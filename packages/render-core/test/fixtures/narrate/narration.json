@@ -1,0 +1,21 @@
+{
+  "voice": "af_heart",
+  "speed": 1.0,
+  "fps": 30,
+  "segments": [
+    {
+      "id": "hook",
+      "text": "What if your build was already broken?"
+    },
+    {
+      "id": "beat",
+      "text": "",
+      "holdSeconds": 2
+    },
+    {
+      "id": "cause",
+      "text": "It was.",
+      "holdSeconds": 3
+    }
+  ]
+}

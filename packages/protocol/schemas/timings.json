@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Timings",
-  "description": "Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors max/server/explainer_mcp.py::_TYPES_TS and the writer at max/.explainers/scripts/narrate.py:290-297.",
+  "description": "Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors the reference implementation's timings type and its narration writer.",
   "type": "object",
   "additionalProperties": false,
   "required": ["fps", "durationInFrames", "totalMs", "audio", "segments"],

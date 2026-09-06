@@ -63,7 +63,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `packages/config` | `@xplainer/config` | open-later | no | yes | no | TypeScript | Shared tsconfig presets, the tier-boundary rule, and the three `xplainer-*` build binaries. | [AGENTS.md](../packages/config/AGENTS.md) |
 | `packages/mcp-server` | `@xplainer/mcp-server` | open-later | yes | yes | yes | TypeScript | Backend-agnostic registration of the eight tools onto an MCP server, across a `RenderBackend` seam. | [AGENTS.md](../packages/mcp-server/AGENTS.md) |
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
-| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
+| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
 | `packages/skill` | `@xplainer/skill` | open-later | yes | no | no | TypeScript | The agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle. | [AGENTS.md](../packages/skill/AGENTS.md) |
 | `packages/tts-client` | `@xplainer/tts-client` | open-later | yes | yes | yes | TypeScript | Kokoro-FastAPI request and response shaping: the two endpoints and the payload flags narration depends on. | [AGENTS.md](../packages/tts-client/AGENTS.md) |
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
@@ -99,6 +99,7 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 | `apps/desktop` | `@xplainer/cli` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
+| `packages/render-core` | `@xplainer/tts-client` | dependencies |
 | `packages/skill` | `@xplainer/protocol` | devDependencies |
 
 Banned specifiers — no file in an open-later root may import these:
@@ -266,11 +267,14 @@ contend for exclusive ownership.
 **Version skew.** `xplainer mcp --attach` is spawned per session; the daemon is not, so a Tuesday
 shim can meet a Monday daemon. An incompatible pair exits `8`, naming both versions and a command
 the user can actually run at that point.
-> *Proposed mechanism, to be confirmed by spike P1-S3:* the contract-version advertisement itself,
-> the compatibility predicate, and whether any consumer can tolerate an unknown `error_code` value.
-> `serverInfo.version` is **not** the contract version — `apps/cli/src/server.ts` passes
-> `CLI_VERSION` into `createMcpServer`, so the handshake reports the release version. An explicit
-> advertisement is required; its shape is open.
+*Settled by spike P1-S3 on 2026-09-06 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)
+§Note, 2026-09-06: P1-S3 settled).* The daemon advertises the contract version as `contract_version`
+in the `/healthz` body — readable before an MCP session exists, which an `initialize` result is not.
+`serverInfo.version` is **not** the contract version: `apps/cli/src/server.ts` passes `CLI_VERSION`
+into `createMcpServer`, so the handshake reports the release number, and both numbers now appear
+side by side in that one body. `MCP_CONTRACT_VERSION` lives in `@xplainer/protocol`, which also
+exports `isContractCompatible(daemon, shim)`; the predicate is **major-compatible**, so an additive
+change attaches and only a removal refuses.
 
 **Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), phase 1).** The daemon announces
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners
@@ -304,7 +308,7 @@ The fixes are small and mechanical. The seven that landed, as worked examples:
 |---|---|---|
 | `packages/mcp-server/src/put-source-guard.ts` — `EngineOwnedPathError.code` | TS9012 | `readonly code: typeof ENGINE_OWNED_PATH_ERROR_CODE = …` |
 | `packages/mcp-server/src/server.ts` — `MCP_SERVER_NAME` | TS9010 | `export const MCP_SERVER_NAME: string = manifest.name;` |
-| `packages/mcp-server/src/server.ts` — `MCP_CONTRACT_VERSION` | TS9010 | `export const MCP_CONTRACT_VERSION: string = manifest.version;` |
+| `packages/protocol/src/generated/manifest.ts` — `MCP_CONTRACT_VERSION` | TS9010 | **generator change** in `scripts/codegen.mjs`: `export const MCP_CONTRACT_VERSION: string = "…";`. It moved out of `packages/mcp-server/src/server.ts` with spike P1-S3 and is re-exported from there. |
 | `packages/protocol/src/generated/manifest.ts` — `TOOL_NAMES` | TS9010 | **generator change** in `scripts/codegen.mjs`: emit the literal tuple type before `Object.freeze([…])` |
 | `packages/protocol/src/generated/manifest.ts` — `ENGINE_OWNED_FILES` | TS9010 | **generator change**, same shape |
 | `packages/render-core/src/scaffold/index.ts` — `ENGINE_OWNED_FILES` | TS9010 | `export const ENGINE_OWNED_FILES: typeof ENGINE_OWNED_FILES_FROM_PROTOCOL = …` |
@@ -403,11 +407,14 @@ in the root [`AGENTS.md`](../AGENTS.md).
 4. Add the member to `PUBLISHABLE_MEMBERS` **or** `PRIVATE_MEMBERS` in
    `scripts/check-publish-contract.mjs`. There is no third option: the checker fails on a member it
    does not know, in either direction.
-5. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
+5. If it is publishable, it also needs a `README.md` — or its npm page renders blank — plus
+   `license`, `homepage`, `author` and a `repository` whose `directory` names this member. The
+   same checker asserts all five, and each rule there carries its own negative test.
+6. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
    `pnpm api:report`.
-6. Write its `AGENTS.md` and its one-line `CLAUDE.md`, and add its row to
+7. Write its `AGENTS.md` and its one-line `CLAUDE.md`, and add its row to
    [§3 Members](#3-members).
-7. `pnpm install` (a new member changes the workspace), then `pnpm verify`.
+8. `pnpm install` (a new member changes the workspace), then `pnpm verify`.
 
 ### A new MCP tool
 
@@ -441,8 +448,10 @@ in the root [`AGENTS.md`](../AGENTS.md).
 2. `pnpm --filter @xplainer/protocol codegen`; commit the generated output in the same commit.
 3. Never touch `src/generated/` or `python/xplainer_protocol/generated/` by hand.
 4. A new **required** field is a breaking change to the contract; a new optional one is not. A new
-   `error_code` enum member is neither until spike `P1-S3` settles it — see
-   [`ROADMAP.md`](ROADMAP.md).
+   `error_code` enum member is a **minor** change — move the minor component of
+   `schemas/manifest.json`'s `version` and nothing else, because both generated decoders fall back
+   to `internal` on a member they do not know ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+   §Note, 2026-09-06: P1-S3 settled).
 5. If the field changes an exported declaration, `pnpm api:report` and commit the `.api.md`.
 6. Add a changeset if the change is user-visible in a published package.
 7. `pnpm verify`.

@@ -3,6 +3,13 @@
   "version": "0.0.0",
   "type": "module",
   "description": "JSON Schema source of truth for the eight explainer tools, with generated TypeScript types and pydantic models.",
+  "homepage": "https://xplainer.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrewMyTech/xplainer.video.git",
+    "directory": "packages/protocol"
+  },
+  "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
   "xplainer": {
     "tier": "open-later"

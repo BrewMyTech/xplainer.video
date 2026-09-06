@@ -160,6 +160,17 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     §Durability, §Durability of the write itself and §Scope — each of which states a binding
     decision over a mechanism marked *proposed*. It reports before the job store is built,
     because the four answers constrain one another.
+    - *Amended 2026-09-06 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+      §Note, 2026-09-06: P1-S1 settled):* **reported, and all four mechanisms are named there.**
+      Ownership is an `O_EXCL` `owner.lock` carrying the pid, the process start time and a boot
+      nonce, with a read-back-confirmed takeover of a stale one; the storage shape stays one JSON
+      file per job; the write is temp-then-`rename` with the file and then the directory flushed,
+      which on macOS is `F_FULLFSYNC` at no extra cost because libuv already issues it; and a
+      worker's identity is that tuple, never the pid. The measurements, the six ownership
+      scenarios, and what stays open — the shared-home question, and Linux and Windows, which were
+      not measured — are in the note. The check that produced them is
+      [`apps/cli/spikes/p1-s1-ownership.mjs`](../apps/cli/spikes/p1-s1-ownership.mjs), which is
+      committed and exits non-zero if an ownership expectation stops holding.
   - **P1-S3 — the contract-version advertisement and the compatibility policy**: how the daemon
     advertises its contract version, whether the predicate is exact or major-compatible, how
     that predicate interacts with ADR 0024's `error_code` extension policy, and whether
@@ -168,6 +179,19 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     half of [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Extending the
     `error_code` enum. It reports **before the first publish** in this phase, because that is
     when the enum and the contract reach a registry and stop being cheap to change.
+    - *Amended 2026-09-06 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)
+      §Note, 2026-09-06: P1-S3 settled, and the matching note in
+      [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)):* **reported, and all four
+      questions are answered there.** The daemon advertises `contract_version` in the `/healthz`
+      body, beside — never instead of — the release `version`; `MCP_CONTRACT_VERSION` has moved to
+      `@xplainer/protocol`, which also exports `isContractCompatible()`; the predicate is
+      **major-compatible**, so adding an `error_code` member is a **minor** contract change that
+      leaves attached shims attached; and unknown-value tolerance turned out to be reachable in
+      both languages, so `schemas/manifest.json` gains an `open_enums` table and codegen emits a
+      decoder per language that falls back to `internal`. The measurements — including the strict
+      Ajv refusal that ruled out an `x-open-enum` schema keyword, and the pydantic
+      `ValidationError` that made the earlier tolerance promise unkeepable — are in the ADR 0025
+      note.
 - **The first public npm publish.** Publishing is phase 1 work because nothing else here
   reaches a user: phase 4 records that until code signing lands, `npx`/`npm` is the supported
   daemon-install path (ADR 0020), and both plugin bundles resolve `@xplainer/*` from a registry
@@ -182,6 +206,24 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     every published package at pack time, and `LICENSE-BINARY` no longer exists. The *urgency*
     argument is unchanged and is why the amendment matters: a licence field that reaches a
     registry cannot be withdrawn from someone who already installed.
+  - *Amended 2026-09-06 (US-011):* **everything on this bullet short of the publish itself is
+    done, and asserted.** All six packages carry a `README.md`, `homepage`
+    (`https://xplainer.video`), `repository` with the member's `directory`, `author`
+    (`Rishav Anand <rishav@brewmytech.com>`) and `license: Apache-2.0`; `packages/config` is
+    still `private: true`; `.changeset/config.json` `"access"` was already `public`.
+    `scripts/check-publish-contract.mjs` now asserts all five metadata fields plus the README
+    from `npm pack --dry-run --json`, adds a rule that no tarball carries the private
+    repository's name, and holds **every** rule to a negative test that runs before the real
+    check — a rule with no self-test is a hard failure. The editorial pass ADR 0022 booked is
+    finished: `grep -rn 'explainer_mcp.py\|plan §' packages/*/dist/**/*.d.ts
+    apps/cli/dist/**/*.d.ts` is empty after a build, fixed at the schemas and comments the
+    declarations are generated from. `pnpm changeset version` was rehearsed in a scratch copy:
+    it exits 0, bumps all six off `0.0.0` and writes each a `CHANGELOG.md` (that day: cli and
+    mcp-server and skill `0.0.1`, protocol and render-core and tts-client `0.1.0` — later
+    phase-1 changesets move these, which is why the numbers are dated and not a promise). The
+    copy was thrown away; nothing here was versioned or committed. **One command is left and it
+    is the owner's: `pnpm changeset version && pnpm changeset publish`.** Nothing in this
+    repository runs it, and nothing should — a publish cannot be taken back.
 - **The tarball hygiene rules that go with that publish, and their exemption list.** Source
   maps are produced and archived as CI artefacts keyed by version, and excluded from the
   tarball; `declarationMap` is off; comments are stripped from emitted `.js`. The rules are

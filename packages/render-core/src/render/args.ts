@@ -27,10 +27,10 @@ export const REMOTION_BIN = "remotion";
 /** The composition id every scaffolded video registers in `Root.tsx`. */
 export const COMPOSITION_ID = "Explainer";
 
-/** Default still frame, from `explainer_still`'s signature (`explainer_mcp.py:430`). */
+/** Default still frame, from `explainer_still`'s signature in the reference implementation. */
 export const DEFAULT_STILL_FRAME = 90;
 
-/** Default still scale, from `explainer_still`'s signature (`explainer_mcp.py:430`). */
+/** Default still scale, from `explainer_still`'s signature in the reference implementation. */
 export const DEFAULT_STILL_SCALE = 0.5;
 
 /** Where a video's entry point sits inside the Remotion workspace. */
@@ -55,7 +55,7 @@ export type StillArgsInput = RenderArgsInput & {
 };
 
 /**
- * argv for a full render, mirroring `explainer_mcp.py:416-419`:
+ * argv for a full render, mirroring the reference implementation's command:
  * `remotion render videos/<slug>/index.ts Explainer <output> --public-dir=<publicDir>`
  */
 export function renderArgs({ slug, output, publicDir }: RenderArgsInput): string[] {
@@ -63,7 +63,7 @@ export function renderArgs({ slug, output, publicDir }: RenderArgsInput): string
 }
 
 /**
- * argv for a single still, mirroring `explainer_mcp.py:442-446`:
+ * argv for a single still, mirroring the reference implementation's command:
  * `remotion still videos/<slug>/index.ts Explainer <output> --frame=<n> --scale=<n> --public-dir=<publicDir>`
  *
  * Flag order matches the reference implementation exactly, so a diff against it

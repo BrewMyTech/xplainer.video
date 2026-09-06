@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerJobInput",
-  "description": "Arguments for explainer_job. Shape and default from max/server/explainer_mcp.py:457.",
+  "description": "Arguments for explainer_job. Shape and default ported from the reference implementation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["job_id"],

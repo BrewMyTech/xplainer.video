@@ -20,7 +20,13 @@ From `src/index.ts`, an explicit named-export list: `createMcpServer`, `MCP_SERV
 types, and the put-source guard (`assertAgentOwnedPaths`, `EngineOwnedPathError`,
 `ENGINE_OWNED_PATH_ERROR_CODE`). Published, emits declarations, carries `api/mcp-server.api.md`.
 
-`MCP_CONTRACT_VERSION` lives **here**, not in `apps/cli`. It reads the manifest's version.
+`MCP_CONTRACT_VERSION` is exported from **here** and defined in **`@xplainer/protocol`**: this
+package re-exports it, so every caller keeps the import it had while the value comes from the
+package that owns the contract. It moved with spike P1-S3
+([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md) §Note, 2026-09-06), because
+`xplainer mcp --attach` has to read the daemon's `contract_version` before an MCP session
+exists — it cannot depend on the MCP server to decide whether it may talk to one. Do not add a
+second definition here; `apps/cli` still must not have one either.
 
 ## Commands
 
@@ -48,8 +54,9 @@ Then the root procedure: `pnpm verify`.
   `explainer_put_source.input.json` reserves the five engine-owned names in the published contract;
   `assertAgentOwnedPaths` refuses the write at the door, because a hand-edited `Video.tsx` renders
   successfully and silently drops the soundtrack ([ADR 0018](../../docs/adr/0018-engine-owns-the-composition-shell.md)).
-- **`isolatedDeclarations` is on `tsconfig.build.json`.** `MCP_SERVER_NAME` and
-  `MCP_CONTRACT_VERSION` carry explicit `: string` annotations for that reason; keep them.
+- **`isolatedDeclarations` is on `tsconfig.build.json`.** `MCP_SERVER_NAME` carries an explicit
+  `: string` annotation for that reason; keep it. `MCP_CONTRACT_VERSION` carries the same
+  annotation at its definition site, which is now `packages/protocol`'s generated manifest.
 
 ## How to add
 

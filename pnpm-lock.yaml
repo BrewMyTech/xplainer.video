@@ -196,6 +196,9 @@ importers:
       '@xplainer/protocol':
         specifier: workspace:*
         version: file:packages/protocol
+      '@xplainer/tts-client':
+        specifier: workspace:*
+        version: file:packages/tts-client
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -203,6 +206,9 @@ importers:
       '@xplainer/config':
         specifier: workspace:*
         version: file:packages/config
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1427,6 +1433,9 @@ packages:
 
   '@xplainer/protocol@file:packages/protocol':
     resolution: {directory: packages/protocol, type: directory}
+
+  '@xplainer/tts-client@file:packages/tts-client':
+    resolution: {directory: packages/tts-client, type: directory}
 
   abbrev@4.0.0:
     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
@@ -4108,6 +4117,8 @@ snapshots:
       - supports-color
 
   '@xplainer/protocol@file:packages/protocol': {}
+
+  '@xplainer/tts-client@file:packages/tts-client': {}
 
   abbrev@4.0.0: {}
 

@@ -17,8 +17,31 @@ from xplainer_protocol.generated.models import (
     ExplainerJobOutput,
     ExplainerListOutput,
     ExplainerNarrateInput,
+    JobErrorCode,
     JobState,
 )
+
+
+def _error_record(error_code: object) -> dict[str, object]:
+    """A terminal explainer_job record carrying the given error_code.
+
+    Args:
+        error_code: The value to put in the ``error_code`` field.
+
+    Returns:
+        A mapping ExplainerJobOutput accepts apart from that one field.
+    """
+    return {
+        "job_id": 1,
+        "job_type": "explainer_render",
+        "status": "error",
+        "exit_code": 1,
+        "error": "the render exited 1",
+        "error_code": error_code,
+        "started_at": "2026-09-06T12:00:00+00:00",
+        "finished_at": "2026-09-06T12:00:01+00:00",
+        "output": {"lines": []},
+    }
 
 
 def test_a_well_formed_create_input_parses() -> None:
@@ -72,3 +95,30 @@ def test_job_state_covers_the_five_lifecycle_values() -> None:
         "error",
         "cancelled",
     ]
+
+
+def test_a_known_error_code_decodes_to_its_own_member() -> None:
+    for member in JobErrorCode:
+        parsed = ExplainerJobOutput.model_validate(_error_record(member.value))
+        assert parsed.error_code is member
+
+
+def test_an_unknown_error_code_decodes_to_the_documented_fallback() -> None:
+    # The enum is open: adding a member is a minor contract change (ADR 0024's
+    # note of 2026-09-06), so a record written by a newer daemon must parse here
+    # rather than raise. Without codegen's `_missing_` hook this raises
+    # ValidationError, which is what made the earlier draft of ADR 0025's
+    # tolerance promise unkeepable.
+    parsed = ExplainerJobOutput.model_validate(_error_record("disk_full"))
+    assert parsed.error_code is JobErrorCode.internal
+    assert JobErrorCode("some_code_from_2027") is JobErrorCode.internal
+
+
+def test_a_non_string_error_code_is_still_rejected() -> None:
+    # Tolerance is for a newer contract, not for a malformed record.
+    with pytest.raises(ValidationError):
+        ExplainerJobOutput.model_validate(_error_record(7))
+
+
+def test_error_code_may_still_be_null() -> None:
+    assert ExplainerJobOutput.model_validate(_error_record(None)).error_code is None

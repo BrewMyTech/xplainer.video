@@ -47,13 +47,29 @@ Then the root procedure: `pnpm verify`.
   call site. `NOT_IMPLEMENTED_EXIT_CODE = 2` keeps its meaning and its export site, and **`8` is
   reserved for contract skew** ([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md)).
 - **`serverInfo.version` is the release version, not the contract version.** `src/server.ts` passes
-  `CLI_VERSION` into `createMcpServer`, so do not read the handshake as a contract advertisement;
-  an explicit one is spike **P1-S3**.
+  `CLI_VERSION` into `createMcpServer`, so do not read the handshake as a contract advertisement.
+  The explicit one is **`contract_version` in the `/healthz` body**, from
+  `@xplainer/protocol`'s `MCP_CONTRACT_VERSION` — settled by spike P1-S3
+  ([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md) §Note, 2026-09-06). The two
+  numbers sit side by side in that one body on purpose, and `/healthz` rather than the
+  `initialize` result because the shim must decide before it opens a session. Compare it with
+  `isContractCompatible()` from the same package; the predicate is major-compatible, and exit
+  `8` is what an incompatible pair gets.
 - **Nothing downloads at install.** No `postinstall` fetches a browser, a model or a binary
   (`AC-1d`); `xplainer setup` does that, deliberately and visibly
   ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)).
 - **`isolatedDeclarations` is on `tsconfig.build.json`**, so `TS9010` surfaces under
   `pnpm turbo build` — not under `typecheck`, and not in your editor.
+- **`spikes/` is measurement, not product.** `spikes/p1-s1-ownership.mjs` settles
+  [ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md)'s four proposed
+  mechanisms and is quoted by the dated note at the end of that record. It is plain Node with no
+  dependencies, and it is outside the build by construction: both `tsconfig.json` and
+  `tsconfig.build.json` `include` only `src`, and `package.json`'s `files` allowlist is `dist/`
+  plus `LICENSE` and `NOTICE`, so nothing here compiles and nothing here ships. It **is** linted —
+  this package's `lint` is `biome check .` from the package root, which reaches it — and it is a
+  check rather than a report: `node spikes/p1-s1-ownership.mjs` exits non-zero if an expectation
+  the ADR note quotes stops holding. Add a spike here when a record names one; do not add product
+  code here.
 
 ## How to add
 

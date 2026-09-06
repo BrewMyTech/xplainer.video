@@ -30,6 +30,7 @@
 import { serve } from "@hono/node-server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer, type RenderBackend } from "@xplainer/mcp-server";
+import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { Hono } from "hono";
 import { CLI_VERSION } from "./version.js";
 
@@ -87,7 +88,15 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
   const version = options.version ?? CLI_VERSION;
   const app = new Hono();
 
-  app.get("/healthz", (c) => c.json({ status: "ok", version }));
+  // `contract_version` is the daemon's advertisement of the tool contract it
+  // speaks, and it is deliberately on `/healthz` rather than only in the MCP
+  // handshake: `xplainer mcp --attach` has to decide whether it may talk to this
+  // daemon *before* it starts proxying a session, and `serverInfo.version` in
+  // the handshake carries `version` below — the release number — which is the
+  // wrong number to compare (ADR 0025 §Note, 2026-09-06: P1-S3 settled).
+  app.get("/healthz", (c) =>
+    c.json({ status: "ok", version, contract_version: MCP_CONTRACT_VERSION }),
+  );
 
   app.post("/mcp", async (c) => {
     const server = createMcpServer(backend, {

@@ -38,7 +38,7 @@ export interface ExplainerCreateInput {
 }
 
 /**
- * Result of explainer_create. Shape from max/server/explainer_mcp.py:333-347, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.
+ * Result of explainer_create. Shape ported from the reference implementation, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.
  */
 export interface ExplainerCreateOutput {
   slug: Slug;
@@ -65,7 +65,7 @@ export interface ExplainerCreateOutput {
 }
 
 /**
- * Arguments for explainer_job. Shape and default from max/server/explainer_mcp.py:457.
+ * Arguments for explainer_job. Shape and default ported from the reference implementation.
  */
 export interface ExplainerJobInput {
   /**
@@ -79,7 +79,7 @@ export interface ExplainerJobInput {
 }
 
 /**
- * State of one explainer job. Shape from max/server/explainer_mcp.py:464-477 with one deliberate divergence: the `command` field max returns is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.
+ * State of one explainer job. Shape ported from the reference implementation with one deliberate divergence: the `command` field it returned is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.
  */
 export interface ExplainerJobOutput {
   /**
@@ -117,7 +117,7 @@ export interface ExplainerJobOutput {
 export interface ExplainerListInput {}
 
 /**
- * Every explainer video the caller owns and what each one has so far. Shape from max/server/explainer_mcp.py:494-507, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.
+ * Every explainer video the caller owns and what each one has so far. Shape ported from the reference implementation, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.
  */
 export interface ExplainerListOutput {
   /**
@@ -127,7 +127,7 @@ export interface ExplainerListOutput {
 }
 
 /**
- * Arguments for explainer_narrate. Shape from max/server/explainer_mcp.py:362-367, minus the session_name argument, which was max's internal job-routing detail and is not part of this contract.
+ * Arguments for explainer_narrate. Shape ported from the reference implementation, minus the session_name argument, which was its internal job-routing detail and is not part of this contract.
  */
 export interface ExplainerNarrateInput {
   slug: Slug;
@@ -139,7 +139,7 @@ export interface ExplainerNarrateInput {
 }
 
 /**
- * Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope from max/server/explainer_mcp.py:293-297.
+ * Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope ported from the reference implementation.
  */
 export interface ExplainerNarrateOutput {
   /**
@@ -238,7 +238,7 @@ export interface ExplainerRenderOutput {
 }
 
 /**
- * Arguments for explainer_still. Shape and defaults from max/server/explainer_mcp.py:430-432.
+ * Arguments for explainer_still. Shape and defaults ported from the reference implementation.
  */
 export interface ExplainerStillInput {
   slug: Slug;
@@ -272,7 +272,7 @@ export interface ExplainerStillOutput {
 }
 
 /**
- * Machine-readable reason a job ended in error, which an agent can branch on. It never replaces `error`: that field always carries the human-readable detail, and this one only says which class of failure produced it. `daemon_restarted`: the daemon restarted while the job was in flight, so the work was lost rather than rejected — retry the same call. `daemon_shutdown`: the daemon stopped before the job finished — retry once it is running again. `toolchain_missing`: a required binary is not installed — do not retry until it is, because every attempt fails the same way. `render_failed`: the render ran and failed — read `error`, fix the source, then retry. `tts_failed`: narration synthesis failed — retry once, and treat a second identical failure as a problem with the narration rather than the run. `cancelled`: a caller cancelled the job — do not retry unless the caller asks again. `internal`: an unclassified failure — retry once, and report `error` verbatim if it repeats. This enum is expected to grow as failure modes are told apart; what adding a member costs a consumer is settled in ADR 0024 and spike P1-S3, not here.
+ * Machine-readable reason a job ended in error, which an agent can branch on. It never replaces `error`: that field always carries the human-readable detail, and this one only says which class of failure produced it. `daemon_restarted`: the daemon restarted while the job was in flight, so the work was lost rather than rejected — retry the same call. `daemon_shutdown`: the daemon stopped before the job finished — retry once it is running again. `toolchain_missing`: a required binary is not installed — do not retry until it is, because every attempt fails the same way. `render_failed`: the render ran and failed — read `error`, fix the source, then retry. `tts_failed`: narration synthesis failed — retry once, and treat a second identical failure as a problem with the narration rather than the run. `cancelled`: a caller cancelled the job — do not retry unless the caller asks again. `internal`: an unclassified failure — retry once, and report `error` verbatim if it repeats. This enum is expected to grow as failure modes are told apart, and it is OPEN: adding a member is a minor contract change, and a consumer that meets a value it does not recognise falls back to `internal` instead of rejecting the record. Both generated bindings already do that — `toJobErrorCode()` in TypeScript and the `_missing_` hook on the Python enum — so branch on the decoded value and quote `error` for the detail. What adding a member costs is settled in ADR 0024's note of 2026-09-06.
  */
 export type JobErrorCode =
   | "daemon_restarted"
@@ -294,7 +294,7 @@ export interface JobOutput {
 }
 
 /**
- * Lifecycle state of a queued explainer job. The five values are the ones max's job queue reports (max/server/explainer_mcp.py:453) and are the complete set: a job is always in exactly one of them.
+ * Lifecycle state of a queued explainer job. The five values are the ones the reference implementation's job queue reports and are the complete set: a job is always in exactly one of them.
  */
 export type JobState = "queued" | "running" | "done" | "error" | "cancelled";
 
@@ -347,7 +347,7 @@ export interface NarrationSegment {
 }
 
 /**
- * Identifier for one explainer video. Lowercase letters, digits and hyphens; must start with a letter or digit; at most 64 characters. Ported verbatim from max/server/explainer_mcp.py:36 (SLUG_RE), because the slug is also a directory name on every backend.
+ * Identifier for one explainer video. Lowercase letters, digits and hyphens; must start with a letter or digit; at most 64 characters. Ported verbatim from the reference implementation's SLUG_RE, because the slug is also a directory name on every backend.
  */
 export type Slug = string;
 
@@ -363,7 +363,7 @@ export interface SourceFile {
 }
 
 /**
- * Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors max/server/explainer_mcp.py::_TYPES_TS and the writer at max/.explainers/scripts/narrate.py:290-297.
+ * Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors the reference implementation's timings type and its narration writer.
  */
 export interface Timings {
   /**

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerNarrateInput",
-  "description": "Arguments for explainer_narrate. Shape from max/server/explainer_mcp.py:362-367, minus the session_name argument, which was max's internal job-routing detail and is not part of this contract.",
+  "description": "Arguments for explainer_narrate. Shape ported from the reference implementation, minus the session_name argument, which was its internal job-routing detail and is not part of this contract.",
   "type": "object",
   "additionalProperties": false,
   "required": ["slug", "narration"],

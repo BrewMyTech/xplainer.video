@@ -12,7 +12,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ENGINE_OWNED_FILES, TOOL_NAMES } from "@xplainer/protocol";
+import { ENGINE_OWNED_FILES, MCP_CONTRACT_VERSION, TOOL_NAMES } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStubBackend } from "./backend.js";
 import { NOT_IMPLEMENTED_MESSAGE } from "./not-implemented.js";
@@ -60,6 +60,38 @@ describe("xplainer serve", () => {
     expect(response.status).toBe(200);
     expect(body.status).toBe("ok");
     expect(body.version).toBe(CLI_VERSION);
+  });
+
+  /**
+   * The contract-version advertisement spike P1-S3 chose (ADR 0025 §Note,
+   * 2026-09-06). `xplainer mcp --attach` reads it here, before it opens an MCP
+   * session, so it cannot come from the `initialize` handshake — and it must not
+   * be the release version, which is the separate `version` field above and is
+   * what `serverInfo.version` reports.
+   */
+  it("advertises the contract version on /healthz, separately from the release version", async () => {
+    const server = await serveOnEphemeralPort();
+
+    const response = await fetch(`${server.url}/healthz`);
+    const body = (await response.json()) as { version: unknown; contract_version: unknown };
+
+    expect(response.status).toBe(200);
+    expect(body.contract_version).toBe(MCP_CONTRACT_VERSION);
+    expect(body.version).toBe(CLI_VERSION);
+  });
+
+  it("keeps the advertised contract version independent of the release version it reports", async () => {
+    running = await startServer({
+      backend: createStubBackend(),
+      port: 0,
+      version: "9.9.9-a-release-version-that-is-not-the-contract",
+    });
+
+    const response = await fetch(`${running.url}/healthz`);
+    const body = (await response.json()) as { version: unknown; contract_version: unknown };
+
+    expect(body.version).toBe("9.9.9-a-release-version-that-is-not-the-contract");
+    expect(body.contract_version).toBe(MCP_CONTRACT_VERSION);
   });
 
   /**

@@ -13,8 +13,10 @@
  * exported until it is added here.
  */
 
+export { isContractCompatible } from "./contract-version.js";
 export type { EngineOwnedFile, ToolName } from "./generated/manifest.js";
-export { ENGINE_OWNED_FILES, TOOL_NAMES } from "./generated/manifest.js";
+export { ENGINE_OWNED_FILES, MCP_CONTRACT_VERSION, TOOL_NAMES } from "./generated/manifest.js";
+export { JOB_ERROR_CODE_VALUES, toJobErrorCode } from "./generated/open-enums.js";
 export type {
   Caption,
   Captions,
