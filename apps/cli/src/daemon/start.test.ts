@@ -29,7 +29,13 @@ import { createJobStore } from "./job-store.js";
 import { describeReconciliation, type StartedDaemon, startDaemon } from "./start.js";
 import { stateDirLayout } from "./state-dir.js";
 import { fakeWorkerRegistry } from "./testing/fake-worker.js";
-import { CHILD_DAEMON, CHILD_SERVE, type SpawnedChild, spawnEntry } from "./testing/spawn-child.js";
+import {
+  CHILD_DAEMON,
+  CHILD_SERVE,
+  type SpawnedChild,
+  spawnEntry,
+  untilGone,
+} from "./testing/spawn-child.js";
 import { isAlive } from "./worker-identity.js";
 
 const scratch: string[] = [];
@@ -71,19 +77,6 @@ function snapshot(dir: string): string {
   };
   walk(dir);
   return entries.sort().join(" | ");
-}
-
-async function untilGone(pid: number, timeoutMs = 10_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isAlive(pid)) {
-      return true;
-    }
-    await new Promise<void>((done) => {
-      setTimeout(done, 20);
-    });
-  }
-  return false;
 }
 
 afterEach(async () => {

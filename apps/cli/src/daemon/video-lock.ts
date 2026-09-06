@@ -34,10 +34,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { JobType } from "@xplainer/protocol";
+import { removeIfPresent } from "./durable-write.js";
 import { classifyHolder, type OwnershipRecord, readLock } from "./lock.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
 import { selfIdentity } from "./worker-identity.js";
@@ -118,17 +119,6 @@ function tryCreate(path: string, record: VideoLockRecord): boolean {
   return true;
 }
 
-/** Delete the lock file, treating "already gone" as the desired state. */
-function unlinkQuietly(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-      throw error;
-    }
-  }
-}
-
 /**
  * Take the write lock on one video, or refuse.
  *
@@ -160,7 +150,7 @@ export function acquireVideoWriteLock(options: AcquireVideoWriteLockOptions): Vi
       if (current.record === null || current.record.boot_nonce !== mine.boot_nonce) {
         return;
       }
-      unlinkQuietly(path);
+      removeIfPresent(path);
     },
   });
 
@@ -180,7 +170,7 @@ export function acquireVideoWriteLock(options: AcquireVideoWriteLockOptions): Vi
   if (again.raw !== found.raw) {
     throw new VideoBusyError(slug, "a stale lock was taken over by another process mid-check");
   }
-  unlinkQuietly(path);
+  removeIfPresent(path);
   if (!tryCreate(path, mine)) {
     throw new VideoBusyError(slug, "another process won the takeover of a stale lock");
   }

@@ -46,6 +46,7 @@ import {
   CHILD_SERVE_JOB,
   type SpawnedChild,
   spawnEntry,
+  untilGone,
 } from "../daemon/testing/spawn-child.js";
 import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
@@ -125,23 +126,6 @@ function getHealthz(
     call.once("error", reject);
     call.end();
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((done) => {
-    setTimeout(done, ms);
-  });
-}
-
-async function untilGone(pid: number, timeoutMs = 10_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isAlive(pid)) {
-      return true;
-    }
-    await sleep(20);
-  }
-  return false;
 }
 
 afterEach(() => {

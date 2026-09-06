@@ -31,9 +31,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
+import { removeIfPresent } from "./durable-write.js";
 import { STATE_DIR_MODE } from "./state-dir.js";
 
 /** The `0700` directory inside the state directory that holds the socket. */
@@ -143,12 +144,6 @@ export function prepareIpcSocket(
   const directory = join(stateDir, IPC_DIR);
   mkdirSync(directory, { recursive: true, mode: STATE_DIR_MODE });
   chmodSync(directory, STATE_DIR_MODE);
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-      throw error;
-    }
-  }
+  removeIfPresent(path);
   return { path, removeOnShutdown: true };
 }

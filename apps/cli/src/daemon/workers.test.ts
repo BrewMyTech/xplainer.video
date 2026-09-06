@@ -26,7 +26,8 @@ import {
 } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeJobRequest } from "../job-request.js";
-import { JOB_RECORD_FORMAT_VERSION, type JobRecord } from "./job-store.js";
+import type { JobRecord } from "./job-store.js";
+import { makeJobRecord } from "./testing/records.js";
 import { videoLockPath } from "./video-lock.js";
 import { selfIdentity } from "./worker-identity.js";
 import { createWorkerRegistry } from "./workers.js";
@@ -42,24 +43,7 @@ function temporaryRoot(): string {
 
 /** A record shaped exactly as the store writes one, with only the fields a factory reads set. */
 function record(jobId: number, jobType: JobRecord["job_type"], slug: string | null): JobRecord {
-  return {
-    format_version: JOB_RECORD_FORMAT_VERSION,
-    job_id: jobId,
-    job_type: jobType,
-    status: "queued",
-    video_id: slug,
-    output_dir: null,
-    created_at: "2026-09-06T10:00:00+00:00",
-    started_at: null,
-    finished_at: null,
-    exit_code: null,
-    error: null,
-    error_code: null,
-    workers_uncertain: false,
-    owner: { ...selfIdentity(), run_id: "workers-test" },
-    workers: [],
-    log: [],
-  };
+  return makeJobRecord({ job_id: jobId, job_type: jobType, video_id: slug });
 }
 
 /** A created video with a narration already measured, which is what a render requires. */

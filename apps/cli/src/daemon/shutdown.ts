@@ -44,9 +44,9 @@
  * because `0` is the portable "do not restart" signal and `70` is not.
  */
 
-import { unlinkSync } from "node:fs";
 import process from "node:process";
 import { removeRuntimeState } from "./daemon-state.js";
+import { removeIfPresent } from "./durable-write.js";
 import { DAEMON_INTERNAL_EXIT_CODE } from "./exit-codes.js";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "./runner.js";
 
@@ -99,13 +99,7 @@ function removeSocket(path: string | null | undefined): void {
   if (path === undefined || path === null || path === "") {
     return;
   }
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-      throw error;
-    }
-  }
+  removeIfPresent(path);
 }
 
 /**

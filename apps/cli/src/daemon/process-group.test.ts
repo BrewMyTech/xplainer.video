@@ -12,6 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import process from "node:process";
 import { describe, expect, it } from "vitest";
 import { groupOf, signalGroup, terminateGroup } from "./process-group.js";
+import { untilGone } from "./testing/spawn-child.js";
 import { isAlive } from "./worker-identity.js";
 
 /**
@@ -50,19 +51,6 @@ function firstLine(child: ChildProcess): Promise<string> {
       reject(new Error("the worker exited before it said anything"));
     });
   });
-}
-
-async function untilGone(pid: number, timeoutMs = 5_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isAlive(pid)) {
-      return true;
-    }
-    await new Promise<void>((done) => {
-      setTimeout(done, 20);
-    });
-  }
-  return false;
 }
 
 describe("terminateGroup", () => {

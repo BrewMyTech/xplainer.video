@@ -79,6 +79,31 @@ export function ensureStateDirectory(directory: string): void {
 }
 
 /**
+ * Delete a file whose desired state is "gone", tolerating its already being gone.
+ *
+ * Every artefact this daemon owns — `owner.lock`, the IPC socket, a video's write lock — is removed
+ * by a path that has just decided the file must not exist, and for each of them an `ENOENT` is that
+ * decision already being true rather than a failure to carry it out: a `SIGKILL`ed predecessor may
+ * have left nothing behind, and a takeover races another taker for the same unlink. Any *other*
+ * `errno` is a real problem — a directory that cannot be written, a permission the daemon has lost
+ * — and is rethrown, because silently continuing past it leaves a socket or a lock in place that
+ * the next start will read as a live owner.
+ *
+ * It lives here, beside {@link writeJsonDurably}, so that the tolerance is spelled once. Five call
+ * sites across four modules carried the same six lines, and a rule about which `errno` may be
+ * ignored is only worth anything while every copy of it still says the same thing.
+ */
+export function removeIfPresent(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+}
+
+/**
  * Write `value` as JSON to `path` so that a `SIGKILL` on the next line cannot lose it.
  *
  * The temporary file is created in the **same directory** as the target, because `rename` is only
@@ -108,7 +133,13 @@ export function writeJsonDurably(path: string, value: unknown): DirectoryFlush {
   return flushDirectory(directory);
 }
 
-/** Delete a file that may already be gone. Used only on the failure path above. */
+/**
+ * Delete the temporary file, swallowing **every** error. Used only on the failure path above.
+ *
+ * Deliberately more forgiving than {@link removeIfPresent}: the caller is already holding the error
+ * it is about to throw, and a second one raised while tidying up would replace the diagnosis with
+ * the clean-up.
+ */
 function removeQuietly(path: string): void {
   try {
     unlinkSync(path);

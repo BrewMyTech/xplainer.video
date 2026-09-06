@@ -8,9 +8,10 @@
  * whose liveness is not in doubt.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import process from "node:process";
 import { describe, expect, it } from "vitest";
+import { exitedPid } from "./testing/records.js";
 import {
   classifyWorker,
   identify,
@@ -19,14 +20,6 @@ import {
   processStartToken,
   selfIdentity,
 } from "./worker-identity.js";
-
-/** A process that has certainly exited, so its pid is a real "gone". */
-function exitedPid(): number {
-  const child = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-    encoding: "utf8",
-  });
-  return Number(child.stdout);
-}
 
 describe("isAlive", () => {
   it("is true for this process and false for one that has exited", () => {

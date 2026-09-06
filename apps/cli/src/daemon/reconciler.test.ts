@@ -14,9 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
-import { createJobStore, type JobStore } from "./job-store.js";
+import { createJobStore } from "./job-store.js";
 import { reconcileJobs } from "./reconciler.js";
 import { deadOwner, exitedPid, makeJobRecord } from "./testing/records.js";
+import { untilGone } from "./testing/spawn-child.js";
 import { identify, isAlive, machineBootId, selfIdentity } from "./worker-identity.js";
 
 const scratch: string[] = [];
@@ -40,23 +41,6 @@ function orphanWorker(): { pid: number } {
   return { pid };
 }
 
-async function untilGone(pid: number, timeoutMs = 5_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isAlive(pid)) {
-      return true;
-    }
-    await new Promise<void>((done) => {
-      setTimeout(done, 20);
-    });
-  }
-  return false;
-}
-
-function storeIn(stateDir: string): JobStore {
-  return createJobStore(stateDir);
-}
-
 afterEach(() => {
   for (const pid of strays.splice(0)) {
     try {
@@ -72,7 +56,7 @@ afterEach(() => {
 
 describe("reconcileJobs", () => {
   it("turns a running job whose daemon is gone into error/daemon_restarted with a log line", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     store.put(
       makeJobRecord({
         job_id: 1,
@@ -95,7 +79,7 @@ describe("reconcileJobs", () => {
   });
 
   it("reconciles a queued job too, because a stuck narrate is the same failure as a stuck render", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     store.put(
       makeJobRecord({ job_id: 4, job_type: "explainer_narrate", owner: deadOwner(exitedPid()) }),
     );
@@ -107,7 +91,7 @@ describe("reconcileJobs", () => {
   });
 
   it("leaves a terminal record exactly as it found it", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     store.put(
       makeJobRecord({ job_id: 2, status: "done", finished_at: "2026-09-06T00:00:00.000Z" }),
     );
@@ -120,7 +104,7 @@ describe("reconcileJobs", () => {
   });
 
   it("leaves a running job alone while its owning daemon is demonstrably alive", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     const owner = { ...identify(orphanWorker().pid), run_id: "a-live-daemon" };
     store.put(makeJobRecord({ job_id: 3, status: "running", owner }));
 
@@ -131,7 +115,7 @@ describe("reconcileJobs", () => {
   });
 
   it("kills a worker whose identity tuple matches the record", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     const worker = orphanWorker();
     store.put(
       makeJobRecord({
@@ -152,7 +136,7 @@ describe("reconcileJobs", () => {
 
   it("leaves a stranger alone, with certainty, and does not quarantine anything", async () => {
     const stateDir = stateDirectory();
-    const store = storeIn(stateDir);
+    const store = createJobStore(stateDir);
     const worker = orphanWorker();
     const outputDir = join(stateDir, "videos", "how-dns-works");
     mkdirSync(outputDir, { recursive: true });
@@ -181,7 +165,7 @@ describe("reconcileJobs", () => {
 
   it("marks workers_uncertain and quarantines the output directory when identity cannot be read", async () => {
     const stateDir = stateDirectory();
-    const store = storeIn(stateDir);
+    const store = createJobStore(stateDir);
     const worker = orphanWorker();
     const outputDir = join(stateDir, "videos", "how-dns-works");
     mkdirSync(outputDir, { recursive: true });
@@ -213,7 +197,7 @@ describe("reconcileJobs", () => {
   });
 
   it("reports a newer record as daemon_restarted without rewriting it", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     store.put(
       makeJobRecord({
         job_id: 8,
@@ -236,7 +220,7 @@ describe("reconcileJobs", () => {
   });
 
   it("does not treat this daemon's own pid as a live previous owner", async () => {
-    const store = storeIn(stateDirectory());
+    const store = createJobStore(stateDirectory());
     store.put(
       makeJobRecord({
         job_id: 9,

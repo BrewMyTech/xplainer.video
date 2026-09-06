@@ -8,7 +8,6 @@
  * `start.test.ts`, where a second `xplainer serve` is spawned for real.
  */
 
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +22,7 @@ import {
   releaseOwnership,
 } from "./lock.js";
 import { OWNER_LOCK_FILE } from "./state-dir.js";
+import { exitedPid } from "./testing/records.js";
 import { selfIdentity } from "./worker-identity.js";
 
 const scratch: string[] = [];
@@ -45,14 +45,6 @@ function acquired(acquisition: Acquisition): OwnershipRecord {
     );
   }
   return acquisition.record;
-}
-
-/** A pid that certainly belongs to nothing: a child that has already exited. */
-function exitedPid(): number {
-  const child = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-    encoding: "utf8",
-  });
-  return Number(child.stdout);
 }
 
 afterEach(() => {

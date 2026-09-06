@@ -40,9 +40,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
-import { ensureStateDirectory, flushDirectory } from "./durable-write.js";
+import { ensureStateDirectory, flushDirectory, removeIfPresent } from "./durable-write.js";
 import { OWNERSHIP_REFUSED_EXIT_CODE } from "./exit-codes.js";
 import { STATE_FILE_MODE, stateDirLayout } from "./state-dir.js";
 import { isAlive, processStartToken, selfIdentity } from "./worker-identity.js";
@@ -206,13 +206,7 @@ export async function acquireOwnership(stateDir: string): Promise<Acquisition> {
     steps.push("the stale lock changed while it was being read — another taker won; refusing");
     return { ok: false, record: null, steps };
   }
-  try {
-    unlinkSync(lock);
-  } catch (error) {
-    if (codeOf(error) !== "ENOENT") {
-      throw error;
-    }
-  }
+  removeIfPresent(lock);
   try {
     writeLock(lock, mine);
   } catch (error) {
@@ -246,13 +240,7 @@ export function releaseOwnership(stateDir: string, record: OwnershipRecord): boo
   if (held.record === null || held.record.boot_nonce !== record.boot_nonce) {
     return false;
   }
-  try {
-    unlinkSync(lock);
-  } catch (error) {
-    if (codeOf(error) !== "ENOENT") {
-      throw error;
-    }
-  }
+  removeIfPresent(lock);
   flushDirectory(stateDir);
   return true;
 }

@@ -16,11 +16,16 @@
  * It deliberately does **not** keep a registry of what it spawned. Each suite owns its own cleanup
  * in `afterEach`, because a shared one would outlive a single file's tests and a stray daemon that
  * still holds a state directory is the one failure mode these tests must never introduce.
+ *
+ * {@link untilGone} is here for the same "described once" reason: four suites end in "and the pid
+ * it left behind is gone", and a process that has been signalled dies on the kernel's schedule
+ * rather than on the assertion's.
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { isAlive } from "../worker-identity.js";
 
 /** The `--import` hook that lets a spawned `node` resolve this package's `.ts` sources. */
 export const TS_SOURCE_HOOK = fileURLToPath(new URL("./ts-source-hook.ts", import.meta.url));
@@ -39,6 +44,25 @@ export const CHILD_DAEMON = fileURLToPath(new URL("./child-daemon.ts", import.me
 
 /** `xplainer serve` with one long fake job already running when it announces readiness. */
 export const CHILD_SERVE_JOB = fileURLToPath(new URL("./child-serve-job.ts", import.meta.url));
+
+/**
+ * Poll until `pid` is no longer alive, or until `timeoutMs` runs out.
+ *
+ * @returns `true` if it went away in time, `false` if it was still alive at the deadline — so an
+ * assertion says which of the two happened rather than timing the whole test out.
+ */
+export async function untilGone(pid: number, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) {
+      return true;
+    }
+    await new Promise<void>((done) => {
+      setTimeout(done, 20);
+    });
+  }
+  return false;
+}
 
 /** A spawned child, and everything a test needs to observe it. */
 export type SpawnedChild = {
