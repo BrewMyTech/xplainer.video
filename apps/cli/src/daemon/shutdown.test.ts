@@ -16,6 +16,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeRuntimeState } from "./daemon-state.js";
+import { DAEMON_INTERNAL_EXIT_CODE } from "./exit-codes.js";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "./runner.js";
 import {
   CLEAN_SHUTDOWN_EXIT_CODE,
@@ -179,6 +180,69 @@ describe("installShutdownHandlers", () => {
     expect(steps.filter((step) => step === "drain")).toHaveLength(1);
     expect(steps.join("\n")).toContain("already shutting down");
     expect(exits).toEqual([CLEAN_SHUTDOWN_EXIT_CODE]);
+  });
+
+  /**
+   * The drain writes records, and `durable-write.ts`'s `renameSync` can fail on a full or
+   * read-only disk. Before this was guarded the rejection escaped: the listeners stayed open, the
+   * socket file and `runtime.json` stayed on disk, nothing called `exit`, and a second `SIGTERM`
+   * met the "already shutting down" guard and was logged as ignored — so the daemon hung until a
+   * supervisor killed it. The sequence must finish; only the code changes.
+   */
+  it("finishes the teardown and exits 70 when the drain rejects", async () => {
+    const stateDir = stateDirectory();
+    const socketPath = join(stateDir, "xplainer.sock");
+    writeFileSync(socketPath, "");
+    const steps: string[] = [];
+    const exits: number[] = [];
+    const handle = install({
+      stateDir,
+      steps,
+      exits,
+      socketPath,
+      drain: async () => {
+        steps.push("drain");
+        throw new Error("ENOSPC: no space left on device, rename job-000001.json");
+      },
+    });
+
+    await expect(handle.shutdown("SIGTERM")).resolves.toBeUndefined();
+
+    expect(steps.filter((step) => !step.startsWith("log: "))).toEqual([
+      "drain",
+      "close tcp",
+      "close ipc",
+    ]);
+    expect(existsSync(socketPath)).toBe(false);
+    expect(existsSync(stateDirLayout(stateDir).runtimeState)).toBe(false);
+    expect(exits).toEqual([DAEMON_INTERNAL_EXIT_CODE]);
+    expect(steps.join("\n")).toContain("ENOSPC");
+  });
+
+  /** A listener that will not close is the same shape, and must not strand the process either. */
+  it("still removes runtime.json and exits 70 when a listener close rejects", async () => {
+    const stateDir = stateDirectory();
+    const exits: number[] = [];
+    const handle = installShutdownHandlers({
+      stateDir,
+      drain: async () => {},
+      listeners: [
+        {
+          close: async () => {
+            throw new Error("EBADF: bad file descriptor, close");
+          },
+        },
+      ],
+      exit: (code) => {
+        exits.push(code);
+      },
+    });
+    handles.push(handle);
+
+    await handle.shutdown("SIGTERM");
+
+    expect(existsSync(stateDirLayout(stateDir).runtimeState)).toBe(false);
+    expect(exits).toEqual([DAEMON_INTERNAL_EXIT_CODE]);
   });
 
   it("registers a handler for SIGTERM and SIGINT, and removes both on dispose", () => {

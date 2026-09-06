@@ -30,11 +30,24 @@
  * unref'd would exit on its own; one that has any live handle left would hang for ever, and P1-7
  * is a *bounded* 25 seconds. So the exit is explicit and the code is `0`, which is the difference
  * between a supervisor calling this a clean stop and a supervisor restarting it immediately.
+ *
+ * **Why a step that throws does not stop the sequence.** Step 4 and step 5 write records, and a
+ * record write is a `renameSync` (`durable-write.ts`) that can fail on a full or read-only disk. If
+ * such a rejection escaped, steps 6's listener close, socket unlink and `runtime.json` removal
+ * would never run, the process would keep every handle it has, and a second `SIGTERM` would meet
+ * the "already shutting down" guard and be logged as ignored — so the daemon would hang with a live
+ * socket file and a `runtime.json` naming a pid that is no longer serving, until a supervisor
+ * `SIGKILL`ed it. **Every step is therefore guarded and the teardown always completes**; what a
+ * failure changes is the *exit code*, not the sequence. {@link CLEAN_SHUTDOWN_EXIT_CODE} means all
+ * six steps did what they say, and {@link DAEMON_INTERNAL_EXIT_CODE} means the daemon stopped
+ * serving but at least one of them did not — which is exactly the distinction a supervisor reads,
+ * because `0` is the portable "do not restart" signal and `70` is not.
  */
 
 import { unlinkSync } from "node:fs";
 import process from "node:process";
 import { removeRuntimeState } from "./daemon-state.js";
+import { DAEMON_INTERNAL_EXIT_CODE } from "./exit-codes.js";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "./runner.js";
 
 /** The signals a foreground daemon must handle. `SIGINT` is the same event with a keyboard. */
@@ -120,14 +133,42 @@ export function installShutdownHandlers(options: ShutdownOptions): ShutdownHandl
         "every worker process group.",
     );
 
-    await options.drain(drainTimeoutMs);
-    for (const listener of options.listeners) {
-      await listener.close();
+    let code = CLEAN_SHUTDOWN_EXIT_CODE;
+    /** Record a step that failed, and carry on: the point of the sequence is that it finishes. */
+    const failed = (what: string, error: unknown): void => {
+      code = DAEMON_INTERNAL_EXIT_CODE;
+      log(`xplainer serve: ${what} failed during shutdown (${String(error)}); continuing anyway.`);
+    };
+
+    try {
+      await options.drain(drainTimeoutMs);
+    } catch (error) {
+      failed("the drain", error);
     }
-    removeSocket(options.socketPath);
-    removeRuntimeState(options.stateDir);
-    log(`xplainer serve: stopped cleanly; exiting ${CLEAN_SHUTDOWN_EXIT_CODE}.`);
-    options.exit(CLEAN_SHUTDOWN_EXIT_CODE);
+    for (const listener of options.listeners) {
+      try {
+        await listener.close();
+      } catch (error) {
+        failed("closing a listener", error);
+      }
+    }
+    try {
+      removeSocket(options.socketPath);
+    } catch (error) {
+      failed("removing the socket", error);
+    }
+    try {
+      removeRuntimeState(options.stateDir);
+    } catch (error) {
+      failed("removing runtime.json", error);
+    }
+
+    log(
+      code === CLEAN_SHUTDOWN_EXIT_CODE
+        ? `xplainer serve: stopped cleanly; exiting ${CLEAN_SHUTDOWN_EXIT_CODE}.`
+        : `xplainer serve: stopped, but not cleanly; exiting ${code}.`,
+    );
+    options.exit(code);
   };
 
   const handlers = signals.map((signal): [NodeJS.Signals, () => void] => [

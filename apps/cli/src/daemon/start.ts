@@ -278,8 +278,16 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
       },
 
       async close(drainTimeoutMs = 0): Promise<void> {
-        await runner.drain(drainTimeoutMs);
-        releaseOwnership(stateDir, ownership);
+        // `finally`, not a plain sequence: a drain that rejects — step 4 or 5 writing a record onto
+        // a full disk — must still give the state directory back, or the next `serve` meets a lock
+        // held by a pid that is no longer serving and has to wait for the staleness check to say
+        // so. The rejection still propagates: `shutdown.ts` is what decides the exit code, and it
+        // tears the rest down either way.
+        try {
+          await runner.drain(drainTimeoutMs);
+        } finally {
+          releaseOwnership(stateDir, ownership);
+        }
       },
     },
   };

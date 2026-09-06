@@ -20,23 +20,18 @@
  *
  * **The shape.** `{event, port, socket, contract_version, pid}`, one line, once.
  *
- * ADR 0025 sketches it as `{"xplainer":"ready","contract":…,"version":…,"port":…,"socket":…}`, and
- * the three differences from that sketch are deliberate. `event` rather than a `xplainer` key,
- * because the record decides "exactly one line of JSON on stdout" *at a defined point* rather than
- * that no second kind of line may ever be written, and a discriminator named for what it
- * discriminates is what lets one arrive without breaking this parser. `contract_version` rather
- * than `contract`, spelled exactly as the `/healthz` body spells it and read from the one
- * `MCP_CONTRACT_VERSION` constant, so a parent reading the pipe and a shim polling the endpoint
- * compare the same string rather than two spellings of it. And no `version`: the release number is
- * a fact about the binary the parent just spawned, so it either knows it already or can ask
- * `/healthz` for it, while the contract version is the one a parent has to act on before it speaks.
+ * §Part three of the record *sketches* a different set of key names, and ADR 0025's
+ * **§Note, 2026-09-07** is where this shape is decided, where that sketch and the sentence in
+ * §Note, 2026-09-06 §(a) about it are corrected, and where each of the four differences is argued —
+ * `event` rather than an `xplainer` key, `contract_version` rather than `contract`, no `version`,
+ * and `pid`. Read it there rather than here: the record is what a future implementer opens, and
+ * reasoning that lives only in a docblock is reasoning they never meet. This file is the shape's
+ * only writer and only parser, and `ready.test.ts` is where the exact bytes are asserted.
  *
- * `socket` is the IPC endpoint's path — the unix socket, or the named pipe on Windows — so "both
- * listeners are bound" is what the line now attests to. It stays nullable because a server bound
- * without one is a supported shape (`services/media-service` binds no socket), and a parent that
- * cannot use a path it has no filesystem access to needs to tell that from "an older daemon".
- * `pid` is here because a parent that spawned the daemon through a shell wrapper may not otherwise
- * know which process to signal.
+ * The one field whose *behaviour* is a fact about this module rather than about the record:
+ * `socket` is nullable, because a server bound without one is a supported shape
+ * (`services/media-service` binds no socket) and a parent that cannot use a path it has no
+ * filesystem access to needs to tell that case from "an older daemon".
  */
 
 import type { ChildProcess } from "node:child_process";

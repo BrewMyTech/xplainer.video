@@ -242,6 +242,7 @@ owns it, never invented at the call site.
 | Code | Meaning | Owner | Status |
 |---:|---|---|---|
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
+| `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
 | `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`); `daemon install` phase 2 |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |

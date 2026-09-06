@@ -9,6 +9,22 @@
  */
 
 /**
+ * The command was asked for something it does not do, and it has written nothing.
+ *
+ * This is the code **Commander itself** exits with when it rejects an argument, so the CLI already
+ * had it before anything here was written: a flag it does not know, a missing required argument, a
+ * `--help`-adjacent parse failure. A hand-written refusal of the same shape — `serve --bind` naming
+ * an address the command will not bind without an acknowledgement, `status` with a `--url` it
+ * cannot turn into an endpoint, `connect claude --scope` naming a file that vendor's CLI owns —
+ * must use the same value, because a caller cannot tell which half of the parser refused it and a
+ * second "you asked for something impossible" code would be a distinction with no reader.
+ *
+ * It is exported here, and named, for the rule `apps/cli/AGENTS.md` states above: a code used at a
+ * call site is a code that is not in the table. `docs/ARCHITECTURE.md` §6 carries the row.
+ */
+export const USAGE_EXIT_CODE = 1;
+
+/**
  * A precondition this command needs was not met, and it has written nothing.
  *
  * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths states the

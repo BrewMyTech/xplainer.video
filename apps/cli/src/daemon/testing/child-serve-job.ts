@@ -3,11 +3,12 @@
  *
  * The `SIGTERM` drain is a property of the **process**: ADR 0024 §Drain on planned restart is six
  * steps between a signal and exit `0`, and the only honest way to assert them is to signal a real
- * `serve` that really has a worker under it. In this phase nothing else can put one there — the
- * three job-shaped tools are still served from the stub backend, so no request reaches the runner —
- * which leaves exactly two gaps: a worker this machine can run without Remotion or a TTS server,
- * and a way to start one. `fake-worker.ts` fills the first; this entry fills the second, through
- * the `ServeSeams` that `program.ts` never passes.
+ * `serve` that really has a worker under it. The shipped backend can put one there — since
+ * `1a95fee` the three job-shaped tools reach the real runner — but every worker it builds needs
+ * Remotion or a TTS server, and a drain test must run on a machine that has neither. That leaves
+ * two gaps: a worker this machine can run regardless, and a way to start one without a tool call.
+ * `fake-worker.ts` fills the first; this entry fills the second, through the `ServeSeams` that
+ * `program.ts` never passes.
  *
  * **What it does not change is the daemon.** The command is the one `createServeCommand()` builds
  * for the binary, with the real token, the real guard, the real state files, the real shutdown

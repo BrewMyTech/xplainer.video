@@ -19,6 +19,13 @@
  * restores an engine-owned file an agent wrote to directly through `write_source_to`, and where
  * `assertRenderable()` refuses a render whose narration or captions are missing. A factory that
  * throws costs a second; the render it stopped would have cost minutes and produced a silent MP4.
+ *
+ * **And it is where the video's write lock is taken** (`video-lock.ts`), last, once every refusal
+ * above has had its chance — so a job that is going to be refused never takes a lock, and a job
+ * that is going to spawn always holds one. `WorkerSpec.release` carries it to the runner, which
+ * gives it back when the record reaches a terminal state. The lock exists because ownership of the
+ * *store* stopped implying ownership of the *workspace* the moment `xplainer mcp` was given this
+ * registry: see ADR 0024 §Note, 2026-09-07.
  */
 
 import { existsSync } from "node:fs";
@@ -38,6 +45,7 @@ import {
 import { readJobRequest } from "../job-request.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
+import { acquireVideoWriteLock } from "./video-lock.js";
 
 /** What {@link createWorkerRegistry} needs. */
 export type CreateWorkerRegistryOptions = {
@@ -133,16 +141,29 @@ function assertReadyToRender(source: string, publicDir: string): void {
 export function createWorkerRegistry(options: CreateWorkerRegistryOptions): WorkerRegistry {
   const { root } = options;
 
+  /** Take this video's write lock, and hand the runner the way to give it back. */
+  function lockVideo(slug: string, jobType: JobType, jobId: number): () => void {
+    const lock = acquireVideoWriteLock({ root, slug, jobType, jobId });
+    return () => {
+      lock.release();
+    };
+  }
+
   return {
     explainer_narrate(record: JobRecord): WorkerSpec {
       // Read here as well as in the worker, for its refusals: a job whose request document is
       // missing or disagrees with the record must fail before a process is spawned for it.
       const request = readJobRequest(root, record.job_id, "explainer_narrate");
-      agreedSlug(record, request.slug);
+      const slug = agreedSlug(record, request.slug);
       const { command, args } = narrateWorkerCommand();
       // The worker re-reads the document rather than being handed its fields on the command line,
       // so the arguments it acts on are the ones that were written down.
-      return { command, args: [...args, root, String(record.job_id)], cwd: root };
+      return {
+        command,
+        args: [...args, root, String(record.job_id)],
+        cwd: root,
+        release: lockVideo(slug, "explainer_narrate", record.job_id),
+      };
     },
 
     explainer_still(record: JobRecord): WorkerSpec {
@@ -160,6 +181,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
           scale: request.scale,
         }),
         cwd: root,
+        release: lockVideo(slug, "explainer_still", record.job_id),
       };
     },
 
@@ -172,6 +194,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
         command: requireRemotion(root),
         args: renderArgs({ slug, output: video.mp4, publicDir: video.publicDir }),
         cwd: root,
+        release: lockVideo(slug, "explainer_render", record.job_id),
       };
     },
   } satisfies Readonly<Record<JobType, (record: JobRecord) => WorkerSpec>>;

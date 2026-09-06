@@ -26,6 +26,14 @@
  * you were given it on. `xplainer mcp --attach` is the entry that shares the daemon's store, and it
  * is what `xplainer connect` writes when a daemon is installed.
  *
+ * **The workspace it shares is shared with writers it cannot see, and that is what the video lock
+ * is for.** Not taking `owner.lock` means a daemon and any number of these sessions can hold one
+ * root at once, so `daemon/workers.ts` takes `<workspace>/locks/<slug>.lock` before it spawns
+ * anything — one writer per video, across processes, released when the job ends
+ * (`daemon/video-lock.ts`, ADR 0024 §Note, 2026-09-07). A session that asks for a video another
+ * process is writing gets that *job* failed with a message saying to retry; it is never refused a
+ * start, because being startable next to a daemon is the whole point of this entry.
+ *
  * The session directory is removed when the session ends, after the runner has drained. A directory
  * per agent session that never went away would accumulate one per Claude Code window, for ever.
  */
@@ -111,7 +119,15 @@ export async function serveStdioMcp(options: StdioMcpOptions = {}): Promise<Stdi
       return closed;
     }
     closing = true;
-    await runner.drain(SESSION_DRAIN_TIMEOUT_MS);
+    // Guarded for the reason `daemon/shutdown.ts` states at length: a drain writes records, a
+    // record write can fail, and a rejection here would leave `closed` unresolved for ever —
+    // `xplainer mcp` awaits it, so the process would hang holding the session directory open
+    // instead of ending when its client did.
+    try {
+      await runner.drain(SESSION_DRAIN_TIMEOUT_MS);
+    } catch (error) {
+      log(`xplainer mcp: the session drain failed (${String(error)}); ending the session anyway.`);
+    }
     await server.close();
     rmSync(sessionDir, { recursive: true, force: true });
     log(`xplainer mcp: session ended; removed ${sessionDir}.`);

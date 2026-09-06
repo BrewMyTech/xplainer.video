@@ -66,6 +66,15 @@ export type WorkerSpec = {
   cwd?: string;
   /** Added to the daemon's own environment rather than replacing it. */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Called once, when the job reaches a terminal state, whichever way it got there.
+   *
+   * The factory is where a resource is taken that must outlive the factory call and not the job —
+   * the per-video write lock of `daemon/video-lock.ts` is the one that exists — and `finish()` is
+   * the single place every terminal outcome passes through, so it is the only honest place to give
+   * one back. A drain, a cancellation, a crash of the worker and a clean exit all land there.
+   */
+  release?: () => void;
 };
 
 /** Builds the command for one job. Called once, when the job leaves the queue. */
@@ -178,6 +187,8 @@ export function createJobRunner(options: CreateJobRunnerOptions): JobRunner {
   );
   const queue: number[] = [];
   const terminationOf = new Map<number, Termination>();
+  /** What each started job took in its factory and owes back when it ends. See `WorkerSpec.release`. */
+  const releaseOf = new Map<number, () => void>();
   let running: RunningJob | null = null;
   let accepting = true;
 
@@ -209,6 +220,20 @@ export function createJobRunner(options: CreateJobRunnerOptions): JobRunner {
     record.error = outcome.error;
     record.error_code = outcome.error_code;
     record.finished_at = now().toISOString();
+    // Before the write, so a record that says `done` is never on disk while the video it wrote is
+    // still locked against the next call an agent makes after reading that record.
+    const release = releaseOf.get(record.job_id);
+    if (release !== undefined) {
+      releaseOf.delete(record.job_id);
+      try {
+        release();
+      } catch (error) {
+        appendLogLine(
+          record,
+          `[xplainer] releasing this job's video lock failed: ${String(error)}`,
+        );
+      }
+    }
     persist(record);
   }
 
@@ -297,14 +322,38 @@ export function createJobRunner(options: CreateJobRunnerOptions): JobRunner {
       return;
     }
 
-    const child = spawn(spec.command, [...spec.args], {
-      // `detached` is what puts the worker in its own process group, which is the handle that
-      // reaches the browser and the encoder it will start (ADR 0024 §Scope: … and its children).
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
-      env: { ...process.env, ...spec.env },
-    });
+    if (spec.release !== undefined) {
+      releaseOf.set(record.job_id, spec.release);
+    }
+
+    let child: ChildProcess;
+    try {
+      child = spawn(spec.command, [...spec.args], {
+        // `detached` is what puts the worker in its own process group, which is the handle that
+        // reaches the browser and the encoder it will start (ADR 0024 §Scope: … and its children).
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
+        env: { ...process.env, ...spec.env },
+      });
+    } catch (error) {
+      // `spawn` reports most failures through an `error` event, but it throws synchronously on an
+      // argument it will not even attempt. Reaching `finish()` is what matters: the factory has
+      // already taken this video's write lock, and an escape here would hold it for the life of the
+      // daemon and refuse every later job for that video.
+      appendLogLine(
+        record,
+        `[xplainer] the ${record.job_type} worker could not be spawned: ${String(error)}`,
+      );
+      finish(record, {
+        status: "error",
+        exit_code: null,
+        error: `The ${record.job_type} worker could not be spawned: ${String(error)}`,
+        error_code: "internal",
+      });
+      startNext();
+      return;
+    }
 
     const target = groupOf(child);
     record.status = "running";

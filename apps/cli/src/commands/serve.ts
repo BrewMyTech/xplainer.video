@@ -65,7 +65,7 @@ import {
   resolveDaemonPort,
 } from "../daemon/binding.js";
 import { readDaemonState } from "../daemon/daemon-state.js";
-import { DAEMON_INTERNAL_EXIT_CODE } from "../daemon/exit-codes.js";
+import { DAEMON_INTERNAL_EXIT_CODE, USAGE_EXIT_CODE } from "../daemon/exit-codes.js";
 import { createLoopbackGuard } from "../daemon/guard.js";
 import { type PreparedIpcSocket, prepareIpcSocket } from "../daemon/ipc.js";
 import { formatReadyLine, readyAnnouncement } from "../daemon/ready.js";
@@ -168,8 +168,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       });
       if (!bind.ok) {
         io.writeErr(`${bind.message}\n`);
-        // Commander's own code for "you asked for something this command does not do".
-        io.exit(1);
+        io.exit(USAGE_EXIT_CODE);
       }
 
       const outcome = await startDaemon({

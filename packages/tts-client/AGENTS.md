@@ -6,11 +6,14 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 **Request and response shaping for Kokoro-FastAPI**, and nothing else. It builds the exact JSON body
 posted to the TTS server, normalises the voice list, and types what comes back. It does not
-synthesise, does not touch audio, does not compute timings and does not own a process — those land
-at roadmap phase 1 with the narration port.
+synthesise, does not touch audio, does not compute timings and does not own a process. The narration
+port landed in phase 1 and lives in [`@xplainer/render-core`](../render-core/AGENTS.md), which
+depends on this package: `src/narrate/build.ts` drives `KokoroClient`, and `WordTimestamp` from here
+is the measured input every timing downstream is derived from.
 
-It declares no workspace dependencies. It is published, emits declarations, and carries
-`api/tts-client.api.md`.
+It declares no runtime workspace dependencies — `@xplainer/config` is a devDependency, for the
+shared lint and TypeScript configuration and nothing else. It is published, emits declarations, and
+carries `api/tts-client.api.md`.
 
 ## Public surface
 

@@ -25,7 +25,7 @@ class Caption(BaseModel):
     )
     text: str = Field(
         ...,
-        description='The word. Whitespace-sensitive: every token except the first of the whole track carries its leading space, so pages join correctly. A segment boundary is not a page boundary, so the first word of a segment carries one too.',
+        description='The word. Whitespace-sensitive: every token except the first of the whole track carries its leading space, so pages join correctly. A segment boundary is not a page boundary, so the first word of a segment carries one too. Punctuation is the one exception, and it has two halves: a punctuation-only token later in a segment is folded into the word before it and never becomes a caption of its own, while a punctuation-only token that OPENS a segment cannot be folded — the fold would stretch the previous caption across the whole inter-segment gap — so it is emitted as its own caption, keeping its own span, and it is emitted bare. A leading space there would render "Alpha , beta"; the word after it inside the same segment still carries its space, so the two words across the boundary stay separated.',
     )
     startMs: int = Field(
         ..., description='Word start on the narration track, in milliseconds.', ge=0

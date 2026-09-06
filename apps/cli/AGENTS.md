@@ -88,6 +88,7 @@ runner because they take tens of seconds
 | `backend.ts` | The eight tools, their refusals, and the schema patterns re-checked at the disk boundary |
 | `workspace-root.ts` | `XPLAINER_VIDEOS_DIR`, else `<state dir>/workspace` — one pure function, two callers |
 | `job-request.ts` | The per-job request document under `<workspace>/requests/`: the tool call's arguments, where the worker can read them |
+| `daemon/video-lock.ts` | `<workspace>/locks/<slug>.lock`: one writer per video, across processes — the shared workspace's own exclusion |
 | `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker, and the pinned Remotion CLI with render-core's argv |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
 | `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else `XPLAINER_TTS_URL`, else the tts-client's own resolution |
@@ -106,7 +107,8 @@ and this directory is what that command runs.
 
 `xplainer mcp` is the **plugin-bundle** path — `npx -y @xplainer/cli mcp`, on a machine with nothing
 installed — and `--attach` is what a machine with a daemon gets. They share the *workspace* and
-deliberately not the *job store*: see the invariant below.
+deliberately not the *job store*, and because they share the workspace they take a per-video write
+lock in it: see the two invariants below.
 
 The workspace itself belongs to `@xplainer/render-core` — the layout, the template, the scaffold,
 the argv builders and the preflight all live there, and nothing about a video's shape is decided
@@ -120,6 +122,7 @@ here:
   public/<slug>/        timings.json, captions.json, narration.wav, narration.json, media/
   out/<slug>/           explainer.mp4 and frame-<n>.png
   requests/job-000001.json   what the job was asked to do
+  locks/<slug>.lock     held while a job is writing that video, by whichever process is writing it
 ```
 
 ### `src/connect/` — the entry an agent is given, and who writes it
@@ -170,22 +173,31 @@ pnpm turbo build --filter @xplainer/cli          # where TS9010 appears
 XPLAINER_SKIP_RENDER_TEST=1 pnpm --filter @xplainer/cli test
 
 # A throwaway state directory, so a hand-run daemon cannot take the real one — and every TCP
-# request needs the bearer token the first start mints there (ADR 0020 §Security R-SEC-4):
+# request needs the bearer token the first start mints there (ADR 0020 §Security R-SEC-4).
+# Read the ready line rather than sleeping (ADR 0025 §Part three): `head -n 1` blocks until the
+# daemon has taken ownership, reconciled and bound both listeners, which is also when the token
+# file and `daemon.json`'s port exist. Without it the next two lines race the start-up.
 export XPLAINER_STATE_DIR=$(mktemp -d)
-node apps/cli/dist/bin.js serve --port 8787 &
+mkfifo "$XPLAINER_STATE_DIR/stdout"
+node apps/cli/dist/bin.js serve --port 8787 > "$XPLAINER_STATE_DIR/stdout" &
+head -n 1 "$XPLAINER_STATE_DIR/stdout"           # {"event":"ready","port":…,"socket":…,…}
 curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
 node apps/cli/dist/bin.js status                 # the two state files, confirmed by a real probe
-kill %1                                          # drains, removes runtime.json, exits 0
+kill %1 && wait %1                               # drains, removes runtime.json, exits 0
 
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
 
 # What `connect` would write, into a throwaway HOME rather than your own agent configuration.
+# Relocate HOME only: `XPLAINER_STATE_DIR` is still exported from the block above, and the
+# `daemon.json` the killed daemon left there is what records the port `connect` refuses to write
+# without (exit 3, nothing written). Relocating HOME on its own would move the state directory too,
+# and every line here would exit 3.
 # With `codex` on PATH this delegates to `codex mcp add`, which writes the same file under that
 # HOME; `--config` is how you exercise this package's own writer instead.
 FAKE_HOME=$(mktemp -d)
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
 cat "$FAKE_HOME/.codex/config.toml"
-node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
+HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -267,6 +279,17 @@ Then the root procedure: `pnpm verify`.
   **not** take `owner.lock`, deliberately: an `mcp` that refused to start because a daemon was
   running would defeat the `npx -y @xplainer/cli mcp` bundle path it exists for. The consequence is
   documented rather than discovered: a `job_id` from one connection means nothing on another.
+- **One writer per video, across processes, and it is a lock in the *workspace*.** Owning the state
+  directory says nothing about the workspace once `xplainer mcp` holds the same worker registry over
+  the same root without that lock, so a daemon and two stdio sessions could each drive Remotion at
+  one `out/<slug>/explainer.mp4`. `daemon/workers.ts` therefore takes
+  `<workspace>/locks/<slug>.lock` (`daemon/video-lock.ts`) as the **last** thing a factory does —
+  after every refusal, so a refused job leaves no lock — and `daemon/runner.ts` gives it back in
+  `finish()`, which is the one place every terminal outcome passes through. A second process asking
+  for a video that is held fails **that job** with a message saying to retry; different videos never
+  contend. Decided in [ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Note,
+  2026-09-07. Anything new that writes into `videos/`, `public/` or `out/` from a *job* belongs
+  behind the same lock; do not reach for `owner.lock` instead, which is a different question.
 - **A shim's stdout is the JSON-RPC stream.** Both `mcp` paths write every human-readable line to
   stderr and never call `io.writeOut`; one stray line on stdout is a parse error inside the agent,
   with no message anyone will see. Same rule as the ready line, pointed the other way.
@@ -323,8 +346,10 @@ Then the root procedure: `pnpm verify`.
   call site; `daemon/exit-codes.ts` is the only place `serve` and `status` read them from.
   `NOT_IMPLEMENTED_EXIT_CODE = 2` keeps its meaning and its export site.
   What is used today: **`0`** a clean drain *or* a latched circuit breaker — the portable "do not
-  restart" signal on all three supervisors — **`1`** a usage error such as a refused `--bind` or a
-  `--scope` this command cannot write, **`3`** a precondition unmet with nothing written —
+  restart" signal on all three supervisors — **`1`** a usage error such as a refused `--bind`, a
+  `--url` that is not an endpoint or a `--scope` this command cannot write (`USAGE_EXIT_CODE`,
+  which is also commander's own code for a rejected argument, so the two halves of the parser
+  cannot disagree), **`3`** a precondition unmet with nothing written —
   `connect` with no daemon ever bound here, or an agent configuration file that cannot be
   understood — **`4`** installed but not healthy — `status`, and `mcp --attach` when nothing answers on the
   socket — **`8`** contract skew between the shim and the daemon

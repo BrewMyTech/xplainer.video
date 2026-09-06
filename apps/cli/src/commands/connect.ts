@@ -53,12 +53,13 @@ import { type PreflightResult, preflightDaemon } from "../connect/preflight.js";
 import { ConnectRefusal } from "../connect/refusal.js";
 import type { VendorCliResult } from "../connect/vendor-cli.js";
 import { StateFileUnreadableError } from "../daemon/daemon-state.js";
-import { DAEMON_INTERNAL_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
+import {
+  DAEMON_INTERNAL_EXIT_CODE,
+  PRECONDITION_UNMET_EXIT_CODE,
+  USAGE_EXIT_CODE,
+} from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import type { CliIo } from "../io.js";
-
-/** The exit code commander itself uses for a usage error, and the one a refused flag gets. */
-const USAGE_EXIT_CODE = 1;
 
 /** The flags both verbs share. */
 type CommonOptions = {

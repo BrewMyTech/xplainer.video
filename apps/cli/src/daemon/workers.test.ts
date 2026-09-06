@@ -12,7 +12,7 @@
  * output in this file would be a second contract that only used to agree.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -27,6 +27,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeJobRequest } from "../job-request.js";
 import { JOB_RECORD_FORMAT_VERSION, type JobRecord } from "./job-store.js";
+import { videoLockPath } from "./video-lock.js";
 import { selfIdentity } from "./worker-identity.js";
 import { createWorkerRegistry } from "./workers.js";
 
@@ -111,11 +112,14 @@ describe("the render worker", () => {
     );
 
     const video = videoPaths(root, "demo");
-    expect(spec).toEqual({
-      command: binary,
-      args: renderArgs({ slug: "demo", output: video.mp4, publicDir: video.publicDir }),
-      cwd: root,
-    });
+    expect(spec?.command).toBe(binary);
+    expect(spec?.args).toEqual(
+      renderArgs({ slug: "demo", output: video.mp4, publicDir: video.publicDir }),
+    );
+    expect(spec?.cwd).toBe(root);
+    expect(spec?.env).toBeUndefined();
+    // The fifth field is the video's write lock, asserted for what it does further down.
+    expect(typeof spec?.release).toBe("function");
   });
 
   it("restores an engine-owned file that drifted, before the render is built", () => {
@@ -162,17 +166,19 @@ describe("the still worker", () => {
     );
 
     const video = videoPaths(root, "demo");
-    expect(spec).toEqual({
-      command: binary,
-      args: stillArgs({
+    expect(spec?.command).toBe(binary);
+    expect(spec?.args).toEqual(
+      stillArgs({
         slug: "demo",
         output: stillOutput(video, 12),
         publicDir: video.publicDir,
         frame: 12,
         scale: 1,
       }),
-      cwd: root,
-    });
+    );
+    expect(spec?.cwd).toBe(root);
+    expect(spec?.env).toBeUndefined();
+    expect(typeof spec?.release).toBe("function");
   });
 });
 
@@ -196,6 +202,99 @@ describe("the narrate worker", () => {
     expect(() =>
       createWorkerRegistry({ root }).explainer_narrate?.(record(4, "explainer_narrate", "demo")),
     ).not.toThrow();
+  });
+});
+
+/**
+ * The hazard ADR 0024 §Scope names — "Two writers to one video directory is a corrupted output that
+ * neither process reports" — reaches the workspace because `xplainer mcp` was handed this same
+ * registry over the same root while deliberately not holding the state directory's lock
+ * (ADR 0024 §Note, 2026-09-07). The exclusion is therefore keyed by the video.
+ *
+ * A "second process" here is a lock file naming a **live** pid with its real start token, which is
+ * scenario `[E]` of `spikes/p1-s1-ownership.mjs`: the one input the classifier calls held. Writing
+ * it is how a single test process can stand in for the two that meet in production.
+ */
+describe("the video write lock", () => {
+  /** Put a lock on `slug` that names a process the classifier will call alive. */
+  function heldByALiveProcess(slug: string): string {
+    const path = videoLockPath(root, slug);
+    mkdirSync(join(root, "locks"), { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        format_version: 1,
+        ...selfIdentity(),
+        boot_nonce: "held-by-someone-else",
+        hostname: "elsewhere",
+        acquired_at: "2026-09-07T00:00:00.000Z",
+        slug,
+        job_type: "explainer_render",
+        job_id: 99,
+      }),
+    );
+    return path;
+  }
+
+  it("is taken by the factory and given back by release()", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    const spec = createWorkerRegistry({ root }).explainer_render?.(
+      record(1, "explainer_render", "demo"),
+    );
+
+    expect(existsSync(videoLockPath(root, "demo"))).toBe(true);
+    spec?.release?.();
+    expect(existsSync(videoLockPath(root, "demo"))).toBe(false);
+  });
+
+  it("refuses a render of a video another live process is already writing", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    heldByALiveProcess("demo");
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    expect(() =>
+      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+    ).toThrow(/is being written by another process/);
+  });
+
+  it("refuses a narrate of that same video, because both write under one slug", () => {
+    heldByALiveProcess("demo");
+    writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
+
+    expect(() =>
+      createWorkerRegistry({ root }).explainer_narrate?.(record(4, "explainer_narrate", "demo")),
+    ).toThrow(/is being written by another process/);
+  });
+
+  it("lets a different video through: the exclusion is per video, not per workspace", () => {
+    narratedVideo("other");
+    pretendInstalled();
+    heldByALiveProcess("demo");
+    writeJobRequest(root, 2, { job_type: "explainer_render", slug: "other" });
+
+    expect(() =>
+      createWorkerRegistry({ root }).explainer_render?.(record(2, "explainer_render", "other")),
+    ).not.toThrow();
+  });
+
+  /**
+   * Taken **after** every refusal above, so a job that is refused for a missing caption file does
+   * not leave a lock behind that would refuse the retry it just told the agent to make.
+   */
+  it("is not taken by a job the gates above it refuse", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+    rmSync(videoPaths(root, "demo").captions);
+
+    expect(() =>
+      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+    ).toThrow(/captions/);
+    expect(existsSync(videoLockPath(root, "demo"))).toBe(false);
   });
 });
 

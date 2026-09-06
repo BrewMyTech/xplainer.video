@@ -555,3 +555,61 @@ the raw value reads the untyped JSON; a consumer that wants to branch calls the 
 published alongside as documentation — is rejected. It buys the same tolerance and gives up the
 greppable contract, and the measured cost of keeping the enum is one classmethod and one function,
 both generated.
+
+## Note, 2026-09-07: the ready line as shipped — this shape, and not §Part three's sketch
+
+**Correcting two passages in this record, neither of which is edited.** §Part three sketches the
+line as
+
+```json
+{"xplainer":"ready","contract":"…","version":"…","port":…,"socket":"…"}
+```
+
+and §Note, 2026-09-06 §(a) says "The ready line §Part three defines already carries `"contract"`".
+Neither describes what US-007 and US-008 built. What ships, byte for byte from a live `serve` on a
+throwaway state directory:
+
+```json
+{"event":"ready","port":8787,"socket":"/…/ipc/xplainer.sock","contract_version":"1","pid":36439}
+```
+
+**Decided: that shape is the artefact.** `{event, port, socket, contract_version, pid}`, one line,
+once, on stdout, after ownership, reconciliation and both binds. `apps/cli/src/daemon/ready.ts` is
+its only writer and its only parser; `apps/cli/src/daemon/ready.test.ts` asserts the exact bytes and
+the rejection of five near-misses, and `apps/cli/AGENTS.md` §Commands now waits on it with
+`head -n 1` over a fifo rather than sleeping. Everything §Part three *decides* is unchanged — one
+line, exactly once, at that point, on every platform, never behind a `--quiet` flag, and stdout is
+nothing else. What changes is four key names, and the reasons are these, recorded here rather than
+only in the source file (root `AGENTS.md`: a record is corrected by a dated note, and reasoning that
+lives only in a docblock is reasoning a reader of the record never meets).
+
+**`event` rather than an `xplainer` key.** The sketch's discriminant is the *product name*, which
+says which program wrote the line and not what the line is. §Part three decides "exactly one line of
+JSON on stdout" at a defined point; it does not decide that no second kind of line may ever exist,
+and phase 2's supervised daemon is the obvious place a second one appears. A field named for what it
+discriminates is what lets that arrive without breaking a parser written today — `parseReadyLine`
+returns `null` for `{"event":"stopping",…}` rather than mistaking it for readiness, which is a test
+case. `apps/cli/AGENTS.md` states the consequence as an invariant: a second kind of stdout line
+means a second `event` value, never a bare line.
+
+**`contract_version` rather than `contract`.** Spelled exactly as the `/healthz` body spells it, and
+read from the same `MCP_CONTRACT_VERSION` constant in `@xplainer/protocol`. §Note, 2026-09-06 §(a)
+already decided these are "one fact published twice, from one constant"; two spellings of it would
+have made a parent reading the pipe and a shim polling the endpoint compare two different field
+names for one value, which is how the second copy drifts.
+
+**No `version`.** The release number is a fact about the binary the parent has just spawned: it
+either knows it already or can ask `/healthz`, which carries both numbers side by side. The contract
+version is the one a parent must act on *before* it speaks, so it is the one the pipe carries. This
+is the same division §Part two draws between the contract and the release, applied to the line.
+
+**`socket` is kept, and `pid` is added.** `socket` is what makes "both listeners are bound" a thing
+the line attests to rather than a thing §Part three asserts; it is nullable because a server bound
+without one is supported (`services/media-service` binds no socket), and a parent with no filesystem
+access to the path has to tell that case from "an older daemon". `pid` is here because a parent that
+spawned the daemon through a shell wrapper otherwise does not know which process to signal, and the
+whole point of waiting for this line is to be able to manage what you started.
+
+**What was not reconsidered.** The `/healthz` half of §Note, 2026-09-06 §(a) stands unchanged: the
+shim reads `contract_version` there, not from the ready line, because `xplainer mcp --attach` is not
+the daemon's parent and has no pipe to read.

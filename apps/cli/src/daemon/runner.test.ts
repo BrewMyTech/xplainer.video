@@ -289,6 +289,90 @@ describe("drain", () => {
   });
 });
 
+/**
+ * `WorkerSpec.release` is how the per-video write lock of `daemon/video-lock.ts` reaches the one
+ * place every terminal outcome passes through. What matters is not that it is *called* but that it
+ * is called on **every** path a job can end on — a lock a crashed render never gave back would
+ * refuse that video for the life of the daemon, which is worse than the race it exists to prevent.
+ */
+describe("what a factory took, given back when the job ends", () => {
+  /** A fake registry whose specs carry a release recorder. */
+  function registryWithRelease(
+    config: FakeWorkerConfig,
+    released: number[],
+  ): ReturnType<typeof fakeWorkerRegistry> {
+    const inner = fakeWorkerRegistry(config);
+    const wrap = (jobType: keyof typeof inner) => (record: JobRecord) => {
+      const spec = inner[jobType]?.(record);
+      if (spec === undefined) {
+        throw new Error(`the fake registry has no ${String(jobType)}`);
+      }
+      return {
+        ...spec,
+        release: (): void => {
+          released.push(record.job_id);
+        },
+      };
+    };
+    return {
+      explainer_render: wrap("explainer_render"),
+      explainer_still: wrap("explainer_still"),
+      explainer_narrate: wrap("explainer_narrate"),
+    };
+  }
+
+  it("releases once when the worker exits cleanly", async () => {
+    const released: number[] = [];
+    const { runner } = runnerOn({}, { workers: registryWithRelease({ lines: 1 }, released) });
+    const jobId = await runner.enqueue({ job_type: "explainer_render", video_id: "demo" });
+
+    expect(await until(() => runner.get({ job_id: jobId }).status === "done")).toBe(true);
+    expect(released).toEqual([jobId]);
+  });
+
+  it("releases when the worker fails", async () => {
+    const released: number[] = [];
+    const { runner } = runnerOn(
+      {},
+      { workers: registryWithRelease({ lines: 1, exitCode: 3 }, released) },
+    );
+    const jobId = await runner.enqueue({ job_type: "explainer_render", video_id: "demo" });
+
+    expect(await until(() => runner.get({ job_id: jobId }).status === "error")).toBe(true);
+    expect(released).toEqual([jobId]);
+  });
+
+  it("releases when the job is cancelled", async () => {
+    const released: number[] = [];
+    const { runner } = runnerOn(
+      {},
+      { workers: registryWithRelease({ lines: 1, lifeMs: 60_000 }, released) },
+    );
+    const jobId = await runner.enqueue({ job_type: "explainer_render", video_id: "demo" });
+    expect(await until(() => runner.get({ job_id: jobId }).status === "running")).toBe(true);
+
+    await runner.cancel(jobId);
+
+    expect(await until(() => released.length === 1)).toBe(true);
+    expect(runner.get({ job_id: jobId }).status).toBe("cancelled");
+  });
+
+  it("releases when the daemon drains out from under a running job", async () => {
+    const released: number[] = [];
+    const { runner } = runnerOn(
+      {},
+      { workers: registryWithRelease({ lines: 1, lifeMs: 60_000 }, released) },
+    );
+    const jobId = await runner.enqueue({ job_type: "explainer_render", video_id: "demo" });
+    expect(await until(() => runner.get({ job_id: jobId }).status === "running")).toBe(true);
+
+    await runner.drain(50);
+
+    expect(released).toEqual([jobId]);
+    expect(runner.get({ job_id: jobId }).error_code).toBe("daemon_shutdown");
+  });
+});
+
 describe("the state directory", () => {
   it("keeps one file per job under jobs/", async () => {
     const { runner, store } = runnerOn({ lines: 1 });

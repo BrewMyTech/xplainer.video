@@ -714,3 +714,56 @@ holding a decoded value sees `internal` and cannot recover `disk_full` from it. 
 a closed, greppable type, and it is affordable only because `error` is never rewritten and carries
 the human-readable half of the same failure. §Extending the `error_code` enum's first bullet already
 draws that line between the two fields; this note relies on it.
+
+## Note, 2026-09-07: `workers_uncertain` is narrower than US-005 asked for, and that is this record
+
+US-005 criterion 4 was worded "a worker that does not match is left alone and the record carries
+`workers_uncertain: true`"; `apps/cli/src/daemon/reconciler.ts:186-197` sets the flag only when
+identity cannot be *read*, and leaves a positively identified stranger alone with no flag — which is
+what §Note, 2026-09-06 §Process identity decides above ("it is **not** set … when the tokens
+**differ**, which is a positive identification of a stranger and is certain"), and both branches are
+tested at `reconciler.test.ts:153` and `:182`. The code follows this record and not the criterion's
+looser wording; the deviation simply had not been written down.
+
+## Note, 2026-09-07: ownership of the store is not ownership of the workspace — one writer per video
+
+§Scope names the hazard this note closes: "The record's orphaned worker processes … race a retry
+over the same output directory … Two writers to one video directory is a corrupted output that
+neither process reports." §Exclusive ownership was the answer, and while the daemon was the only
+thing that ran jobs it was a complete one — the lock on the state directory implied the workspace,
+because the default workspace root is *inside* that directory and only its owner ran a worker.
+
+**Phase 1 broke that implication, deliberately.** `xplainer mcp` — the `npx -y @xplainer/cli mcp`
+bundle path, with no daemon behind it — was given the real worker registry over
+`resolveWorkspaceRoot(stateDir)`, the same root a running daemon resolves, while explicitly **not**
+taking `owner.lock`: a bundle entry that refused to start because a daemon happened to be running
+would defeat its own reason to exist. So a daemon and any number of stdio sessions can hold the same
+workspace at once. Each has its own job store, so the *records* never collide; the *files* are one
+set, and `out/<slug>/explainer.mp4` and `public/<slug>/timings.json` had no exclusion at all.
+
+**Decided: the exclusion is keyed by the video, not by the process.**
+`<workspace>/locks/<slug>.lock` (`apps/cli/src/daemon/video-lock.ts`) is taken when a job leaves the
+queue and released when its record reaches a terminal state. Three consequences are the decision:
+
+- **It is taken in the worker factory, last.** The factory is already ADR 0018's layer 4 — the last
+  gate before Chrome starts — and it is the only in-process moment between "queued" and "spawned".
+  Taking it *after* every refusal above it is what stops a job that is refused for a missing caption
+  file from leaving behind a lock that would then refuse the retry it just asked for.
+- **It is released in `finish()`**, the single function every terminal outcome passes through —
+  clean exit, non-zero exit, an unspawnable command, a cancellation, a drain — because a lock a
+  crashed render never gave back would refuse that video for the life of the daemon, which is worse
+  than the race it prevents. A `SIGKILL`ed process leaves a stale file, and the next acquirer
+  classifies the holder with the same tuple §Note, 2026-09-06 §Ownership settles and takes it over.
+- **A held video fails one job, not the process.** `VideoBusyError` names the holder and says to
+  retry, and the runner turns it into an `error`/`internal` record an agent can poll to a
+  conclusion. Refusing to *start* would have been the ownership answer, and it is the wrong one
+  here: the second caller is a legitimate agent on a machine that supports several.
+
+**What this does not decide.** The direct, synchronous tools — `explainer_create`,
+`explainer_put_source`, `explainer_put_media` — are not behind this lock. They are millisecond file
+writes rather than minute-long process groups, and the interleaving they can produce is one an agent
+can already produce inside a single daemon by calling `put_source` during its own render; that is a
+question about tool ordering, not about two processes, and it is left open here rather than answered
+badly. The `requests/` document is likewise still keyed by job id per store, so two stores can
+overwrite one another's; `agreedSlug()` turns that into a named, retryable failure rather than a
+wrong render, and moving those documents into the store that owns them is phase 2's to do.

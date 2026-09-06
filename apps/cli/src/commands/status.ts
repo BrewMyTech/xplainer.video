@@ -31,7 +31,11 @@ import {
   readRuntimeState,
   StateFileUnreadableError,
 } from "../daemon/daemon-state.js";
-import { DAEMON_INTERNAL_EXIT_CODE, DAEMON_UNHEALTHY_EXIT_CODE } from "../daemon/exit-codes.js";
+import {
+  DAEMON_INTERNAL_EXIT_CODE,
+  DAEMON_UNHEALTHY_EXIT_CODE,
+  USAGE_EXIT_CODE,
+} from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
@@ -141,7 +145,7 @@ export function createStatusCommand(io: CliIo): Command {
       });
       if (!endpoint.ok) {
         io.writeErr(`xplainer status: ${endpoint.message}\n`);
-        io.exit(1);
+        io.exit(USAGE_EXIT_CODE);
       }
 
       const tokenPath = daemonState.token_file ?? resolveTokenPath(stateDir);
