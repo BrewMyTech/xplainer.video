@@ -129,6 +129,14 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
+      # The render test in apps/cli (US-006, P1-1/P1-2) shells out to ffmpeg and
+      # ffprobe to inspect the MP4 it produced, and a missing binary is an ENOENT
+      # test failure rather than a skip — the test is deliberately un-skippable
+      # in CI. GitHub's ubuntu runner image does not ship ffmpeg, so it is
+      # installed here, before the build, from the distribution package.
+      - name: Install ffmpeg for the render test
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && ffprobe -version | head -1
+
       # AC-2c's placement argument, applied to a second pattern scan: the check
       # reads repository sources only, so it needs neither the dependency
       # install nor any build output and fails in seconds instead of after a

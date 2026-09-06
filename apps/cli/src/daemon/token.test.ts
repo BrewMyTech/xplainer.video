@@ -1,0 +1,159 @@
+/**
+ * The bearer token file: where it is, how it is created, and what makes it unusable.
+ *
+ * ADR 0020 §Security R-SEC-4 and R-SEC-5 are two requirements about one file — 32 random bytes,
+ * `0600` inside a `0700` directory — and R-SEC-6 is a third about its *path* travelling in the
+ * environment while the value never does. All three are asserted against the real filesystem: a
+ * mode is only a mode if `stat` agrees, and a token that "exists but cannot be used" is a condition
+ * you can only produce with a real file.
+ */
+
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import process from "node:process";
+import { afterEach, describe, expect, it } from "vitest";
+import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
+import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
+import {
+  loadOrMintToken,
+  resolveTokenPath,
+  TOKEN_BYTES,
+  TOKEN_FILE,
+  TOKEN_FILE_ENV,
+  TokenUnreadableError,
+} from "./token.js";
+
+const scratch: string[] = [];
+
+function stateDirectory(): string {
+  const dir = mkdtempSync(join(tmpdir(), "xplainer-token-"));
+  scratch.push(dir);
+  return dir;
+}
+
+/** The permission bits, without the file-type bits `stat` returns alongside them. */
+function mode(path: string): string {
+  return (statSync(path).mode % 0o1000).toString(8).padStart(4, "0");
+}
+
+afterEach(() => {
+  for (const dir of scratch.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("resolveTokenPath", () => {
+  it("puts the token inside the state directory by default", () => {
+    expect(resolveTokenPath("/state", {})).toBe(join("/state", TOKEN_FILE));
+  });
+
+  /** R-SEC-6: the unit carries a *path*, so the override has to win over the layout. */
+  it("obeys XPLAINER_TOKEN_FILE", () => {
+    expect(resolveTokenPath("/state", { [TOKEN_FILE_ENV]: "/run/secrets/xplainer" })).toBe(
+      "/run/secrets/xplainer",
+    );
+  });
+
+  it("ignores an override that is empty or blank", () => {
+    expect(resolveTokenPath("/state", { [TOKEN_FILE_ENV]: "   " })).toBe(
+      join("/state", TOKEN_FILE),
+    );
+  });
+});
+
+describe("loadOrMintToken", () => {
+  it("mints 32 random bytes 0600 inside a 0700 directory, and says it minted them", () => {
+    const stateDir = join(stateDirectory(), "nested");
+    const path = join(stateDir, TOKEN_FILE);
+
+    const token = loadOrMintToken(path, stateDir);
+
+    expect(token.minted).toBe(true);
+    expect(token.path).toBe(path);
+    expect(Buffer.from(token.value, "base64url")).toHaveLength(TOKEN_BYTES);
+    expect(mode(path)).toBe(STATE_FILE_MODE.toString(8).padStart(4, "0"));
+    expect(mode(stateDir)).toBe(STATE_DIR_MODE.toString(8).padStart(4, "0"));
+  });
+
+  it("mints a different token every time", () => {
+    const first = loadOrMintToken(join(stateDirectory(), TOKEN_FILE));
+    const second = loadOrMintToken(join(stateDirectory(), TOKEN_FILE));
+
+    expect(first.value).not.toBe(second.value);
+  });
+
+  it("reads an existing token back rather than replacing it", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const minted = loadOrMintToken(path, stateDir);
+
+    const reread = loadOrMintToken(path, stateDir);
+
+    expect(reread.value).toBe(minted.value);
+    expect(reread.minted).toBe(false);
+  });
+
+  it("trims the newline it wrote, so the value never carries whitespace", () => {
+    const path = join(stateDirectory(), TOKEN_FILE);
+    writeFileSync(path, "  a-token-with-space  \n", { mode: STATE_FILE_MODE });
+
+    expect(loadOrMintToken(path).value).toBe("a-token-with-space");
+  });
+
+  /**
+   * An empty token would authenticate an empty `Authorization` header, which is not a weaker guard
+   * but no guard at all — so it is the same refusal as a file that cannot be read.
+   */
+  it(`refuses an empty token file with exit ${TOKEN_UNREADABLE_EXIT_CODE}`, () => {
+    const path = join(stateDirectory(), TOKEN_FILE);
+    writeFileSync(path, "\n");
+
+    expect(() => loadOrMintToken(path)).toThrow(TokenUnreadableError);
+    try {
+      loadOrMintToken(path);
+      expect.unreachable("the empty token file was accepted");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TokenUnreadableError);
+      if (error instanceof TokenUnreadableError) {
+        expect(error.exitCode).toBe(TOKEN_UNREADABLE_EXIT_CODE);
+        expect(error.path).toBe(path);
+        expect(error.message).toContain("holds no token");
+      }
+    }
+  });
+
+  /**
+   * A directory where the file should be is the portable way to make a read fail: `chmod 000` would
+   * still be readable by a test running as root, and this condition is about the *refusal*, not
+   * about which errno produced it.
+   */
+  it("refuses a token path that cannot be read at all", () => {
+    const path = join(stateDirectory(), TOKEN_FILE);
+    mkdirSync(path);
+
+    expect(() => loadOrMintToken(path)).toThrow(TokenUnreadableError);
+  });
+
+  it("names a remedy a user can act on", () => {
+    const path = join(stateDirectory(), TOKEN_FILE);
+    writeFileSync(path, "");
+
+    try {
+      loadOrMintToken(path);
+      expect.unreachable("the empty token file was accepted");
+    } catch (error) {
+      expect(String(error)).toContain("Delete the file");
+      expect(String(error)).toContain(TOKEN_FILE_ENV);
+    }
+  });
+
+  /** Nothing here may write the value anywhere but the file itself (R-SEC-6). */
+  it("keeps the value out of the process environment", () => {
+    const path = join(stateDirectory(), TOKEN_FILE);
+
+    const token = loadOrMintToken(path);
+
+    expect(Object.values(process.env)).not.toContain(token.value);
+  });
+});

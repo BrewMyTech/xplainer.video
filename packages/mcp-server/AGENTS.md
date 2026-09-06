@@ -61,8 +61,8 @@ Then the root procedure: `pnpm verify`.
 ## How to add
 
 **A backend method:** add it to the `RenderBackend` type, register the tool's handler in
-`src/server.ts`, and update `createStubBackend` in `apps/cli` so the stub still satisfies the
-interface.
+`src/server.ts`, and implement it in `createLocalBackend()` in `apps/cli/src/backend.ts` — the local
+implementation of this interface — so the workspace-backed backend still satisfies it.
 
 **An export:** add it to `src/index.ts` explicitly — no `export *` — then `pnpm api:report` and
 commit the `.api.md` diff, which is what a reviewer reads.

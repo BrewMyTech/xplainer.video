@@ -15,11 +15,63 @@ Entry point: `dist/index.d.ts`
 ## `dist/backend.d.ts`
 
 ```ts
+/** Which refusal a {@link LocalBackendError} carries, for a caller that branches on it. */
+export type LocalBackendCode = 
+/** The slug is not the shape `schemas/slug.json` describes. */
+"INVALID_SLUG"
+/** No video by that slug: `explainer_create` has not been called for it. */
+ | "NO_SUCH_VIDEO"
+/** A `put_source` path names one of the five files the engine owns (ADR 0018, layer 3). */
+ | "ENGINE_OWNED_PATH"
+/** A `put_source` path is absolute, or climbs out of the video's source directory. */
+ | "INVALID_SOURCE_PATH"
+/** A `put_media` name is not the bare filename the schema's pattern allows. */
+ | "INVALID_MEDIA_NAME"
+/** A `put_media` payload is not base64, so the asset would land truncated. */
+ | "INVALID_MEDIA_PAYLOAD"
+/** The narration spec has no segments to speak. */
+ | "NO_SEGMENTS"
+/** A still's frame or scale is outside what the schema allows. */
+ | "INVALID_STILL_ARGUMENT"
+/** The video has never been narrated, so no scene has a length yet. */
+ | "NARRATION_MISSING"
+/** The shared Remotion workspace has no dependencies installed. */
+ | "WORKSPACE_NOT_INSTALLED";
+
 /**
- * A `RenderBackend` that implements all eight tools by reporting that the work
- * lands in a later phase.
+ * A refusal an agent can act on, rather than a stack trace.
+ *
+ * `createMcpServer()` turns a rejection into a tool error carrying the message, so the message is
+ * the whole interface: it says what was refused and names the one call that fixes it. `code` is for
+ * a caller below the tool boundary — this package's tests, a future structured error — and never
+ * has to be parsed back out of prose.
  */
-export declare function createStubBackend(): RenderBackend;
+export declare class LocalBackendError extends Error {
+    readonly code: LocalBackendCode;
+    constructor(code: LocalBackendCode, message: string);
+}
+
+/** What {@link createLocalBackend} needs. */
+export type CreateLocalBackendOptions = {
+    /** The daemon's job runner: where narrate, still and render go, and what `explainer_job` reads. */
+    runner: JobRunner;
+    /**
+     * The shared Remotion workspace root.
+     *
+     * Defaults to `XPLAINER_VIDEOS_DIR`, then `<state dir>/workspace`. `commands/serve.ts` passes the
+     * root the daemon already resolved, so the backend and the worker registry cannot disagree about
+     * where the videos are.
+     */
+    root?: string;
+};
+
+/**
+ * Build the local backend over one workspace root.
+ *
+ * Nothing is created until a tool is called: a daemon starts before any video exists, and the first
+ * `explainer_create` is what materialises the workspace.
+ */
+export declare function createLocalBackend(options: CreateLocalBackendOptions): RenderBackend;
 ```
 
 ## `dist/not-implemented.d.ts`
@@ -31,10 +83,13 @@ export declare function createStubBackend(): RenderBackend;
  * Spec §Non-Goals scopes `mcp`, `setup` and `connect` out of the scaffold, and
  * the plan (§4 S2.4b) turns that into behaviour rather than a placeholder: the
  * commands are registered, they appear in `--help`, they say what happened on
- * stderr, and they exit with a defined non-zero code. The stub `RenderBackend`
- * in `backend.ts` reports the same thing through the MCP error channel, so an
- * agent that calls a tool and a human who runs a command are told the same
- * thing in the same words.
+ * stderr, and they exit with a defined non-zero code.
+ *
+ * It is about **commands** and nothing else. The eight tools once reported the
+ * same wording through the MCP error channel; they no longer do, because
+ * `backend.ts` implements them against the local Remotion workspace. Adding a
+ * tool back to this wording would be adding a tool that answers a poll with
+ * prose instead of a job.
  *
  * `2` distinguishes "this command exists but does nothing yet" from commander's
  * own `1` for a usage error, so a caller can tell a deferred command apart from
@@ -65,6 +120,19 @@ export type CreateServerOptions = {
     name?: string;
     /** Version reported by `/healthz` and the handshake. Defaults to the CLI's. */
     version?: string;
+    /**
+     * Middleware every route passes before it is reached — the loopback guard, for a TCP binding.
+     *
+     * A parameter rather than a boolean "local mode", which is
+     * [ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC: "the
+     * TCP binding passes the loopback guard, the IPC binding passes none, and at phase 3
+     * `services/media-service` passes its OAuth guard. One place decides, and the loopback Host
+     * allowlist does not have to be wrong for the hosted service."
+     *
+     * It is mounted before any route, so `/healthz`, `/mcp` and the future `/api/*` are covered by
+     * construction rather than by remembering to list them (R-SEC-2).
+     */
+    guard?: MiddlewareHandler;
 };
 
 /** A bound server, and the handle that stops it. */
@@ -77,14 +145,25 @@ export type RunningServer = {
     close(): Promise<void>;
 };
 
+/**
+ * A guard that can only be built once the port is known.
+ *
+ * R-SEC-2 requires the `Host` allowlist to be built **after** bind, "because `startServer()`
+ * resolves the real port in the listen callback and `--port 0` must keep working". A factory is how
+ * that requirement reaches an application object that has to exist before `listen()` is called.
+ */
+export type GuardFactory = (port: number) => MiddlewareHandler;
+
 /** What {@link startServer} needs to bind. */
-export type StartServerOptions = CreateServerOptions & {
+export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
     /** The implementation the eight tools are served from. */
     backend: RenderBackend;
     /** Port to bind. `0` picks an ephemeral one. Defaults to {@link DEFAULT_PORT}. */
     port?: number;
     /** Interface to bind. Defaults to {@link DEFAULT_HOSTNAME}. */
     hostname?: string;
+    /** Built with the resolved port in the listen callback, and armed before any request arrives. */
+    guard?: GuardFactory;
 };
 
 /**
@@ -110,4 +189,44 @@ export declare function startServer(options: StartServerOptions): Promise<Runnin
 ```ts
 /** The version from `apps/cli/package.json`. */
 export declare const CLI_VERSION: string;
+```
+
+## `dist/workspace-root.d.ts`
+
+```ts
+/**
+ * Where this machine's shared Remotion workspace lives.
+ *
+ * One directory holds every video and one `node_modules/` (see
+ * `@xplainer/render-core`'s `workspace.ts` for the layout inside it), so the question this module
+ * answers is only *where the root is* — and it is asked from two places that must agree: the job
+ * runner's worker registry, built in `daemon/start.ts`, and the backend the tools are served from,
+ * built in `commands/serve.ts`. Both take it from {@link resolveWorkspaceRoot} over the same
+ * resolved state directory, which is why the answer is a pure function of an environment and a
+ * path rather than something either side reads for itself.
+ *
+ * The default sits **inside** the daemon's state directory. That directory is already created
+ * `0700` and is already the thing `serve` takes exclusive ownership of, so a workspace under it
+ * inherits both properties: no other local user can read a video's source, and no second daemon can
+ * be writing into the same `videos/` while this one renders. `XPLAINER_VIDEOS_DIR` moves it — for a
+ * user who wants their videos on a bigger disk, and for every test in this package, which points it
+ * at a temporary directory so a suite never touches a developer's own work.
+ */
+/** The environment variable that relocates the Remotion workspace. */
+export declare const VIDEOS_DIR_ENV = "XPLAINER_VIDEOS_DIR";
+
+/** The workspace's directory name inside the state directory, when nothing overrides it. */
+export declare const WORKSPACE_DIR_NAME = "workspace";
+
+/** The environment this module reads, narrowed to what it uses. */
+export type WorkspaceEnvironment = Readonly<Record<string, string | undefined>>;
+
+/**
+ * `XPLAINER_VIDEOS_DIR` when it is set to something non-blank, otherwise
+ * `<stateDir>/workspace`.
+ *
+ * @param stateDir the resolved daemon state directory
+ * @param env the environment to read; defaults to this process's
+ */
+export declare function resolveWorkspaceRoot(stateDir: string, env?: WorkspaceEnvironment): string;
 ```

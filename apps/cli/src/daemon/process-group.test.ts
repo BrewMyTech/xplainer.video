@@ -14,15 +14,23 @@ import { describe, expect, it } from "vitest";
 import { groupOf, signalGroup, terminateGroup } from "./process-group.js";
 import { isAlive } from "./worker-identity.js";
 
-/** A leader that prints its grandchild's pid and then ignores `SIGTERM` for ever. */
+/**
+ * A leader that ignores `SIGTERM` for ever and then prints its grandchild's pid.
+ *
+ * **The handler is installed before the line is printed, and that order is the test.** libuv writes
+ * to a pipe synchronously when it can, so the parent can be scheduled on another core and read the
+ * announcement while this process is still between two statements — and a leader signalled in that
+ * window dies of `SIGTERM`'s default action, leaving nothing for `SIGKILL` to reach and turning
+ * "escalated to SIGKILL" into "SIGTERM was enough". Announcing last closes the window.
+ */
 const STUBBORN_LEADER = `
 const { spawn } = require("node:child_process");
+process.on("SIGTERM", function () {});
 const kid = spawn(process.execPath, ["-e", "process.on('SIGTERM', function () {}); setInterval(function () {}, 1000);"], {
   stdio: "ignore",
 });
 kid.unref();
 process.stdout.write("grandchild " + kid.pid + "\\n");
-process.on("SIGTERM", function () {});
 setInterval(function () {}, 1000);
 `;
 

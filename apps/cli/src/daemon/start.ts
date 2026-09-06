@@ -13,6 +13,12 @@
  * exists for: this module hands back a reconciled runner and a way to record the port once
  * something is actually listening on it.
  *
+ * The runner is built here, so the **worker registry** is registered here too: `workers.ts` turns a
+ * job record into the narration worker or the pinned Remotion CLI, over the workspace root
+ * `workspace-root.ts` resolves from this run's state directory. That root travels back out on
+ * {@link StartedDaemon.workspaceRoot} so the backend `commands/serve.ts` builds serves the same
+ * videos the workers render.
+ *
  * Three refusals leave here as an outcome rather than an exception, because each one has a
  * documented exit code and a sentence a user can act on (`docs/ARCHITECTURE.md` §6):
  *
@@ -23,6 +29,7 @@
  *   all three supervisors (ADR 0020 §Restart on crash), so a crash loop stops being a crash loop.
  */
 
+import { resolveWorkspaceRoot } from "../workspace-root.js";
 import {
   isStalled,
   markDaemonReady,
@@ -42,18 +49,51 @@ import { type ReconcileOutcome, reconcileJobs } from "./reconciler.js";
 import { createJobRunner, type JobRunner, type WorkerRegistry } from "./runner.js";
 import { resolveStateDir, stateDirLayout } from "./state-dir.js";
 import { selfIdentity } from "./worker-identity.js";
+import { createWorkerRegistry } from "./workers.js";
+
+/**
+ * What the daemon is listening on, once something is.
+ *
+ * It is one argument rather than four because the two state files are written from it in one act:
+ * the durable half of it goes to `daemon.json` (the port a later `serve` and `status` read back, the
+ * contract version, the token file's path) and the ephemeral half to `runtime.json` (this run's pid,
+ * its addresses, its socket) — ADR 0020 §Port and discovery's split, applied at the one moment both
+ * facts are known.
+ */
+export type DaemonBinding = {
+  /** The TCP port actually bound, resolved — so `--port 0` records its real value. */
+  port: number;
+  /** Every origin this run answers on. */
+  addresses: readonly string[];
+  /** The IPC socket path, or `null` while the daemon has only a TCP listener (P1-9). */
+  socket: string | null;
+  /** The path — never the value — of the bearer token file (R-SEC-6). */
+  tokenFile: string;
+  /** `MCP_CONTRACT_VERSION`, so `status` can report it without an HTTP call. */
+  contractVersion: string;
+};
 
 /** What a started daemon hands back to the command that binds the listeners. */
 export type StartedDaemon = {
   stateDir: string;
+  /**
+   * The shared Remotion workspace root this run's workers read and write under.
+   *
+   * Resolved here, once, and handed back so that `commands/serve.ts` builds the backend over the
+   * same root the worker registry was built over. Two independent resolutions could disagree — a
+   * test that overrides the state directory but not `XPLAINER_VIDEOS_DIR` is exactly that case —
+   * and a backend that enqueues into one workspace while the workers render out of another fails
+   * in a way no error message would explain.
+   */
+  workspaceRoot: string;
   /** The lock this run holds. */
   ownership: OwnershipRecord;
   /** What boot reconciliation did, so a caller can report it. */
   reconciliation: ReconcileOutcome;
   /** The job runner, already holding the reconciled records. */
   runner: JobRunner;
-  /** Record the bound port and stamp this run as a *successful* start. */
-  markReady(port: number): void;
+  /** Record where this run is listening and stamp it as a *successful* start. */
+  markReady(binding: DaemonBinding): void;
   /**
    * Stop the runner and give the state directory back.
    *
@@ -73,7 +113,13 @@ export type DaemonStartOutcome =
 export type StartDaemonOptions = {
   /** Overrides `XPLAINER_STATE_DIR` and the platform default. */
   stateDir?: string;
-  /** Which job kinds this daemon can run. */
+  /**
+   * Which job kinds this daemon can run.
+   *
+   * Defaults to the real registry from `workers.ts` over {@link StartedDaemon.workspaceRoot}: the
+   * narration worker and the two Remotion commands. Only the tests pass one, and they pass a worker
+   * that needs neither Remotion nor a TTS server.
+   */
   workers?: WorkerRegistry;
   /** Where the start-up narrative goes. Silent by default. */
   log?: (line: string) => void;
@@ -138,6 +184,7 @@ type OwnedStartOptions = StartDaemonOptions & {
 
 async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStartOutcome> {
   const { stateDir, log, now, ownership } = options;
+  const workspaceRoot = resolveWorkspaceRoot(stateDir);
 
   // Probed once, and recorded rather than thrown: ADR 0024 §Write durability requires the flush and
   // refuses to assert one behaviour for all three platforms, so a platform that cannot flush a
@@ -190,7 +237,9 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
     owner,
     records: reconciliation.records,
     now,
-    ...(options.workers === undefined ? {} : { workers: options.workers }),
+    // The real three kinds, unless a caller substitutes its own — which only the tests do, with a
+    // worker that needs neither Remotion nor a TTS server.
+    workers: options.workers ?? createWorkerRegistry({ root: workspaceRoot }),
     ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
     ...(options.logFlushIntervalMs === undefined
       ? {}
@@ -201,19 +250,30 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
     started: true,
     daemon: {
       stateDir,
+      workspaceRoot,
       ownership,
       reconciliation,
       runner,
 
-      markReady(port: number): void {
+      markReady(binding: DaemonBinding): void {
         writeRuntimeState(stateDir, {
           pid: ownership.pid,
           run_id: ownership.boot_nonce,
           boot_id: ownership.boot_id,
-          port,
+          port: binding.port,
+          addresses: [...binding.addresses],
+          socket: binding.socket,
           started_at: startedAt.toISOString(),
         });
-        updateDaemonState(stateDir, { port });
+        // The durable half. `port` is what a later `serve` binds and what `status` probes, so this
+        // write is what makes ADR 0020's "the recorded port is a contract" true; `token_file` and
+        // `contract_version` are here so a reader learns both without an HTTP call it may not be
+        // able to make.
+        updateDaemonState(stateDir, {
+          port: binding.port,
+          contract_version: binding.contractVersion,
+          token_file: binding.tokenFile,
+        });
         markDaemonReady(stateDir, ownership.boot_nonce, now().toISOString());
       },
 

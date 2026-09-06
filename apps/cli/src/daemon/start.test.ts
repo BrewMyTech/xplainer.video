@@ -12,29 +12,25 @@
  *   boot turns it into a terminal, explained answer and stops the orphan.
  *
  * So the children here are real: `testing/child-serve.ts` runs the command tree, and
- * `testing/child-daemon.ts` runs a daemon that kills itself. Both are started through
- * `testing/ts-source-hook.ts` rather than from `dist/`, so the suite asserts the sources being
- * edited and needs no build (see that file).
+ * `testing/child-daemon.ts` runs a daemon that kills itself. Both are started by
+ * `testing/spawn-child.ts` through `testing/ts-source-hook.ts` rather than from `dist/`, so the
+ * suite asserts the sources being edited and needs no build (see that file).
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { OWNERSHIP_REFUSED_EXIT_CODE } from "./exit-codes.js";
 import { createJobStore } from "./job-store.js";
 import { describeReconciliation, type StartedDaemon, startDaemon } from "./start.js";
 import { stateDirLayout } from "./state-dir.js";
 import { fakeWorkerRegistry } from "./testing/fake-worker.js";
+import { CHILD_DAEMON, CHILD_SERVE, type SpawnedChild, spawnEntry } from "./testing/spawn-child.js";
 import { isAlive } from "./worker-identity.js";
-
-const HOOK = fileURLToPath(new URL("./testing/ts-source-hook.ts", import.meta.url));
-const CHILD_SERVE = fileURLToPath(new URL("./testing/child-serve.ts", import.meta.url));
-const CHILD_DAEMON = fileURLToPath(new URL("./testing/child-daemon.ts", import.meta.url));
 
 const scratch: string[] = [];
 const children: ChildProcess[] = [];
@@ -48,65 +44,11 @@ function stateDirectory(): string {
   return dir;
 }
 
-type Child = {
-  process: ChildProcess;
-  stdout: () => string;
-  stderr: () => string;
-  waitForLine(match: string, timeoutMs?: number): Promise<string>;
-  waitForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-};
-
-function run(entry: string, args: readonly string[], env: Record<string, string>): Child {
-  const child = spawn(process.execPath, ["--import", HOOK, entry, ...args], {
-    env: { ...process.env, ...env },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  children.push(child);
-
-  let out = "";
-  let err = "";
-  child.stdout?.setEncoding("utf8");
-  child.stderr?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    out += chunk;
-  });
-  child.stderr?.on("data", (chunk: string) => {
-    err += chunk;
-  });
-
-  return {
-    process: child,
-    stdout: () => out,
-    stderr: () => err,
-    async waitForLine(match: string, timeoutMs = 20_000): Promise<string> {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const line = `${out}\n${err}`.split("\n").find((candidate) => candidate.includes(match));
-        if (line !== undefined) {
-          return line;
-        }
-        if (child.exitCode !== null || child.signalCode !== null) {
-          throw new Error(
-            `the child exited before printing "${match}"\nstdout:${out}\nstderr:${err}`,
-          );
-        }
-        await new Promise<void>((done) => {
-          setTimeout(done, 20);
-        });
-      }
-      throw new Error(`timed out waiting for "${match}"\nstdout:${out}\nstderr:${err}`);
-    },
-    waitForExit(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
-      }
-      return new Promise((resolve) => {
-        child.once("exit", (code, signal) => {
-          resolve({ code, signal });
-        });
-      });
-    },
-  };
+/** Spawn a child entry and register it for teardown, so no test can leave a daemon behind. */
+function run(entry: string, args: readonly string[], env: Record<string, string>): SpawnedChild {
+  const child = spawnEntry(entry, args, env);
+  children.push(child.process);
+  return child;
 }
 
 /** Size, mtime and content hash of every file under `dir`: the evidence a refusal wrote nothing. */

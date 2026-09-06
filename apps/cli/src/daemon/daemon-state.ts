@@ -34,9 +34,9 @@
  * from its own narrow view would silently uninstall the daemon it is part of.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import process from "node:process";
-import { writeJsonDurably } from "./durable-write.js";
+import { flushDirectory, writeJsonDurably } from "./durable-write.js";
 import { STATE_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { stateDirLayout } from "./state-dir.js";
 
@@ -75,6 +75,14 @@ export type DaemonState = {
   port: number | null;
   /** The contract version this daemon speaks, so `status` can report it without an HTTP call. */
   contract_version: string | null;
+  /**
+   * Where the bearer token lives, so `status` and `connect` read a path rather than guess one.
+   *
+   * ADR 0020 §Port and discovery lists the token file among `daemon.json`'s durable fields, and
+   * R-SEC-6 is why it is a *path*: `/proc/<pid>/cmdline` is world-readable and
+   * `systemctl --user show` prints `Environment=`, so the value never appears anywhere but the file.
+   */
+  token_file: string | null;
   /** What a directory flush did on this platform, recorded once rather than thrown. */
   directory_flush: string | null;
   recentStarts: DaemonStart[];
@@ -89,6 +97,23 @@ export type RuntimeState = {
   run_id: string;
   boot_id: string | null;
   port: number;
+  /**
+   * Every address this run is actually reachable on, as origins.
+   *
+   * The port alone stopped being enough once `--bind` existed: a daemon bound to one interface and
+   * a `status` that assumes `127.0.0.1` disagree silently, and the disagreement looks like a dead
+   * daemon. ADR 0020 §Port and discovery lists the bound addresses among `runtime.json`'s fields
+   * for that reason.
+   */
+  addresses: string[];
+  /**
+   * The IPC socket path, or `null` while the daemon has only a TCP listener.
+   *
+   * The key exists before the listener does (roadmap P1-9) so that a reader never has to tell "no
+   * socket" apart from "an older daemon". Whatever is here is removed on clean shutdown along with
+   * this file.
+   */
+  socket: string | null;
   started_at: string;
 };
 
@@ -164,6 +189,7 @@ export function readDaemonState(stateDir: string): DaemonState {
       typeof raw.format_version === "number" ? raw.format_version : STATE_FORMAT_VERSION,
     port: typeof raw.port === "number" ? raw.port : null,
     contract_version: asNullableString(raw.contract_version),
+    token_file: asNullableString(raw.token_file),
     directory_flush: asNullableString(raw.directory_flush),
     recentStarts: asStarts(raw.recentStarts),
     stalled: asStall(raw.stalled),
@@ -244,12 +270,12 @@ export function recordStall(stateDir: string, stall: StallRecord): DaemonState {
 }
 
 /**
- * Write `runtime.json` after the listener is bound.
+ * Write `runtime.json` after the listeners are bound.
  *
- * This story writes the pid, the run and the bound port. The bound addresses, the socket path and
- * the removal on clean shutdown arrive with the `SIGTERM` drain and the IPC listener, which are
- * ADR 0020 §The agent path is IPC and roadmap P1-7. Nothing reads this file without a liveness
- * check, which is why a stale one left by a `SIGKILL` is a hint rather than a lie.
+ * It carries this run's pid, its run and boot ids, the bound port, every address it answers on and
+ * the IPC socket path — `null` until that listener exists. {@link removeRuntimeState} deletes it on
+ * a clean shutdown, which is what makes its presence meaningful. Nothing reads this file without a
+ * liveness check even so, which is why a stale one left by a `SIGKILL` is a hint rather than a lie.
  */
 export function writeRuntimeState(
   stateDir: string,
@@ -258,6 +284,30 @@ export function writeRuntimeState(
   const record: RuntimeState = { format_version: STATE_FORMAT_VERSION, ...state };
   writeJsonDurably(stateDirLayout(stateDir).runtimeState, record);
   return record;
+}
+
+/**
+ * Delete `runtime.json`, and report whether there was one.
+ *
+ * This is step 6 of ADR 0024 §Drain on planned restart — "remove `runtime.json` and the socket,
+ * exit `0`" — and the reason the file means anything at all: a descriptor that is only ever written
+ * is a descriptor every stale copy of which looks live. The directory is flushed afterwards for the
+ * same reason a write flushes it: on Linux and macOS the *removal* of the entry is not durable
+ * until it is, and a daemon that is stopped and whose machine loses power immediately afterwards
+ * would otherwise come back to a runtime file describing a run that never resumed.
+ */
+export function removeRuntimeState(stateDir: string): boolean {
+  const path = stateDirLayout(stateDir).runtimeState;
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  flushDirectory(stateDir);
+  return true;
 }
 
 /** Read `runtime.json`, or `null` where none has been written. */

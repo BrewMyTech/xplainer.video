@@ -40,9 +40,9 @@ into an agent's configuration. `apps/desktop` is **one optional GUI client** of 
 nothing more. The runtime lives in the CLI, not in Electron
 ([ADR 0016](adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)), and it is a
 supervised, always-running, per-user daemon rather than a foreground command
-([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener, `/healthz`
-and `/mcp` exist today; the IPC socket, the shim's attach mode, the supervisor and the job runner
-land at roadmap phases 1 and 2.
+([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener — guarded,
+token-authenticated, draining on `SIGTERM` — `/healthz`, `/mcp` and the job runner exist today; the
+IPC socket, the shim's attach mode and the supervisor land at roadmap phases 1 and 2.
 
 ## 3. Members
 
@@ -96,6 +96,8 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 |---|---|---|
 | `apps/cli` | `@xplainer/mcp-server` | dependencies |
 | `apps/cli` | `@xplainer/protocol` | dependencies |
+| `apps/cli` | `@xplainer/render-core` | dependencies |
+| `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
@@ -130,7 +132,9 @@ An equality check that reads as a permission list is how a forbidden edge gets d
 legitimacy, so the two are stated apart on purpose.
 
 **Direction of travel.** `packages/protocol` is the sink — it depends on nothing in the workspace,
-and four members depend on it. `apps/cli` composes `mcp-server` and `protocol`. `apps/desktop`
+and four members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
+`tts-client`: the tool registration, the contract, the workspace and scaffold, and the speech client
+its narration worker drives. `apps/desktop`
 depends only on `apps/cli`, and takes it as an **injected** production dependency
 (`injectWorkspacePackages: true`, `dedupeInjectedDeps: false`) so that electron-builder packs a real
 directory rather than a symlink.
@@ -179,13 +183,23 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 **What exists today.** `apps/cli/src/server.ts` builds one Hono application — `GET /healthz`
 returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable HTTP, and
 `GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
-The eight tools are registered and return "not implemented in this phase" payloads
+The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
+scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
+runner, which `explainer_job` then reports on
 ([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)). `mcp`, `setup`,
 `connect` and `daemon` are registered stub commands that name themselves on stderr and exit `2`.
 `serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
 left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
-`daemon.json`, `runtime.json` and `jobs/` are real. There is still no supervisor, no IPC listener and
-no guard middleware, and the eight tools are not yet wired to the runner.
+`daemon.json`, `runtime.json` and `jobs/` are real. It also mints a `0600` bearer token in its
+`0700` state directory and puts the **guard middleware** in front of every TCP route — `Host`
+allowlist built from the bound port, `Origin` validation, and the token on `/healthz` as well as
+`/mcp` — handles `SIGTERM` by draining, removing `runtime.json` and exiting `0`, and announces
+readiness with one line of JSON on stdout. `xplainer status` reads the two state files and confirms
+them with an authenticated `GET /healthz`. The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
+`<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
+files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
+tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
+rather than failing inside `spawn`. There is still no supervisor and no IPC listener.
 **Much of the rest of this section is phase 1 or phase 2**, and each paragraph says which.
 
 **Process model (phase 2, [ADR 0020](adr/0020-always-running-local-daemon.md)).** `xplainer serve`
@@ -193,38 +207,44 @@ becomes an installed, supervised, per-user daemon — systemd user unit, LaunchA
 Scheduled Task — installed by `xplainer daemon {install,uninstall,start,stop,restart,status,logs}`,
 running as the user and never as root, and never needing an administrator at install.
 
-**The two listeners (phase 2).** One application, two bindings: the TCP loopback listener, and a
-unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer connect` writes a
-**stdio** entry pointing at `xplainer mcp --attach`, which proxies to that socket, so no URL and no
-token enter an agent configuration file. A browser can neither open a unix socket nor spawn a
-process, which is what puts the DNS-rebinding class structurally outside the path agents use. The
-TCP listener keeps a **guard middleware** — origin and host checks plus a bearer token — because it
-is the surface a web page can reach.
+**The two listeners (the IPC half is phase 2).** One application, two bindings: the TCP loopback
+listener, and a unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer
+connect` writes a **stdio** entry pointing at `xplainer mcp --attach`, which proxies to that
+socket, so no URL and no token enter an agent configuration file. A browser can neither open a unix
+socket nor spawn a process, which is what puts the DNS-rebinding class structurally outside the
+path agents use. The TCP listener keeps a **guard middleware** — origin and host checks plus a
+bearer token — because it is the surface a web page can reach. That middleware is **built**:
+`createServer()` takes it as a parameter rather than a mode, so the IPC listener can carry none and
+`services/media-service` can carry its own.
 
-**Two state files, opposite lifetimes (phase 2).** `daemon.json` is **durable**, written by
-`install`, and must survive reboot; it records the port, socket path, token file path, supervisor
-kind and artefact path, resolved program and interpreter, lingering, log sink and installing
-version. `runtime.json` is **ephemeral**, written by `serve` at bind, removed on clean shutdown, and
-never trusted without a liveness check. The port is decided once, at install, and the recorded port
-is a contract — `connect`, `status`, `logs` and the desktop client all read it rather than guessing.
+**Two state files, opposite lifetimes (both written today; `install` owns most of `daemon.json`
+from phase 2).** `daemon.json` is **durable** and must survive reboot; it records the port, socket
+path, token file path, supervisor kind and artefact path, resolved program and interpreter,
+lingering, log sink and installing version. `serve` writes only the fields it knows — the port it
+bound, the contract version, the token file's path, the flush verdict and the circuit breaker's
+history — and preserves every key it does not, because a `serve` that rewrote the file from its own
+narrow view would silently uninstall the daemon it is part of. `runtime.json` is **ephemeral**,
+written by `serve` at bind, removed on clean shutdown, and never trusted without a liveness check.
+The port is decided once, at install, and the recorded port is a contract — `connect`, `status`,
+`logs` and the desktop client all read it rather than guessing.
 
 **Exit codes.** One table, and a new code is added to it and to the successor of the record that
 owns it, never invented at the call site.
 
 | Code | Meaning | Owner | Status |
 |---:|---|---|---|
-| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | stall **built**; clean shutdown phase 1 |
+| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
 | `3` | Precondition unmet | ADR 0020 | phase 2 |
-| `4` | Installed but not healthy | ADR 0020 | phase 2 |
+| `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`) |
 | `5` | Administrator privileges required | ADR 0020 | phase 2 |
 | `6` | No supported supervisor | ADR 0020 | phase 2 |
 | `7` | Port or label conflict | ADR 0020 | phase 2 |
 | `8` | Contract skew between shim and daemon | ADR 0025 | phase 1 |
 | `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
 | `11` | State file unreadable | ADR 0020 | **built** |
-| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | phase 2 |
-| `70` | Internal error | ADR 0020 | phase 2 |
+| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
+| `70` | Internal error | ADR 0020 | **built** |
 
 **Job lifecycle (phase 1, [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)).** Five
 states, and a job is always in exactly one of them: `queued`, `running`, `done`, `error`,
@@ -252,8 +272,8 @@ states, and a job is always in exactly one of them: `queued`, `running`, `done`,
 - **An unknown format version is a rollback signal, not corruption**, so state written by a newer
   version is preserved rather than deleted.
 
-**Drain (phase 1 behaviour, phase 2 reach).** `SIGTERM` stops new jobs with a named "shutting down"
-error, gives in-flight jobs at most **20 s** to checkpoint, hard-stops Chrome and ffmpeg children,
+**Drain (built; phase 2 reach).** `SIGTERM` stops new jobs with a named "shutting down" error,
+gives in-flight jobs at most **20 s** to checkpoint, hard-stops Chrome and ffmpeg children,
 marks anything still `running` *or* `queued` as `error` with `error_code: "daemon_shutdown"`,
 removes `runtime.json` and the socket, and exits `0` — the portable "do not restart" signal on all
 three supervisors. Twenty seconds plus teardown fits inside the 25-second budget.
@@ -281,13 +301,16 @@ side by side in that one body. `MCP_CONTRACT_VERSION` lives in `@xplainer/protoc
 exports `isContractCompatible(daemon, shim)`; the predicate is **major-compatible**, so an additive
 change attaches and only a removal refuses.
 
-**Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), phase 1).** The daemon announces
+**Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), built).** The daemon announces
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners
 are bound — and parents wait for the announcement rather than sleeping. The primary mechanism on
-every platform is **one line of JSON on stdout**. A parent that spawned the daemon itself reads it
-from the pipe; a post-install hook restarting a *supervised* daemon cannot, because that stdout goes
-to the supervisor's log sink, so it waits on a supervisor-native report or an authenticated,
-bounded `GET /healthz` poll.
+every platform is **one line of JSON on stdout**:
+`{"event":"ready","port":…,"socket":…,"contract_version":…,"pid":…}`, where `socket` is `null` until
+the IPC listener lands. That line is the whole of stdout — everything else `serve` says goes to
+stderr, so it must never move behind a `--quiet` flag or a log-level filter. A parent that spawned
+the daemon itself reads it from the pipe; a post-install hook restarting a *supervised* daemon
+cannot, because that stdout goes to the supervisor's log sink, so it waits on a supervisor-native
+report or an authenticated, bounded `GET /healthz` poll.
 > *Proposed mechanism, to be confirmed by spike P2-S4:* systemd `Type=notify`. `$NOTIFY_SOCKET` is
 > an `AF_UNIX` datagram socket and `node:dgram` is UDP-only, so `sd_notify` costs a dependency or a
 > native addon. ADR 0020's `Type=exec` is **not** amended until the spike settles.
@@ -434,7 +457,7 @@ in the root [`AGENTS.md`](../AGENTS.md).
 5. Nothing to *register* by hand — `createMcpServer()` iterates `TOOL_NAMES` — but three
    hand-written surfaces still name the tools one at a time, and all three stop compiling until you
    extend them: the `RenderBackend` interface in `packages/mcp-server/src/backend.ts`,
-   `createStubBackend()` in `apps/cli/src/backend.ts`, and whatever real backend implements the
+   `createLocalBackend()` in `apps/cli/src/backend.ts`, and whatever other backend implements the
    seam. `server.test.ts` asserts `Object.keys(backend)` equals `TOOL_NAMES`, so a missing method is
    a failing test rather than a runtime surprise.
 6. Update `packages/skill/SKILL.md` — its `explainer_*` names are asserted against `TOOL_NAMES` in

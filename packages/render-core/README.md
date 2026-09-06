@@ -1,10 +1,13 @@
 # @xplainer/render-core
 
-Three things that travel together:
+Four things that travel together:
 
 - **the Remotion workspace template** under `template/`, copied onto your machine as the
-  workspace your videos render inside;
-- **the ownership-aware scaffold generator**, which writes the six files of a new video; and
+  workspace your videos render inside — and `materialiseWorkspace()` / `videoPaths()`, which
+  lay it out and never overwrite a file that is already there;
+- **the ownership-aware scaffold generator**, which writes the six files of a new video;
+- **the narration port**, which measures real speech into `narration.wav`, `captions.json` and
+  the `timings.json` every scene length comes from; and
 - **the render preflight**, which refuses an unrenderable job before Chrome is ever launched.
 
 ```bash
@@ -20,8 +23,12 @@ the template, and an agent-owned file is never touched. That is what keeps a han
 composition shell from producing a silently wrong MP4.
 
 ```ts
-import { scaffoldVideo, assertRenderable, renderArgs } from "@xplainer/render-core";
+import { videoPaths, scaffoldVideo, narrate, assertRenderable, renderArgs } from "@xplainer/render-core";
 ```
+
+Nothing here installs anything. `materialiseWorkspace()` copies the template files and creates
+the directories; `remotionBinary()` answers `null` for a workspace you have not run
+`npm install` in, so a caller can tell you that rather than failing inside `spawn`.
 
 The scaffold templates and the workspace template ship as readable, editable text on purpose:
 they land on your disk and you edit them. The exported surface is recorded in

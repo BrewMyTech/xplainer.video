@@ -63,6 +63,7 @@ describe("readDaemonState", () => {
       format_version: 1,
       port: null,
       contract_version: null,
+      token_file: null,
       directory_flush: null,
       recentStarts: [],
       stalled: null,
@@ -117,6 +118,8 @@ describe("recentStarts and stalled", () => {
       run_id: "run-a",
       boot_id: null,
       port: 8787,
+      addresses: ["http://127.0.0.1:8787"],
+      socket: null,
       started_at: "2026-09-06T00:00:00.000Z",
     });
 

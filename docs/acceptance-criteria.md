@@ -218,9 +218,26 @@ and gains a second `toEqual` pinning the seven verbs. Widening to `toContain` wo
 the criterion — its value was never the number four, but that the command surface is **fixed
 and asserted** and that commander's implicit `help [command]` can never reappear in it.
 
+*Amended 2026-09-06 (ADR 0020 §Port and discovery):* `--help` also lists a top-level
+`status`, between `serve` and `mcp`. ADR 0020 requires a command that reads `daemon.json` and
+`runtime.json` and confirms them with an **authenticated `GET /healthz`**, because
+`runtime.json` is "never trusted without a liveness check" and on macOS and Windows nothing
+reaps it; `4` — installed but not healthy — is the exit code that answer needs. It is **not**
+`daemon status`, which reports on the installed supervisor artefact and is still a phase-2
+stub: one asks "is the daemon up, and where", the other asks "is it installed, and how". The
+`toEqual` list is amended to the six names for the same reason as above.
+
 - **14a** `pnpm --filter @xplainer/cli build && node apps/cli/dist/bin.js --version` prints the version from `apps/cli/package.json`.
-- **14b** `node apps/cli/dist/bin.js --help` lists exactly `serve`, `mcp`, `setup` and `connect` (as amended above, plus `daemon`). **This only holds because commander's implicit help subcommand is disabled**, which is added automatically as soon as a program has subcommands; left on, the listing would also contain `help [command]` and the assertion could never pass.
+- **14b** `node apps/cli/dist/bin.js --help` lists exactly `serve`, `mcp`, `setup` and `connect` (as amended above, plus `status` and `daemon`). **This only holds because commander's implicit help subcommand is disabled**, which is added automatically as soon as a program has subcommands; left on, the listing would also contain `help [command]` and the assertion could never pass.
 - **14c** `node apps/cli/dist/bin.js serve --port 8787` then `curl -sf localhost:8787/healthz` returns 200.
+  - *Amended 2026-09-06 (ADR 0020 §Security R-SEC-4):* that curl now returns **401**, and the criterion is met by
+    `curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz`. The bearer token
+    is required on **every** TCP route, `/healthz` included, and deliberately so: an unauthenticated `{status, version}`
+    tells any web page which xplainer to attack, and a `401` against *our own* token is what lets `xplainer status` say
+    "something is on our port that is not our daemon". The criterion's property — the daemon binds the port it was told
+    to and answers a health probe with `200` — is unchanged; what changed is that the probe must be authenticated, which
+    is also what ADR 0025 §Part three requires of a readiness poll ("a `401` proves the port is bound and proves nothing
+    about readiness").
 - **14d** `pnpm --filter @xplainer/cli test` includes a Vitest that drives `tools/list` against the served `/mcp` endpoint and asserts the names equal `TOOL_NAMES` from `@xplainer/protocol`.
   - *Note 2026-09-06 (ADR 0023):* this was written as the TypeScript mirror of AC-8c's pytest, with an explicit rule that the two must not drift. AC-8 relocated; 14d did not change, and it is now the only place the tool contract is asserted against the manifest in this repository.
 - **14e** `apps/desktop/package.json` lists `@xplainer/cli` in `dependencies`.

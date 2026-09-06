@@ -84,7 +84,7 @@ declaration, run `pnpm api:report` and commit the `.api.md` too.
 run `codegen`, export the generated input and output types from `src/index.ts`, then update
 `packages/skill/SKILL.md` — its `explainer_*` names are asserted against `TOOL_NAMES`. Nothing is
 *registered* by hand — `createMcpServer()` iterates `TOOL_NAMES` — but `RenderBackend` and
-`createStubBackend()` are hand-written lists and have to grow a method each. Finish with
+`createLocalBackend()` are hand-written lists and have to grow a method each. Finish with
 `pnpm api:report`: `api/protocol.api.md` pins `TOOL_NAMES` as a literal tuple, so codegen alone
 leaves `check:api-report` red. A ninth tool changes `AC-9b`, which is a deliberate act.
 [`docs/ARCHITECTURE.md` §9](../../docs/ARCHITECTURE.md#9-how-to-add-x) carries the full ten-step form.

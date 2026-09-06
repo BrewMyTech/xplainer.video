@@ -4,10 +4,15 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 ## What this package is
 
-Four things that travel together: the **Remotion workspace template** under `template/`, the
-**ownership-aware scaffold generator** under `src/scaffold/`, the **narration port** under
-`src/narrate/`, and the **render preflight** that refuses an unrenderable job before Chrome is
-launched.
+Five things that travel together: the **Remotion workspace template** under `template/`, the
+**layout of the workspace that template becomes** in `src/workspace.ts`, the **ownership-aware
+scaffold generator** under `src/scaffold/`, the **narration port** under `src/narrate/`, and the
+**render preflight** that refuses an unrenderable job before Chrome is launched.
+
+`src/workspace.ts` is the map: `videoPaths(root, slug)` is the only place `videos/<slug>` and
+`public/<slug>` are paired, `materialiseWorkspace()` copies the four template files in without ever
+overwriting one, and `remotionBinary()` answers `null` for a workspace nobody has installed. It
+writes directories and copies files; it spawns nothing, renders nothing and installs nothing.
 
 The narration port is where a scene duration comes from. It synthesises each segment through
 `@xplainer/tts-client`, measures the audio it got back, and writes `narration.wav`,
@@ -30,7 +35,10 @@ the narration port — `narrate`, `planSegments`, `buildCaptions`, `buildTimings
 `writeNarrationTrack`, the WAV primitives `decodeWav` / `encodeWav` / `silentFrames` /
 `silenceSamples` / `pcmFrameBytes` / `pcmDurationMs` / `samePcmFormat`, `NarrationError`, and the
 pacing constants `LEAD_IN_MS`, `GAP_MS`, `TAIL_MS`, `DEFAULT_SAMPLE_RATE`, `DEFAULT_FPS`,
-`DEFAULT_VOICE`, `NARRATION_AUDIO_FILE`, `TIMINGS_FILE`, `CAPTIONS_FILE`. The Remotion template
+`DEFAULT_VOICE`, `NARRATION_AUDIO_FILE`, `TIMINGS_FILE`, `CAPTIONS_FILE`; and the workspace layout —
+`videoPaths`, `stillOutput`, `materialiseWorkspace`, `remotionBinary`, `isWorkspaceInstalled`,
+`workspaceNotInstalledMessage`, `listVideoSlugs`, `WORKSPACE_FILES`, `VIDEOS_DIR`, `PUBLIC_DIR`,
+`OUT_DIR`, `MEDIA_DIR`, `RENDERED_FILE`, `NARRATION_SPEC_FILE` and their types. The Remotion template
 itself is not a JavaScript export — it is files, reached through `./template/*`.
 
 Published, emits declarations, carries `api/render-core.api.md`.
@@ -79,6 +87,16 @@ Then the root procedure: `pnpm verify`.
   reader would pad the track with clicks instead of failing.
 - **A dry run is labelled.** `narrate()` reports `mode: "dry_run"` when it estimated rather than
   measured, so nothing downstream can mistake an invented timing for a measured one.
+- **`--public-dir` is `public/<slug>`, never the video's source directory.** `Root.tsx` fetches
+  `timings.json` and `captions.json` through `staticFile()` at metadata time, so pointing it at the
+  source directory does not fail — it renders the `durationInFrames={300}` placeholder, silently.
+  `videoPaths()` is the one place the pair is built, which is what keeps them from drifting apart.
+- **`materialiseWorkspace()` never overwrites, and never installs.** `package.json` is what a
+  package manager recorded `node_modules/` against, so rewriting it from the template on every
+  `explainer_create` would un-pin a workspace someone had already installed; and installing is a
+  visible step a user takes ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)),
+  never something a tool call does. `remotionBinary()` returning `null` — rather than a guessed path
+  — is what lets a caller say "run `npm install` in `<root>`" instead of failing inside `spawn`.
 
 ## How to add
 
@@ -88,6 +106,10 @@ from) or to `AGENT_OWNED_FILES`, and add its golden fixture in the same commit.
 
 **A preflight check:** add the code to the `PreflightCode` union, emit the problem from
 `preflight()`, and test both the firing and the not-firing case.
+
+**A path in the workspace:** add it to `VideoPaths` in `src/workspace.ts` and derive it there from
+the root and the slug — never join a path at a call site, because a second place that knows the
+layout is a second place that can be wrong about it.
 
 **A narration change:** put the arithmetic in `src/narrate/plan.ts`, which is pure and takes
 measured input, and assert it from the fixtures in `test/fixtures/narrate/` — never from a live

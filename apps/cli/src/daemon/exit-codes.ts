@@ -9,6 +9,16 @@
  */
 
 /**
+ * The daemon is set up on this machine and is not answering.
+ *
+ * ADR 0020 gives `4` to "installed but not healthy", and `xplainer status` is the first command
+ * that can be in that position: a state directory that names a port, and nothing at that port that
+ * answers an authenticated `GET /healthz` with a `200`. A daemon that answers `401` to *our* token
+ * is the same row for the same reason — "something is on our port that is not our daemon".
+ */
+export const DAEMON_UNHEALTHY_EXIT_CODE = 4;
+
+/**
  * Another process already holds this machine's runtime.
  *
  * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) records `10` as "the
@@ -21,6 +31,17 @@ export const OWNERSHIP_REFUSED_EXIT_CODE = 10;
 
 /** A state file exists and cannot be read or parsed (ADR 0020 §`serve` gains four things). */
 export const STATE_UNREADABLE_EXIT_CODE = 11;
+
+/**
+ * The bearer token file exists and cannot be read.
+ *
+ * ADR 0020 words the row as "`12` token file missing (it cannot enforce authentication, so it must
+ * not serve)", and that clause is the whole rule: a daemon with no usable token would either serve
+ * every caller unauthenticated or answer `401` to its own user for ever. Both are worse than not
+ * binding, so `serve` refuses. An *absent* file is not this condition — `daemon/token.ts` mints one
+ * on first start — but a file that cannot be read or that holds no token is.
+ */
+export const TOKEN_UNREADABLE_EXIT_CODE = 12;
 
 /** Internal error: the daemon could not start for a reason it cannot classify (ADR 0020). */
 export const DAEMON_INTERNAL_EXIT_CODE = 70;

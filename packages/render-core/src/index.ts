@@ -2,7 +2,8 @@
  * `@xplainer/render-core` — the Remotion workspace template, the scaffold
  * generator that writes one video's engine-owned shell and the agent's entry
  * point, the narration port that measures scene durations from real speech,
- * the render preflight, and the pure argv builders for the Remotion CLI.
+ * the render preflight, the pure argv builders for the Remotion CLI, and the
+ * layout of the shared workspace all four of those write into.
  *
  * Nothing here renders, and nothing here decides a duration by hand. The
  * package holds the byte-fidelity guarantee that the wiring it writes is the
@@ -89,3 +90,20 @@ export {
   SCAFFOLD_FILES,
   scaffoldVideo,
 } from "./scaffold/index.js";
+export type { VideoPaths, WorkspaceFile, WorkspaceResult } from "./workspace.js";
+export {
+  isWorkspaceInstalled,
+  listVideoSlugs,
+  MEDIA_DIR,
+  materialiseWorkspace,
+  NARRATION_SPEC_FILE,
+  OUT_DIR,
+  PUBLIC_DIR,
+  RENDERED_FILE,
+  remotionBinary,
+  stillOutput,
+  VIDEOS_DIR,
+  videoPaths,
+  WORKSPACE_FILES,
+  workspaceNotInstalledMessage,
+} from "./workspace.js";
