@@ -1,0 +1,31 @@
+{
+  "name": "xplainer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "xplainer.video — agent-driven explainer video monorepo",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "check": "turbo build lint typecheck test",
+    "codegen": "turbo codegen",
+    "lint:tiers": "node packages/config/bin/check-tiers.mjs",
+    "check:publish-contract": "node scripts/check-publish-contract.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@changesets/cli": "3.0.2",
+    "lefthook": "2.1.12",
+    "turbo": "2.10.12",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

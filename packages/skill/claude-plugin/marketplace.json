@@ -1,0 +1,35 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "xplainer",
+  "owner": {
+    "name": "xplainer.video",
+    "url": "https://xplainer.video"
+  },
+  "description": "The xplainer skill and its hosted MCP server, for building narrated explainer videos.",
+  "plugins": [
+    {
+      "name": "xplainer",
+      "displayName": "Xplainer",
+      "source": "./",
+      "description": "Turn a bug, a root cause, or an architecture decision into a short narrated explainer video with captions, rendered to one MP4.",
+      "author": {
+        "name": "xplainer.video",
+        "url": "https://xplainer.video"
+      },
+      "homepage": "https://xplainer.video",
+      "license": "UNLICENSED",
+      "category": "design",
+      "keywords": [
+        "explainer",
+        "video",
+        "remotion",
+        "animation",
+        "captions",
+        "narration",
+        "tts",
+        "mcp"
+      ],
+      "tags": ["video", "explainer", "motion-graphics", "remotion"]
+    }
+  ]
+}

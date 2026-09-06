@@ -1,0 +1,35 @@
+{
+  "name": "@xplainer/tts-client",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Kokoro-FastAPI request/response shaping: the two endpoints and the payload flags the narration phase depends on.",
+  "license": "Apache-2.0",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@xplainer/config": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

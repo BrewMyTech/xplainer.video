@@ -1,0 +1,32 @@
+{
+  "name": "@xplainer/skill",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The xplainer agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle.",
+  "license": "Apache-2.0",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "files": [
+    "SKILL.md",
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@xplainer/config": "workspace:*",
+    "@xplainer/protocol": "workspace:*",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

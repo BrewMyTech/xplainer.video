@@ -1,0 +1,32 @@
+# --- Node / JavaScript -------------------------------------------------------
+node_modules/
+dist/
+out/
+release/
+.next/
+.turbo/
+
+# --- Python ------------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Local environment -------------------------------------------------------
+.env
+
+# --- OS ----------------------------------------------------------------------
+.DS_Store
+
+# --- Agent tooling scratch ---------------------------------------------------
+.session/
+
+# OMC state, ignored in full. This directory previously carried two negations,
+# `!.omc/specs/` and `!.omc/plans/`, so that the interview spec and the execution
+# plan — the decision provenance the ADRs cite — were committed on purpose. Both
+# documents were relocated to the private repository when this one was reduced to
+# its public, local shape (ADR 0023); `docs/adr/README.md` § Provenance says where
+# they live and at which commit. The negations are removed with them: planning
+# artefacts here routinely carry absolute local paths and commercial detail, and a
+# public repository is the wrong place for them to land by default.
+.omc/

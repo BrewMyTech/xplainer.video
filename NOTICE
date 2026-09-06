@@ -1,0 +1,25 @@
+xplainer.video
+Copyright 2026 BrewMyTech
+
+This product includes software developed by BrewMyTech (https://xplainer.video).
+
+The `@xplainer/` packages published to npm are licensed under the Apache
+Licence, Version 2.0. See the LICENSE file distributed with each package, or
+LICENSE-APACHE-2.0 in the source repository.
+
+--------------------------------------------------------------------------------
+
+THIRD PARTY COMPONENTS
+
+This software depends on components owned by others, each under its own
+licence. Those licences govern those components.
+
+Rendering depends on Remotion, which is licensed commercially by Remotion AG on
+its own terms. `@xplainer/render-core` declares Remotion as a dependency of the
+video workspace it scaffolds; it does not bundle Remotion, and your own install
+fetches it under Remotion's terms. Depending on the size of your company and how
+you use it, you may need your own Remotion licence. See
+https://remotion.pro/license.
+
+Apache-2.0 governs this software. It does not govern Remotion, and nothing here
+grants you any right to Remotion.

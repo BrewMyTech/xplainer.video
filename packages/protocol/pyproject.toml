@@ -1,0 +1,45 @@
+# The Python half of packages/protocol. This package is a uv workspace member as
+# well as a pnpm workspace member: it is the one place in the repo where both
+# languages live side by side, because the tool contract has to be generated
+# into both and the two halves must never be regenerated separately.
+#
+# Recorded as deviation D-1 in the plan: the spec's proposed layout listed only
+# apps/api and services/tts-sidecar as uv members.
+[project]
+name = "xplainer-protocol"
+version = "0.0.0"
+description = "Generated pydantic models and the frozen tool manifest for the xplainer tool contract"
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic>=2.9,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/xplainer_protocol"]
+
+# The four-tool list every Python member in this workspace carries, identical
+# across packages/protocol and services/tts-sidecar so the convention and the
+# manifests cannot drift (plan S0.7 rule 1).
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.3,<2",
+  "pyright>=1.1.407,<2",
+  "ruff>=0.16.6,<0.17",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Generated Python is excluded from ruff for exactly the reason biome.json
+# excludes src/generated/**: scripts/codegen.mjs rewrites these files wholesale,
+# so a lint finding there could only be answered by editing a file whose own
+# header says not to. `extend` inherits the root ruff.toml rather than forking
+# it, so this member narrows what the rules run over and never what they are.
+[tool.ruff]
+extend = "../../ruff.toml"
+extend-exclude = ["python/xplainer_protocol/generated"]

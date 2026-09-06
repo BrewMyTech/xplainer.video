@@ -1,0 +1,15 @@
+{
+  "name": "@xplainer/tts-sidecar",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kokoro-FastAPI TTS sidecar: pinned upstream image plus the connection contract.",
+  "license": "UNLICENSED",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "scripts": {
+    "lint": "uv run --no-sync --project . ruff check .",
+    "typecheck": "uv run --no-sync --project . pyright",
+    "test": "uv run --no-sync --project . pytest"
+  }
+}

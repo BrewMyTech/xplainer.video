@@ -1,0 +1,46 @@
+# The TTS sidecar: the open-later member that owns how this product talks to
+# Kokoro-FastAPI. In this scaffold phase it holds the connection contract only —
+# the base URL, the pinned image, the two endpoint paths and the default voice.
+# No synthesis, no audio, no timings (spec section Non-Goals); those land at
+# roadmap phase 1 with the narrate.py port.
+#
+# uv workspace member declared in the root pyproject.toml [tool.uv.workspace].
+[project]
+name = "xplainer-tts-sidecar"
+version = "0.0.0"
+description = "Kokoro-FastAPI connection contract for the xplainer TTS sidecar"
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic-settings>=2.7,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xplainer_tts_sidecar"]
+
+# The four-tool list every Python member in this workspace carries, identical
+# across packages/protocol and services/tts-sidecar so the convention and the
+# manifests cannot drift (plan S0.7 rule 1). pytest-asyncio is listed even
+# though nothing here is async yet, because a uniform list across both members
+# is cheaper to keep true than a per-member one.
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.3,<2",
+  "pyright>=1.1.407,<2",
+  "ruff>=0.16.6,<0.17",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# `extend` inherits the root ruff.toml rather than forking it: this member
+# narrows what the rules run over, never what they are. `src` is declared so
+# isort classifies xplainer_tts_sidecar as first-party under the src layout
+# instead of grouping it with third-party imports.
+[tool.ruff]
+extend = "../../ruff.toml"
+src = ["src"]

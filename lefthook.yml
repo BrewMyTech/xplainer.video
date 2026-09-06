@@ -1,0 +1,12 @@
+# Git hooks. Install with `pnpm lefthook install`.
+#
+# The two jobs are NAMED so either half can be excluded by name, e.g.
+# `LEFTHOOK_EXCLUDE=ruff pnpm lefthook run pre-commit`. Wave 0 needs exactly
+# that: the ruff job invokes uv against a workspace whose three Python members
+# do not exist until wave 2, so before then it cannot resolve.
+pre-commit:
+  jobs:
+    - name: biome
+      run: pnpm biome check --staged --no-errors-on-unmatched
+    - name: ruff
+      run: uv run --no-sync ruff check --force-exclude

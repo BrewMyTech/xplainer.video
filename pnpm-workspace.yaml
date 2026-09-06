@@ -1,0 +1,137 @@
+# Workspace members. Nine in total, after the hosted tier was relocated to the
+# private BrewMyTech/xplainer-hosted repository:
+#   apps/      cli, desktop
+#   packages/  protocol, mcp-server, render-core, tts-client, skill, config
+#   services/  tts-sidecar
+packages:
+  - apps/*
+  - packages/*
+  - services/*
+
+# Versions every TypeScript member shares. Members declare "catalog:" in their
+# own devDependencies, so each package that has tests owns its test runner
+# explicitly instead of relying on hoisting to find the root copy.
+catalog:
+  "@types/node": 26.4.1
+  typescript: 7.0.2
+  vitest: 5.0.0
+
+# --- Install settings ---------------------------------------------------------
+#
+# The linker and engine settings below are ALSO written in .npmrc, which is
+# where the plan places them. `allowBuilds` is the one exception and is
+# deliberately NOT mirrored: pnpm 11 restricts .npmrc to auth and registry
+# settings, so a copy there would be inert.
+#
+# pnpm 11 no longer reads pnpm-specific settings out of .npmrc — verified on
+# pnpm 11.25.0: with only `engine-strict=true` in .npmrc an incompatible
+# engines.node produced a warning, and with `engineStrict: true` here it
+# produced ERR_PNPM_UNSUPPORTED_ENGINE. The .npmrc copy is kept because it is
+# what npm/npx and older pnpm read; THIS file is the one pnpm 11 obeys. Change
+# both together.
+#
+# nodeLinker: electron-builder resolves and packs the production dependency tree
+# by walking real directories and does not follow pnpm's default symlinked
+# store. Recorded in ADR 0004's Consequences.
+nodeLinker: hoisted
+
+# injectWorkspacePackages: nodeLinker: hoisted flattens EXTERNAL packages only;
+# pnpm keeps WORKSPACE dependencies as symlinks whatever the linker setting.
+# apps/desktop takes @xplainer/cli as a production dependency, so without
+# injection electron-builder is handed a symlink it will not follow. Injection
+# hard-copies the workspace package into apps/desktop/node_modules/ instead —
+# at install time, so a rebuilt apps/cli reaches apps/desktop only after
+# `pnpm install` runs again.
+injectWorkspacePackages: true
+
+# dedupeInjectedDeps: pnpm dedupes an injected dependency back to a plain
+# symlink whenever the injected copy would be identical to the source, which on
+# pnpm 11.25.0 undoes injection entirely for this workspace — verified: with the
+# default (true) the lockfile records `link:`, with false it records `file:` and
+# a real directory is materialised. Without this, injectWorkspacePackages above
+# is a silent no-op and electron-builder is back to packing a symlink.
+dedupeInjectedDeps: false
+
+# syncInjectedDepsAfterScripts: an injected copy is hard-copied at install time,
+# so a member's freshly built dist/ would not reach its dependents until the
+# next install. Listing `build` here makes pnpm re-sync every injected copy of a
+# package right after that package's build script runs, which is what keeps the
+# Turbo build graph honest.
+syncInjectedDepsAfterScripts:
+  - build
+
+# engineStrict: makes the Node 24 pin in the root "engines" a hard failure
+# rather than a warning.
+engineStrict: true
+
+# allowBuilds: pnpm will not run a dependency's install/postinstall script
+# unless the package is named here, and — this is the part that bites —
+# `strictDepBuilds` (true by default since pnpm 11) turns a skipped build into
+# EXIT 1 with ERR_PNPM_IGNORED_BUILDS. A machine whose pnpm store already holds
+# the built side-effects never sees the failure; a cold store always does, so
+# `pnpm install --frozen-lockfile` was green here and red on every GitHub runner
+# and inside every Docker build that installed from a cold store:
+#
+#   [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: electron-winstaller@5.4.0,
+#   esbuild@0.25.12, esbuild@0.28.1, esbuild@0.28.2, lefthook@2.1.12
+#
+# The pnpm 10 spelling of this setting is `onlyBuiltDependencies` (a list), and
+# writing that here would be worse than writing nothing: pnpm 11 REMOVED it
+# along with onlyBuiltDependenciesFile, neverBuiltDependencies,
+# ignoredBuiltDependencies and ignoreDepScripts, and ignores them in silence, so
+# the workspace would carry an allowlist that looks active and is not. Verified
+# on pnpm 11.25.0: with `onlyBuiltDependencies` the cold-store install still
+# exited 1 with the error above; with `allowBuilds` it exits 0. `allowBuilds` is
+# a map of package-name pattern to boolean — true allows the scripts, false
+# denies them explicitly, and anything unlisted stays denied and fails the
+# install loudly, which is the point of the gate.
+#
+# Each entry is load-bearing, and each script was read before it was allowed:
+#   esbuild             `node install.js` links the platform binary; vite, tsup
+#                       and vitest all fail at runtime without it.
+#   lefthook            `node postinstall.js` fetches and links the platform
+#                       lefthook binary; without it `pnpm lefthook install`, the
+#                       hook setup documented at the top of lefthook.yml, has no
+#                       executable to run.
+#   electron-winstaller `node ./script/select-7z-arch.js` picks the bundled 7z
+#                       for the host arch — no download — and electron-builder's
+#                       Squirrel.Windows target in desktop.yml needs it.
+allowBuilds:
+  esbuild: true
+  lefthook: true
+  electron-winstaller: true
+
+# Written automatically by pnpm 11's supply-chain release-age gate when this
+# machine's global minimumReleaseAge setting held these back. Inert on a
+# machine or CI runner that does not set minimumReleaseAge.
+minimumReleaseAgeExclude:
+  - '@changesets/apply-release-plan@8.1.0'
+  - '@changesets/cli@3.0.2'
+  - '@changesets/git@4.0.1'
+  - '@changesets/read@1.0.1'
+
+# --- Normative script rule (binding on every member) -------------------------
+#
+# Turbo invokes only the script whose name matches the task and SILENTLY SKIPS a
+# member that does not declare it — no warning, no non-zero exit. A member
+# missing a `lint` script is therefore indistinguishable from a member that
+# lints cleanly, and `pnpm turbo build lint typecheck test` stays green over
+# code that was never checked. So:
+#
+#   * Every TypeScript member carries exactly four scripts: `build`,
+#     `lint` (biome check .), `typecheck` (tsc --noEmit) and `test`
+#     (vitest run). All eight of them: packages/config, packages/protocol,
+#     packages/render-core, packages/tts-client, packages/mcp-server,
+#     packages/skill, apps/cli, apps/desktop.
+#     Members may add their own scripts (dev, package, codegen) but never at the
+#     cost of one of the four.
+#
+#   * The sole exception is the one Python-only member, services/tts-sidecar.
+#     It carries `lint`, `typecheck` and `test` as
+#     `uv run --no-sync --project .` wrappers, and NO `build`, because there is
+#     nothing to compile. This exception is why the `build` task covers eight
+#     members while the other three cover nine (asserted at AC-2f and AC-2g).
+#
+#   * packages/protocol is the one dual-language member: each of its four
+#     scripts chains its Python half (`lint` -> `lint:py`, and so on) so that a
+#     single Turbo task exercises both languages.

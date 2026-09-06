@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.xplainer.video/claude-plugin.schema.json",
+  "$comment": "Vendored, deliberately stricter than the published manifest schema. Anthropic's own schema at https://json.schemastore.org/claude-code-plugin-manifest.json requires only `name` and allows any additional key, so validating against it would pass almost any document and prove nothing. This copy pins the shape a real, installable bundle needs — every field the Remotion plugin manifest at ~/.claude/plugins/marketplaces/remotion/.claude-plugin/plugin.json ships, and no field the published schema does not define. That manifest validates against this schema unchanged, which is the check that keeps the extra strictness honest. Widen it deliberately; do not widen it to make a failing build green.",
+  "title": "Claude Code plugin manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "description", "author", "homepage", "license", "keywords"],
+  "properties": {
+    "$schema": {
+      "description": "Editor-facing schema reference. Ignored when the plugin is loaded.",
+      "type": "string",
+      "format": "uri"
+    },
+    "name": {
+      "description": "Namespacing identifier. Kebab-case, because it prefixes every skill the plugin contributes.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "displayName": {
+      "description": "Human-facing name shown in the plugin list.",
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "description": "Semantic version. Written at build time from the package version, so npm and the marketplace cannot disagree.",
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "description": {
+      "description": "One-paragraph explanation of what the plugin provides.",
+      "type": "string",
+      "minLength": 1
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "email": { "type": "string", "format": "email" },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri"
+    },
+    "license": {
+      "description": "SPDX identifier, or UNLICENSED while the repository is proprietary.",
+      "type": "string",
+      "minLength": 1
+    },
+    "keywords": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "skills": {
+      "description": "Extra skill directories. Omitted here: `skills/` at the bundle root is discovered automatically.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "mcpServers": {
+      "description": "Extra MCP server declarations. Omitted here: `.mcp.json` at the bundle root is discovered automatically.",
+      "type": "string",
+      "pattern": "^\\./.*\\.json$"
+    }
+  }
+}

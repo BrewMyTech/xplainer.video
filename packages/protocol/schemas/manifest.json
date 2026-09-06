@@ -1,0 +1,64 @@
+{
+  "$comment": "The contract manifest: the authoritative list of the eight explainer tools — for each, the JSON Schema that defines its input and its output — and the authoritative list of the scaffold files the engine owns. This is a data document, not a schema. Every surface that speaks the protocol — the TypeScript MCP server, the hosted FastAPI server, the plugin bundles — derives its tool list from here, so a tool cannot be added to one surface and forgotten on another. The tool order below is the contract order and is preserved by codegen into TOOL_NAMES; engine_owned_files is preserved into ENGINE_OWNED_FILES the same way.",
+  "name": "xplainer",
+  "version": "1",
+  "engine_owned_files": ["index.ts", "types.ts", "Root.tsx", "Captions.tsx", "Video.tsx"],
+  "tools": [
+    {
+      "name": "explainer_create",
+      "title": "Create explainer",
+      "description": "Create a new explainer video and scaffold only its wiring — audio, captions and the timings contract — leaving the picture for the agent to design. Safe to call twice: it never overwrites.",
+      "input": { "$ref": "tools/explainer_create.input.json" },
+      "output": { "$ref": "tools/explainer_create.output.json" }
+    },
+    {
+      "name": "explainer_put_source",
+      "title": "Upload source",
+      "description": "Write agent-authored Remotion source files into an existing video, overwriting any file of the same path. Refuses the engine-owned files that mount the audio and captions — index.ts, types.ts, Root.tsx, Captions.tsx, Video.tsx — so write scenes to Scenes.tsx and the files it imports.",
+      "input": { "$ref": "tools/explainer_put_source.input.json" },
+      "output": { "$ref": "tools/explainer_put_source.output.json" }
+    },
+    {
+      "name": "explainer_put_media",
+      "title": "Upload media",
+      "description": "Upload one image, audio or video asset into a video's media directory, for the composition to reference through staticFile().",
+      "input": { "$ref": "tools/explainer_put_media.input.json" },
+      "output": { "$ref": "tools/explainer_put_media.output.json" }
+    },
+    {
+      "name": "explainer_narrate",
+      "title": "Narrate",
+      "description": "Synthesise the voiceover and word-level captions, and measure the segment timings the composition reads its durations from. Queued; poll explainer_job.",
+      "input": { "$ref": "tools/explainer_narrate.input.json" },
+      "output": { "$ref": "tools/explainer_narrate.output.json" }
+    },
+    {
+      "name": "explainer_still",
+      "title": "Render still",
+      "description": "Render one frame to PNG for a layout check, far faster than a full render. Queued; poll explainer_job.",
+      "input": { "$ref": "tools/explainer_still.input.json" },
+      "output": { "$ref": "tools/explainer_still.output.json" }
+    },
+    {
+      "name": "explainer_render",
+      "title": "Render video",
+      "description": "Render the video to MP4 — picture, voiceover and burnt-in captions in one pass. Requires explainer_narrate to have run. Queued; poll explainer_job.",
+      "input": { "$ref": "tools/explainer_render.input.json" },
+      "output": { "$ref": "tools/explainer_render.output.json" }
+    },
+    {
+      "name": "explainer_job",
+      "title": "Check job",
+      "description": "Report the status, exit code and recent output of a job started by explainer_narrate, explainer_render or explainer_still.",
+      "input": { "$ref": "tools/explainer_job.input.json" },
+      "output": { "$ref": "tools/explainer_job.output.json" }
+    },
+    {
+      "name": "explainer_list",
+      "title": "List explainers",
+      "description": "List the caller's explainer videos and what each one has so far: narration, a finished MP4, its size and its length.",
+      "input": { "$ref": "tools/explainer_list.input.json" },
+      "output": { "$ref": "tools/explainer_list.output.json" }
+    }
+  ]
+}

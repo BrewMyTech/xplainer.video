@@ -1,0 +1,46 @@
+{
+  "name": "@xplainer/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The xplainer local runtime: the `xplainer` binary and the HTTP/MCP server core shared with the hosted media-service.",
+  "license": "Apache-2.0",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "bin": {
+    "xplainer": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@xplainer/mcp-server": "workspace:*",
+    "@xplainer/protocol": "workspace:*",
+    "commander": "15.0.0",
+    "hono": "4.13.5"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@xplainer/config": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

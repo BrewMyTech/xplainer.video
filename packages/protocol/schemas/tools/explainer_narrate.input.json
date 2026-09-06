@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerNarrateInput",
+  "description": "Arguments for explainer_narrate. Shape from max/server/explainer_mcp.py:362-367, minus the session_name argument, which was max's internal job-routing detail and is not part of this contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "narration"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "narration": { "$ref": "../narration.json" },
+    "dry_run": {
+      "type": "boolean",
+      "default": false,
+      "description": "Emit silence of a plausible length instead of calling the TTS server. Produces real timings.json and captions.json, so a composition can be built and checked before any speech is synthesised."
+    }
+  }
+}

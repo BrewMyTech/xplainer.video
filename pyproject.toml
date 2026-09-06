@@ -1,0 +1,79 @@
+# Root of the uv workspace. This project is virtual — it ships no code of its
+# own and is never installed; it exists to own the workspace member list and the
+# workspace-scoped dev tooling.
+[project]
+name = "xplainer-workspace"
+version = "0.0.0"
+description = "xplainer.video Python workspace root"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/protocol", "services/tts-sidecar"]
+
+# Workspace-scoped tools only: the ones that operate ACROSS members. Per-member
+# tooling (pytest, pytest-asyncio, pyright, ruff) is declared in each member's
+# own [dependency-groups] dev.
+#
+# Two members is still a workspace, and still earns the shape: ONE environment
+# and ONE uv.lock behind the single documented bootstrap
+# (`uv sync --all-packages --frozen`), and one place to pin the generator below.
+# The tier contract is no longer part of the justification — see the note at the
+# foot of this file.
+#
+# datamodel-code-generator is pinned to an exact version because
+# packages/protocol's codegen output is diffed in CI: a patch bump that changes
+# a single byte of generated output would fail the drift check for no reason.
+[dependency-groups]
+dev = [
+  "datamodel-code-generator==0.76.2",
+  "ruff>=0.16.6,<0.17",
+]
+
+# --- Python command convention (binding on every uv command in this repo) -----
+#
+# 1. Per-member tooling is declared in each member's own [dependency-groups] dev.
+# 2. The environment is populated ONCE, at the workspace root:
+#        uv sync --all-packages --frozen
+# 3. Every `uv run` carries --no-sync. Every one, with no exception for scope:
+#        member-scoped:  uv run --no-sync --project <member> <tool>
+#        root-scoped:    uv run --no-sync <tool>
+#
+#    A uv workspace shares ONE environment, and `uv run` syncs before executing
+#    and is exact by default. A bare `uv run --project packages/protocol pytest`
+#    re-syncs that shared environment down to packages/protocol's closure and
+#    prunes xplainer-tts-sidecar out of it; Turbo drives two such runs from one
+#    `pnpm turbo test`, each undoing the last.
+#
+#    Root-scoped is NOT the safe case. This root declares `package = false` and
+#    does not depend on its members, so its closure is the dev group and nothing
+#    else: a bare root-scoped `uv run` prunes BOTH members out of the shared
+#    environment, and the next member-scoped run has to put them back.
+
+# --- Tier boundary contract: the Python half is retired ----------------------
+#
+# There used to be an import-linter contract here, plus `import-linter` in the
+# dev group above, forbidding an edge from the open-later Python modules to the
+# hosted one. Both are gone, and this note is why rather than a silent deletion.
+#
+# The contract named exactly one forbidden target, `xplainer_api`. `apps/api`
+# was the only `hosted` Python member, and it was relocated to the private
+# BrewMyTech/xplainer-hosted repository along with the rest of the hosted tier.
+# With no hosted Python module left in this workspace the contract has no
+# forbidden target: it cannot fail, and a check that cannot fail is not
+# evidence. Its negative-path proof, `apps/api/tests/test_tier_boundary.py`,
+# left with the member it lived in and was not relocated here — there is
+# nothing left for it to prove.
+#
+# The rule ITSELF is not retired, only its Python half. The two TypeScript
+# halves stay and are still capable of failing:
+#   * packages/config/bin/check-tiers.mjs reads DECLARED workspace dependency
+#     edges and still enforces that every member declares `xplainer.tier`
+#     (AC-3a). Its real-graph half is now vacuous for the same reason as above;
+#     the synthetic graphs in packages/config/src/tiers.test.ts are what still
+#     prove the rule can report a violation.
+#   * the noRestrictedImports override in biome.json reads import SPECIFIERS and
+#     is what would catch a new dependency on the relocated tier.

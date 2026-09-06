@@ -1,0 +1,37 @@
+{
+  "name": "xplainer",
+  "description": "Turn a bug, a root cause, or an architecture decision into a short narrated explainer video with captions, rendered to one MP4.",
+  "author": {
+    "name": "xplainer.video",
+    "url": "https://xplainer.video"
+  },
+  "homepage": "https://xplainer.video",
+  "license": "UNLICENSED",
+  "keywords": [
+    "explainer",
+    "video",
+    "remotion",
+    "animation",
+    "captions",
+    "narration",
+    "tts",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Xplainer",
+    "shortDescription": "Explain anything as a narrated video",
+    "longDescription": "Build short explainer videos from inside the session: animated Remotion scenes, a synthesised voiceover, and word-level captions rendered together into one MP4. The tools run locally when a local xplainer runtime is present and against the hosted service otherwise.",
+    "developerName": "xplainer.video",
+    "category": "Creativity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://xplainer.video",
+    "brandColor": "#0f172a",
+    "defaultPrompt": [
+      "Explain this bug as a ninety-second video",
+      "Turn this architecture decision into an explainer",
+      "Make a video showing what this fix actually changes"
+    ]
+  }
+}

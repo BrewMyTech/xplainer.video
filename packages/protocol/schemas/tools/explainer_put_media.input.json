@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerPutMediaInput",
+  "description": "Arguments for explainer_put_media: upload one image, audio or video asset the composition will reference through staticFile().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "name", "base64"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "Filename inside the video's media directory. A bare name, never a path."
+    },
+    "base64": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "The asset's bytes, base64-encoded."
+    }
+  }
+}

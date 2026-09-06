@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerCreateInput",
+  "description": "Arguments for explainer_create.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" }
+  }
+}

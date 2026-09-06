@@ -1,0 +1,5 @@
+{
+  "extends": "@xplainer/config/tsconfig/node.json",
+  "include": ["src"],
+  "exclude": ["dist"]
+}

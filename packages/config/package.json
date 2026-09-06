@@ -1,0 +1,39 @@
+{
+  "name": "@xplainer/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared TypeScript presets and the workspace tier-boundary rule.",
+  "license": "UNLICENSED",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "exports": {
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tsconfig/react.json": "./tsconfig/react.json",
+    "./tsconfig/node.json": "./tsconfig/node.json",
+    "./tiers": {
+      "types": "./dist/tiers.d.ts",
+      "default": "./dist/tiers.js"
+    }
+  },
+  "bin": {
+    "xplainer-check-tiers": "./bin/check-tiers.mjs",
+    "xplainer-minify-dist": "./bin/minify-dist.mjs",
+    "xplainer-sync-license": "./bin/sync-license.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "esbuild": "0.28.2"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

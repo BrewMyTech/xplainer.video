@@ -1,0 +1,21 @@
+import type { SceneMap } from "./Video";
+
+/**
+ * YOUR FILE. Everything you design lives here and in the files you import.
+ * One entry per narration segment id in timings.json. The engine reads the
+ * order and the duration from the measured narration, so you never write
+ * either. A scene is ordinary React — draw anything.
+ *
+ *   export const scenes: SceneMap = { symptom: SymptomScene, cause: CauseScene };
+ *
+ * Each scene is handed { segment, timings, captions }. Inside its Sequence,
+ * useCurrentFrame() restarts at zero.
+ *
+ * Keep the `import type` above: it erases at compile time, so the loop between
+ * this file and Video.tsx exists only in the type graph, never at runtime.
+ */
+export const scenes: SceneMap = {};
+
+// Optional. Uncomment either to draw across the whole video:
+//   export const Backdrop: React.FC = () => <AbsoluteFill style={{ backgroundColor: "#101418" }} />;
+//   export const Overlay: React.FC = () => null;   // above scenes, below captions

@@ -1,0 +1,85 @@
+# Unsigned desktop installers for the optional Electron client (AC-4, AC-6b).
+#
+# One matrix job on ubuntu-latest, macos-latest and windows-latest. Each runner
+# builds the electron-vite bundles, packs them with electron-builder and uploads
+# whatever lands in apps/desktop/release/.
+#
+# Two things this workflow deliberately does NOT do:
+#
+#   * No signing. No certificate, no notarization, no secret is referenced
+#     anywhere below; `CSC_IDENTITY_AUTO_DISCOVERY=false` additionally stops
+#     electron-builder from adopting a signing identity that happens to be
+#     present on a runner, and `--publish never` stops it reaching for a release
+#     feed. Signed artifacts are a later roadmap phase (spec Non-Goals).
+#
+#   * No `uv sync`, and no Python setup at all. apps/desktop is a TypeScript
+#     member with no Python half, so a uv step here would install a toolchain
+#     this build never uses. More importantly it would duplicate, in a job whose
+#     red square means "the installer did not build", a claim that belongs to a
+#     job whose red square means only one thing: AC-1's three-OS install claim is
+#     discharged by the install-only `bootstrap` matrix in ci.yml. Testing it in
+#     two places would make a Windows `uv sync` failure show up as a desktop
+#     packaging failure, which is exactly the ambiguity `bootstrap` exists to
+#     remove.
+
+name: desktop
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # All three runners report independently: a Windows NSIS failure must not
+      # cancel the macOS dmg build that would have told us it was Windows-only.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The `...` suffix selects @xplainer/desktop and its workspace
+      # dependencies, so @xplainer/cli is built before it is packed.
+      - name: Build the desktop app and its workspace dependencies
+        run: pnpm --filter @xplainer/desktop... build
+
+      - name: Pack unsigned installers
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm --filter @xplainer/desktop exec electron-builder --publish never
+
+      # `if-no-files-found: error` is the point of this step: a packaging run
+      # that silently produced nothing would otherwise upload an empty artifact
+      # and report success.
+      - name: Upload unsigned installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: xplainer-desktop-${{ matrix.os }}
+          path: apps/desktop/release/*
+          if-no-files-found: error

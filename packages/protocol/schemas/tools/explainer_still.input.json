@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerStillInput",
+  "description": "Arguments for explainer_still. Shape and defaults from max/server/explainer_mcp.py:430-432.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "frame": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 90,
+      "description": "Frame number to render."
+    },
+    "scale": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "default": 0.5,
+      "description": "Output scale. Half size is enough for a layout check and much faster."
+    }
+  }
+}

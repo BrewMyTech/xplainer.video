@@ -1,0 +1,10 @@
+{
+  "extends": "@xplainer/config/tsconfig/react.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["src", "electron.vite.config.ts"],
+  "exclude": ["out", "release"]
+}

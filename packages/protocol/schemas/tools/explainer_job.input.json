@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerJobInput",
+  "description": "Arguments for explainer_job. Shape and default from max/server/explainer_mcp.py:457.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id"],
+  "properties": {
+    "job_id": {
+      "type": "integer",
+      "description": "The id returned by explainer_narrate, explainer_render or explainer_still."
+    },
+    "output_lines": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60,
+      "description": "How many trailing output lines to return."
+    }
+  }
+}

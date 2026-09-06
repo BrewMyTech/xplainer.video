@@ -1,0 +1,82 @@
+Copyright (c) 2026 BrewMyTech.
+
+This repository is NOT under a single licence. Part of it is open source and
+part of it is proprietary, and the line between them is drawn per directory
+below. Read the whole of this file before copying anything out of here.
+
+
+PART ONE — OPEN SOURCE, APACHE LICENCE 2.0
+
+The six packages published to npm under the `@xplainer/` scope are licensed
+under the Apache Licence, Version 2.0:
+
+    apps/cli                 @xplainer/cli
+    packages/mcp-server      @xplainer/mcp-server
+    packages/protocol        @xplainer/protocol
+    packages/render-core     @xplainer/render-core
+    packages/skill           @xplainer/skill
+    packages/tts-client      @xplainer/tts-client
+
+Everything inside those six directories is Apache-2.0, including the Remotion
+workspace template and the scaffold templates under `packages/render-core`.
+The full licence text is in LICENSE-APACHE-2.0 at the root of this repository,
+and a copy of it is committed as `LICENSE` inside each of the six package
+directories so that it also travels inside every published tarball. The
+attribution notice Apache-2.0 section 4(d) propagates is the NOTICE file, at
+the root and inside each of the six.
+
+Each of those six manifests declares `"license": "Apache-2.0"`. That SPDX
+identifier is the authoritative statement for machine consumers.
+
+    Licensed under the Apache Licence, Version 2.0 (the "Licence"); you may
+    not use these files except in compliance with the Licence. You may obtain
+    a copy of the Licence at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the Licence is distributed on an "AS IS" BASIS, WITHOUT
+    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+    Licence for the specific language governing permissions and limitations
+    under the Licence.
+
+
+PART TWO — PROPRIETARY, ALL RIGHTS RESERVED
+
+Every other file in this repository is proprietary. No permission is granted
+to use, copy, modify, merge, publish, distribute, sublicense, or sell any part
+of it. This covers, without being limited to:
+
+    apps/api                 the hosted API                    (tier: hosted)
+    apps/web                 the hosted web client             (tier: hosted)
+    services/media-service   the hosted render service         (tier: hosted)
+
+    apps/desktop             the desktop client                (tier: open-later)
+    packages/config          shared build presets and tooling  (tier: open-later)
+    services/tts-sidecar     the packaged TTS sidecar          (tier: open-later)
+
+    infra/, scripts/, docs/, and every other file at the root
+
+The `hosted` tier stays proprietary and is not on any path to being opened.
+The three `open-later` members listed above are on that path but have NOT been
+relicensed: opening the six published packages did not open them, and each
+still declares `"license": "UNLICENSED"` in its own manifest. Nothing in Part
+One extends to them.
+
+The tier each package belongs to is declared in its own package.json as
+`"xplainer": { "tier": "hosted" | "open-later" }`, and the boundary between
+the tiers is machine-checked. The tier field describes intent; this file
+describes the grant. Where they appear to disagree, this file and the
+`license` field of the package's own manifest govern.
+
+
+THIRD PARTY COMPONENTS
+
+Rendering depends on Remotion, which is licensed commercially by Remotion AG
+on its own terms. The Apache-2.0 grant in Part One covers this software only;
+it grants you nothing in respect of Remotion, and depending on the size of
+your company and how you use it you may need your own Remotion licence. See
+https://remotion.pro/license and the NOTICE file.
+
+
+Questions: rishav@brewmytech.com

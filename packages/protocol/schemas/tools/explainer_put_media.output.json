@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerPutMediaOutput",
+  "description": "Result of explainer_put_media.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "name", "bytes"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "name": {
+      "type": "string",
+      "description": "The stored filename, as the composition should reference it."
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Decoded size in bytes, so the caller can confirm the upload arrived whole."
+    }
+  }
+}

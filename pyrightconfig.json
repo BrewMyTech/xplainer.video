@@ -1,0 +1,6 @@
+{
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.13",
+  "include": ["packages/protocol/python", "services/tts-sidecar/src"],
+  "exclude": ["**/node_modules", "**/__pycache__", "**/.venv"]
+}

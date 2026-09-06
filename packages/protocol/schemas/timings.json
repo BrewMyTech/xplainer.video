@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Timings",
+  "description": "Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors max/server/explainer_mcp.py::_TYPES_TS and the writer at max/.explainers/scripts/narrate.py:290-297.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fps", "durationInFrames", "totalMs", "audio", "segments"],
+  "properties": {
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Frame rate the frame numbers below are expressed in."
+    },
+    "durationInFrames": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total composition length in frames, including lead-in and tail silence."
+    },
+    "totalMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total narration track length in milliseconds."
+    },
+    "audio": {
+      "type": "string",
+      "description": "Filename of the narration track, relative to the video's public directory."
+    },
+    "segments": {
+      "type": "array",
+      "description": "One entry per narration segment, in narration order.",
+      "items": { "$ref": "#/$defs/TimingsSegment" }
+    }
+  },
+  "$defs": {
+    "TimingsSegment": {
+      "title": "TimingsSegment",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "index", "startMs", "endMs", "from", "durationInFrames"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The id of the narration segment this was measured from."
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based position in the narration."
+        },
+        "startMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Segment start on the narration track, in milliseconds."
+        },
+        "endMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Segment end on the narration track, in milliseconds."
+        },
+        "from": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Segment start as a frame number, for Remotion's Sequence."
+        },
+        "durationInFrames": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Segment length in frames. Never below 1."
+        }
+      }
+    }
+  }
+}

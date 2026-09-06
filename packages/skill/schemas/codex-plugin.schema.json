@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.xplainer.video/codex-plugin.schema.json",
+  "$comment": "Vendored. OpenAI publishes no schema for the Codex plugin manifest, so this one is derived from the manifests Codex has actually cached on this machine: ~/.codex/.tmp/plugins/plugins/hyperframes/.codex-plugin/plugin.json for the skills-only shape, and the linear and notion plugins for the remote-MCP shape (`mcpServers` naming a sibling .mcp.json). The optional fields below are the ones those manifests use and this bundle does not; the enums list the values observed there. Checked against those three: linear and notion validate, and hyperframes fails on `mcpServers` alone, which is deliberate — a skills-only plugin legitimately omits it, but an xplainer bundle that lost its MCP declaration would install and then do nothing, so it is required here. Widen this against a real manifest, never against a failing build.",
+  "title": "Codex plugin manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version",
+    "description",
+    "author",
+    "homepage",
+    "license",
+    "keywords",
+    "skills",
+    "mcpServers",
+    "interface"
+  ],
+  "properties": {
+    "name": {
+      "description": "Plugin identifier. Kebab-case, matching the Claude bundle so one product is not two names.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "version": {
+      "description": "Semantic version. Written at build time from the package version.",
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "description": { "type": "string", "minLength": 1 },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "email": { "type": "string", "format": "email" },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "homepage": { "type": "string", "format": "uri" },
+    "repository": { "type": "string", "format": "uri" },
+    "license": { "type": "string", "minLength": 1 },
+    "keywords": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "skills": {
+      "description": "Relative path to the skills directory. A directory path, so it ends in a slash.",
+      "type": "string",
+      "pattern": "^\\./.*/$"
+    },
+    "apps": {
+      "description": "OpenAI app-directory binding. Unrelated to MCP and unused by this bundle.",
+      "type": "string",
+      "pattern": "^\\./.*\\.json$"
+    },
+    "mcpServers": {
+      "description": "Relative path to the .mcp.json that declares the remote MCP server.",
+      "type": "string",
+      "pattern": "^\\./.*\\.json$"
+    },
+    "interface": {
+      "description": "Everything the Codex plugin directory renders. Absent it, the plugin installs but has no listing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "displayName",
+        "shortDescription",
+        "longDescription",
+        "developerName",
+        "category",
+        "capabilities",
+        "websiteURL",
+        "brandColor",
+        "defaultPrompt"
+      ],
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1 },
+        "shortDescription": { "type": "string", "minLength": 1 },
+        "longDescription": { "type": "string", "minLength": 1 },
+        "developerName": { "type": "string", "minLength": 1 },
+        "category": {
+          "description": "Directory category. The two values observed in the cached manifests.",
+          "enum": ["Creativity", "Productivity"]
+        },
+        "capabilities": {
+          "description": "Coarse permissions shown before install.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["Read", "Write", "Interactive"] }
+        },
+        "websiteURL": { "type": "string", "format": "uri" },
+        "privacyPolicyURL": { "type": "string", "format": "uri" },
+        "termsOfServiceURL": { "type": "string", "format": "uri" },
+        "brandColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "defaultPrompt": {
+          "description": "Suggested prompts. Both the single-string and the list form occur in the cached manifests.",
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          ]
+        },
+        "composerIcon": { "type": "string", "pattern": "^\\./.+" },
+        "logo": { "type": "string", "pattern": "^\\./.+" },
+        "logoDark": { "type": "string", "pattern": "^\\./.+" },
+        "screenshots": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

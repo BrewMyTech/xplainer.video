@@ -1,0 +1,6 @@
+// Tailwind is available workspace-wide; drop this import if you style inline.
+import "../../tailwind.css";
+import { registerRoot } from "remotion";
+import { Root } from "./Root";
+
+registerRoot(Root);

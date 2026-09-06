@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerListInput",
+  "description": "explainer_list takes no arguments: it lists everything the caller owns on the backend it is talking to.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

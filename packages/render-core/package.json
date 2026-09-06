@@ -1,0 +1,41 @@
+{
+  "name": "@xplainer/render-core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Remotion workspace template, the ownership-aware video scaffold generator (engine-owned composition shell, agent-owned scenes) and the render preflight.",
+  "license": "Apache-2.0",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./template/*": "./template/*"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/scaffold/templates/*.txt",
+    "template",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-templates.mjs && xplainer-minify-dist",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@xplainer/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@xplainer/config": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

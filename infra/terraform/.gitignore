@@ -1,0 +1,33 @@
+# Terraform working files. This lives here rather than in the root .gitignore
+# because it is scoped to exactly one directory and belongs next to what it
+# ignores.
+
+# Provider binaries and module cache: hundreds of megabytes, re-created by
+# `terraform init`.
+.terraform/
+
+# State, and any local copy of it. This module has no remote backend configured
+# yet, so a real `apply` would write terraform.tfstate here; it records every
+# resource id and, for some providers, secret material.
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Real variable files. terraform.tfvars.example is committed and does not match
+# this pattern, which is the point of the suffix.
+*.tfvars
+*.tfvars.json
+
+# Local CLI configuration and config overrides.
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# .terraform.lock.hcl is deliberately NOT ignored. It pins the exact provider
+# versions and checksums this module was validated against, and committing it is
+# what makes a later `terraform init` on another machine resolve the same
+# binaries.

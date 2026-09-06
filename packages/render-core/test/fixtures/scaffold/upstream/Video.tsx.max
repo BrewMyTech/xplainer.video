@@ -1,0 +1,61 @@
+import { AbsoluteFill, Sequence, staticFile } from "remotion";
+import { Audio } from "@remotion/media";
+import type { Caption } from "@remotion/captions";
+import { Captions } from "./Captions";
+import type { Timings } from "./types";
+
+/**
+ * REPLACE THIS. The wiring below (audio, captions, per-segment Sequences) is
+ * the part that must stay; everything visual is yours to design.
+ *
+ * Look segments up by id so reordering narration cannot silently reshuffle
+ * the picture, and spread the result onto the Sequence:
+ *
+ *   const at = (id: string) => {
+ *     const s = timings.segments.find((x) => x.id === id);
+ *     if (!s) throw new Error(`no narration segment "${id}"`);
+ *     return { from: s.from, durationInFrames: s.durationInFrames };
+ *   };
+ *
+ *   <Sequence name="Symptom" {...at("symptom")}><SymptomScene /></Sequence>
+ */
+export const Video: React.FC<{
+  timings: Timings | null;
+  captions: Caption[];
+}> = ({ timings, captions }) => {
+  if (!timings) return <AbsoluteFill style={{ backgroundColor: "#0A0C10" }} />;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#0A0C10" }}>
+      {timings.segments.map((segment) => (
+        <Sequence
+          key={segment.id}
+          name={`${segment.index + 1}. ${segment.id}`}
+          from={segment.from}
+          durationInFrames={segment.durationInFrames}
+        >
+          <AbsoluteFill
+            style={{
+              justifyContent: "center",
+              alignItems: "center",
+              color: "#E6EAF2",
+              fontSize: 84,
+              fontWeight: 700,
+              paddingBottom: 200,
+            }}
+          >
+            {segment.id}
+          </AbsoluteFill>
+        </Sequence>
+      ))}
+
+      <Sequence name="Narration">
+        <Audio src={staticFile(timings.audio)} />
+      </Sequence>
+
+      <Sequence name="Captions">
+        <Captions captions={captions} />
+      </Sequence>
+    </AbsoluteFill>
+  );
+};

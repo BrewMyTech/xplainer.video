@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerCreateOutput",
+  "description": "Result of explainer_create. Shape from max/server/explainer_mcp.py:333-347, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "created", "already_present", "put_media_in", "next"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "created": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Wiring files written by this call, by filename."
+    },
+    "already_present": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Wiring files left untouched because they already existed. The scaffold never overwrites."
+    },
+    "write_source_to": {
+      "type": "string",
+      "description": "Local backends only: absolute directory the agent may write Video.tsx and scene files into. Absent on hosted backends, where explainer_put_source is the only way in."
+    },
+    "put_media_in": {
+      "type": "string",
+      "description": "Where media for this video belongs. A path on a local backend; the token to pass to explainer_put_media on a hosted one."
+    },
+    "next": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ordered next actions, phrased for an agent to follow."
+    }
+  }
+}

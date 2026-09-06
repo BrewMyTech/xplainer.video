@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerNarrateOutput",
+  "description": "Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope from max/server/explainer_mcp.py:293-297.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "status", "what", "poll"],
+  "properties": {
+    "job_id": { "type": "integer", "description": "Identifier to pass to explainer_job." },
+    "status": { "$ref": "../job-state.json" },
+    "what": {
+      "type": "string",
+      "description": "One line describing the queued work, for the agent to relay."
+    },
+    "poll": { "type": "string", "description": "The exact call that reports progress." }
+  }
+}

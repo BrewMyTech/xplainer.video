@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is ignored by
+# infra/terraform/.gitignore; this example is not, and must therefore never
+# carry a real token.
+#
+# The token can be supplied here or as an environment variable
+# (TF_VAR_cloudflare_api_token). Prefer the environment on a shared machine: a
+# variable is not left on disk when the shell exits.
+
+# Cloudflare API token. Two permissions, and both are needed:
+#   Zone    -> DNS                 -> Edit   (on the zone named below)
+#   Account -> Workers R2 Storage  -> Edit   (on the account below)
+cloudflare_api_token = "REPLACE_WITH_CLOUDFLARE_API_TOKEN"
+
+# Cloudflare account id. Dashboard -> any zone -> right-hand sidebar, or
+# `wrangler whoami`. Not a credential, but it does appear in the R2 endpoint
+# hostname.
+cloudflare_account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+
+# Both below have a working default in variables.tf and are shown here so the
+# full input surface is visible in one place. Delete the lines you do not want
+# to override.
+
+# zone_name      = "xplainer.video"
+# r2_bucket_name = "xplainer-artifacts"

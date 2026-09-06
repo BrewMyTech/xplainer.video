@@ -1,0 +1,185 @@
+/**
+ * What the binary does, driven through the real commander program.
+ *
+ * The things asserted here — the version it prints, the commands it offers, the
+ * verbs its one command group offers, and what a deferred command does — are
+ * AC-14a, AC-14b and S2.4b's fifth test. All of them are observable only through
+ * stdout, stderr and an exit code, so the program is built with a recording
+ * `CliIo` (see `io.ts`) and everything else is real: the real command
+ * registrations, the real help generation, the real exit codes commander and the
+ * stubs choose.
+ */
+
+import { readFileSync } from "node:fs";
+import type { Command } from "commander";
+import { describe, expect, it } from "vitest";
+import type { CliIo } from "./io.js";
+import { createProgram } from "./program.js";
+
+/** Thrown in place of `process.exit`, carrying the code the CLI asked for. */
+class ExitSignal extends Error {
+  readonly code: number;
+
+  constructor(code: number) {
+    super(`exit ${code}`);
+    this.name = "ExitSignal";
+    this.code = code;
+  }
+}
+
+/** What a single CLI invocation produced. */
+type Invocation = {
+  exitCode: number | undefined;
+  stdout: string;
+  stderr: string;
+};
+
+/**
+ * Pin help rendering on `command` and every command beneath it.
+ *
+ * Colours off and 80 columns, so the assertions below read the same text on a
+ * narrow terminal, a wide one and a CI pipe. It recurses because commander's
+ * `configureOutput()` replaces the configuration object rather than mutating it
+ * and `addCommand()` copies nothing from the parent — so the `daemon` group,
+ * whose help this file also asserts, holds a configuration of its own.
+ */
+function pinHelpRendering(command: Command): void {
+  command.configureOutput({
+    getOutHasColors: () => false,
+    getErrHasColors: () => false,
+    getOutHelpWidth: () => 80,
+    getErrHelpWidth: () => 80,
+  });
+  for (const child of command.commands) {
+    pinHelpRendering(child);
+  }
+}
+
+/** Run the program over `argv` and collect everything a user would have seen. */
+async function run(argv: string[]): Promise<Invocation> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: CliIo = {
+    writeOut(text) {
+      out.push(text);
+    },
+    writeErr(text) {
+      err.push(text);
+    },
+    exit(code): never {
+      throw new ExitSignal(code);
+    },
+  };
+
+  const program = createProgram(io);
+  pinHelpRendering(program);
+
+  let exitCode: number | undefined;
+  try {
+    await program.parseAsync(argv, { from: "user" });
+  } catch (error) {
+    if (!(error instanceof ExitSignal)) {
+      throw error;
+    }
+    exitCode = error.code;
+  }
+
+  return { exitCode, stdout: out.join(""), stderr: err.join("") };
+}
+
+/**
+ * The command names commander listed, read out of the help text itself.
+ *
+ * Reading the rendered help rather than `program.commands` is the point: the
+ * implicit `help [command]` entry AC-14b guards against is created during help
+ * generation and never appears in `program.commands`, so only the text can
+ * prove it is gone — at the top level and inside the `daemon` group alike.
+ */
+function listedCommands(help: string): string[] {
+  const lines = help.split("\n");
+  const heading = lines.indexOf("Commands:");
+  if (heading < 0) {
+    throw new Error(`--help output has no "Commands:" section:\n${help}`);
+  }
+
+  const names: string[] = [];
+  for (const line of lines.slice(heading + 1)) {
+    if (line.trim() === "") {
+      break;
+    }
+    // Entries start at two spaces; wrapped descriptions are indented far deeper.
+    const match = /^ {2}(\S+)/.exec(line);
+    if (match) {
+      names.push(match[1]);
+    }
+  }
+  return names;
+}
+
+describe("xplainer", () => {
+  it("prints the version from apps/cli/package.json for --version", async () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    const { stdout, stderr, exitCode } = await run(["--version"]);
+
+    expect(stdout).toBe(`${manifest.version}\n`);
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+  });
+
+  it("lists exactly serve, mcp, setup, connect and daemon under --help", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["serve", "mcp", "setup", "connect", "daemon"]);
+    expect(exitCode).toBe(0);
+  });
+
+  it("lists exactly the seven lifecycle verbs under `daemon --help`", async () => {
+    const { stdout, exitCode } = await run(["daemon", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual([
+      "install",
+      "uninstall",
+      "start",
+      "stop",
+      "restart",
+      "status",
+      "logs",
+    ]);
+    expect(exitCode).toBe(0);
+  });
+
+  it("prints the daemon group's help on stderr and exits 1 when no verb is given", async () => {
+    const { stdout, stderr, exitCode } = await run(["daemon"]);
+
+    expect(stdout).toBe("");
+    expect(listedCommands(stderr)).toContain("install");
+    expect(exitCode).toBe(1);
+  });
+
+  it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
+    const deferred = [
+      ["mcp"],
+      ["setup"],
+      ["connect"],
+      ["daemon", "install"],
+      ["daemon", "uninstall"],
+      ["daemon", "start"],
+      ["daemon", "stop"],
+      ["daemon", "restart"],
+      ["daemon", "status"],
+      ["daemon", "logs"],
+    ];
+
+    for (const argv of deferred) {
+      const { stdout, stderr, exitCode } = await run(argv);
+
+      // The whole path, not the leaf: `xplainer install` is not a command.
+      expect(stderr).toBe(`xplainer ${argv.join(" ")}: not implemented in this phase\n`);
+      expect(stdout).toBe("");
+      expect(exitCode).toBe(2);
+    }
+  });
+});

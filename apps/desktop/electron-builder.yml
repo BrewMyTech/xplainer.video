@@ -1,0 +1,92 @@
+# electron-builder configuration for the optional desktop client.
+#
+# Two rules govern every target listed below.
+#
+# 1. Nothing here may need a native prerequisite that a stock GitHub-hosted
+#    runner does not already have. `desktop.yml` builds this app on
+#    ubuntu-latest, macos-latest and windows-latest with no `apt-get`, no
+#    `brew install` and no toolchain setup step, so the target list is limited
+#    to AppImage + deb (x64) on Linux, NSIS (x64) on Windows and dmg + zip on
+#    macOS. Targets such as snap (needs snapcraft), rpm (needs rpmbuild) and
+#    pacman are deliberately absent.
+#
+# 2. Nothing here may need a signing identity. `publish: null` below and
+#    `--publish never` in the `package` script keep electron-builder from
+#    reaching for a release feed, `mac.identity: null` disables macOS code
+#    signing in the configuration, and the `package` script additionally exports
+#    `CSC_IDENTITY_AUTO_DISCOVERY=false` so electron-builder does not adopt a
+#    signing certificate that happens to be present in the developer's keychain.
+#    Signing and notarization are a later roadmap phase; the artifacts this
+#    phase produces are unsigned by design (spec Non-Goals, AC-4).
+
+appId: video.xplainer.desktop
+productName: Xplainer
+copyright: Copyright (c) 2026 xplainer.video
+
+directories:
+  output: release
+
+# The three electron-vite bundles plus the manifest. Production dependencies
+# (@xplainer/cli, electron-updater) are added by electron-builder itself; they
+# are hard-copied into apps/desktop/node_modules by pnpm's
+# injectWorkspacePackages setting rather than symlinked, which is what makes
+# them packable at all (see pnpm-workspace.yaml).
+files:
+  - out/**/*
+  - package.json
+
+# No native modules are in the dependency tree, so there is nothing to rebuild
+# against the Electron ABI. Turning the rebuild off removes the last reason a
+# stock runner would need a C toolchain.
+npmRebuild: false
+
+# No release feed in this phase. Auto-update is scaffolded as a dependency only.
+publish: null
+
+mac:
+  category: public.app-category.developer-tools
+  identity: null
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  category: Development
+  # electron-builder derives the Linux executable name from package.json `name`,
+  # which is the scoped `@xplainer/desktop`. Sanitising that yields
+  # `@xplainerdesktop`, and the AppImage target rejects the leading `@` with
+  # "executableName contains characters that cannot be safely used in file
+  # paths". macOS and Windows are unaffected because they name the binary from
+  # productName, which is why a macOS-only local build passes while the Linux
+  # runner fails. Set it explicitly so every platform is deterministic.
+  executableName: xplainer
+  # The default artifact name interpolates `${name}`, which is the scoped
+  # `@xplainer/desktop`. The embedded slash makes fpm try to write the .deb into
+  # a `release/@xplainer/` directory that does not exist, and it aborts with
+  # "Parent directory does not exist". Naming from productName keeps every Linux
+  # artifact in `release/` with no path separator in the filename.
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerStillOutput",
+  "description": "Acknowledgement that a still render was queued. Same envelope as explainer_narrate and explainer_render; poll explainer_job for the PNG path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "status", "what", "poll"],
+  "properties": {
+    "job_id": { "type": "integer", "description": "Identifier to pass to explainer_job." },
+    "status": { "$ref": "../job-state.json" },
+    "what": {
+      "type": "string",
+      "description": "One line describing the queued work, for the agent to relay."
+    },
+    "poll": { "type": "string", "description": "The exact call that reports progress." }
+  }
+}

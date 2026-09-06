@@ -1,0 +1,13 @@
+# Normalise every text file to LF in the index and in the working tree.
+# Load-bearing: packages/render-core compares scaffold output against goldens
+# with Buffer.compare, so a CRLF checkout on Windows would break AC-7.
+* text=auto eol=lf
+
+# Binary assets: never normalise, never diff as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.wav  binary
+*.mp4  binary
+*.ico  binary
+*.icns binary

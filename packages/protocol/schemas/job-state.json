@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JobState",
+  "description": "Lifecycle state of a queued explainer job. The five values are the ones max's job queue reports (max/server/explainer_mcp.py:453) and are the complete set: a job is always in exactly one of them.",
+  "type": "string",
+  "enum": ["queued", "running", "done", "error", "cancelled"]
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerPutSourceOutput",
+  "description": "Result of explainer_put_source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "written"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" },
+    "written": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths written, relative to the video's source directory, in the order given."
+    }
+  }
+}

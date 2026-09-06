@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerListOutput",
+  "description": "Every explainer video the caller owns and what each one has so far. Shape from max/server/explainer_mcp.py:494-507, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["videos"],
+  "properties": {
+    "videos": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/VideoSummary" },
+      "description": "One entry per video, ordered by slug."
+    }
+  },
+  "$defs": {
+    "VideoSummary": {
+      "title": "VideoSummary",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "has_narration", "rendered"],
+      "properties": {
+        "slug": { "$ref": "../slug.json" },
+        "has_narration": {
+          "type": "boolean",
+          "description": "Whether timings.json exists, which is what explainer_render requires."
+        },
+        "rendered": { "type": "boolean", "description": "Whether a finished MP4 exists." },
+        "mp4": {
+          "type": "string",
+          "description": "Where the MP4 can be fetched. Present only when rendered is true."
+        },
+        "size_mb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "MP4 size in megabytes, rounded to one decimal. Present only when rendered is true."
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Narration length in seconds, rounded to one decimal. Present only when has_narration is true."
+        }
+      }
+    }
+  }
+}

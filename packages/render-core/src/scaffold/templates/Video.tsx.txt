@@ -1,0 +1,151 @@
+import { AbsoluteFill, Sequence, staticFile } from "remotion";
+import { Audio } from "@remotion/media";
+import type { Caption } from "@remotion/captions";
+import { Captions } from "./Captions";
+import type { Segment, Timings } from "./types";
+import * as authored from "./Scenes";
+
+/**
+ * ENGINE-OWNED — the composition shell. Your scenes go in Scenes.tsx.
+ *
+ * This file mounts the narration audio, mounts the caption track, and lays out
+ * one Sequence per measured narration segment. explainer_put_source refuses to
+ * write it and explainer_create restores it, so none of that wiring can go
+ * missing.
+ *
+ * It is the one scaffolded file that deliberately diverges from the reference
+ * implementation (ADR 0018). There, this file was the agent's own and opened
+ * with a banner telling the agent to replace it wholesale while keeping the
+ * wiring. An edit as small as "make the title smaller" had the
+ * agent rewrite the file, and <Audio> and <Captions> went out with the picture:
+ * the render still succeeded and shipped a silent, caption-less MP4, and
+ * nothing downstream noticed. Moving ownership here makes that unreachable.
+ *
+ * Nothing else moved. A scene is still arbitrary React — no registry, no
+ * component allow-list, no scene document — and it is now handed its own
+ * segment as well as the timings and captions the old file received.
+ */
+
+/** What every scene is handed. A superset of the old agent-owned Video.tsx's props. */
+export type SceneProps = { segment: Segment; timings: Timings; captions: Caption[] };
+
+/** What a layer spanning the whole composition is handed. */
+export type LayerProps = { timings: Timings; captions: Caption[] };
+
+export type Scene = React.FC<SceneProps>;
+
+/** One component per narration segment id. */
+export type SceneMap = Record<string, Scene>;
+
+export type SceneModule = {
+  scenes: SceneMap;
+  /** Optional. Spans the whole video, behind every scene. */
+  Backdrop?: React.FC<LayerProps>;
+  /** Optional. Spans the whole video, above the scenes and below the captions. */
+  Overlay?: React.FC<LayerProps>;
+};
+
+/**
+ * The whole discovery mechanism: one static module specifier, narrowed to the
+ * contract. No filesystem scan, no dynamic import, no build step. A namespace
+ * object assigns to a type whose extra members are optional, so a Scenes.tsx
+ * that exports neither layer still compiles.
+ */
+const agent: SceneModule = authored;
+
+/**
+ * Only reachable through Studio's defaultProps, which carry no timings until
+ * explainer_narrate has run. A card rather than the black frame this branch
+ * used to return: "nothing is wired yet" must not look like a design choice.
+ */
+const NotNarratedYet: React.FC = () => (
+  <AbsoluteFill
+    style={{
+      backgroundColor: "#0A0C10",
+      justifyContent: "center",
+      alignItems: "center",
+      textAlign: "center",
+      padding: 120,
+      color: "#E6EAF2",
+      fontSize: 48,
+      fontWeight: 700,
+    }}
+  >
+    not narrated yet — call explainer_narrate
+  </AbsoluteFill>
+);
+
+/**
+ * A narration segment Scenes.tsx has no entry for. Deliberately visible rather
+ * than fatal: a blank scene shows up in the first still, so iterating one scene
+ * at a time keeps working. Silent audio, by contrast, shows up nowhere, which
+ * is why the guards below throw.
+ */
+const MissingScene: React.FC<SceneProps> = ({ segment }) => (
+  <AbsoluteFill
+    style={{
+      flexDirection: "column",
+      justifyContent: "center",
+      alignItems: "center",
+      color: "#E6EAF2",
+      fontSize: 84,
+      fontWeight: 700,
+      paddingBottom: 200,
+    }}
+  >
+    {segment.id}
+    <span style={{ marginTop: 24, fontSize: 36, fontWeight: 600, color: "#8A94A8" }}>
+      no scene
+    </span>
+  </AbsoluteFill>
+);
+
+export const Video: React.FC<{
+  timings: Timings | null;
+  captions: Caption[];
+}> = ({ timings, captions }) => {
+  if (!timings) return <NotNarratedYet />;
+  if (!timings.audio) throw new Error("timings.json names no audio track — re-run explainer_narrate.");
+  if (captions.length === 0) throw new Error("captions.json is empty — re-run explainer_narrate.");
+
+  const ids = new Set(timings.segments.map((s) => s.id));
+  const unknown = Object.keys(agent.scenes).filter((id) => !ids.has(id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Scenes.tsx exports scenes for segments that are not in the narration: ${unknown.join(", ")}. ` +
+        `Known ids: ${[...ids].join(", ")}.`,
+    );
+  }
+
+  const { Backdrop, Overlay } = agent;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#0A0C10" }}>
+      {Backdrop ? <Backdrop timings={timings} captions={captions} /> : null}
+
+      {timings.segments.map((segment) => {
+        const Scene = agent.scenes[segment.id] ?? MissingScene;
+        return (
+          <Sequence
+            key={segment.id}
+            name={`${segment.index + 1}. ${segment.id}`}
+            from={segment.from}
+            durationInFrames={segment.durationInFrames}
+          >
+            <Scene segment={segment} timings={timings} captions={captions} />
+          </Sequence>
+        );
+      })}
+
+      {Overlay ? <Overlay timings={timings} captions={captions} /> : null}
+
+      <Sequence name="Narration">
+        <Audio src={staticFile(timings.audio)} />
+      </Sequence>
+
+      <Sequence name="Captions">
+        <Captions captions={captions} />
+      </Sequence>
+    </AbsoluteFill>
+  );
+};

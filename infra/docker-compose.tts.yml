@@ -1,0 +1,49 @@
+# The local speech container, and nothing else.
+#
+#     docker compose -f infra/docker-compose.tts.yml up --build
+#     docker compose -f infra/docker-compose.tts.yml config     # parses, exits 0
+#
+# This file is what is left of the five-service hosted stack that used to live
+# at infra/docker-compose.hosted.yml. The `api`, `worker`, `media-service` and
+# `postgres` services moved, with the rest of the hosted tier, to the private
+# repository BrewMyTech/xplainer-hosted. The `tts` service stayed because it is
+# not a hosted service: it is the Kokoro-FastAPI container the local runtime
+# talks to, and packages/tts-client defaults to http://localhost:8880 with no
+# configuration at all (packages/tts-client/src/client.ts, DEFAULT_BASE_URL).
+#
+# This is a convenience, not the shipping path. `xplainer setup` downloads a
+# per-OS standalone build (ADR 0005, services/tts-sidecar/packaging/) so that a
+# user needs no Docker. Compose is here for the developer who already has
+# Docker and wants the pinned image in one command.
+#
+# BUILD CONTEXT IS RELATIVE TO THIS FILE, WHICH LIVES IN infra/. That is why the
+# context below is `../services/tts-sidecar` and never `.`: a `context: .` would
+# resolve to infra/ and Docker would report a missing Dockerfile.
+#
+# The one interpolation carries an inline default, so this file parses and
+# `config` exits 0 on a fresh clone with no .env present. There is no committed
+# .env.example any more: every variable in the old one configured a hosted
+# service, and the single survivor was this port, which is already the default
+# here, in the Dockerfile's EXPOSE and healthcheck, and in
+# services/tts-sidecar/src/xplainer_tts_sidecar/config.py.
+
+name: xplainer-tts
+
+services:
+  tts:
+    build:
+      # The service directory, not the repository root: the image is a pinned
+      # upstream base plus a healthcheck and copies nothing out of the
+      # workspace, so it gets the smaller context and needs no ignore file.
+      context: ../services/tts-sidecar
+    image: xplainer/tts:${XPLAINER_IMAGE_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      # Loopback only. This is a local speech server for a local runtime on the
+      # same machine; it has no authentication of its own, so it must not be
+      # reachable off the host.
+      - "127.0.0.1:${XPLAINER_TTS_PORT:-8880}:8880"
+    # Healthcheck inherited from services/tts-sidecar/Dockerfile, which probes
+    # /v1/audio/voices with a 180s start period because the CPU image loads the
+    # voice pack before it serves anything. Restating it here is how the two
+    # drift apart.

@@ -1,0 +1,249 @@
+# Continuous integration for the xplainer.video monorepo.
+#
+# Three jobs, deliberately kept apart:
+#
+#   bootstrap  Install only, on all three operating systems. This job is what
+#              turns AC-1's "macOS, Linux, Windows" claim into a tested fact
+#              rather than an assertion: it checks out, sets Node from
+#              .node-version, sets Python/uv from .python-version, runs
+#              `pnpm install --frozen-lockfile` and `uv sync --all-packages
+#              --frozen`, and does nothing else. A red square here therefore
+#              means exactly one thing: the repository does not bootstrap on
+#              that operating system. (AC-1a, AC-1b, AC-1c, AC-1e)
+#
+#   check      The full quality gate, on ubuntu-latest. One discrete step per
+#              assertion so the job summary names the check that failed.
+#              (AC-2, AC-3b, AC-4a, AC-9, AC-12b)
+#
+#   images     The one container build left. Still separate from `check` so
+#              that pulling the pinned upstream Kokoro CPU base image — which
+#              carries the voice pack, and is far larger than anything else CI
+#              fetches — cannot delay fast feedback on lint/typecheck/test.
+#              (AC-11b)
+#
+# Every job runs with `shell: bash` (the workflow-level default below) so a
+# single script body works unchanged on the Windows runner.
+#
+# The hosted tier — apps/api, apps/web, services/media-service, and the VM,
+# firewall and five-service Compose stack in front of them — now lives in the
+# private repository BrewMyTech/xplainer-hosted. The criteria that judged it went
+# with it: AC-8, AC-11a, AC-12a, AC-12c and the Python half of AC-3d are retired
+# from this repository, not loosened. docs/acceptance-criteria.md carries the
+# surviving ids verbatim and a tombstone row for each retired one.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bootstrap:
+    name: bootstrap (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      # astral-sh/setup-uv has no `python-version-file` input (it has
+      # `version-file`, which selects the uv version, not the Python version),
+      # so .python-version is read here and handed to the `python-version`
+      # input. That keeps .python-version load-bearing in the workflow, which
+      # is what AC-1c requires, instead of passing an input the action would
+      # silently ignore.
+      - name: Read pinned Python version
+        id: python
+        run: echo "version=$(tr -d '\r\n' < .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: ${{ steps.python.outputs.version }}
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: uv sync --all-packages --frozen
+        run: uv sync --all-packages --frozen
+
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Runs before the toolchain setup, on a pristine tree, so the pattern
+      # sees repository sources only and never a dependency or build output.
+      # The command is the one AC-2c names, unchanged.
+      - name: No placeholder markers in source (AC-2c)
+        run: |
+          if grep -rnE '\.(skip|only)\(|\bTODO\b|\bFIXME\b' \
+            --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' \
+            apps packages services; then
+            echo "::error::placeholder markers found in committed source; see AC-2c for the forbidden set"
+            exit 1
+          fi
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Read pinned Python version
+        id: python
+        run: echo "version=$(tr -d '\r\n' < .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: ${{ steps.python.outputs.version }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          # Matches the version the scaffold was verified against locally and
+          # satisfies the `required_version >= 1.9` in infra/terraform/versions.tf.
+          terraform_version: "1.16.0"
+          # The wrapper rewrites exit codes and stdout; `validate` is checked on
+          # its exit status here, so it is turned off.
+          terraform_wrapper: false
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: uv sync --all-packages --frozen
+        run: uv sync --all-packages --frozen
+
+      - name: Build, lint, typecheck and test every member (AC-2a)
+        run: pnpm turbo build lint typecheck test
+
+      # Placed immediately after the build because it packs dist/, and before
+      # the slower Terraform and Docker steps so a leak fails fast (~1s: six
+      # `npm pack --dry-run` runs in parallel, no network).
+      #
+      # It asserts against `npm pack` output rather than the working tree. The
+      # .gitignore and the npm `files` allowlist are different filters and only
+      # npm's decides what a user receives — packages/protocol shipped five
+      # __pycache__/*.pyc that git had never seen, for exactly that reason.
+      # Checks: no source maps, no .ts that is not a .d.ts, no src/, no tests or
+      # fixtures, no Python bytecode, no sourceMappingURL left in shipped JS,
+      # LICENSE actually inside every tarball with a matching `license` field
+      # (Apache-2.0 since f07d06c; LICENSE-BINARY no longer exists), the
+      # publishable set still exactly six, and — the other direction
+      # — that the Remotion templates, scaffold templates and SKILL.md still
+      # ship byte-identical, because those have to be readable to work at all.
+      - name: Published tarballs leak no source, maps or licence
+        run: pnpm check:publish-contract
+
+      # Turbo skips a member that does not declare the script, silently and with
+      # a zero exit, so a member that never declares `lint` is indistinguishable
+      # from one that lints cleanly. Counting the members a task actually reaches
+      # is the only thing that catches it.
+      #
+      # `--dry=json` lists every workspace member for every task and marks the
+      # ones with no such script as `"command": "<NONEXISTENT>"`, so the members
+      # are counted after filtering those out — an unfiltered count is 9 for all
+      # four tasks and would assert nothing. `node -e` rather than jq, because jq
+      # is not installed on GitHub-hosted Windows runners and this loop must stay
+      # portable to any runner this job is moved to.
+      - name: Assert task coverage per member (AC-2b, AC-2f, AC-2g)
+        run: |
+          set -euo pipefail
+          # Nine workspace members: apps/cli, apps/desktop, the six packages
+          # and services/tts-sidecar. Eight of them build — tts-sidecar is the
+          # only Python-only member and declares no `build` script. These were
+          # twelve and ten before the hosted tier moved out; the numbers are the
+          # assertion, so they are restated rather than relaxed.
+          for entry in test:9 lint:9 typecheck:9 build:8; do
+            task="${entry%%:*}"
+            expected="${entry##*:}"
+            echo "checking that turbo run $task reaches $expected members"
+            pnpm turbo run "$task" --dry=json | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8'));const declared=d.tasks.filter((t)=>t.command&&t.command!=='<NONEXISTENT>');const n=new Set(declared.map((t)=>t.package)).size;if(n!==Number(process.argv[1])){console.error('expected '+process.argv[1]+' members, got '+n);process.exit(1)}" "$expected"
+          done
+
+      - name: Tier boundary, npm dependency graph (AC-3b)
+        run: pnpm lint:tiers
+
+      # Fails loudly if an earlier `uv run` pruned a member out of the shared
+      # workspace environment, before pytest reports it as something subtler.
+      # It used to also import xplainer_api; that member, and the import-linter
+      # contract this step protected, left with the hosted tier.
+      - name: Workspace environment is intact
+        run: uv run --no-sync python -c "import xplainer_protocol, xplainer_tts_sidecar"
+
+      - name: Generated protocol output is not stale (AC-9c, AC-9d)
+        run: |
+          pnpm --filter @xplainer/protocol codegen
+          git diff --exit-code -- \
+            packages/protocol/src/generated \
+            packages/protocol/python/xplainer_protocol/generated
+
+      # AC-12a asserted the five-service hosted stack and was retired with it.
+      # This is the one-service local replacement: it neither builds nor pulls,
+      # so it costs about a second, and it is the only thing standing between
+      # infra/docker-compose.tts.yml and silent rot.
+      - name: Local TTS compose file is valid
+        run: docker compose -f infra/docker-compose.tts.yml config
+
+      # AC-12b survives the split, retargeted at the reduced Cloudflare-only
+      # module: an R2 bucket for release artefacts and the cached custom domain
+      # that delivers them. The VM, the firewall and the hcloud provider left.
+      - name: Terraform validates without credentials (AC-12b)
+        run: |
+          terraform -chdir=infra/terraform init -backend=false
+          terraform -chdir=infra/terraform validate
+
+      # Container form, so neither this job nor a developer machine needs a host
+      # install of actionlint (S0.0). With no file arguments it lints every
+      # workflow in .github/workflows.
+      - name: Lint the workflows themselves (AC-4a)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+
+  images:
+    name: images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Build context is the service directory: this image is a pinned upstream
+      # base plus a healthcheck and copies nothing from the workspace, so it
+      # needs no ignore file and no workspace install.
+      - name: Build tts-sidecar image (AC-11b)
+        uses: docker/build-push-action@v7
+        with:
+          context: services/tts-sidecar
+          push: false
+          tags: xplainer/tts-sidecar:ci
+          cache-from: type=gha,scope=tts-sidecar
+          cache-to: type=gha,mode=max,scope=tts-sidecar

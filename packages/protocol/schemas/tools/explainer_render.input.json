@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerRenderInput",
+  "description": "Arguments for explainer_render. Picture, voiceover and captions are produced in one pass, so there is no ffmpeg step and no options to choose between.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug"],
+  "properties": {
+    "slug": { "$ref": "../slug.json" }
+  }
+}

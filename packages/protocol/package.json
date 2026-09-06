@@ -1,0 +1,47 @@
+{
+  "name": "@xplainer/protocol",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "JSON Schema source of truth for the eight explainer tools, with generated TypeScript types and pydantic models.",
+  "license": "Apache-2.0",
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schemas/*": "./schemas/*"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "schemas",
+    "python/**/*.py",
+    "python/xplainer_protocol/py.typed",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
+    "prepack": "xplainer-sync-license",
+    "codegen": "node scripts/codegen.mjs",
+    "codegen:check": "node scripts/codegen.mjs --check",
+    "lint": "biome check . && pnpm run lint:py",
+    "lint:py": "uv run --no-sync --project . ruff check .",
+    "typecheck": "tsc --noEmit && pnpm run typecheck:py",
+    "typecheck:py": "uv run --no-sync --project . pyright",
+    "test": "vitest run && pnpm run test:py",
+    "test:py": "uv run --no-sync --project . pytest"
+  },
+  "devDependencies": {
+    "@xplainer/config": "workspace:*",
+    "@types/node": "catalog:",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

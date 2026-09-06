@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExplainerJobOutput",
+  "description": "State of one explainer job. Shape from max/server/explainer_mcp.py:464-477 with one deliberate divergence: the `command` field max returns is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "job_type",
+    "status",
+    "exit_code",
+    "error",
+    "started_at",
+    "finished_at",
+    "output"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "integer",
+      "description": "The job this describes."
+    },
+    "job_type": {
+      "$ref": "#/$defs/JobType"
+    },
+    "status": {
+      "$ref": "../job-state.json"
+    },
+    "exit_code": {
+      "type": ["integer", "null"],
+      "description": "Process exit code. Null until the job finishes."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "description": "Failure message. Null unless status is error."
+    },
+    "started_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When the job left the queue, as an ISO-8601 timestamp with a timezone offset. Null while it is still queued."
+    },
+    "finished_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When the job stopped, as an ISO-8601 timestamp with a timezone offset. Null while it is queued or running."
+    },
+    "output": {
+      "$ref": "#/$defs/JobOutput"
+    }
+  },
+  "$defs": {
+    "JobType": {
+      "title": "JobType",
+      "description": "Which tool queued the job. Only these three enqueue work.",
+      "type": "string",
+      "enum": ["explainer_narrate", "explainer_render", "explainer_still"]
+    },
+    "JobOutput": {
+      "title": "JobOutput",
+      "description": "The tail of the job's console output, oldest line first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lines"],
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "At most output_lines lines, in the order they were written."
+        }
+      }
+    }
+  }
+}

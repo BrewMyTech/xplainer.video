@@ -1,0 +1,42 @@
+import { Composition, staticFile } from "remotion";
+import type { CalculateMetadataFunction } from "remotion";
+import type { Caption } from "@remotion/captions";
+import { Video } from "./Video";
+import type { Timings } from "./types";
+
+type Props = { timings: Timings | null; captions: Caption[] };
+
+/**
+ * Duration and scene timing come from the measured narration, never from here.
+ * Loading both JSON files at metadata time means no component has to hold the
+ * render open with delayRender().
+ */
+const calculateMetadata: CalculateMetadataFunction<Props> = async ({ abortSignal }) => {
+  const [timings, captions] = await Promise.all([
+    fetch(staticFile("timings.json"), { signal: abortSignal }).then(
+      (r) => r.json() as Promise<Timings>,
+    ),
+    fetch(staticFile("captions.json"), { signal: abortSignal }).then(
+      (r) => r.json() as Promise<Caption[]>,
+    ),
+  ]);
+
+  return {
+    durationInFrames: timings.durationInFrames,
+    fps: timings.fps,
+    props: { timings, captions },
+  };
+};
+
+export const Root: React.FC = () => (
+  <Composition
+    id="Explainer"
+    component={Video}
+    durationInFrames={300}
+    fps={30}
+    width={1920}
+    height={1080}
+    defaultProps={{ timings: null, captions: [] }}
+    calculateMetadata={calculateMetadata}
+  />
+);

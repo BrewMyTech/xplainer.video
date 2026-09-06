@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Narration",
+  "description": "The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["segments"],
+  "properties": {
+    "voice": {
+      "type": "string",
+      "default": "af_heart",
+      "description": "Kokoro voice id, or a blend such as \"af_bella(2)+af_sky(1)\". Blends are resolved server-side."
+    },
+    "speed": {
+      "type": "number",
+      "default": 1,
+      "minimum": 0.25,
+      "maximum": 4,
+      "description": "Speech rate multiplier passed straight through to Kokoro."
+    },
+    "fps": {
+      "type": "integer",
+      "default": 30,
+      "minimum": 1,
+      "description": "Frame rate the measured timings are converted to. Must match the composition."
+    },
+    "langCode": {
+      "type": "string",
+      "description": "Optional Kokoro language code. Inferred from the voice when omitted."
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered narration segments. One timings entry is produced per segment, in this order.",
+      "items": { "$ref": "#/$defs/NarrationSegment" }
+    }
+  },
+  "$defs": {
+    "NarrationSegment": {
+      "title": "NarrationSegment",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable scene identifier. Reappears as the id of the matching timings segment."
+        },
+        "text": {
+          "type": "string",
+          "description": "What the voice says. Empty text yields a silent segment of holdSeconds length."
+        },
+        "holdSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum on-screen duration. Silence is appended when the narration is shorter, so an animation can finish or a beat can land."
+        }
+      }
+    }
+  }
+}

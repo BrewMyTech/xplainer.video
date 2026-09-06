@@ -1,0 +1,77 @@
+import { useMemo } from "react";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
+import { createTikTokStyleCaptions } from "@remotion/captions";
+import type { Caption, TikTokPage } from "@remotion/captions";
+
+/** How often the caption line turns over. Higher = more words on screen. */
+const SWITCH_EVERY_MS = 1400;
+
+const Page: React.FC<{ page: TikTokPage }> = ({ page }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const nowMs = page.startMs + (frame / fps) * 1000;
+
+  return (
+    <AbsoluteFill
+      style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 84 }}
+    >
+      <div
+        style={{
+          maxWidth: 1480,
+          textAlign: "center",
+          fontSize: 48,
+          fontWeight: 600,
+          lineHeight: 1.3,
+          // Tokens carry their own leading space; pre-wrap keeps words apart.
+          whiteSpace: "pre-wrap",
+          padding: "20px 40px",
+          borderRadius: 18,
+          backgroundColor: "rgba(10, 12, 16, 0.78)",
+        }}
+      >
+        {page.tokens.map((token) => {
+          const isActive = token.fromMs <= nowMs && token.toMs > nowMs;
+          return (
+            <span
+              key={`${token.fromMs}-${token.text}`}
+              style={{ color: isActive ? "#FFFFFF" : "#8A94A8" }}
+            >
+              {token.text}
+            </span>
+          );
+        })}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+export const Captions: React.FC<{ captions: Caption[] }> = ({ captions }) => {
+  const { fps } = useVideoConfig();
+  const { pages } = useMemo(
+    () =>
+      createTikTokStyleCaptions({
+        captions,
+        combineTokensWithinMilliseconds: SWITCH_EVERY_MS,
+      }),
+    [captions],
+  );
+
+  return (
+    <AbsoluteFill>
+      {pages.map((page, i) => {
+        const next = pages[i + 1] ?? null;
+        const from = (page.startMs / 1000) * fps;
+        const end = Math.min(
+          next ? (next.startMs / 1000) * fps : Infinity,
+          from + (SWITCH_EVERY_MS / 1000) * fps,
+        );
+        if (end - from <= 0) return null;
+        return (
+          <Sequence key={page.startMs} from={from} durationInFrames={end - from}>
+            <Page page={page} />
+          </Sequence>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
