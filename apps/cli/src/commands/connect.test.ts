@@ -8,20 +8,34 @@
  * applies with particular force to a writer whose whole risk is writing the wrong bytes to the wrong
  * path.
  *
- * The one thing that is *not* the real article is `claude` itself: the fake on `PATH` records the
- * argument vector it was handed and exits `0`. That is deliberate and it is the strongest available
- * assertion, because the argv **is** the contract with that CLI — the vendor's own writer is then
- * responsible for the file, and a test that drove the real `claude` would be asserting Claude Code's
- * behaviour on the developer's own machine and mutating their real configuration to do it. The
- * live run against the installed `claude` is recorded in the session's `progress.txt` instead.
+ * The one thing that is *not* the real article is the vendor CLI itself: the fake on `PATH` records
+ * the argument vector it was handed and exits `0`. That is deliberate and it is the strongest
+ * available assertion, because the argv **is** the contract with that CLI — the vendor's own writer
+ * is then responsible for the file, and a test that drove the real `claude` or the real `codex`
+ * would be asserting their behaviour on the developer's own machine and mutating their real
+ * configuration to do it. The live runs against both installed CLIs are recorded in the session's
+ * `progress.txt` instead.
  *
- * The Codex half needs no such shim, because there is no vendor writer to delegate to: the file is
- * written here, and it is read back with a **real TOML parser** (`smol-toml`) rather than with the
- * scanner that wrote it, so a round trip that only this module agrees with cannot pass.
+ * One shim is more than a recorder: `alreadyRegisteredClaude` keeps a file for "an entry of this
+ * name exists", refuses an `add` while it is there exactly as `claude mcp add` does — exit `1`,
+ * `already exists` on stderr — and honours a `remove`. It is the only way to assert the thing a
+ * recorder cannot: that running `xplainer connect claude` **twice** succeeds twice.
+ *
+ * Where a file *is* written here — the `--config` path, and any machine with no `codex` on `PATH` —
+ * it is read back with a **real TOML parser** (`smol-toml`) rather than with the scanner that wrote
+ * it, so a round trip that only this module agrees with cannot pass.
  */
 
 import type { ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
@@ -68,8 +82,8 @@ function binWith(shims: Readonly<Record<string, string>>): string {
   return directory;
 }
 
-/** A `claude` that writes each argument it was given on its own line, and succeeds. */
-function recordingClaude(record: string): string {
+/** A vendor CLI that writes each argument it was given on its own line, and succeeds. */
+function recordingShim(record: string): string {
   return [
     "#!/bin/sh",
     `: > "${record}"`,
@@ -81,8 +95,55 @@ function recordingClaude(record: string): string {
   ].join("\n");
 }
 
-/** The argument vector the fake `claude` was handed. */
+/** The argument vector the fake vendor CLI was handed. */
 function recordedArgv(record: string): string[] {
+  return readFileSync(record, "utf8").split("\n").slice(0, -1);
+}
+
+/** What `alreadyRegisteredClaude` writes into its marker while an entry is registered. */
+const REGISTERED = "registered";
+
+/**
+ * A `claude` that keeps one entry, and refuses a second `add` for it the way the real one does.
+ *
+ * `claude mcp add` over a name a scope already holds writes `already exists` to stderr and exits
+ * `1` (2.1.263, checked live); `claude mcp remove` gives the name back and exits `0`. `marker` is
+ * the whole of its state — **non-empty** means registered, rather than *present* means registered,
+ * because a case's `PATH` holds nothing but these shims and `rm` is not a shell builtin. Everything
+ * this script runs is: `printf`, `[` and a redirection.
+ */
+function alreadyRegisteredClaude(record: string, marker: string): string {
+  return [
+    "#!/bin/sh",
+    `printf '%s\\n' "$*" >> "${record}"`,
+    'case "$2" in',
+    "  add)",
+    `    if [ -s "${marker}" ]; then`,
+    "      printf 'MCP server xplainer already exists in user config\\n' >&2",
+    "      exit 1",
+    "    fi",
+    `    printf '%s\\n' '${REGISTERED}' > "${marker}"`,
+    "    printf 'Added stdio MCP server xplainer to user config\\n'",
+    "    exit 0",
+    "    ;;",
+    "  remove)",
+    `    if [ -s "${marker}" ]; then`,
+    `      : > "${marker}"`,
+    "      printf 'Removed MCP server xplainer from user config\\n'",
+    "      exit 0",
+    "    fi",
+    "    printf 'No MCP server named \"xplainer\" in user scope\\n' >&2",
+    "    exit 1",
+    "    ;;",
+    "esac",
+    "printf 'unexpected verb: %s\\n' \"$*\" >&2",
+    "exit 1",
+    "",
+  ].join("\n");
+}
+
+/** One line per run of that shim: the argument vector, space-joined. */
+function invocations(record: string): string[] {
   return readFileSync(record, "utf8").split("\n").slice(0, -1);
 }
 
@@ -114,7 +175,7 @@ describe("xplainer connect claude", () => {
   it("delegates to `claude mcp add` at user scope, with an argv holding no URL, port or token", async () => {
     const home = temporary("home");
     const record = join(home, "argv.txt");
-    const bin = binWith({ claude: recordingClaude(record), xplainer: FAKE_BINARY });
+    const bin = binWith({ claude: recordingShim(record), xplainer: FAKE_BINARY });
 
     const run = await connect(["claude"], {
       HOME: home,
@@ -145,7 +206,7 @@ describe("xplainer connect claude", () => {
   it("passes --scope through to that CLI", async () => {
     const home = temporary("home");
     const record = join(home, "argv.txt");
-    const bin = binWith({ claude: recordingClaude(record), xplainer: FAKE_BINARY });
+    const bin = binWith({ claude: recordingShim(record), xplainer: FAKE_BINARY });
 
     const run = await connect(["claude", "--scope", "local"], {
       HOME: home,
@@ -252,9 +313,152 @@ describe("xplainer connect claude", () => {
     expect(run.stderr).toContain("exited 7");
     expect(run.stdout).toBe("");
   }, 30_000);
+
+  /**
+   * The most ordinary thing a user can do to this command is run it again — after an upgrade, after
+   * moving off `npx`, or because they forgot they had. `claude mcp add` answers a name its scope
+   * already holds with exit `1`, which used to come out of here as exit `70` and a vendor sentence
+   * about a state that was perfectly fine. There is no `claude mcp update` to reach for, so the
+   * entry is removed and added back, and the run that matters is the **second** one.
+   */
+  it("is re-runnable: the second run replaces the entry `claude mcp add` refuses to", async () => {
+    const home = temporary("home");
+    const record = join(home, "invocations.txt");
+    const marker = join(home, "registered");
+    const bin = binWith({
+      claude: alreadyRegisteredClaude(record, marker),
+      xplainer: FAKE_BINARY,
+    });
+    const environment = { HOME: home, PATH: bin, [STATE_DIR_ENV]: stateWithPort(8800) };
+
+    const first = await connect(["claude"], environment);
+    const second = await connect(["claude"], environment);
+
+    expect(first.code).toBe(0);
+    expect(second.code).toBe(0);
+    const add = "mcp add --transport stdio --scope user xplainer -- xplainer mcp --attach";
+    expect(invocations(record)).toEqual([
+      add,
+      // The second run: refused, the name given back, then the same vector again.
+      add,
+      "mcp remove xplainer --scope user",
+      add,
+    ]);
+    expect(first.stdout).not.toContain("replacing");
+    expect(second.stdout).toContain("replacing the entry that was there");
+    // An entry is registered at the end, not merely un-refused.
+    expect(readFileSync(marker, "utf8").trim()).toBe(REGISTERED);
+  }, 30_000);
+
+  /**
+   * The remove-then-add pair is not atomic, so the one case where this command could leave a user
+   * worse off than it found them says so in words. A `claude` that gives the name back and then
+   * refuses the second add is that case.
+   */
+  it("says so when the re-add fails after the old entry was already removed", async () => {
+    const home = temporary("home");
+    const bin = binWith({
+      claude: [
+        "#!/bin/sh",
+        'case "$2" in',
+        "  add) printf 'MCP server xplainer already exists in user config\\n' >&2; exit 1 ;;",
+        "  remove) printf 'Removed MCP server xplainer from user config\\n'; exit 0 ;;",
+        "esac",
+        "exit 1",
+        "",
+      ].join("\n"),
+      xplainer: FAKE_BINARY,
+    });
+
+    const run = await connect(["claude"], {
+      HOME: home,
+      PATH: bin,
+      [STATE_DIR_ENV]: stateWithPort(8801),
+    });
+
+    expect(run.code).toBe(70);
+    expect(run.stderr).toContain("already exists");
+    expect(run.stderr).toContain("this scope now holds none");
+    expect(run.stdout).toBe("");
+  }, 30_000);
 });
 
 describe("xplainer connect codex", () => {
+  /**
+   * `codex mcp add <NAME> -- <COMMAND>…` exists (codex-cli 0.153.4) and is the vendor's own writer,
+   * so it is preferred for the same reason `claude mcp add` is. The argv is the whole contract with
+   * it, and `--` is the load-bearing part: without it `--attach` is a flag `codex` would read.
+   */
+  it("delegates to `codex mcp add` when that CLI is on PATH, writing no file itself", async () => {
+    const home = temporary("home");
+    const record = join(home, "argv.txt");
+    const bin = binWith({ codex: recordingShim(record), xplainer: FAKE_BINARY });
+
+    const run = await connect(["codex"], {
+      HOME: home,
+      PATH: bin,
+      [STATE_DIR_ENV]: stateWithPort(8802),
+    });
+
+    expect(run.code).toBe(0);
+    expect(recordedArgv(record)).toEqual([
+      "mcp",
+      "add",
+      "xplainer",
+      "--",
+      "xplainer",
+      "mcp",
+      "--attach",
+    ]);
+    expect(run.stdout).toContain("mcp add");
+    carriesNoSecret(recordedArgv(record).join(" "), 8802);
+    // The vendor's CLI owns the file on this path, so this command wrote nothing of its own.
+    expect(existsSync(join(home, ".codex", "config.toml"))).toBe(false);
+  }, 30_000);
+
+  /**
+   * `codex mcp add` has no flag that names a different file — its own `-c key=value` overrides
+   * *values* — so asking for `--config` is asking for the writer below it, whatever is on `PATH`.
+   */
+  it("keeps the direct writer for --config, which that CLI cannot be pointed at", async () => {
+    const home = temporary("home");
+    const record = join(home, "argv.txt");
+    const config = join(home, "elsewhere.toml");
+    const bin = binWith({ codex: recordingShim(record), xplainer: FAKE_BINARY });
+
+    const run = await connect(["codex", "--config", config], {
+      HOME: home,
+      PATH: bin,
+      [STATE_DIR_ENV]: stateWithPort(8803),
+    });
+
+    expect(run.code).toBe(0);
+    expect(existsSync(record)).toBe(false);
+    expect(run.stdout).toContain(`wrote:   ${config}`);
+    expect(parseToml(readFileSync(config, "utf8"))).toEqual({
+      mcp_servers: { xplainer: { command: "xplainer", args: ["mcp", "--attach"] } },
+    });
+  }, 30_000);
+
+  it("reports a failing `codex mcp add` and exits 70", async () => {
+    const home = temporary("home");
+    const bin = binWith({
+      codex: "#!/bin/sh\nprintf 'config.toml is not valid TOML\\n' >&2\nexit 2\n",
+      xplainer: FAKE_BINARY,
+    });
+
+    const run = await connect(["codex"], {
+      HOME: home,
+      PATH: bin,
+      [STATE_DIR_ENV]: stateWithPort(8804),
+    });
+
+    expect(run.code).toBe(70);
+    expect(run.stderr).toContain("config.toml is not valid TOML");
+    expect(run.stderr).toContain("exited 2");
+    expect(run.stdout).toBe("");
+  }, 30_000);
+
   /** The file is the user's; the entry is ours. Both facts are asserted against a real parse. */
   it("adds [mcp_servers.xplainer] to ~/.codex/config.toml and leaves the rest byte for byte", async () => {
     const home = temporary("home");

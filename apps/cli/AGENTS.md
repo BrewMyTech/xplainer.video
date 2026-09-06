@@ -135,8 +135,9 @@ IPC, not TCP).
 |---|---|
 | `entry.ts` | The command line itself: the real `PATH` lookup, and the two forms it chooses between |
 | `preflight.ts` | The check before any write: `daemon.json`'s recorded port, or a refusal and exit `3` |
-| `claude.ts` | `claude mcp add` when that CLI is on `PATH`, else `~/.claude.json`'s `mcpServers` |
-| `codex.ts` | The `[mcp_servers.xplainer]` table in `~/.codex/config.toml`, edited in place |
+| `claude.ts` | `claude mcp add` when that CLI is on `PATH` — remove-then-add over a name it already holds — else `~/.claude.json`'s `mcpServers` |
+| `codex.ts` | `codex mcp add` when that CLI is on `PATH`, else the `[mcp_servers.xplainer]` table in `~/.codex/config.toml`, edited in place |
+| `vendor-cli.ts` | The one spawn of somebody else's CLI: resolved path, closed stdin, both streams captured |
 | `toml-tables.ts` | Where that table starts and ends, and the declarations it refuses to duplicate |
 | `atomic-write.ts` | temp → `rename` over somebody else's file, keeping the mode that file had |
 | `refusal.ts` | `ConnectRefusal`: one sentence and one exit code from the documented table |
@@ -178,10 +179,13 @@ kill %1                                          # drains, removes runtime.json,
 
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
 
-# What `connect` would write, into a throwaway HOME rather than your own agent configuration:
+# What `connect` would write, into a throwaway HOME rather than your own agent configuration.
+# With `codex` on PATH this delegates to `codex mcp add`, which writes the same file under that
+# HOME; `--config` is how you exercise this package's own writer instead.
 FAKE_HOME=$(mktemp -d)
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
 cat "$FAKE_HOME/.codex/config.toml"
+node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -248,7 +252,13 @@ Then the root procedure: `pnpm verify`.
 - **The socket lives in a `0700` directory and is unlinked on a clean stop.** `daemon/ipc.ts` makes
   the directory and clears whatever the last run left at the path, and it is only allowed to do that
   because `serve` calls it **after** `acquireOwnership()`: a socket file present while this process
-  holds `owner.lock` belongs to a run that is gone. Windows gets a named pipe named after a digest
+  holds `owner.lock` belongs to a run that is gone. `0700` is **`chmod`ed on every start, not just
+  passed to `mkdir`**: a mode given to `mkdir` applies to a directory it creates and is ignored for
+  one that already exists, so an `ipc/` an older release or a stray `umask` left at `0755` would
+  keep those bits for ever and every local account could walk in to the socket that is authenticated
+  by nothing else. The state directory *above* it is left exactly as found — ADR 0020 and
+  `state-dir.ts` own that one, and `ipc/` is the last directory on the path to the socket, so
+  narrowing it is sufficient. Windows gets a named pipe named after a digest
   of the state directory, which has no mode, no directory and nothing to unlink — ADR 0020 §Security
   R-SEC-5 already records that gap as the installer's to close in phase 2.
 - **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
@@ -268,16 +278,37 @@ Then the root procedure: `pnpm verify`.
   *reason* the port is read at all is the refusal: ADR 0020 §Ordering says `connect` "refuses to
   write an agent configuration pointing at a daemon that has never answered (`--force`
   overrides)", and `daemon.json`'s recorded port is that proof. Exit `3`, having written nothing.
+- **The vendor's own writer is preferred on both verbs, and the direct writer is the fallback.**
+  `claude mcp add` and `codex mcp add` both exist — the latter is
+  `codex mcp add <NAME> -- <COMMAND>…`, checked against codex-cli 0.153.4 — and each is delegated
+  to when that binary is on `PATH`, because a command that reimplements another program's file
+  layout is a command that is one release behind for ever. `connect/vendor-cli.ts` is the one place
+  either is spawned. Two cases still reach the direct writers: the machine with no such CLI
+  installed, and `codex --config <path>`, which names a file `codex mcp add` has no flag to be
+  aimed at (`-c key=value` overrides *values*). Delegating costs something and the cost is
+  recorded rather than assumed: `codex mcp add` rewrites the `mcp_servers` subtree, so a comment
+  attached to or inside an `[mcp_servers.*]` table does not survive it (0.153.4, measured), while
+  comments elsewhere in `config.toml` do. `--config` is the way to a byte-preserving write.
 - **Somebody else's configuration is edited, never reserialised.** `~/.claude.json` is Claude
   Code's whole per-user state and `~/.codex/config.toml` carries the user's comments and table
   order; a parse-and-write round trip through a JSON or TOML serialiser returns a file that means
-  the same and looks nothing like theirs. So the Claude path prefers `claude mcp add` — the
-  vendor's own writer, which is the only thing that stays correct when their layout changes — and
-  the Codex path replaces exactly the lines of `[mcp_servers.xplainer]` and no others. Every write
+  the same and looks nothing like theirs. So where this package writes, it writes narrowly: the
+  Claude fallback sets one key of `mcpServers` and keeps every other key in that file, and the
+  Codex fallback replaces exactly the lines of `[mcp_servers.xplainer]` and no others. Every write
   goes through `connect/atomic-write.ts`, temp-then-`rename`, keeping the mode the file already
   had. A declaration this line-oriented edit cannot safely replace — a dotted key, an inline
   parent, an array of tables — is **refused**, because appending beside it is a duplicate key and a
   `config.toml` with a duplicate key does not load at all.
+- **Both verbs are re-runnable, and only one of them gets that for free.** Running `connect` again
+  is the most ordinary thing a user does — after an upgrade, or after moving off `npx` — and it has
+  to end in one entry saying what this version writes. `codex mcp add` updates the table it finds
+  and exits `0` every time. `claude mcp add` does not: over a name its scope already holds it
+  writes `already exists` and exits `1`, and `claude mcp` has no update verb (2.1.263 lists
+  eleven verbs; `add-json`, the only other writer, refuses an existing name the same way). So that one refusal — matched on
+  `already exists`, over a CLI that has *already said* the name is taken — is answered with
+  `claude mcp remove <name> --scope <scope>` and a second add. Nothing is ever removed on any other
+  failure, and because the pair is not atomic, a re-add that fails says the old entry is gone
+  rather than claiming nothing was written.
 - **The skew check happens before a session exists, and compares the contract.** `mcp --attach`
   reads `contract_version` from `GET /healthz` over the socket and applies
   `isContractCompatible()` from `@xplainer/protocol` — never `serverInfo.version`, which is the

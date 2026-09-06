@@ -10,16 +10,26 @@
  * fold extends the previous caption's end rather than replacing it, so the
  * punctuation's own span is kept.
  *
- * **Every token but the very first carries a leading space.**
- * `@remotion/captions` joins a page by concatenating `text`, so a missing space
- * silently welds two words together. Only the first token of the whole track is
- * bare: `createTikTokStyleCaptions` starts a new page precisely when a token
- * begins with a space, and trims that space off the token it opens the page
- * with, so a leading space is what *permits* a page break rather than what
+ * **Every token but the very first carries a leading space — unless it is
+ * punctuation.** `@remotion/captions` joins a page by concatenating `text`, so a
+ * missing space silently welds two words together. The first token of the whole
+ * track is bare: `createTikTokStyleCaptions` starts a new page precisely when a
+ * token begins with a space, and trims that space off the token it opens the
+ * page with, so a leading space is what *permits* a page break rather than what
  * spoils one. A segment boundary is not a page boundary — pages are cut by
- * elapsed time, not by segment — so the first word of a segment needs its space
- * no less than every other word does, or `"one."` and `"Segment"` land in one
- * page as `"one.Segment"`.
+ * elapsed time, not by segment — so the first *word* of a segment needs its
+ * space no less than every other word does, or `"one."` and `"Segment"` land in
+ * one page as `"one.Segment"`.
+ *
+ * A segment whose first token is punctuation is the one place where those two
+ * rules meet, and the space rule loses. The fold above cannot apply — it would
+ * stretch the previous caption's `endMs` forward across the whole inter-segment
+ * gap, leaving that caption on screen through the silence — so the token is
+ * emitted as its own caption, keeping its own span, and it is emitted **bare**.
+ * A leading space there would render `"Alpha , beta"`, which is the space rule
+ * applied to a token that is not a word; the word that follows it inside the
+ * same segment still gets its space, so two words across a boundary are still
+ * separated.
  */
 
 import type { Caption, Captions } from "@xplainer/protocol";
@@ -55,14 +65,11 @@ export function buildCaptions(segments: readonly PlannedSegment[]): Captions {
 
     for (const word of segment.words) {
       const previous = captions[captions.length - 1];
+      const punctuation = PUNCTUATION_ONLY.test(word.text);
       // The fold never reaches back across a segment boundary: it extends the
       // previous caption's `endMs`, and the previous segment's last word is a
       // whole inter-segment gap away.
-      if (
-        previous !== undefined &&
-        captions.length > firstOfSegment &&
-        PUNCTUATION_ONLY.test(word.text)
-      ) {
+      if (previous !== undefined && captions.length > firstOfSegment && punctuation) {
         previous.text += word.text;
         previous.endMs = Math.max(previous.endMs, word.endMs);
         previous.timestampMs = midpoint(previous.startMs, previous.endMs);
@@ -70,7 +77,10 @@ export function buildCaptions(segments: readonly PlannedSegment[]): Captions {
       }
 
       captions.push({
-        text: captions.length === 0 ? word.text : ` ${word.text}`,
+        // Bare for the first token of the track, and bare for punctuation that
+        // opens a segment — reaching here punctuation means exactly that, since
+        // anything later in the segment folded above.
+        text: captions.length === 0 || punctuation ? word.text : ` ${word.text}`,
         startMs: word.startMs,
         endMs: word.endMs,
         timestampMs: midpoint(word.startMs, word.endMs),

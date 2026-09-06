@@ -9,7 +9,15 @@
  * stale socket a `SIGKILL`ed daemon leaves behind.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -88,6 +96,40 @@ describe("preparing the socket directory", () => {
     expect(prepared.path).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
     expect(prepared.removeOnShutdown).toBe(true);
     expect(mode(join(stateDir, IPC_DIR))).toBe(STATE_DIR_MODE.toString(8).padStart(4, "0"));
+  });
+
+  /**
+   * The case `mkdir` cannot cover. A mode passed to `mkdir` applies to a directory it creates and
+   * is ignored for one that already exists, so an `ipc/` left open by an older release or by a
+   * permissive `umask` would keep those bits for ever and the socket inside it would be reachable
+   * by every local account — which is the entire authentication of this transport (ADR 0020 §The
+   * agent path is IPC, not TCP). The mode has to be a property of the directory this run binds in,
+   * not of the call that first made it.
+   */
+  it("narrows an ipc directory a previous run left open, because mkdir would not", () => {
+    const stateDir = stateDirectory();
+    mkdirSync(join(stateDir, IPC_DIR), { recursive: true });
+    chmodSync(join(stateDir, IPC_DIR), 0o777);
+
+    prepareIpcSocket(stateDir, "darwin");
+
+    expect(mode(join(stateDir, IPC_DIR))).toBe("0700");
+  });
+
+  /**
+   * The state directory above it is ADR 0020's to own and may be somebody's `XPLAINER_STATE_DIR`,
+   * chosen for reasons of their own — so it is left exactly as it was found. That costs nothing:
+   * reaching a file means holding execute on every directory on the way to it, and `ipc/` is the
+   * last one.
+   */
+  it("leaves the state directory's own mode alone while still ending at 0700 itself", () => {
+    const stateDir = stateDirectory();
+    chmodSync(stateDir, 0o755);
+
+    prepareIpcSocket(stateDir, "darwin");
+
+    expect(mode(stateDir)).toBe("0755");
+    expect(mode(join(stateDir, IPC_DIR))).toBe("0700");
   });
 
   /**

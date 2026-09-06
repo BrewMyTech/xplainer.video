@@ -75,11 +75,15 @@ Then the root procedure: `pnpm verify`.
   between two Kokoro spans is real silence — a breath, a comma — and a caption stretched across it
   reads as lag. `plan.test.ts` asserts the 100 ms gap the fixture carries survives into
   `captions.json`.
-- **Every caption token but the first of the whole track carries a leading space.**
-  `@remotion/captions` builds a page by concatenating `text` and cuts a new page by elapsed time,
-  never at a segment boundary it cannot see, so two segments routinely share a page. A bare first
-  word of a segment welded the burned caption into `segment one.Segment two`;
-  `src/narrate/captions.test.ts` holds that boundary against the `adjacent.json` fixture.
+- **Every caption *word* but the first of the whole track carries a leading space; punctuation
+  never does.** `@remotion/captions` builds a page by concatenating `text` and cuts a new page by
+  elapsed time, never at a segment boundary it cannot see, so two segments routinely share a page.
+  A bare first word of a segment welded the burned caption into `segment one.Segment two`. The
+  exception is a segment whose *first* token is punctuation-only: it cannot fold — the fold extends
+  the previous caption's `endMs`, and the previous segment's last word is a whole inter-segment gap
+  away — so it is emitted as its own caption and emitted bare, or `"Alpha"` and `", beta"` read as
+  `"Alpha , beta"`. `src/narrate/captions.test.ts` holds both halves: the boundary against the
+  `adjacent.json` fixture, and the two token orders against plans it spells out.
 - **A segment's spoken length is measured from its PCM frames**, never from its last word's
   `end_time`. A synthesised clip routinely runs past its last word, and a planner that inferred the
   length from the spans would shift every later segment earlier than the audio.

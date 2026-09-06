@@ -31,7 +31,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import { STATE_DIR_MODE } from "./state-dir.js";
@@ -115,8 +115,19 @@ export type PreparedIpcSocket = {
  * other way round — binding first and discovering `EADDRINUSE` — would make every `SIGKILL` need a
  * manual `rm` before the daemon could start again.
  *
- * `mkdir` with mode `0o700` yields `0700` under any umask, because a umask can only clear bits and
- * there are no group or other bits to clear. That is why there is no `chmod` after it.
+ * **The `chmod` is not redundant with the `mkdir` mode.** `mkdir`'s mode applies to a directory it
+ * *creates* and is ignored entirely for one that is already there, so a run in a state directory
+ * whose `ipc/` was left `0755` — by an older release, by a `umask` a wrapper script set, by a user
+ * who unpacked a backup — would bind the socket inside a directory every local account can walk
+ * into, and nothing would say so. `chmod` runs on both paths and is what actually makes `0700` a
+ * property of the directory this daemon binds in rather than of the call that happened to create it.
+ *
+ * Only the `ipc/` directory is enforced here. The state directory *above* it is
+ * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md)'s to own (`state-dir.ts`
+ * mints it `0700`), and a `chmod` on somebody's `XPLAINER_STATE_DIR` — which may be a directory
+ * they chose for other reasons — is not this module's to make. A permissive parent still leaves the
+ * socket unreachable, because reaching a file means having execute on **every** directory on the
+ * way to it, and this one is the last of them.
  */
 export function prepareIpcSocket(
   stateDir: string,
@@ -129,7 +140,9 @@ export function prepareIpcSocket(
   if (Buffer.byteLength(path) > MAX_UNIX_SOCKET_PATH) {
     throw new IpcPathTooLongError(path);
   }
-  mkdirSync(join(stateDir, IPC_DIR), { recursive: true, mode: STATE_DIR_MODE });
+  const directory = join(stateDir, IPC_DIR);
+  mkdirSync(directory, { recursive: true, mode: STATE_DIR_MODE });
+  chmodSync(directory, STATE_DIR_MODE);
   try {
     unlinkSync(path);
   } catch (error) {

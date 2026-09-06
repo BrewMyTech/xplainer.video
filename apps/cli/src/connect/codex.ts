@@ -1,9 +1,27 @@
 /**
  * `xplainer connect codex` — one `[mcp_servers.xplainer]` table in `~/.codex/config.toml`.
  *
- * Codex CLI has no `mcp add` writer this command can delegate to the way `connect claude` delegates
- * to `claude mcp add`, so this is the one place in the repository that edits somebody else's
- * configuration format directly. Two rules follow from that, and they are the whole design:
+ * **Codex CLI's own writer is preferred, exactly as on the Claude path.** `codex mcp add <NAME> --
+ * <COMMAND>…` exists (codex-cli 0.153.4) and is the right thing to delegate to when `codex` is on
+ * `PATH`: it appends the same three-line `[mcp_servers.<name>]` table this module renders, and
+ * running it twice updates that table in place rather than duplicating it, so it is already
+ * idempotent in the sense this command needs. Delegating means the entry keeps being written the way
+ * that CLI writes entries when its own layout moves.
+ *
+ * It is not byte-preserving, and the honest version of that is worth writing down: measured against
+ * 0.153.4, it rewrites the `mcp_servers` subtree and **drops comments attached to or inside an
+ * `[mcp_servers.*]` table**, while a comment at the top of the file, before any other table, on a
+ * key, or after everything survives untouched. That is the vendor's own file and the vendor's own
+ * trade, and it is a narrower loss than the one this module exists to avoid — but a user who wants
+ * their `[mcp_servers.*]` comments kept exactly has `--config`, which reaches the writer below.
+ *
+ * **The direct writer below is the fallback, and it is still load-bearing.** Two cases reach it:
+ * `codex` is not installed on this machine, and `--config <path>` names a file that CLI has no flag
+ * to be pointed at (`-c key=value` overrides *values*, not the file). Both are real — a Codex plugin
+ * bundle installs on machines with no `codex` binary, and `--config` is how this repository's own
+ * tests write somewhere that is not a developer's `~/.codex`. So this remains the one place in the
+ * repository that edits somebody else's configuration format directly, and two rules follow from
+ * that:
  *
  * **The file is edited, never rewritten.** `config.toml` holds the user's model, their approval
  * policy, a `[projects."…"]` table per trusted directory and every other MCP server they use, with
@@ -28,11 +46,16 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { writeFileAtomically } from "./atomic-write.js";
-import { SERVER_NAME, type StdioEntry } from "./entry.js";
+import { type PathEnvironment, SERVER_NAME, type StdioEntry } from "./entry.js";
 import { ConnectRefusal } from "./refusal.js";
 import { findConflictingDefinition, findTableSpan } from "./toml-tables.js";
+import { runVendorCli, type VendorCliResult } from "./vendor-cli.js";
+
+/** The vendor CLI this command prefers to delegate to. */
+export const CODEX_CLI = "codex";
 
 /** Codex's configuration directory, relative to the home directory. */
 export const CODEX_CONFIG_DIR = ".codex";
@@ -49,6 +72,45 @@ export const CODEX_TABLE_PATH: readonly string[] = [CODEX_SERVERS_TABLE, SERVER_
 /** `~/.codex/config.toml`, or the same file under a home directory a test supplied. */
 export function codexConfigPath(home: string = homedir()): string {
   return join(home, CODEX_CONFIG_DIR, CODEX_CONFIG_FILE);
+}
+
+/**
+ * The argument vector that asks Codex CLI's own writer to record this entry.
+ *
+ * `--` is not optional decoration: `codex mcp add` reads everything after it as the command line to
+ * launch, which is what keeps `--attach` an argument of `xplainer mcp` rather than a flag `codex`
+ * would try to interpret.
+ */
+export function codexAddArgv(entry: StdioEntry): string[] {
+  return ["mcp", "add", SERVER_NAME, "--", entry.command, ...entry.args];
+}
+
+/** What asking Codex CLI to record this entry came to. */
+export type CodexRegistration =
+  | { ok: true }
+  | {
+      ok: false;
+      /** The vector that failed, so the caller can print the command a user could run. */
+      argv: string[];
+      /** What that run said and how it ended. */
+      result: VendorCliResult;
+    };
+
+/**
+ * Register the entry through `codex mcp add`.
+ *
+ * There is no remove-then-add dance here, and that is not an oversight: `codex mcp add` run twice
+ * over the same name updates the table it finds and exits `0` both times, so the vendor already
+ * gives this command the idempotence `claude mcp add` has to be given by hand.
+ */
+export function registerWithCodexCli(
+  program: string,
+  entry: StdioEntry,
+  env: PathEnvironment = process.env,
+): CodexRegistration {
+  const argv = codexAddArgv(entry);
+  const result = runVendorCli(program, argv, env);
+  return result.status === 0 ? { ok: true } : { ok: false, argv, result };
 }
 
 /** A TOML basic string. The values here are this command's own, and quoting them is still cheaper

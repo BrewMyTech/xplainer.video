@@ -19,7 +19,13 @@
  * met, with nothing written — no daemon has ever bound here, or the file to edit cannot be
  * understood; `1` for a usage error, such as a scope this command cannot write without the vendor's
  * own CLI; `11` for a `daemon.json` that exists and cannot be read; and `70` for anything else,
- * including a `claude mcp add` that failed for its own reasons.
+ * including a vendor's own `mcp add` that failed for its own reasons.
+ *
+ * **Each verb prefers the vendor's writer and falls back to a file.** `claude mcp add` and
+ * `codex mcp add` both exist and both are delegated to when that binary is on `PATH`; the direct
+ * writers in `connect/claude.ts` and `connect/codex.ts` are for the machine where it is not, and —
+ * on the Codex side — for a `--config <path>` that CLI has no way to be aimed at. Which branch ran
+ * is printed either way, because "it worked" and "which file changed" are different questions.
  *
  * **This is not an agent-facing entry**, so unlike `commands/mcp.ts` it writes its summary to
  * stdout. Nothing spawns `connect` and reads its stdout as a protocol.
@@ -31,15 +37,21 @@ import {
   CLAUDE_DEFAULT_SCOPE,
   CLAUDE_SCOPES,
   CLAUDE_SERVERS_KEY,
-  claudeAddArgv,
   claudeUserConfigPath,
-  runClaudeAdd,
+  registerWithClaudeCli,
   writeClaudeUserConfig,
 } from "../connect/claude.js";
-import { CODEX_TABLE_PATH, codexConfigPath, writeCodexConfig } from "../connect/codex.js";
+import {
+  CODEX_CLI,
+  CODEX_TABLE_PATH,
+  codexConfigPath,
+  registerWithCodexCli,
+  writeCodexConfig,
+} from "../connect/codex.js";
 import { describeEntry, findOnPath, resolveStdioEntry, type StdioEntry } from "../connect/entry.js";
 import { type PreflightResult, preflightDaemon } from "../connect/preflight.js";
 import { ConnectRefusal } from "../connect/refusal.js";
+import type { VendorCliResult } from "../connect/vendor-cli.js";
 import { StateFileUnreadableError } from "../daemon/daemon-state.js";
 import { DAEMON_INTERNAL_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
@@ -120,6 +132,32 @@ function attempt<T>(io: CliIo, verb: string, operation: () => T): T {
   }
 }
 
+/**
+ * Report a vendor CLI that started and exited non-zero, and end with `70`.
+ *
+ * Its own message goes out first and unedited: it is the sentence about the actual condition, and
+ * paraphrasing somebody else's refusal is how a user ends up searching for a string nothing prints.
+ * The line after it names the command that produced it, because "connect failed" without the argv
+ * is not something a user can run themselves.
+ */
+function vendorFailed(
+  io: CliIo,
+  verb: string,
+  cli: string,
+  argv: readonly string[],
+  result: VendorCliResult,
+  consequence: string,
+): never {
+  if (result.stderr.trim() !== "") {
+    io.writeErr(`${result.stderr.trimEnd()}\n`);
+  }
+  io.writeErr(
+    `xplainer connect ${verb}: \`${cli} ${argv.join(" ")}\` exited ` +
+      `${String(result.status)}, ${consequence}\n`,
+  );
+  return io.exit(DAEMON_INTERNAL_EXIT_CODE);
+}
+
 /** The summary both verbs print: a headline, then the facts, indented. */
 function report(io: CliIo, agent: string, lines: readonly string[]): void {
   io.writeOut(
@@ -152,19 +190,26 @@ function createClaudeCommand(io: CliIo): Command {
       const claude = findOnPath(CLAUDE_CLI);
 
       if (claude !== null) {
-        const argv = claudeAddArgv(entry, options.scope);
-        const result = attempt(io, "claude", () => runClaudeAdd(claude, argv));
-        if (result.status !== 0) {
-          if (result.stderr.trim() !== "") {
-            io.writeErr(`${result.stderr.trimEnd()}\n`);
-          }
-          io.writeErr(
-            `xplainer connect claude: \`${CLAUDE_CLI} ${argv.join(" ")}\` exited ` +
-              `${String(result.status)}, so nothing was registered.\n`,
+        const registration = attempt(io, "claude", () =>
+          registerWithClaudeCli(claude, entry, options.scope),
+        );
+        if (!registration.ok) {
+          vendorFailed(
+            io,
+            "claude",
+            CLAUDE_CLI,
+            registration.argv,
+            registration.result,
+            registration.removed
+              ? "and the entry that was there had already been removed, so this scope now holds " +
+                  "none. Fix what that command reports and run this again."
+              : "so nothing was registered.",
           );
-          io.exit(DAEMON_INTERNAL_EXIT_CODE);
         }
-        lines.push(`  via:     ${claude} mcp add, at ${options.scope} scope`);
+        lines.push(
+          `  via:     ${claude} mcp add, at ${options.scope} scope` +
+            (registration.replaced ? ", replacing the entry that was there" : ""),
+        );
         report(io, "claude", lines);
         return;
       }
@@ -201,14 +246,35 @@ function createCodexCommand(io: CliIo): Command {
     .option("--force", "write the entry even though no daemon has bound on this machine")
     .action((options: CodexOptions) => {
       const { entry, daemonLine } = prepare(io, "codex", options);
+      const lines = [`  runs:    ${describeEntry(entry)}`, daemonLine];
+
+      // `--config` names a file `codex mcp add` has no flag to be pointed at, so asking for one is
+      // asking for the writer below. Without it, the vendor's own writer wins wherever it exists.
+      const codex = options.config === undefined ? findOnPath(CODEX_CLI) : null;
+      if (codex !== null) {
+        const registration = attempt(io, "codex", () => registerWithCodexCli(codex, entry));
+        if (!registration.ok) {
+          vendorFailed(
+            io,
+            "codex",
+            CODEX_CLI,
+            registration.argv,
+            registration.result,
+            "so nothing was registered.",
+          );
+        }
+        lines.push(`  via:     ${codex} mcp add`);
+        report(io, "codex", lines);
+        return;
+      }
+
       const path = options.config ?? codexConfigPath();
       const written = attempt(io, "codex", () => writeCodexConfig(path, entry));
-      report(io, "codex", [
-        `  runs:    ${describeEntry(entry)}`,
-        daemonLine,
+      lines.push(
         `  wrote:   ${path} ([${CODEX_TABLE_PATH.join(".")}], ` +
           `${written.replaced ? "replacing the table that was there" : "a new table"})`,
-      ]);
+      );
+      report(io, "codex", lines);
     });
 }
 

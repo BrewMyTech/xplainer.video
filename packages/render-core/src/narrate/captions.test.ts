@@ -7,7 +7,7 @@ import type { WordTimestamp } from "@xplainer/tts-client";
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { buildCaptions } from "./captions.js";
-import { planSegments, type SegmentSpeech } from "./plan.js";
+import { type PlannedSegment, type PlannedWord, planSegments, type SegmentSpeech } from "./plan.js";
 
 /**
  * The caption boundary between two adjacent segments.
@@ -95,7 +95,7 @@ describe("buildCaptions — the boundary between two segments", () => {
     expect(at(captions, 3).text).toBe(" two.");
   });
 
-  it("leaves only the very first caption of the track bare", () => {
+  it("leaves only the very first caption bare, on a track whose tokens are all words", () => {
     const plan = planSegments(adjacent, measuredSpeech(), RATE);
     const captions = buildCaptions(plan.segments);
 
@@ -121,6 +121,97 @@ describe("buildCaptions — the boundary between two segments", () => {
   it("still validates against packages/protocol's captions schema", () => {
     const plan = planSegments(adjacent, measuredSpeech(), RATE);
     const captions = buildCaptions(plan.segments);
+
+    expect(validateCaptions(captions), JSON.stringify(validateCaptions.errors)).toBe(true);
+  });
+});
+
+/**
+ * The other boundary case, and the one US-012's fix got wrong.
+ *
+ * Kokoro timestamps a comma as its own token, so a narration segment that
+ * *begins* with one — `"Alpha"` then `", beta"` — hands `buildCaptions` a
+ * punctuation token in first position. The fold cannot take it: folding reaches
+ * back into the previous segment, whose last word is a whole inter-segment gap
+ * away, and the previous caption would stay on screen through that silence. So
+ * it is emitted as its own caption, and the leading space every *word* gets
+ * would render `"Alpha , beta"` — which is what this block exists to keep from
+ * coming back, without giving up the separation `"one. Segment"` needs.
+ *
+ * These plans are spelled out rather than measured: the property is about token
+ * text and one boundary, and a fixture would bury both.
+ */
+
+/** How long every token below is spoken for. */
+const TOKEN_MS = 200;
+
+/** The silence between two of these segments — wide enough to be visible. */
+const SEGMENT_GAP_MS = 700;
+
+/** The fields `buildCaptions` reads, wrapped around word spans a case chose. */
+function plannedSegment(index: number, words: readonly PlannedWord[]): PlannedSegment {
+  const first = words[0];
+  const last = words[words.length - 1];
+  if (first === undefined || last === undefined) {
+    throw new Error("a planned segment needs at least one word");
+  }
+  return {
+    id: `segment-${index + 1}`,
+    index,
+    startMs: first.startMs,
+    endMs: last.endMs,
+    from: 0,
+    durationInFrames: 1,
+    words,
+    trailingSilenceSamples: 0,
+  };
+}
+
+/** Tokens laid end to end, one `PlannedSegment` per array, a real gap between them. */
+function planFromTokens(tokensPerSegment: readonly (readonly string[])[]): PlannedSegment[] {
+  let cursor = 0;
+  return tokensPerSegment.map((tokens, index) => {
+    const words = tokens.map((text) => {
+      const startMs = cursor;
+      cursor += TOKEN_MS;
+      return { text, startMs, endMs: cursor };
+    });
+    cursor += SEGMENT_GAP_MS;
+    return plannedSegment(index, words);
+  });
+}
+
+describe("buildCaptions — a segment whose first token is punctuation", () => {
+  it('reads "Alpha, beta", never "Alpha , beta"', () => {
+    const captions = buildCaptions(planFromTokens([["Alpha"], [",", "beta"]]));
+
+    expect(joined(captions)).toBe("Alpha, beta");
+    expect(joined(captions)).not.toContain(" ,");
+    expect(captions.map((caption) => caption.text)).toEqual(["Alpha", ",", " beta"]);
+  });
+
+  it("keeps that token's own span instead of stretching the caption before it", () => {
+    const captions = buildCaptions(planFromTokens([["Alpha"], [",", "beta"]]));
+    const alpha = at(captions, 0);
+    const comma = at(captions, 1);
+
+    // The fold would have moved `alpha.endMs` to 1100, holding "Alpha" on
+    // screen through 700 ms of silence it was never spoken over.
+    expect(alpha.endMs).toBe(TOKEN_MS);
+    expect(comma.startMs).toBe(TOKEN_MS + SEGMENT_GAP_MS);
+    expect(comma.endMs).toBe(TOKEN_MS + SEGMENT_GAP_MS + TOKEN_MS);
+  });
+
+  it('still separates two words across the same boundary: "one. Segment"', () => {
+    const captions = buildCaptions(planFromTokens([["one", "."], ["Segment"]]));
+
+    expect(joined(captions)).toBe("one. Segment");
+    expect(joined(captions)).not.toContain("one.Segment");
+    expect(captions.map((caption) => caption.text)).toEqual(["one.", " Segment"]);
+  });
+
+  it("validates against packages/protocol's captions schema with a bare token in it", () => {
+    const captions = buildCaptions(planFromTokens([["Alpha"], [",", "beta"]]));
 
     expect(validateCaptions(captions), JSON.stringify(validateCaptions.errors)).toBe(true);
   });

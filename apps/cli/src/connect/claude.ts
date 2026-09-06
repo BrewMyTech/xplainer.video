@@ -11,6 +11,25 @@
  * claude mcp add --transport stdio --scope user xplainer -- xplainer mcp --attach
  * ```
  *
+ * **`claude mcp add` is not idempotent, and `connect` has to be.** Run a second time against a
+ * scope that already holds an entry of this name, that CLI writes
+ * `MCP server xplainer already exists in <scope> config` to stderr and exits `1` — which used to
+ * surface as `xplainer connect claude` exiting `70` on the most ordinary thing a user can do:
+ * running it again. There is no update verb to reach for: of the verbs `claude mcp` offers
+ * (2.1.263 lists eleven, among them `add`, `add-json`, `get`, `remove` and `list`), none replaces
+ * an existing entry — `add-json` refuses an existing name the same way `add` does. So an add refused **for that
+ * one reason** is followed by `claude mcp remove <name> --scope <scope>` and a second add, which
+ * leaves exactly one entry saying what this version of `connect` writes — the same meaning of
+ * "idempotent" the Codex path already has.
+ *
+ * The trigger is the vendor's own sentence, matched loosely on "already exists", and that is a
+ * deliberate choice over the structural alternative. `claude mcp get` would answer "is there an
+ * entry", but it answers it by **spawning the server and health-checking it**, and it takes no
+ * `--scope`, so it cannot tell an entry in the scope being written from one in a scope that is not.
+ * The add's own refusal names the scope. If that wording ever changes, this falls back to what it
+ * did before — the vendor's message, quoted, and exit `70` — which is a degradation and not a
+ * corruption. Nothing is removed unless the CLI has already said the name is taken.
+ *
  * **The fallback exists because a plugin bundle is not a CLI install.** Claude Code can be present
  * as a desktop application with no `claude` on this shell's `PATH`, and refusing there would leave
  * the user with nothing but a manual copy-paste. So `connect` writes the **user-scope** file itself:
@@ -30,7 +49,6 @@
  * file's.
  */
 
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +57,7 @@ import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { writeFileAtomically } from "./atomic-write.js";
 import { type PathEnvironment, SERVER_NAME, type StdioEntry } from "./entry.js";
 import { ConnectRefusal } from "./refusal.js";
+import { runVendorCli, type VendorCliResult } from "./vendor-cli.js";
 
 /** The vendor CLI this command prefers to delegate to. */
 export const CLAUDE_CLI = "claude";
@@ -83,39 +102,83 @@ export function claudeAddArgv(entry: StdioEntry, scope: string): string[] {
   ];
 }
 
+/** The argument vector that removes this command's entry from one scope. */
+export function claudeRemoveArgv(scope: string): string[] {
+  return ["mcp", "remove", SERVER_NAME, "--scope", scope];
+}
+
 /** The entry as it appears in the file — the shape `claude mcp add --transport stdio` writes. */
 export function claudeServerEntry(entry: StdioEntry): ClaudeServerEntry {
   return { type: "stdio", command: entry.command, args: [...entry.args] };
 }
 
-/** What running the vendor CLI produced, in the three parts a caller has to report. */
-export type ClaudeCliResult = {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-};
+/**
+ * Whether a failed `claude mcp add` failed *because the name is taken*.
+ *
+ * The whole match is "already exists", case-insensitively, over both streams. Anything narrower —
+ * the scope word, the server name, the exact sentence — is a promise about a string this repository
+ * does not own; anything wider would start removing entries over failures that have nothing to do
+ * with them. Both streams are read because which one a CLI writes a refusal to is not a contract
+ * either.
+ */
+export function isAlreadyRegistered(result: VendorCliResult): boolean {
+  return /already exists/i.test(`${result.stderr}\n${result.stdout}`);
+}
+
+/** What asking Claude Code's CLI to record this entry came to. */
+export type ClaudeRegistration =
+  | {
+      ok: true;
+      /** `true` when an entry of this name was already there and was replaced. */
+      replaced: boolean;
+    }
+  | {
+      ok: false;
+      /** The vector that failed, so the caller can print the command a user could run. */
+      argv: string[];
+      /** What that run said and how it ended. */
+      result: VendorCliResult;
+      /** `true` when the entry that was there had already been removed — see below. */
+      removed: boolean;
+    };
 
 /**
- * Run `claude mcp add`, and report what it did.
+ * Register the entry through `claude mcp add`, replacing an entry of the same name if one is there.
  *
- * The resolved absolute path is spawned rather than the bare name: this command has already looked
- * `claude` up on `PATH` to decide which branch to take, and spawning the name again would let the
- * two lookups disagree.
+ * The `removed` flag on a failure exists because the remove-then-add pair is **not atomic** and
+ * pretending otherwise would be a lie in the one place a user needs the truth: if the second add
+ * fails, the entry that was there is already gone, and "nothing was registered" would send them
+ * looking for a configuration that no longer has anything in it. It is only ever set when this
+ * function did the removing.
  */
-export function runClaudeAdd(
+export function registerWithClaudeCli(
   program: string,
-  argv: readonly string[],
+  entry: StdioEntry,
+  scope: string,
   env: PathEnvironment = process.env,
-): ClaudeCliResult {
-  const result = spawnSync(program, [...argv], {
-    encoding: "utf8",
-    env: env as NodeJS.ProcessEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error !== undefined) {
-    throw result.error;
+): ClaudeRegistration {
+  const addArgv = claudeAddArgv(entry, scope);
+  const added = runVendorCli(program, addArgv, env);
+  if (added.status === 0) {
+    return { ok: true, replaced: false };
   }
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  if (!isAlreadyRegistered(added)) {
+    return { ok: false, argv: addArgv, result: added, removed: false };
+  }
+
+  const removeArgv = claudeRemoveArgv(scope);
+  const removed = runVendorCli(program, removeArgv, env);
+  if (removed.status !== 0) {
+    // The name is taken and this scope will not give it up: report the add's own refusal, which is
+    // the sentence about the condition, rather than the remove's, which is about a consequence.
+    return { ok: false, argv: addArgv, result: added, removed: false };
+  }
+
+  const readded = runVendorCli(program, addArgv, env);
+  if (readded.status !== 0) {
+    return { ok: false, argv: addArgv, result: readded, removed: true };
+  }
+  return { ok: true, replaced: true };
 }
 
 /** What the fallback writer did to the file. */

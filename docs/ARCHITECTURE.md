@@ -189,10 +189,12 @@ scaffolds, writes source and media, lists, and enqueues narrate, still and rende
 runner, which `explainer_job` then reports on
 ([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)).
 `xplainer connect claude` and `xplainer connect codex` put the `xplainer mcp --attach` command line
-into an agent's own configuration — through `claude mcp add`
-when that CLI is installed, else into `~/.claude.json`, and into `~/.codex/config.toml`'s
-`[mcp_servers.xplainer]` table, edited in place — after reading `daemon.json` to confirm a daemon
-has bound on this machine at all. `setup` and `daemon` are registered stub commands that name
+into an agent's own configuration — through that agent's own writer, `claude mcp add` or
+`codex mcp add`, wherever it is on `PATH`, and otherwise into `~/.claude.json` or into
+`~/.codex/config.toml`'s `[mcp_servers.xplainer]` table, edited in place — after reading
+`daemon.json` to confirm a daemon has bound on this machine at all. Both verbs are re-runnable:
+`claude mcp add` refuses a name its scope already holds, so that refusal is answered with
+`claude mcp remove` and a second add. `setup` and `daemon` are registered stub commands that name
 themselves on stderr and exit `2`.
 `serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
 left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
