@@ -230,6 +230,12 @@ async function generateTypes() {
 function generateTsManifest(names, engineOwned) {
   const entries = names.map((name) => `  ${JSON.stringify(name)},`).join("\n");
   const engineEntries = engineOwned.map((name) => `  ${JSON.stringify(name)},`).join("\n");
+  // `isolatedDeclarations` forbids inferring an exported const's type from the
+  // initialiser, so the tuple type is written out. It is built from the same
+  // `names`/`engineOwned` arrays as the values below, which is what keeps a
+  // re-run byte-identical (AC-9c).
+  const toolTuple = names.map((name) => JSON.stringify(name)).join(", ");
+  const engineTuple = engineOwned.map((name) => JSON.stringify(name)).join(", ");
   return `${TS_HEADER}
 /**
  * The eight explainer tools, in contract order.
@@ -240,7 +246,7 @@ function generateTsManifest(names, engineOwned) {
  * surface that serves the protocol iterates this tuple rather than repeating
  * the names.
  */
-export const TOOL_NAMES = Object.freeze([
+export const TOOL_NAMES: readonly [${toolTuple}] = Object.freeze([
 ${entries}
 ] as const);
 
@@ -260,7 +266,7 @@ export type ToolName = (typeof TOOL_NAMES)[number];
  * lives in \`schemas/manifest.json\`, and no consumer gets to extend or narrow it
  * at runtime.
  */
-export const ENGINE_OWNED_FILES = Object.freeze([
+export const ENGINE_OWNED_FILES: readonly [${engineTuple}] = Object.freeze([
 ${engineEntries}
 ] as const);
 

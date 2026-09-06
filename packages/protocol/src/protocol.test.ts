@@ -260,7 +260,8 @@ describe("schema behaviour", () => {
 
 describe("the deliberate divergences from max", () => {
   it("drops the `command` field from explainer_job's output, on both backends", () => {
-    const properties = readJson("tools/explainer_job.output.json").properties as JsonObject;
+    const schema = readJson("tools/explainer_job.output.json");
+    const properties = schema.properties as JsonObject;
     expect(Object.keys(properties)).not.toContain("command");
     expect(Object.keys(properties)).toEqual([
       "job_id",
@@ -268,6 +269,22 @@ describe("the deliberate divergences from max", () => {
       "status",
       "exit_code",
       "error",
+      "error_code",
+      "started_at",
+      "finished_at",
+      "output",
+    ]);
+    // Both orders are asserted because both are load-bearing. `properties`
+    // fixes the field order of the generated pydantic model, and `required`
+    // is the list a reader compares against it; a field added to one and not
+    // the other is exactly the drift these assertions exist to catch.
+    expect(schema.required).toEqual([
+      "job_id",
+      "job_type",
+      "status",
+      "exit_code",
+      "error",
+      "error_code",
       "started_at",
       "finished_at",
       "output",

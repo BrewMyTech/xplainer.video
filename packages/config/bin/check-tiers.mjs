@@ -4,8 +4,9 @@
  *
  * Reads every workspace member manifest under `apps/*`, `packages/*` and
  * `services/*`, takes each one's `name`, its `xplainer.tier`, and the union of
- * its `dependencies` and `devDependencies` keys that begin `@xplainer/`, and
- * feeds that graph to `checkTierGraph` from `../src/tiers.ts`.
+ * its `dependencies`, `devDependencies`, `peerDependencies` and
+ * `optionalDependencies` keys that begin `@xplainer/`, and feeds that graph to
+ * `checkTierGraph` from `../src/tiers.ts`.
  *
  * Exit codes:
  *   0  every member declares a tier and no open-later -> hosted edge exists
@@ -30,8 +31,25 @@ const MEMBER_ROOTS = ["apps", "packages", "services"];
 /** Only dependencies in our own scope are in-workspace edges. */
 const SCOPE = "@xplainer/";
 
-/** Dependency fields that count as an edge, per plan S1.5. */
-const DEPENDENCY_FIELDS = ["dependencies", "devDependencies"];
+/**
+ * Dependency fields that count as an edge, per plan S1.5.
+ *
+ * Peer and optional edges were added by the agent-first plan's T15. Until then
+ * this list held `dependencies` and `devDependencies` only, so a contributor who
+ * added a forbidden open-later -> hosted edge in `peerDependencies` or
+ * `optionalDependencies` — and documented it in `docs/ARCHITECTURE.md`'s
+ * `CHECKED:deps` table — satisfied `check:docs-contract`'s equality check while
+ * this boundary rule never looked. The two checkers now read the same four
+ * kinds (AC-18d). Measured when the change was made: the workspace declares 0
+ * peer and 0 optional edges, so this closes the gap before the first one
+ * appears rather than reacting to one.
+ */
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+];
 
 const VALID_TIERS = new Set(["hosted", "open-later"]);
 

@@ -229,6 +229,64 @@ and asserted** and that commander's implicit `help [command]` can never reappear
 
 ---
 
+## Agent-first repository contracts (AC-15 … AC-19)
+
+These five extend the `AC-nn` series rather than the `P<n>-` series in
+[`ROADMAP.md`](ROADMAP.md), and the distinction is deliberate. A `P<n>-` criterion judges a
+**product phase** — a command a user runs, a job that survives a restart, a tarball that ships.
+These judge **the repository's own contracts**: the type system it compiles under, the lint rules
+it enforces, whether its public surface is visible in a diff, and whether its architecture document
+and agent instructions still describe the workspace on disk. That is the same class of thing
+AC-1 … AC-14 judge, so they are numbered with them.
+
+They were written down in the RALPLAN-DR plan for the agent-first architecture and are recorded
+here, under their own ids, for the same reason phase 0's criteria are: comments, CI step names and
+`AGENTS.md` files cite them. The decision behind all five is
+[ADR 0026](adr/0026-agent-first-repository-contracts.md), which carries the measured count behind
+every rule adopted and every rule rejected.
+
+### AC-15 — The public surface is typed at its declaration site
+
+- **15a** `packages/config/tsconfig/base.json` sets all ten of `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `allowUnreachableCode: false`, `allowUnusedLabels: false`, `erasableSyntaxOnly`, `noUnusedLocals`, `noUnusedParameters`, alongside the existing `strict`, and remains parseable by `require()`.
+- **15b** All **six** members with a `tsconfig.build.json` set `isolatedDeclarations: true` — `apps/cli`, `packages/config`, `packages/mcp-server`, `packages/protocol`, `packages/render-core`, `packages/tts-client`. `apps/desktop` and `packages/skill` have no build config and are out of scope.
+- **15c** `pnpm turbo typecheck` exits 0 and reaches nine members.
+- **15d** `noPropertyAccessFromIndexSignature` is **absent**, and [ADR 0026](adr/0026-agent-first-repository-contracts.md) records why. Asserted by a `node -e` throw, so a future contributor adding it has to read the record first.
+- **15e** The repository contains **zero** suppressions: no `as any`, `@ts-ignore`, `@ts-expect-error`, `biome-ignore` or `# noqa`, in `apps`, `packages` or `services`. This is an assertion of equality with zero, not a diff against a baseline, because the count is zero today. **It is enforced by `pnpm check:no-suppressions`, which runs in `pnpm verify` and as its own CI step beside AC-2c's.** An earlier draft ran it only in the verifier's block, which made it advisory in everything but name: a criterion that only a human executes is the thing this repository's enforcement principle exists to forbid.
+- **15f** `pnpm check:no-suppressions` exits **1** when a suppression is introduced, proved by adding one and reverting it.
+
+### AC-16 — The lint contract is explicit about what it bans and what it refuses to ban
+
+- **16a** `biome.json` sets `noExplicitAny`, `noUnusedImports`, `noNonNullAssertion`, `noEnum`, `noDefaultExport`, `useFilenamingConvention` and `noReExportAll` to `error`, with exactly two overrides: `noDefaultExport` off for `apps/desktop/electron.vite.config.ts`, and `useFilenamingConvention` allowing PascalCase under `apps/desktop/src/renderer/**`.
+- **16b** No `export *` remains in `apps` or `packages` (excluding `node_modules` and `dist`).
+- **16c** `ruff.toml` selects the nine added groups with `convention = "google"` and the two tests per-file-ignores, and **`pnpm turbo lint`** exits 0. The CI form is the criterion because it is what gates, not because the root form is wrong — measured, a root `ruff check .` honours each member's `extend-exclude` and gives the same result.
+- **16d** `useNamingConvention`, `noProcessEnv`, `noBarrelFile` and `useExplicitType` are absent from `biome.json`, and [ADR 0026](adr/0026-agent-first-repository-contracts.md) records the measured count behind each rejection.
+- **16e** `pnpm biome check .` runs in CI, so root `scripts/` and the workspace config files are linted by something other than a local pre-commit hook.
+
+### AC-17 — A change to a package's public surface is visible in its diff
+
+- **17a** Each of the **five** members that are both published and declaration-emitting has a committed `api/<name>.api.md`. `packages/skill` is published with no TypeScript surface and has none, and the gate asserts its absence rather than leaving it ambiguous.
+- **17b** `pnpm check:api-report` exits 0 on a clean tree, and `pnpm api:report` is idempotent.
+- **17c** The gate exits **exactly 1** on each of four conditions, and each is executed as a runnable case in the verification sequence: an exported symbol **added**; an exported symbol **removed**; a report file **deleted**; and an **orphan report** present for a member that emits no declarations. **The fourth had no case in an earlier draft** — it was asserted only by `test ! -d packages/skill/api`, which proves the directory is absent, not that the gate would notice if it were not. The negative path is the criterion; a check that has never failed proves nothing, which is the argument `pyproject.toml` already makes about the retired import-linter contract.
+- **17d** The added and removed symbols are exercised **through the package's entry point**, not merely appended to an implementation module. `packages/tts-client/src/index.ts` re-exports an explicit named list, so a symbol added to `client.ts` alone is invisible to an entry-point-rooted report and a correct gate stays silent. A case that mutates only the implementation file tests nothing and would fail a working gate.
+- **17e** The gate does **not** fire on a symbol **not reachable from the entry point** — one exported from an implementation module and not re-exported by the barrel. The case asserts the symbol reached `dist/client.d.ts` and did **not** reach `dist/index.d.ts`, so it fails an implementation that globs every `.d.ts` and passes one rooted at the entry point. An earlier draft phrased this as "a non-exported symbol", which reaches no declaration file at all and therefore passes both implementations — the control proved nothing.
+- **17f** `pnpm check:publish-contract` still exits 0 — the reports are a repository artefact and do not ship.
+
+### AC-18 — The architecture document cannot drift silently
+
+- **18a** [`ARCHITECTURE.md`](ARCHITECTURE.md) exists and contains a `CHECKED:members` block and a `CHECKED:deps` block, each naming the columns it checks.
+- **18b** `pnpm check:docs-contract` exits 0.
+- **18c** It exits **exactly 1** on each of: a member row deleted from the table; a `workspace:` `dependencies` edge present in a `package.json` and absent from the edge list; an edge listed in the doc that no `package.json` declares. It does **not** fire on a new `@xplainer/config` devDependency edge, which is excluded by rule. **The does-not-fire control must mutate a member that lacks the edge:** `packages/tts-client` already declares `@xplainer/config: workspace:*`, so an earlier draft's step "added" an identical value and asserted the gate exits 0 on an unchanged tree. `services/tts-sidecar` declares no workspace dependencies of any kind — verified — so it is the one member the control can actually mutate.
+- **18d** `pnpm lint:tiers` covers the same four dependency kinds the doc gate compares, so a forbidden edge cannot hide in a kind only one of them reads. Measured before the change: `check-tiers.mjs` read `dependencies` and `devDependencies` only.
+
+### AC-19 — There is one agent instruction surface and it is complete
+
+- **19a** Every one of the nine workspace members has an `AGENTS.md` carrying the five required headings.
+- **19b** Root `AGENTS.md` exists and carries the canonical post-change procedure; root `CLAUDE.md` **and each of the nine member `CLAUDE.md` stubs** exist, are at most three lines, and contain the line `@AGENTS.md`. Ten files, because Claude Code reads `CLAUDE.md` and has no discovery path for a nested `AGENTS.md`, while Codex walks `AGENTS.md` hierarchically; the nine member stubs are deliberately **not** imported from the root, so a session loads a member's invariants only when working inside that member.
+- **19c** `pnpm check:docs-contract` exits **1** when a member's `AGENTS.md` is removed.
+- **19d** `pnpm verify` exists in the root `package.json` and chains every gate that a local run can execute: `turbo build lint typecheck test`, `biome check .`, `check:no-suppressions`, `lint:tiers`, `check:publish-contract`, `check:codegen-fresh`, `check:api-report`, `check:docs-contract`. **The list is the criterion, not the phrase "every gate"** — an earlier draft asserted the phrase while omitting three of them, which is exactly the drift a criterion is for. Task coverage (AC-2b, AC-2f, AC-2g) is CI-only and named as such, because it asserts a property of the workspace roster that a local run cannot make false.
+
+---
+
 ## Tombstones
 
 Criteria that judged hosted work. They are not deleted, because comments and CI step names in

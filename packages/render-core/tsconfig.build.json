@@ -6,7 +6,8 @@
     "declaration": true,
     "declarationMap": false,
     "sourceMap": false,
-    "removeComments": false
+    "removeComments": false,
+    "isolatedDeclarations": true
   },
   "include": ["src"],
   "exclude": ["dist", "template", "test/fixtures", "src/scaffold/templates", "src/**/*.test.ts"]

@@ -25,7 +25,19 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "suspicious": { "noExplicitAny": "error" },
+      "correctness": { "noUnusedImports": "error" },
+      "performance": { "noReExportAll": "error" },
+      "style": {
+        "noNonNullAssertion": "error",
+        "noEnum": "error",
+        "noDefaultExport": "error",
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": { "filenameCases": ["kebab-case"], "requireAscii": true }
+        }
+      }
     }
   },
   "javascript": {
@@ -56,6 +68,29 @@
                   "@xplainer/media-service": "Tier boundary (plan §2 P4, AC-3): @xplainer/media-service is hosted and this file is in an open-later package. A hosted package may import an open-later one; an open-later package may never import a hosted one, because it would drag a private package into the roadmap phase-5 open-source extraction."
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/desktop/electron.vite.config.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noDefaultExport": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["apps/desktop/src/renderer/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useFilenamingConvention": {
+              "level": "error",
+              "options": { "filenameCases": ["kebab-case", "PascalCase"] }
             }
           }
         }

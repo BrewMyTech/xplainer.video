@@ -12,6 +12,11 @@
  * layers refuse the same paths with the same message (ADR 0018).
  */
 
-export * from "./backend.js";
-export * from "./put-source-guard.js";
-export * from "./server.js";
+export type { RenderBackend, RenderBackendMethod } from "./backend.js";
+export {
+  assertAgentOwnedPaths,
+  ENGINE_OWNED_PATH_ERROR_CODE,
+  EngineOwnedPathError,
+} from "./put-source-guard.js";
+export type { CreateMcpServerOptions } from "./server.js";
+export { createMcpServer, MCP_CONTRACT_VERSION, MCP_SERVER_NAME } from "./server.js";

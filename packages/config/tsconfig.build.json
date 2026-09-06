@@ -6,7 +6,8 @@
     "declaration": true,
     "declarationMap": false,
     "sourceMap": false,
-    "removeComments": false
+    "removeComments": false,
+    "isolatedDeclarations": true
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

@@ -100,7 +100,7 @@ function normalizeRelativePath(raw: string): string {
  */
 export class EngineOwnedPathError extends Error {
   /** Stable machine-readable code. Unchanged if this ever becomes a `-32602`. */
-  readonly code = ENGINE_OWNED_PATH_ERROR_CODE;
+  readonly code: typeof ENGINE_OWNED_PATH_ERROR_CODE = ENGINE_OWNED_PATH_ERROR_CODE;
 
   /** The engine-owned paths the call asked to write, in the order it listed them. */
   readonly rejected: readonly string[];

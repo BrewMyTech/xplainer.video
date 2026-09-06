@@ -90,9 +90,16 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
   app.get("/healthz", (c) => c.json({ status: "ok", version }));
 
   app.post("/mcp", async (c) => {
-    const server = createMcpServer(backend, { name: options.name, version });
+    const server = createMcpServer(backend, {
+      ...(options.name !== undefined && { name: options.name }),
+      version,
+    });
+    // Omitting `sessionIdGenerator` IS stateless mode: the SDK reads the option
+    // and branches on falsiness, and its own example passes an explicit
+    // `undefined` for the same effect (@modelcontextprotocol/sdk 1.30.0). Under
+    // `exactOptionalPropertyTypes` only the omission type-checks, so do not
+    // re-add the key — ADR 0020 §R-SEC-2 quotes this object with it present.
     const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
     try {

@@ -11,7 +11,7 @@
  * surface that serves the protocol iterates this tuple rather than repeating
  * the names.
  */
-export const TOOL_NAMES = Object.freeze([
+export const TOOL_NAMES: readonly ["explainer_create", "explainer_put_source", "explainer_put_media", "explainer_narrate", "explainer_still", "explainer_render", "explainer_job", "explainer_list"] = Object.freeze([
   "explainer_create",
   "explainer_put_source",
   "explainer_put_media",
@@ -38,7 +38,7 @@ export type ToolName = (typeof TOOL_NAMES)[number];
  * lives in `schemas/manifest.json`, and no consumer gets to extend or narrow it
  * at runtime.
  */
-export const ENGINE_OWNED_FILES = Object.freeze([
+export const ENGINE_OWNED_FILES: readonly ["index.ts", "types.ts", "Root.tsx", "Captions.tsx", "Video.tsx"] = Object.freeze([
   "index.ts",
   "types.ts",
   "Root.tsx",

@@ -83,6 +83,20 @@ class ExplainerListInput(BaseModel):
     )
 
 
+class JobErrorCode(StrEnum):
+    """
+    Machine-readable reason a job ended in error, which an agent can branch on. It never replaces `error`: that field always carries the human-readable detail, and this one only says which class of failure produced it. `daemon_restarted`: the daemon restarted while the job was in flight, so the work was lost rather than rejected — retry the same call. `daemon_shutdown`: the daemon stopped before the job finished — retry once it is running again. `toolchain_missing`: a required binary is not installed — do not retry until it is, because every attempt fails the same way. `render_failed`: the render ran and failed — read `error`, fix the source, then retry. `tts_failed`: narration synthesis failed — retry once, and treat a second identical failure as a problem with the narration rather than the run. `cancelled`: a caller cancelled the job — do not retry unless the caller asks again. `internal`: an unclassified failure — retry once, and report `error` verbatim if it repeats. This enum is expected to grow as failure modes are told apart; what adding a member costs a consumer is settled in ADR 0024 and spike P1-S3, not here.
+    """
+
+    daemon_restarted = 'daemon_restarted'
+    daemon_shutdown = 'daemon_shutdown'
+    toolchain_missing = 'toolchain_missing'
+    render_failed = 'render_failed'
+    tts_failed = 'tts_failed'
+    cancelled = 'cancelled'
+    internal = 'internal'
+
+
 class JobOutput(BaseModel):
     """
     The tail of the job's console output, oldest line first.
@@ -272,7 +286,12 @@ class ExplainerJobOutput(BaseModel):
         ..., description='Process exit code. Null until the job finishes.'
     )
     error: str | None = Field(
-        ..., description='Failure message. Null unless status is error.'
+        ...,
+        description='Failure message, for a human to read. Null unless status is error. `error_code` is the machine-readable half of the same failure: branch on that, quote this.',
+    )
+    error_code: JobErrorCode | None = Field(
+        ...,
+        description='Which class of failure produced `error`, so an agent can decide whether to retry without parsing prose. Null unless status is error.',
     )
     started_at: AwareDatetime | None = Field(
         ...,

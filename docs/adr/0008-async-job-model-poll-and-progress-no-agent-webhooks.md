@@ -83,3 +83,37 @@ polling agent does not re-read a large log on every call. Job states are a fixed
   in the eight tools; `cancelled` exists as a state a server can reach on its own (shutdown,
   timeout, quota). Adding a cancel tool later is a protocol change, and ADR 0007's codegen
   makes that a visible one.
+
+## Note, 2026-09-06: where job records live is decided in ADR 0024
+
+Added as a dated note. Nothing above is rewritten: the decision — a `job_id` returned immediately
+and an agent that polls `explainer_job` — is unchanged, as are the five states, the returned shape's
+existing fields and the `output_lines` bound.
+
+This record defined the **shape** of a job and deliberately did not decide the **queue**: "the queue
+implementation is deliberately not decided by this ADR … the local job runner is a phase-1
+deliverable". That remains true and remains phase 1.
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md) fills the gap that left on the local tier —
+where the record lives, who is allowed to touch it, and what happens to it when the daemon dies
+without warning. It adds the one thing this record's contract *implies* but does not *state*: that
+**polling terminates across a restart.** This record already names that promise for the hosted tier
+("honouring the contract's implicit promise that polling *terminates* becomes work someone has to
+do"); ADR 0024 is the local half — durable records, exclusive ownership before reconciliation, and a
+boot reconciler that turns a job whose process is gone into `error` with `error_code:
+"daemon_restarted"` rather than a `404` or a `running` that never advances.
+
+**One field joins the returned shape.** `explainer_job` now returns `error_code` alongside `error` —
+a machine-readable reason drawn from a closed enum, where `error` stays the human-readable detail.
+It is added before `packages/protocol`'s first publish, because a required field added afterwards is
+a breaking change for every consumer, and it is `null` until the phase-1 runner writes it. The enum
+and the policy for extending it live in ADR 0024.
+
+**One clarification about the progress half of this decision, for phase 1 to resolve concretely.**
+MCP progress notifications are scoped to an **in-flight request's** progress token, so a server
+cannot keep emitting progress against an `explainer_*` call that has already returned its `job_id`
+and completed. "Servers also emit MCP progress notifications" therefore describes progress **during
+a long-running call**, or a future streaming surface — not a background channel attached to a
+polled job — and **polling `explainer_job` is the contract**. The `/api/*` REST + SSE path this
+record already carves out for GUI clients is the other place live progress belongs. Phase 1 decides
+which of the two, if either, carries per-job progress for agents; the polling contract does not
+depend on the answer.

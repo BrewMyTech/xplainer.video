@@ -110,7 +110,11 @@ function listedCommands(help: string): string[] {
     // Entries start at two spaces; wrapped descriptions are indented far deeper.
     const match = /^ {2}(\S+)/.exec(line);
     if (match) {
-      names.push(match[1]);
+      const [, name] = match;
+      if (name === undefined) {
+        throw new Error(`--help line matched the command pattern but captured no name: ${line}`);
+      }
+      names.push(name);
     }
   }
   return names;

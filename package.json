@@ -16,9 +16,15 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "check": "turbo build lint typecheck test",
+    "verify": "pnpm turbo build lint typecheck test && pnpm biome check . && pnpm check:no-suppressions && pnpm lint:tiers && pnpm check:publish-contract && pnpm check:codegen-fresh && pnpm check:api-report && pnpm check:docs-contract",
     "codegen": "turbo codegen",
     "lint:tiers": "node packages/config/bin/check-tiers.mjs",
-    "check:publish-contract": "node scripts/check-publish-contract.mjs"
+    "check:no-suppressions": "node scripts/check-no-suppressions.mjs",
+    "check:codegen-fresh": "pnpm --filter @xplainer/protocol codegen && git diff --exit-code -- packages/protocol/src/generated packages/protocol/python/xplainer_protocol/generated",
+    "check:publish-contract": "node scripts/check-publish-contract.mjs",
+    "api:report": "node scripts/api-report.mjs",
+    "check:api-report": "node scripts/api-report.mjs --check",
+    "check:docs-contract": "node scripts/check-docs-contract.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",

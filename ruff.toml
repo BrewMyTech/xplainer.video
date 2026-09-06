@@ -2,4 +2,11 @@ line-length = 100
 target-version = "py313"
 
 [lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "ANN", "RUF", "PTH", "C4", "SIM", "TID", "ARG", "N", "D"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+"**/tests/**" = ["D100", "D103"]
+"**/*_test.py" = ["D100", "D103"]
