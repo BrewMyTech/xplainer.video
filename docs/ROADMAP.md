@@ -124,6 +124,50 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     the installer that may refuse to install.
   - **`daemon.json` and `runtime.json`, and recording the port**, because `connect` must read
     a port rather than assume 8787 the first time it writes a real configuration file.
+  - **The durable job store, exclusive ownership and boot reconciliation**
+    ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)). Exclusive ownership of the
+    state directory is acquired **before** reconciliation and before bind — the recorded port
+    makes a second `serve` exit `10` only at *bind*, which is already too late to stop it
+    reconciling another daemon's jobs — job records are written durably and outlive the process
+    that wrote them, and a boot reconciler turns every job whose owner is gone into `error`
+    with `error_code: "daemon_restarted"`, a non-null `finished_at` and a bounded log tail.
+    Without it the SIGTERM handler above covers only the *graceful* half: a `SIGKILL`ed daemon
+    leaves a job stuck in `running` for ever, which is the failure P1-5 forbids reached by a
+    different route. `recentStarts[]` and the `stalled` flag move here too, out of the
+    `runtime.json` that systemd removes on every clean stop.
+  - **The shim's contract-version check and the stdout ready line**
+    ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)). `xplainer mcp --attach` compares
+    the daemon's **contract** version with its own — not the release version, or every patch
+    release breaks every agent session that outlives it — and exits `8`, naming both versions
+    and a remediation that exists in phase 1, when it deems the pair incompatible. `serve`
+    writes exactly one line of JSON to stdout, once, after ownership is acquired,
+    reconciliation has finished and both listeners are bound. Both belong here because this is
+    the phase where `mcp --attach` and `serve`'s real startup path first exist, and because a
+    published shim that cannot tell a skewed daemon from a compatible one gives a wrong answer
+    silently.
+  - *Amended 2026-09-06 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md),
+    [ADR 0025](adr/0025-daemon-updates-and-readiness.md)):* **six pieces, not four.** The two
+    bullets above are the addition and the original four are unchanged. The value is amended
+    here rather than edited into the sentence, the same way the criteria below record a changed
+    value.
+- **Two spikes, each settling a mechanism a decision record deliberately left open.** They are
+  prerequisites of the work above rather than reports written beside it, and each is a judged
+  criterion in its own right — P1-S1 and P1-S3 below.
+  - **P1-S1 — the exclusive-ownership mechanism**, and with it the storage shape, what flushing
+    a directory after a rename actually guarantees per platform, and how a recorded worker PID
+    is confirmed to still be that worker. Settles
+    [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive ownership,
+    §Durability, §Durability of the write itself and §Scope — each of which states a binding
+    decision over a mechanism marked *proposed*. It reports before the job store is built,
+    because the four answers constrain one another.
+  - **P1-S3 — the contract-version advertisement and the compatibility policy**: how the daemon
+    advertises its contract version, whether the predicate is exact or major-compatible, how
+    that predicate interacts with ADR 0024's `error_code` extension policy, and whether
+    unknown-value tolerance is achievable at all. Settles
+    [ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Part two — version skew, and the open
+    half of [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Extending the
+    `error_code` enum. It reports **before the first publish** in this phase, because that is
+    when the enum and the contract reach a registry and stop being cheap to change.
 - **The first public npm publish.** Publishing is phase 1 work because nothing else here
   reaches a user: phase 4 records that until code signing lands, `npx`/`npm` is the supported
   daemon-install path (ADR 0020), and both plugin bundles resolve `@xplainer/*` from a registry
@@ -193,6 +237,61 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
 - **P1-11** The four exempt paths arrive byte-identical to their sources in the published
   tarballs, and phase 0's five byte-identity scaffold assertions still pass against the
   *published* package rather than only the workspace one.
+- **P1-S1 (spike)** Four questions [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+  assigns to this spike are answered and recorded **together**, because the answers constrain
+  each other.
+  1. **Ownership.** The exclusive-ownership mechanism for the state directory: it survives a
+     `SIGKILL`ed holder on all three platforms and on a network or container-shared home
+     directory, it is acquired before reconciliation and before bind, and a second `serve` that
+     cannot acquire it exits `10` having written nothing.
+  2. **Storage shape.** One JSON file per job under that directory, or `node:sqlite` in WAL
+     mode. Measured, `node:sqlite` is built into Node 24.20.0, so this is a design choice and
+     not a dependency question.
+  3. **Write durability.** What flushing the containing directory after a rename actually
+     guarantees on Linux, macOS and Windows, since the three do not offer the same promise and
+     Windows has no directory handle to sync.
+  4. **Process identity.** How a recorded worker PID is confirmed to still be the process that
+     was recorded — start-time, boot-id, a process group, or a platform handle — and what
+     proportion of real cases end in `workers_uncertain`.
+
+  Settles ADR 0024 §Exclusive ownership, §Durability, §Durability of the write itself and
+  §Scope.
+- **P1-12** A render, still or narrate job is written to durable storage, and its `job_id` is
+  not returned until the write is durable. `SIGKILL` to `xplainer serve` mid-job, then a
+  restart, leaves that job reporting `error` with `error_code: "daemon_restarted"`, a non-null
+  `finished_at` and a bounded log tail — not `running`, and not a `404`. **Every Chrome or
+  ffmpeg child the reconciler positively identified as belonging to that job is gone;** a
+  worker it could not identify is left running, the record carries `workers_uncertain: true`,
+  the log names it, and the job's output directory is quarantined so a retry cannot collide
+  with it. An earlier draft demanded "no surviving Chrome or ffmpeg child" unconditionally,
+  which contradicted ADR 0024's own decision that a leaked worker is a smaller failure than a
+  killed stranger. The agent's next `explainer_job` poll receives that answer. This is the
+  ungraceful counterpart to P1-7, which covers `SIGTERM`.
+- **P1-S3 (spike)** Four linked questions are settled together and recorded **before the first
+  publish**: (a) the named mechanism by which the daemon advertises its **contract** version;
+  (b) the compatibility predicate — exact or major-compatible; (c) how that predicate interacts
+  with [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)'s enum-extension policy,
+  since under exact matching a minor bump exits `8` on every live session; and (d) whether
+  unknown-`error_code` tolerance is achievable at all, given that this repository's codegen
+  turns a closed enum into a Python `StrEnum` that Pydantic rejects unknown members against,
+  and if so for which languages and at what codegen cost. Settles
+  [ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Part two — version skew, and the open
+  half of ADR 0024's extension policy.
+- **P1-13** `xplainer mcp --attach` against a daemon whose contract version the shim deems
+  **incompatible under the predicate P1-S3 selects** exits `8`, naming both versions and a
+  remediation command that exists at that point. Against a daemon it deems compatible — which
+  includes one whose release version differs — it attaches normally, and at least one such
+  compatible-but-different pair is exercised. The criterion says "incompatible" and not
+  "differs" deliberately: "differs" would presuppose the exact-match answer to P1-S3's own open
+  question.
+- **P1-14** `xplainer serve` writes exactly one line of JSON to stdout after ownership is
+  acquired, reconciliation has finished and both listeners are bound. A parent that reads
+  stdout until that line, then issues a request, is not refused **by a daemon that is still
+  starting**; a bounded startup timeout and a premature-exit path are defined. A later crash is
+  out of scope for this criterion and is covered by
+  [ADR 0020](adr/0020-always-running-local-daemon.md)'s restart behaviour — an earlier draft
+  said "never observes a request refused afterwards", which no readiness signal can promise
+  across a subsequent crash.
 
 ---
 
@@ -253,6 +352,46 @@ that phase 0 only declared a dependency on.
   - This is already the three-operating-system phase (P2-7 runs on three runners); phase 1's
     P1-1 names a headless Linux VM **and** macOS, with no Windows.
 
+  **Three things this block also owns, put here rather than in phase 1 by
+  [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) and
+  [ADR 0025](adr/0025-daemon-updates-and-readiness.md), because none of them exists until the
+  supervisor artefacts do:**
+
+  - **The supervisor kill strategy and the grace values.** ADR 0024's drain gives in-flight
+    jobs at most **20 seconds** to reach a checkpoint before Chrome and ffmpeg are
+    hard-stopped, which is what fits the whole shutdown inside P1-7's 25-second budget. A
+    supervisor grace longer than that budget is necessary and **not sufficient**: systemd's
+    default `KillMode=control-group` sends the stop signal to every process in the cgroup, so
+    Chrome and ffmpeg receive `SIGTERM` at the same instant the daemon does — a simultaneous
+    execution with a longer countdown, not a drain. The unit therefore needs an explicit kill
+    strategy that signals only the main process and leaves the daemon responsible for its
+    children, and macOS and Windows need a tested equivalent: `launchctl kickstart -k` is
+    documented only as kill-and-restart, `Restart-ScheduledTask` is not a cmdlet in the
+    standard `ScheduledTasks` module, and Windows has no `SIGTERM` for Node to catch. What is
+    decided is one application-level drain reached through a per-platform adapter; the systemd
+    keys are P2-S4's and the adapters are P2-S5's.
+  - **The staged post-install update sequence** (ADR 0025). Install, **stage** the new runtime
+    beside the pinned copy instead of overwriting it in place, **drain**, **switch the
+    executable the supervisor launches**, **restart and wait for the readiness signal**, and on
+    a timeout stop the replacement *before* starting anything else, switch back to the retained
+    previous copy, restart and verify **its** readiness. Two parts of that are easy to get
+    wrong and are named here: staging is the **post-install hook's** work and never the
+    daemon's, because the daemon must not write the runtime it is executing from; and the
+    switch is an edit to the unit file, the plist or the Task XML, because rewriting
+    `daemon.json` alone leaves `ExecStart` pointing at the old copy and reports success.
+    `xplainer daemon restart` performs the drain-to-rollback half and is a deliverable of this
+    phase for the same reason the installer is.
+  - **Two spikes, each settling a mechanism a decision record deliberately left open**, and
+    each a judged criterion below. **P2-S4** — systemd readiness: either an `sd_notify`
+    mechanism with its dependency named and justified, or `Type=exec` retained with a readiness
+    wait in the installer, since Node's `node:dgram` cannot open the `AF_UNIX` datagram socket
+    `$NOTIFY_SOCKET` names. It settles [ADR 0025](adr/0025-daemon-updates-and-readiness.md)
+    §Part three — readiness and the open question in
+    [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of 2026-09-06. **P2-S5** — the
+    drain adapters: the Linux kill strategy plus a documented, tested equivalent on macOS and
+    Windows. It settles [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Drain on
+    planned restart.
+
   It also owns the degraded paths ADR 0020 documents, and `docs/daemon.md` — the
   self-supervision recipes for hosts with no user-scope supervisor, which we document and do
   not write.
@@ -290,6 +429,49 @@ that phase 0 only declared a dependency on.
   within 30 seconds and records the reason, on all three platforms; `xplainer daemon status`
   names the holding pid in words; `xplainer daemon restart` clears the latched failure and the
   daemon comes back.
+- **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
+  dependency named and justified, or `Type=exec` retained with a readiness wait in the
+  installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new
+  dependency" path an early draft assumed does not exist. Settles
+  [ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Part three — readiness and the open
+  question in [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of 2026-09-06.
+- **P2-S5 (spike)** The drain is reachable on all three platforms through one application-level
+  operation: a kill strategy on Linux that signals the main process rather than the whole
+  cgroup (the default `KillMode=control-group` signals Chrome and ffmpeg at the same instant,
+  which is not a drain), and a documented, tested equivalent on macOS and Windows. `launchctl
+  kickstart -k`'s graceful behaviour is unverified and `Restart-ScheduledTask` is not a
+  standard cmdlet, so both need a method rather than a name. Settles
+  [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Drain on planned restart.
+- **P2-12** A supervisor-initiated restart during a job drains: the job either completes or
+  reports `error` with `error_code: "daemon_shutdown"`; queued jobs report the same; no Chrome
+  or ffmpeg process survives; the process exits within 25 seconds; and the supervisor's grace
+  exceeds that budget. Proved on Linux by `systemctl --user restart xplainer` with
+  `TimeoutStopSec` and the P2-S5 kill strategy in place, and on macOS and Windows by the
+  adapters P2-S5 defines — each with its own named command, not by assertion.
+  - **Update failure injection is part of this criterion, not an afterthought:** three further
+    cases, each ending with a daemon that is running and answering. A staged copy that fails to
+    start; a replacement that starts but never becomes ready within the timeout; and a rollback
+    that must itself reach readiness. In every case the previous pinned copy is running at the
+    end, state written by the newer version is intact, and exactly one daemon holds the
+    exclusive ownership ADR 0024 requires.
+- **P2-13** A parent knows the daemon is ready without sleeping or guessing. **The method is
+  conditional on P2-S4's outcome**, because the two candidate mechanisms give different
+  guarantees and it would be wrong to assert the stronger one while permitting the weaker:
+  - **If P2-S4 adopts `Type=notify`:** `systemctl --user start xplainer` itself returns only
+    after readiness — proved by a script that starts the unit and immediately issues an
+    **authenticated** `GET /healthz`, with no sleep and no retry, and asserts a `200`. A `401`
+    proves the port is bound and proves nothing about readiness, so the token ADR 0020
+    §Security defines is part of the proof.
+  - **If P2-S4 retains `Type=exec`:** `systemctl --user start xplainer` returns early **by
+    design**, and the guarantee moves to the caller: the post-install hook polls the
+    authenticated `/healthz` with a bounded timeout and a named failure, and the script proves
+    the hook does not return success before a `200`. Asserting the bare `systemctl` behaviour
+    here would be asserting something `Type=exec` never promised.
+
+  Either way the daemon still writes its one stdout ready line, and a parent that spawned it
+  directly — the desktop app, a `docs/daemon.md` recipe — reads that instead. The macOS and
+  Windows equivalents are the P2-S5 adapters plus that same directly-spawned path, each with
+  its own script.
 
 ---
 
@@ -356,6 +538,16 @@ capability, and it already has a decision record behind it.
   always running from phase 2, which makes an unattended update a different risk from an app the
   user restarts: an update that lands mid-render must not orphan a Chrome process, and P1-7's
   clean-shutdown contract is what it has to be built on.
+  - *Amended 2026-09-06 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)):* the explicit
+    decision was taken, and it is **no self-update**. The package manager updates the daemon;
+    the post-install hook stages the new runtime beside the pinned copy, drains, switches the
+    executable the supervisor launches, restarts, waits for the readiness signal, and rolls
+    back to the retained previous copy when readiness does not arrive. What remains for this
+    phase is therefore not the decision but the **signed artefact the package manager
+    installs** — code signing and notarisation, and the version-and-checksum manifest the same
+    hook verifies against. The clean-shutdown argument in the bullet above is unchanged and is
+    exactly what ADR 0025's drain step is built on; the mid-render case is judged by P4-8, and
+    its phase-2 counterpart by P2-12.
 - **Marketplace submission of both plugin bundles**
   ([ADR 0013](adr/0013-plugin-packaging-for-claude-and-codex.md)). It waits for phase 1, not for
   signing: the bundles declare a local stdio server and `xplainer mcp` exits 2 until then.

@@ -595,3 +595,57 @@ bounded crash-only sink.
 - **Whether `serve` should ever be removed as a user-facing command.** It should not be, and
   the roadmap does not propose it: it is what the supervisors execute, and it is the only way
   to see the daemon's output attached to a terminal.
+
+## Note, 2026-09-06: in-flight jobs, updates and readiness are decided in ADR 0024 and ADR 0025
+
+Added as a dated note the same day this record was accepted, after the agent-first architecture plan
+took three findings against it. Nothing above is rewritten, and — see the third item — **this is not
+an amendment of the `Type=` value.** Round 1 of that plan proposed one and it is withdrawn.
+
+**One. In-flight job durability is decided in
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md).** This record gives the daemon
+restart-on-crash, a circuit breaker and a phase-1 line requiring that "a render whose process dies
+must land in `error` with a bounded log tail, never stay stuck in `running`". It does not say where
+that record lives or what re-establishes it once the process is gone. ADR 0024 does: durable job
+records under this record's own state directory, exclusive ownership of that directory acquired
+**before** reconciliation and before bind, and a boot reconciler that turns every job whose owner is
+gone into a terminal, explained, retryable answer. The ordering matters to this record's reasoning:
+the argument that a second `serve` is harmless because the recorded port makes it exit `10` holds
+only at **bind**, and reconciliation happens earlier — so ownership, not the port, is what makes the
+single-writer property true.
+
+Related, and named here rather than filed elsewhere: **`recentStarts[]` and the `stalled` flag live
+in `runtime.json`**, which on Linux sits in systemd's `RuntimeDirectory=`, where "the innermost
+subdirectories are removed when the unit is stopped". The circuit breaker therefore forgets its
+history on every clean stop, which is not what a breaker is for. ADR 0024 moves crash history to the
+durable state directory alongside the job store.
+
+**Two. The update sequence in [ADR 0025](0025-daemon-updates-and-readiness.md) must replace the
+pinned copy this record introduced, not only the globally installed package.** This record's own
+accepted cost — "until the SEA binaries exist, `ExecStart` points at a path that a package manager
+can delete", so "the phase-2 installer therefore pins a copy of `process.execPath` and the CLI under
+the state directory" — has a consequence for upgrades that it does not spell out: `npm i -g` updates
+the global CLI and leaves the pinned copy the supervisor actually executes untouched. ADR 0025
+records the real sequence — install, stage beside the pinned copy, drain, switch **the executable
+the supervisor launches**, restart, wait for readiness, and roll back to the retained previous copy
+if readiness does not arrive — and notes that rewriting `daemon.json` alone is a no-op, because the
+artefact that decides what runs is the unit file, the plist or the Task XML.
+
+**Three. Readiness is now a decided requirement, and its mechanism is open.** ADR 0025 decides that
+the daemon announces readiness exactly once — after ownership is acquired, reconciliation has
+finished and both listeners are bound — and that every parent waits for that announcement instead of
+sleeping. The concrete defect on this record's side is stated plainly: **`Type=exec` reports the
+unit active as soon as `execve` succeeds**, which is before the port is bound and long before jobs
+are reconciled, so `systemctl --user start xplainer` returning tells a caller almost nothing. The
+ordering `setup → daemon install → (wait for /healthz) → connect` above is right about the wait and
+silent about how it is performed.
+
+`Type=exec` **stands** in this record. Whether the fix is `Type=notify` with an `sd_notify` write —
+which Node cannot perform with `node:dgram`, since `$NOTIFY_SOCKET` is an `AF_UNIX` datagram socket
+and `node:dgram` is UDP-only, so it costs a dependency or a native addon — or a readiness wait in
+the installer polling an **authenticated** `/healthz` with a bounded timeout, is open pending spike
+**P2-S4**. One consequence to record with it: `Type=notify` would **not** preserve the
+foreground-process invariant above on its own, because systemd's notification protocol permits a
+service to move its main PID (`MAINPID=`, `NotifyAccess=all`). "`serve` stays a foreground process"
+and "never add `serve --detach`" remain properties this project maintains deliberately, whichever
+unit type is chosen.

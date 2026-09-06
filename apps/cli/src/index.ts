@@ -12,7 +12,12 @@
  * command tree.
  */
 
-export * from "./backend.js";
-export * from "./not-implemented.js";
-export * from "./server.js";
-export * from "./version.js";
+export { createStubBackend } from "./backend.js";
+export {
+  NOT_IMPLEMENTED_EXIT_CODE,
+  NOT_IMPLEMENTED_MESSAGE,
+  notImplementedLine,
+} from "./not-implemented.js";
+export type { CreateServerOptions, RunningServer, StartServerOptions } from "./server.js";
+export { createServer, DEFAULT_HOSTNAME, DEFAULT_PORT, startServer } from "./server.js";
+export { CLI_VERSION } from "./version.js";

@@ -1,0 +1,361 @@
+# 0025. The package manager updates the daemon; the daemon drains, announces readiness, and the shim refuses a skewed contract
+
+- Status: accepted
+- Date: 2026-09-06
+- Deciders: @rishavanand
+- Settled by: `.omc/plans/ralplan-agent-first-architecture.md` — the RALPLAN-DR plan for the
+  agent-first architecture, whose durability findings **L2** (updating a daemon that is always
+  running, and the version skew that follows) and **L3** (how a parent knows the daemon is up) this
+  record answers. Consensus at round 3: Critic APPROVE, Architect SOUND-WITH-CHANGES with every
+  remaining item folded in.
+- Builds on: **[ADR 0020](0020-always-running-local-daemon.md)**, which made the local runtime an
+  installed, supervised daemon and pinned a copy of the interpreter and the CLI under the state
+  directory, and **[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md)**, whose drain this
+  record's update sequence calls and whose exclusive ownership its rollback must not violate.
+  ADR 0020 carries a dated note pointing here; it is not rewritten, and — see §Readiness — its
+  `Type=exec` is **not** amended by this record.
+- **Mechanisms deliberately left open.** The contract-version advertisement, the compatibility
+  predicate, its interaction with ADR 0024's enum-extension policy and the achievability of
+  unknown-value tolerance are all spike **P1-S3**; the systemd readiness mechanism is spike
+  **P2-S4**. Wherever the text reads "Proposed mechanism, to be confirmed by spike …", the decision
+  above it is binding and the mechanism inside it is not.
+
+## Context and Problem Statement
+
+ADR 0020 turned `xplainer serve` from a command a human runs into a service the operating system
+starts. That buys the product its pitch — installed once, and simply there — and it creates three
+problems a foreground command never had.
+
+**Updating something that is always running is not the same as installing it.** ADR 0020 records
+that "until the SEA binaries exist, `ExecStart` points at a path that a package manager can delete",
+and that the phase-2 installer therefore "pins a copy of `process.execPath` and the CLI under the
+state directory". So `npm i -g @xplainer/cli` replaces the **globally installed** CLI and leaves the
+**pinned copy the supervisor actually executes** exactly where it was. The user believes they have
+upgraded. The daemon that answers their agent has not.
+
+**An upgrade produces version skew inside a single agent session.** `xplainer mcp --attach` is a
+fresh process spawned per session; the daemon is not. So the shim an agent starts on Tuesday
+afternoon may be newer than the daemon it attaches to, which has been up since Monday. Today it
+attaches anyway, and the failure surfaces as a tool call that returns something the shim did not
+expect — the least legible failure available.
+
+**Nobody knows when the daemon is ready.** ADR 0020's ordering is
+`setup → daemon install → (wait for /healthz) → connect`, and that parenthesis is doing real work
+that nothing implements. Worse, ADR 0024 adds two things that must finish before the daemon is
+usable and that no port check can observe: acquiring exclusive ownership of the state directory, and
+reconciling every job record. A supervisor that reports the unit active the moment `execve` succeeds
+is reporting something true and useless. A caller that sleeps two seconds and hopes is guessing, and
+a caller that polls an unauthenticated port is confirming that a socket exists.
+
+The three are one record because they are one sequence. An update drains, restarts and must **know**
+the replacement came up; if it did not, it must roll back to a daemon that is itself ready; and
+afterwards the shim must tell an agent, in one legible sentence, when the pair it is holding cannot
+speak to each other.
+
+## Decision Drivers
+
+- **The daemon must not update itself.** ADR 0020 already states "**The daemon does not become an
+  updater**" about the toolchain. The same rule applied to the daemon's own code is not a new
+  principle, and a process that rewrites the executable it is running from is a class of bug rather
+  than a feature.
+- **An interrupted update must leave a working daemon.** The failure mode to design against is not
+  "the upgrade failed"; it is "the upgrade failed and now nothing renders".
+- **A skew failure must name its own fix.** An agent that gets an unexplained error retries it. An
+  agent that gets "daemon speaks contract 1, this shim speaks contract 2 — run *X*" can act.
+- **Compare the contract, not the release.** Two releases that serve the same contract must attach
+  cleanly, or every patch release breaks every live agent session.
+- **Readiness is a fact the daemon knows and nobody else does.** Only the daemon knows it has
+  ownership, has reconciled and has bound both listeners. Any mechanism that infers readiness from
+  outside is inferring it from evidence that is available earlier than the fact.
+- **Do not decide what has not been measured.** Round 1 of the settling plan asserted a fifteen-line
+  `sd_notify` write that Node cannot perform, and round 2 promised an unknown-value tolerance this
+  repository's own codegen forbids. Both are corrected below rather than defended.
+
+## Considered Options
+
+**For updates.**
+
+1. **The daemon self-updates** — downloads a new version, swaps itself, restarts.
+2. **The package manager installs; a post-install hook stages, drains, switches, restarts, verifies
+   and rolls back.** **Chosen.**
+3. **`electron-updater` (ADR 0004) is extended from the desktop app to the daemon.**
+4. **Nothing** — the user upgrades and restarts by hand, and finds out from a support thread that
+   the supervisor still executes the old pinned copy.
+
+**For version skew.**
+
+5. **Ignore it.** Attach and hope the surfaces are compatible.
+6. **Compare the release version** from the MCP `initialize` handshake's `serverInfo.version`.
+7. **Compare an explicitly advertised contract version, and exit `8` on an incompatible pair.**
+   **Chosen.**
+
+**For readiness.**
+
+8. **Sleep.** A fixed delay in the installer and in the desktop spawn path.
+9. **Poll the port.** Connect until the TCP handshake succeeds.
+10. **The daemon announces readiness exactly once, after ownership, reconciliation and both binds,
+    and every parent waits for that announcement.** **Chosen.**
+
+## Decision Outcome
+
+Chosen: options 2, 7 and 10.
+
+Option 1 contradicts ADR 0020 and is the one shape that can leave a machine with no working daemon
+and no way to install one. Option 3 gives the daemon a second update channel with a different
+failure vocabulary, for the benefit of the one consumer that already has an updater; the desktop app
+keeps `electron-updater` and the daemon is not added to it. Option 4 is the status quo and it is the
+bug. Option 5 trades a legible error for an illegible one. Option 6 compares the wrong number, and
+the measurement is below. Options 8 and 9 both answer a different question than the one asked:
+a sleep asserts a duration, a port check asserts a bind, and readiness is neither.
+
+### Part one — the package manager updates the daemon
+
+**The package manager updates the binary. The daemon never self-updates.** ADR 0020 already states
+the rule for the toolchain; this record applies it to the daemon's own code and records the
+mechanics 0020 left out.
+
+The sequence, stated in full because the round-1 version of it ("`npm i -g` and restart") is wrong
+about what an update replaces:
+
+1. **Install** the new version through the package manager — or, from phase 4, the signed SEA
+   binary.
+2. **Stage** the new runtime beside the pinned copy under the state directory. Do not overwrite in
+   place: a half-copied interpreter is an unstartable daemon, and the window is exactly as long as
+   copying 120 MB of Node takes.
+3. **Drain** the running daemon using [ADR 0024](0024-durable-jobs-and-boot-reconciliation.md)'s
+   handler — in-flight jobs reach a checkpoint or are marked `error` with
+   `error_code: "daemon_shutdown"`, and nothing is left `running`.
+4. **Switch** the executable the **supervisor** launches — not only the path `daemon.json` records.
+5. **Restart, and wait for the readiness signal** defined in part three. Not for the supervisor's
+   own idea of "started".
+6. **If readiness does not arrive** within a bounded timeout: stop the replacement *before* starting
+   anything else, switch back to the previous pinned copy, restart, verify **its** readiness, and
+   report the failure with the old version running. The previous copy is retained until the new one
+   has been ready once.
+
+Three gaps that the first drafts of this sequence left open, closed here:
+
+- **Step 2 has an owner.** Staging is the **post-install hook's** work, never the daemon's — the
+  daemon must not write the runtime it is executing from. The hook stages, then invokes step 3
+  onward. This keeps ADR 0020's "the daemon does not become an updater" true of steps 2 and 4 as
+  well as of the download.
+- **Step 4 is a supervisor edit, not a state-file edit.** ADR 0020 records `daemon.json` as holding
+  "the supervisor kind and artefact path, the resolved program and interpreter", and the artefact is
+  `~/.config/systemd/user/xplainer.service`, the LaunchAgent plist, or the Task XML. Rewriting
+  `daemon.json` alone leaves `ExecStart` pointing at the old copy, so the switch is a no-op that
+  reports success. Either the artefact is rewritten and the supervisor reloaded, or `ExecStart`
+  points at a stable indirection that the switch flips. This record states the requirement and
+  leaves the choice to phase 2, because a rewritten unit file and a flipped symlink have different
+  failure modes and Windows has neither.
+- **Step 6 stops before it starts.** Rolling back without first stopping the timed-out replacement
+  risks two daemons contending for the exclusive ownership ADR 0024 requires — and the rollback
+  would be the process that loses. State written by the newer version is **preserved rather than
+  deleted**, per ADR 0024's rule that a `format_version` newer than the reader understands is a
+  rollback signal and not corruption.
+
+**Failure injection is part of the criterion, not an afterthought.** P2-12's method includes a staged
+copy that fails to start, a readiness timeout, and a rollback that must itself become ready — each
+ending with a daemon that is running and answering, the previous pinned copy in place, the newer
+version's state intact, and exactly one owner.
+
+`xplainer daemon restart` performs steps 3–6 and is a **phase-2** deliverable, because that is where
+the installer and the pinned copy exist. **What phase 1 owes the user is a remediation that exists
+in phase 1:** the skew error below must name a command the user can actually run at that point.
+Until `daemon restart` ships, that is stopping and re-running `xplainer serve` — or, where a
+supervisor is already installed, the supervisor's own restart command — and the message names the
+one that applies, rather than a phase-2 subcommand the user does not have.
+
+`electron-updater` (ADR 0004) stays the desktop app's story and is not extended to the daemon.
+
+### Part two — version skew, and the shim's exit code `8`
+
+After an upgrade the running daemon can be older than the `xplainer mcp --attach` shim an agent just
+spawned. On attach, the shim compares the daemon's **contract** version with its own — and when it
+deems the pair **incompatible**, exits with a new code **`8`** and a message naming both versions
+and a command that fixes it. Code `8` is the next free value after ADR 0020's `2`–`7`; the daemon's
+own `10`, `11`, `12` and `70` are untouched.
+
+The shim's own contract version is `MCP_CONTRACT_VERSION`, which today lives at
+`packages/mcp-server/src/server.ts:44` and reads `manifest.version` from
+`packages/protocol/schemas/manifest.json` — **not** in `@xplainer/protocol`, where an earlier draft
+of this record placed it. Whether it moves there, or the shim reads `manifest.version` directly, is
+part of the phase-1 work P1-S3 scopes.
+
+It compares that contract version, not the release version. Two releases that serve the same
+contract must attach cleanly, or every patch release breaks every agent session that outlives it.
+
+**"Incompatible", not "different".** An earlier draft wrote "on mismatch", which is exact-match
+semantics — and exact-versus-major-compatible is precisely what the spike below is convened to
+settle. So this record states the *behaviour* (an incompatible pair exits `8` with both versions
+named and a remediation that exists) and defers the *predicate*.
+
+> **Proposed mechanism, to be confirmed by spike P1-S3.** Round 1 said the shim "reads
+> `serverInfo.version`" from the MCP `initialize` handshake. Measured: `apps/cli/src/server.ts:87`
+> resolves `const version = options.version ?? CLI_VERSION` and line 93 passes it into
+> `createMcpServer`, so `serverInfo.version` is the **release** version today — and the MCP
+> specification treats that field as identifying the *implementation*, not any application-level
+> contract. Reusing it would compare exactly the wrong number. The daemon must therefore advertise
+> the contract version **explicitly**. Candidates for P1-S3 to choose between: adding `contract` to
+> the existing `/healthz` body, which returns `{status, version}` at `apps/cli/src/server.ts:90`; an
+> `instructions` or `_meta` field on the handshake result; or a dedicated read-only MCP resource.
+>
+> **P1-S3 settles four linked questions, not one.** They cannot be answered independently:
+>
+> 1. **The advertisement.** Which of the candidates above carries the contract version.
+> 2. **The compatibility predicate.** Exact match, or major-compatible. P1-13 is written against
+>    whichever this picks and must not presuppose it.
+> 3. **How that predicate interacts with the enum-extension policy.**
+>    [ADR 0024](0024-durable-jobs-and-boot-reconciliation.md) leaves open whether adding an
+>    `error_code` member is a **minor** or a **breaking** contract change, and this is the question
+>    that settles it. If it were minor and the predicate were exact, a minor bump would exit `8` on
+>    every live agent session until the daemon restarts — precisely the outcome the "compare the
+>    contract, not the release" rule exists to prevent. The exits are: a major-compatible predicate;
+>    additive changes that do not move the compared version; or classifying an enum addition as
+>    breaking and accepting that cost. Pick one, here, once.
+> 4. **Whether unknown-value tolerance is achievable at all**, and for which languages — see the
+>    block immediately below.
+
+**Unknown-value tolerance: promised in an earlier draft, unachievable as written.** That draft had
+this record promise that "a consumer must treat an unrecognised `error_code` as equivalent to
+`internal` rather than failing validation". Measured against this repository's own codegen, the
+promise cannot be kept for Python consumers. `job-error-code.json` is shaped exactly like
+`job-state.json`, and `job-state.json` generates:
+
+```python
+class JobState(StrEnum):
+    queued = 'queued'
+    running = 'running'
+    ...
+```
+
+A Pydantic field typed with that `StrEnum` raises `ValidationError` on a value outside the members.
+Prose in a schema `description` does not change a generated validator. TypeScript consumers are
+unaffected, because the union is erased at runtime — but `packages/protocol`'s `files` allowlist
+ships `python/**/*.py`, so Python consumers are a **shipped** surface and not a hypothetical one.
+
+This record therefore states the constraint rather than a promise it cannot keep, and hands the
+resolution to P1-S3 as its fourth question. The options, none of them free:
+
+- **Change the generated shape for this one schema** — a `Literal` union plus a fallback, or a
+  `model_validator`. That means a codegen change, because AC-9c forbids hand-editing anything under
+  `generated/`.
+- **Leave the enum closed** and accept that a new member is a **breaking** change for Python
+  consumers. That makes the "minor bump" reading of the extension policy wrong, and ties directly to
+  question 3.
+- **Type the wire field as an open `string`**, with the enum published alongside as documentation.
+  That buys tolerance at the cost of the greppable contract the field exists to provide.
+
+**What ships now is unaffected**, because the initial enum has seven members and no consumer exists
+to be broken. What must not happen is freezing "consumers tolerate unknown values" into an accepted
+record while the repository generates validators that do the opposite.
+
+**The extension policy itself lives in ADR 0024.** The field, the enum and its `null`-until-phase-1
+consequence are there, so a contributor adding a member opens that record. This one cross-references
+it, because the skew check and the extension policy are one decision with two halves — question 3
+above is the seam.
+
+### Part three — readiness is announced, not inferred
+
+A parent needs to know the daemon is up, and polling in a loop is a guess dressed as a check. **The
+decision is that the daemon announces readiness exactly once — after ownership is acquired,
+reconciliation has finished and both listeners are bound — and that every parent (installer,
+supervisor, desktop app) waits for that announcement rather than sleeping.**
+
+**Primary, every platform, supervised or not:** exactly one line of JSON on stdout, written once,
+after that point:
+
+```json
+{"xplainer":"ready","contract":"…","version":"…","port":…,"socket":"…"}
+```
+
+followed by a newline. This needs nothing Node does not already have. It is what `apps/desktop`
+waits on when it spawns a bundled daemon (ADR 0016's phase-2 spawn path), and what a
+`docs/daemon.md` self-supervision recipe waits on.
+
+**Who can actually read that line.** A **supervised** daemon's stdout goes to the supervisor's log
+sink — the journal, the plist's `StandardOutPath`, the Task's redirect — and the post-install hook
+is not its parent, so it cannot read the stream at all. The split is therefore explicit:
+
+- **A parent that spawned the daemon itself** — the desktop app, a `docs/daemon.md` recipe, a test
+  harness — reads the ready line directly from the pipe. This is the primary mechanism and it is
+  free.
+- **A post-install hook restarting a supervised daemon** cannot, so it waits on one of two things,
+  chosen by spike P2-S4: a supervisor-native readiness report, if the spike adopts one, or an
+  authenticated `GET /healthz` polled with a bounded timeout and a named failure. The health probe
+  must carry the token ADR 0020 §Security defines and must assert a **successful, authenticated**
+  response — a `401` proves the port is bound and proves nothing about readiness.
+
+> **Proposed mechanism, to be confirmed by spike P2-S4 — systemd `Type=notify`.** Round 1 said the
+> `READY=1` write is "a `dgram` send of one datagram, about fifteen lines, no new dependency". That
+> is **false**: `$NOTIFY_SOCKET` names an `AF_UNIX` datagram socket, and Node's built-in
+> `node:dgram` supports UDP over IPv4 and IPv6 only — it cannot open a Unix datagram socket at all.
+> The options are therefore a dependency (a small `sd_notify` package), a native addon, or staying
+> on `Type=exec` and having the post-install step poll an authenticated `/healthz` with a bounded
+> timeout. **Waiting on the stdout ready line is not among them for this caller:** a supervised
+> daemon's stdout goes to the supervisor's log sink and the post-install hook is not its parent, as
+> the paragraph above sets out. P2-S4 picks one, weighing a new runtime dependency in a package
+> whose install path is `npx` against what the notification protocol buys.
+>
+> **Consequence for ADR 0020: no amendment in this round.** Round 1 planned to record
+> `Type=exec` → `Type=notify` as an accepted amendment. Because the mechanism is unproven,
+> ADR 0020's `Type=exec` **stands**. Its dated note says only that readiness is now a decided
+> requirement; that `Type=exec` reports the unit active as soon as `execve` succeeds — before the
+> port is bound, and long before jobs are reconciled; and that whether the fix is the notification
+> protocol or a readiness wait in the installer is open pending this spike.
+>
+> **A round-2 claim withdrawn.** Round 2 added that "`Type=notify` would not, on its own, weaken
+> ADR 0020's foreground-process invariant: it forbids forking just as `Type=exec` does". That is
+> **false** — systemd's notification protocol supports a service moving its main PID, via `MAINPID=`
+> in the notification or `NotifyAccess=all`, so `Type=notify` does *not* forbid forking the way
+> `Type=exec` does. The invariant ADR 0020 states — `serve` stays a foreground process and never
+> forks, and `serve --detach` is never added — is a **property of this daemon that must be preserved
+> deliberately**, not something the unit type enforces on its behalf. P2-S4 records that explicitly,
+> so a later contributor does not read the unit type as a guard it is not.
+
+**Why L3 is not its own record.** Readiness exists to serve two callers, and both are in this
+record: the update sequence needs to know the drain finished and the replacement is up, and the
+desktop spawn path needs the same fact without a supervisor at all. Splitting it produces a record
+whose Context is a forward reference to this one.
+
+## Consequences
+
+- **`serve` writes to stdout in a machine-readable format**, once, at a defined point. That makes
+  stdout part of the contract for anything that spawns the daemon directly, and it means the ready
+  line must not move behind a `--quiet` flag or a log-level filter.
+- **The ready line carries the contract version**, so a directly-spawning parent gets the skew
+  answer without a handshake. This overlaps deliberately with whatever P1-S3 picks for the
+  supervised path; one of them may subsume the other, and that is the spike's call.
+- **A new exit code, `8`, joins the CLI's table** — the first addition since ADR 0020 fixed `2`–`7`.
+  It belongs to the shim, not the daemon.
+- **The post-install hook becomes a real component with real failure modes**, not a one-line
+  `npm` lifecycle script: it stages, drains, switches a supervisor artefact, waits, and rolls back.
+  P2-12's failure injection exists because a rollback path that has never been executed is a
+  hypothesis.
+- **The previous pinned copy is retained** until the replacement has been ready once, which costs
+  disk — roughly a second copy of the ~120 MB ADR 0020 already accepted — until the SEA binaries
+  make the pin unnecessary.
+- **Phase 1 must ship a remediation string that is true in phase 1.** The skew message naming
+  `xplainer daemon restart` before that subcommand exists would be a worse failure than the skew.
+
+## Phase placement
+
+- **Phase 1 (P1-13, P1-14, with spike P1-S3):** the shim's contract-version check and exit `8`, and
+  the stdout ready line — because that is where `mcp --attach` and `serve`'s startup path first
+  exist.
+- **Phase 2 (P2-13, with spike P2-S4):** the supervisor keys, the staged post-install update
+  sequence and `xplainer daemon restart` — because that is where the installer, the supervisor
+  artefacts and the pinned copy exist.
+
+## What this record does not decide
+
+- **How the contract version is advertised, and what "compatible" means.** Both are P1-S3, along
+  with the enum-extension consequence and the tolerance question.
+- **Which readiness mechanism a supervised post-install hook uses.** P2-S4.
+- **How the drain reaches the daemon on macOS and Windows.** That is ADR 0024's drain and spike
+  P2-S5; this record calls the drain and does not implement it.
+- **Whether the switch in step 4 is a rewritten supervisor artefact or a flipped indirection.** A
+  phase-2 choice, stated as a requirement here.
+- **Anything about the desktop app's own update channel.** `electron-updater` (ADR 0004) is
+  unchanged and is not extended.
+- **Anything about the hosted tier.** `services/media-service` is deployed, not installed, and
+  nothing here applies to it.

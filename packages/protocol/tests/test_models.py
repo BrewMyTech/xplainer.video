@@ -53,6 +53,7 @@ def test_job_output_drops_the_command_field_max_returns() -> None:
         "status",
         "exit_code",
         "error",
+        "error_code",
         "started_at",
         "finished_at",
         "output",

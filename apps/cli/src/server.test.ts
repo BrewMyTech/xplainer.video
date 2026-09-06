@@ -11,6 +11,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ENGINE_OWNED_FILES, TOOL_NAMES } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStubBackend } from "./backend.js";
@@ -29,6 +30,24 @@ afterEach(async () => {
 async function serveOnEphemeralPort(): Promise<RunningServer> {
   running = await startServer({ backend: createStubBackend(), port: 0 });
   return running;
+}
+
+/**
+ * The SDK's own client transport does not satisfy the SDK's own `Transport`
+ * interface under `exactOptionalPropertyTypes`: `Transport` declares
+ * `sessionId?: string` while `StreamableHTTPClientTransport` declares
+ * `sessionId: string | undefined` (@modelcontextprotocol/sdk 1.30.0,
+ * `shared/transport.d.ts:83` against `client/streamableHttp.d.ts`). Both spell
+ * the same fact — no session id until the server issues one, and this server is
+ * stateless so it never does — but only one of the two spellings is assignable.
+ *
+ * `satisfies` cannot repair assignability at a call site, and a delegating
+ * adapter would hit the identical mismatch on every optional callback member, so
+ * the widening is stated once, here, in test code. Drop this when the SDK's
+ * declaration is fixed.
+ */
+function clientTransport(url: URL): Transport {
+  return new StreamableHTTPClientTransport(url) as Transport;
 }
 
 describe("xplainer serve", () => {
@@ -58,7 +77,7 @@ describe("xplainer serve", () => {
     const server = await serveOnEphemeralPort();
 
     const client = new Client({ name: "xplainer-cli-test", version: CLI_VERSION });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`)));
+    await client.connect(clientTransport(new URL(`${server.url}/mcp`)));
 
     try {
       const result = await client.callTool({
@@ -89,7 +108,7 @@ describe("xplainer serve", () => {
     const server = await serveOnEphemeralPort();
 
     const client = new Client({ name: "xplainer-cli-test", version: CLI_VERSION });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`)));
+    await client.connect(clientTransport(new URL(`${server.url}/mcp`)));
 
     try {
       const { tools } = await client.listTools();

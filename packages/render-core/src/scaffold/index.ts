@@ -60,7 +60,8 @@ import { ENGINE_OWNED_FILES as ENGINE_OWNED_FILES_FROM_PROTOCOL } from "@xplaine
  * generator that restores the file cannot drift apart into three lists that
  * merely used to agree.
  */
-export const ENGINE_OWNED_FILES = ENGINE_OWNED_FILES_FROM_PROTOCOL;
+export const ENGINE_OWNED_FILES: typeof ENGINE_OWNED_FILES_FROM_PROTOCOL =
+  ENGINE_OWNED_FILES_FROM_PROTOCOL;
 
 /**
  * The files the agent owns, appended after the engine's so the first five keep
@@ -74,8 +75,19 @@ export const ENGINE_OWNED_FILES = ENGINE_OWNED_FILES_FROM_PROTOCOL;
  */
 export const AGENT_OWNED_FILES = ["Scenes.tsx"] as const;
 
-/** Every file one `scaffoldVideo()` call is responsible for. */
-export const SCAFFOLD_FILES = [...ENGINE_OWNED_FILES, ...AGENT_OWNED_FILES] as const;
+/**
+ * Every file one `scaffoldVideo()` call is responsible for.
+ *
+ * The engine's five come first and `Scenes.tsx` last, and `created`, `skipped`
+ * and `restored` are reported in that order. `isolatedDeclarations` cannot infer
+ * a type through the spreads, so the type is written out as an array rather than
+ * a six-element tuple: the ordering above is a guarantee about these values, not
+ * about the type, and no consumer indexes the list by position.
+ */
+export const SCAFFOLD_FILES: readonly (EngineOwnedFile | AgentOwnedFile)[] = [
+  ...ENGINE_OWNED_FILES,
+  ...AGENT_OWNED_FILES,
+];
 
 export type EngineOwnedFile = (typeof ENGINE_OWNED_FILES)[number];
 export type AgentOwnedFile = (typeof AGENT_OWNED_FILES)[number];

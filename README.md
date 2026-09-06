@@ -170,6 +170,11 @@ the half that is open source.
 The phase-0 acceptance criteria that comments and CI step names cite by id (`AC-2c`, `AC-7b`,
 `AC-14b`) are in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
 
+For how the workspace itself is put together — who the members are, what depends on what, and
+which of those claims a command proves — start at
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), which is the entry point the records and the
+roadmap hang off.
+
 ## Tiers
 
 Every package declares its tier in its own `package.json` as
@@ -202,6 +207,13 @@ left for someone to discover.
 - A user-visible change to a published package needs a changeset (`pnpm changeset`).
 - New packages need a `"xplainer": { "tier": ... }` field and all four scripts (`build`,
   `lint`, `typecheck`, `test`), or Turbo silently skips them.
+- **A change to a published package's exported surface requires `pnpm api:report` in the same
+  commit.** Each of the five published, declaration-emitting members carries a committed
+  `api/<name>.api.md`, so a widened or narrowed export shows up in the diff — CI fails on a
+  stale report.
+- **`AGENTS.md` and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) are the agent-facing
+  surface**, at the root and in every member, and **`pnpm verify` is the one command** — it
+  chains the build, lint, typecheck and test graph and every repository gate behind it.
 
 Contributions to the six Apache-2.0 packages arrive under Apache-2.0 §5, which supplies the
 inbound grant in the licence text itself; no separate CLA is required for those

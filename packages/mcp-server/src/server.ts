@@ -32,7 +32,7 @@ import type { RenderBackend } from "./backend.js";
 import { assertAgentOwnedPaths, EngineOwnedPathError } from "./put-source-guard.js";
 
 /** Server name reported in the MCP `initialize` handshake. */
-export const MCP_SERVER_NAME = manifest.name;
+export const MCP_SERVER_NAME: string = manifest.name;
 
 /**
  * Version reported in the handshake when the caller does not supply one.
@@ -41,7 +41,7 @@ export const MCP_SERVER_NAME = manifest.name;
  * number: a process that has its own version — the CLI, the media-service —
  * passes it through {@link CreateMcpServerOptions}.
  */
-export const MCP_CONTRACT_VERSION = manifest.version;
+export const MCP_CONTRACT_VERSION: string = manifest.version;
 
 /** Optional identity overrides for the MCP `initialize` handshake. */
 export type CreateMcpServerOptions = {

@@ -13,7 +13,7 @@
 #
 #   check      The full quality gate, on ubuntu-latest. One discrete step per
 #              assertion so the job summary names the check that failed.
-#              (AC-2, AC-3b, AC-4a, AC-9, AC-12b)
+#              (AC-2, AC-3b, AC-4a, AC-9, AC-12b, AC-14f, AC-15e)
 #
 #   images     The one container build left. Still separate from `check` so
 #              that pulling the pinned upstream Kokoro CPU base image — which
@@ -108,6 +108,19 @@ jobs:
             exit 1
           fi
 
+      # Same placement argument as AC-2c above, and the same shape: a pattern
+      # scan over repository sources that needs no toolchain, so it fails in
+      # seconds on a pristine tree. The command is the one AC-14f names,
+      # unchanged. `package.json` is in the path list deliberately — the way
+      # render or TTS code arrives in this app is a dependency, not a file.
+      - name: apps/desktop holds no render or TTS code (AC-14f)
+        run: |
+          if grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' \
+            apps/desktop/src apps/desktop/*.ts apps/desktop/package.json; then
+            echo "::error::render or TTS code reached apps/desktop; see AC-14f"
+            exit 1
+          fi
+
       - name: Set up Node from .node-version
         uses: actions/setup-node@v7
         with:
@@ -115,6 +128,19 @@ jobs:
 
       - name: Enable corepack
         run: corepack enable
+
+      # AC-2c's placement argument, applied to a second pattern scan: the check
+      # reads repository sources only, so it needs neither the dependency
+      # install nor any build output and fails in seconds instead of after a
+      # full build. It cannot sit beside AC-2c at the very top of the job,
+      # because that step runs before Node exists and this one is a `pnpm`
+      # script, so it goes immediately after the Node and corepack setup.
+      #
+      # It is the compensating control for `isolatedDeclarations` (AC-15): it
+      # turns an `as any` or a `biome-ignore` reached for to satisfy the
+      # compiler into a red build rather than a silent regression.
+      - name: No type or lint suppressions in source (AC-15e)
+        run: pnpm check:no-suppressions
 
       - name: Read pinned Python version
         id: python
@@ -161,6 +187,26 @@ jobs:
       # ship byte-identical, because those have to be readable to work at all.
       - name: Published tarballs leak no source, maps or licence
         run: pnpm check:publish-contract
+
+      # The three steps below sit here, after the tarball check, because this is
+      # the point in the job where the build outputs are already known good.
+      #
+      # `--check` regenerates the five reports from the built declarations into
+      # memory and exits 1 with a unified diff if a committed report differs —
+      # the same shape as AC-9c's codegen staleness check below, deliberately,
+      # so a contributor who has met one has met both.
+      - name: Public API reports are not stale (AC-17)
+        run: pnpm check:api-report
+
+      - name: Architecture doc and agent instructions match the workspace (AC-18, AC-19)
+        run: pnpm check:docs-contract
+
+      # `turbo run lint` invokes each *member's* `lint` script, so the root
+      # `scripts/*.mjs` and the root config files are linted by the lefthook
+      # pre-commit `biome check --staged` job and by nothing in CI. The gap is
+      # inherited rather than introduced, and it costs one step to close.
+      - name: Lint the root scripts and config that turbo does not reach (AC-16e)
+        run: pnpm biome check .
 
       # Turbo skips a member that does not declare the script, silently and with
       # a zero exit, so a member that never declares `lint` is indistinguishable

@@ -86,6 +86,9 @@ must resolve to "relocated" rather than looking like a typo.
 | [0021](0021-proprietary-licence-free-to-use.md) | The published packages are proprietary and free to use — `SEE LICENSE IN LICENSE-BINARY`, not open source | **superseded by 0022** |
 | [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — note 2026-09-06 |
 | [0023](0023-split-the-repository.md) | Split the repository: the local tier is public and open source here, the hosted tier is relocated to a private repository — deferred pending a vendor answer, not cancelled | accepted |
+| [0024](0024-durable-jobs-and-boot-reconciliation.md) | Render jobs are durable records under the daemon's state directory, reconciled at boot by the process that exclusively owns it — a job whose owner is gone ends `error` with an `error_code`, never a stuck `running` or a `404` | accepted |
+| [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted |
+| [0026](0026-agent-first-repository-contracts.md) | The repository's contracts are machine-checked — ten `tsconfig` flags, `isolatedDeclarations`, seven Biome rules, nine ruff groups, five committed API reports and a checked `docs/ARCHITECTURE.md` — and `AGENTS.md` is the one agent instruction surface | accepted |
 
 ### The relocated five, and why each could not stay
 
@@ -140,6 +143,29 @@ to two members and the import-linter contract retiring (0001); both `.mcp.json` 
 to a local stdio transport (0013); two cited documents relocating (0019); and the repository
 decision that 0022 explicitly deferred being taken (0022). **No body was rewritten in any of
 them.**
+
+ADR 0008 carries a dated note of 2026-09-06 pointing at
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md). ADR 0008 fixed the **shape** of a job —
+a `job_id` returned immediately, five states, an agent that polls `explainer_job` — and
+deliberately left the queue implementation open. ADR 0024 fills that gap on the local tier: where
+the record lives, who is allowed to touch it, and what happens to it when the daemon dies without
+warning. It adds the one thing ADR 0008's contract implies but does not state — that **polling
+terminates across a restart** — and one field, `error_code`, to the returned shape, before
+`packages/protocol`'s first publish. ADR 0008 stays `accepted` and is not rewritten.
+
+ADR 0020 carries a dated note of 2026-09-06 pointing at **both**
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md) and
+[ADR 0025](0025-daemon-updates-and-readiness.md): 0024 because ADR 0020 required that a render
+whose process dies must never stay stuck in `running` without saying what re-establishes that once
+the process is gone, and because exclusive ownership — not the recorded port — is what makes the
+single-writer property true at reconciliation time; and 0025 because ADR 0020's own accepted cost,
+a copy of the interpreter and the CLI pinned under the state directory, has an upgrade consequence
+it does not spell out, and because a parent needs a readiness announcement rather than a sleep.
+**That note is a pointer, not a value change.** `Type=exec` **stands** in ADR 0020; the concrete
+defect is named — the unit reports active as soon as `execve` succeeds, which is before the port is
+bound — and whether the fix is `Type=notify` or a readiness wait in the installer is open pending
+spike **P2-S4**. Round 1 of the plan that produced 0024 and 0025 proposed amending the `Type=`
+value and that proposal was withdrawn. ADR 0020 stays `accepted` and is not rewritten.
 
 ## Licence
 

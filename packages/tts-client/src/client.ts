@@ -45,8 +45,13 @@ const ERROR_BODY_LIMIT = 400;
 
 /** A Kokoro request that the server rejected, or answered with an unusable body. */
 export class KokoroError extends Error {
-  /** HTTP status, when the failure was an HTTP one. */
-  readonly status?: number;
+  /**
+   * HTTP status, when the failure was an HTTP one, and `undefined` when it was
+   * not. The field is always present so a caller reading the emitted `.d.ts`
+   * sees that the absence is expressible rather than having to guess whether the
+   * property exists (`exactOptionalPropertyTypes`).
+   */
+  readonly status: number | undefined;
 
   constructor(message: string, status?: number) {
     super(message);

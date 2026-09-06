@@ -68,6 +68,7 @@ function createStubBackend(calls: RecordedCall[]): RenderBackend {
         status: "done",
         exit_code: 0,
         error: null,
+        error_code: null,
         started_at: "2026-09-05T10:00:00+00:00",
         finished_at: "2026-09-05T10:01:00+00:00",
         output: { lines: ["rendered"] },

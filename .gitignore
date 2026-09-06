@@ -11,6 +11,9 @@ release/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+# import-linter was removed at the split; `pyproject.toml` carries the argument.
+.import_linter_cache
 
 # --- Local environment -------------------------------------------------------
 .env

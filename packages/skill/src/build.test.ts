@@ -206,9 +206,13 @@ describe("the manifests", () => {
       plugins: JsonObject[];
     };
     expect(marketplace.plugins).toHaveLength(1);
-    expect(marketplace.plugins[0].name).toBe(plugin.name);
-    expect(marketplace.plugins[0].version).toBe(packageVersion);
-    expect(marketplace.plugins[0].source).toBe("./");
+    const [listed] = marketplace.plugins;
+    if (listed === undefined) {
+      throw new Error("marketplace.json lists no plugins");
+    }
+    expect(listed.name).toBe(plugin.name);
+    expect(listed.version).toBe(packageVersion);
+    expect(listed.source).toBe("./");
   });
 });
 
@@ -219,19 +223,25 @@ describe("the MCP declaration", () => {
       expect(Object.keys(servers), `${relative} declares more than one server`).toEqual([
         "xplainer",
       ]);
-      expect(servers.xplainer.type, `${relative} transport`).toBe(MCP_SERVER.type);
-      expect(servers.xplainer.command, `${relative} command`).toBe(MCP_SERVER.command);
-      expect(servers.xplainer.args, `${relative} args`).toEqual(MCP_SERVER.args);
+      const { xplainer } = servers;
+      if (xplainer === undefined) {
+        throw new Error(`${relative} declares no xplainer server`);
+      }
+      expect(xplainer.type, `${relative} transport`).toBe(MCP_SERVER.type);
+      expect(xplainer.command, `${relative} command`).toBe(MCP_SERVER.command);
+      expect(xplainer.args, `${relative} args`).toEqual(MCP_SERVER.args);
     }
   });
 
   it("declares nothing that would send a client at a remote endpoint", () => {
     for (const relative of ["claude-plugin/.mcp.json", "codex-plugin/.mcp.json"]) {
       const servers = readJson(relative).mcpServers as Record<string, JsonObject>;
+      const { xplainer } = servers;
+      if (xplainer === undefined) {
+        throw new Error(`${relative} declares no xplainer server`);
+      }
       for (const key of HOSTED_ONLY_KEYS) {
-        expect(Object.keys(servers.xplainer), `${relative} still declares ${key}`).not.toContain(
-          key,
-        );
+        expect(Object.keys(xplainer), `${relative} still declares ${key}`).not.toContain(key);
       }
     }
   });
