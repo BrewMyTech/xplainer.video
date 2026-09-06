@@ -24,7 +24,8 @@
     "check:publish-contract": "node scripts/check-publish-contract.mjs",
     "api:report": "node scripts/api-report.mjs",
     "check:api-report": "node scripts/api-report.mjs --check",
-    "check:docs-contract": "node scripts/check-docs-contract.mjs"
+    "check:docs-contract": "node scripts/check-docs-contract.mjs",
+    "e2e:macos": "node scripts/e2e/macos.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",

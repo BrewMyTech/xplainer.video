@@ -12,7 +12,12 @@ exclusive ownership of the state directory, one JSON file per job, boot reconcil
 that executes each job's worker as a child process in its own process group. `serve` is also
 **hardened**: a bearer token minted `0600` in a `0700` directory, a guard in front of every TCP
 route (`Host` allowlist, `Origin` validation, the token on `/healthz` too), a `SIGTERM` drain that
-ends in exit `0`, and one JSON line on stdout announcing readiness. All render
+ends in exit `0`, and one JSON line on stdout announcing readiness. It binds **two** listeners over
+that one application — the TCP port, and a unix socket (a named pipe on Windows) inside a `0700`
+directory where filesystem permissions are the authentication — and `xplainer mcp` is the stdio
+entry an agent is configured with, either running the tools in its own process or proxying them to
+that socket with `--attach` (`src/mcp/`), while `xplainer connect claude|codex` is what writes that
+entry into an agent's own configuration (`src/connect/`). All render
 and TTS logic lives here, not in `apps/desktop`
 ([ADR 0016](../../docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)), and from
 phase 2 `serve` becomes an installed, supervised, per-user daemon
@@ -40,6 +45,7 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `workers.ts` | The registry `start.ts` registers: one `WorkerSpec` per job kind, and the last gate before Chrome |
 | `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600` |
 | `guard.ts` | The four layers every TCP request passes: `Host`, `Origin`, the token, the redacted log |
+| `ipc.ts` | The socket path, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
 | `binding.ts` | Which addresses `--bind` may take, and the port precedence — two pure functions, no I/O |
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
@@ -55,8 +61,10 @@ owner.lock          the ownership artefact: pid, start token, boot id, nonce (06
 token               DURABLE. 32 random bytes, base64url, 0600 — or wherever XPLAINER_TOKEN_FILE says
 daemon.json         DURABLE. port, contract version, token_file, directory_flush, recentStarts[], stalled
 runtime.json        EPHEMERAL. this run's pid, run id, boot id, bound port, addresses, socket
+ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown
 jobs/job-000001.json   one record per job, temp-then-rename, with a bounded log tail
 jobs/corrupt/          records that could not be parsed, moved aside rather than deleted
+mcp/session-XXXXXX/    one `xplainer mcp` stdio session's private job store, removed when it ends
 ```
 
 **The two files have opposite lifetimes and that is the whole point** (ADR 0020 §Port and
@@ -84,6 +92,22 @@ runner because they take tens of seconds
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
 | `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else `XPLAINER_TTS_URL`, else the tts-client's own resolution |
 
+### `src/mcp/` — the two things `xplainer mcp` can be
+
+`xplainer connect` writes an agent a **command**, never a URL and never a token
+([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not TCP),
+and this directory is what that command runs.
+
+| Module | What it owns |
+|---|---|
+| `stdio-server.ts` | `xplainer mcp`: the eight tools in this process, over a session-private job store |
+| `attach.ts` | `xplainer mcp --attach`: the `/healthz` skew gate, then one pumped MCP session |
+| `socket-fetch.ts` | `fetch` over a unix socket, which Node's own has no supported way to do |
+
+`xplainer mcp` is the **plugin-bundle** path — `npx -y @xplainer/cli mcp`, on a machine with nothing
+installed — and `--attach` is what a machine with a daemon gets. They share the *workspace* and
+deliberately not the *job store*: see the invariant below.
+
 The workspace itself belongs to `@xplainer/render-core` — the layout, the template, the scaffold,
 the argv builders and the preflight all live there, and nothing about a video's shape is decided
 here:
@@ -98,11 +122,31 @@ here:
   requests/job-000001.json   what the job was asked to do
 ```
 
+### `src/connect/` — the entry an agent is given, and who writes it
+
+`xplainer connect claude` and `xplainer connect codex` write **one stdio entry** —
+`xplainer mcp --attach`, or `npx -y @xplainer/cli mcp --attach` on a machine where the binary is not
+on `PATH` — into the agent's own configuration, and nothing else goes in it: no URL, no port and no
+token, because the transport is the daemon's unix socket and filesystem permissions are its
+authentication ([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is
+IPC, not TCP).
+
+| Module | What it owns |
+|---|---|
+| `entry.ts` | The command line itself: the real `PATH` lookup, and the two forms it chooses between |
+| `preflight.ts` | The check before any write: `daemon.json`'s recorded port, or a refusal and exit `3` |
+| `claude.ts` | `claude mcp add` when that CLI is on `PATH`, else `~/.claude.json`'s `mcpServers` |
+| `codex.ts` | The `[mcp_servers.xplainer]` table in `~/.codex/config.toml`, edited in place |
+| `toml-tables.ts` | Where that table starts and ends, and the declarations it refuses to duplicate |
+| `atomic-write.ts` | temp → `rename` over somebody else's file, keeping the mode that file had |
+| `refusal.ts` | `ConnectRefusal`: one sentence and one exit code from the documented table |
+
 ## Public surface
 
 From `src/index.ts`: `createServer`, `startServer`, `DEFAULT_PORT`, `DEFAULT_HOSTNAME` and their
 option types — including `GuardFactory`, the middleware-over-the-bound-port seam a second binding
-uses; `createLocalBackend`, `LocalBackendError` and `LocalBackendCode`; `resolveWorkspaceRoot`,
+uses, and `RunningServer.socket`, the IPC endpoint a `startServer({ ipc })` bound;
+`createLocalBackend`, `LocalBackendError` and `LocalBackendCode`; `resolveWorkspaceRoot`,
 `VIDEOS_DIR_ENV` and `WORKSPACE_DIR_NAME`; `CLI_VERSION`; `NOT_IMPLEMENTED_EXIT_CODE` and the
 not-implemented helpers. `bin/` ships `dist/bin.js` as `xplainer`. Published, emits declarations,
 carries `api/cli.api.md`.
@@ -133,6 +177,11 @@ node apps/cli/dist/bin.js status                 # the two state files, confirme
 kill %1                                          # drains, removes runtime.json, exits 0
 
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
+
+# What `connect` would write, into a throwaway HOME rather than your own agent configuration:
+FAKE_HOME=$(mktemp -d)
+HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
+cat "$FAKE_HOME/.codex/config.toml"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -148,7 +197,9 @@ Then the root procedure: `pnpm verify`.
   because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
-  second reports on the installed supervisor artefact and is still a phase-2 stub.
+  second reports on the installed supervisor artefact and is still a phase-2 stub. `connect` and
+  `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the seven
+  lifecycle verbs — for the same reason and with the same implicit `help [command]` disabled.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
   note ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive
   ownership). Reconciliation *rewrites other processes' records*, so a second `serve` has to be
@@ -186,16 +237,69 @@ Then the root procedure: `pnpm verify`.
   `scaffoldVideo()` — restoring an engine-owned file an agent wrote through `write_source_to`, which
   is the hole ADR 0007 accepted and ADR 0018 layer 4 closes — and `assertRenderable()` before a
   single Chrome process starts.
+- **Two listeners, one application, and only one of them carries the guard.** `startServer({ ipc })`
+  binds the TCP port with `serve()` and the socket with `createAdaptorServer({ fetch })` over the
+  *same* `Hono` object — ADR 0020's "One `createServer()`, one tool registration, two listeners".
+  A request is exempt from the guard because the **socket's own adaptor** put its `Request` in a
+  `WeakSet` on the way in, never because of anything the request says: no header, path or body can
+  make a TCP request look like an IPC one, and there is no "local mode" flag to get wrong. Keep it
+  that way — the moment the exemption is inferred from a header or from `remoteAddress`, the
+  loopback guard has a bypass in it.
+- **The socket lives in a `0700` directory and is unlinked on a clean stop.** `daemon/ipc.ts` makes
+  the directory and clears whatever the last run left at the path, and it is only allowed to do that
+  because `serve` calls it **after** `acquireOwnership()`: a socket file present while this process
+  holds `owner.lock` belongs to a run that is gone. Windows gets a named pipe named after a digest
+  of the state directory, which has no mode, no directory and nothing to unlink — ADR 0020 §Security
+  R-SEC-5 already records that gap as the installer's to close in phase 2.
+- **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
+  store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
+  takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
+  **not** take `owner.lock`, deliberately: an `mcp` that refused to start because a daemon was
+  running would defeat the `npx -y @xplainer/cli mcp` bundle path it exists for. The consequence is
+  documented rather than discovered: a `job_id` from one connection means nothing on another.
+- **A shim's stdout is the JSON-RPC stream.** Both `mcp` paths write every human-readable line to
+  stderr and never call `io.writeOut`; one stray line on stdout is a parse error inside the agent,
+  with no message anyone will see. Same rule as the ready line, pointed the other way.
+- **`connect` writes a command, never a credential, and proves there is a daemon first.** The entry
+  is `connect/entry.ts`'s and neither writer composes its own: `xplainer mcp --attach`, or
+  `npx -y @xplainer/cli mcp --attach` where the binary is not on `PATH`. No URL, no port and no
+  token go into an agent's file
+  ([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §Security R-SEC-8), and the
+  *reason* the port is read at all is the refusal: ADR 0020 §Ordering says `connect` "refuses to
+  write an agent configuration pointing at a daemon that has never answered (`--force`
+  overrides)", and `daemon.json`'s recorded port is that proof. Exit `3`, having written nothing.
+- **Somebody else's configuration is edited, never reserialised.** `~/.claude.json` is Claude
+  Code's whole per-user state and `~/.codex/config.toml` carries the user's comments and table
+  order; a parse-and-write round trip through a JSON or TOML serialiser returns a file that means
+  the same and looks nothing like theirs. So the Claude path prefers `claude mcp add` — the
+  vendor's own writer, which is the only thing that stays correct when their layout changes — and
+  the Codex path replaces exactly the lines of `[mcp_servers.xplainer]` and no others. Every write
+  goes through `connect/atomic-write.ts`, temp-then-`rename`, keeping the mode the file already
+  had. A declaration this line-oriented edit cannot safely replace — a dotted key, an inline
+  parent, an array of tables — is **refused**, because appending beside it is a duplicate key and a
+  `config.toml` with a duplicate key does not load at all.
+- **The skew check happens before a session exists, and compares the contract.** `mcp --attach`
+  reads `contract_version` from `GET /healthz` over the socket and applies
+  `isContractCompatible()` from `@xplainer/protocol` — never `serverInfo.version`, which is the
+  release, and never the `initialize` result, because "a check that requires the session it is
+  gating is not a gate" ([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md) §Note,
+  2026-09-06). An incompatible pair exits `8` naming both versions and a command that **exists
+  today**; the release version in the same body is what makes that command
+  `npm i -g @xplainer/cli@<the daemon's release>` rather than a phase-2 verb.
 - **Exit codes are a documented table**, in
   [`docs/ARCHITECTURE.md` §6](../../docs/ARCHITECTURE.md#6-the-runtime) and in the ADR that owns
   each one. A new code is added to the table and to ADR 0020's successor — never invented at the
   call site; `daemon/exit-codes.ts` is the only place `serve` and `status` read them from.
-  `NOT_IMPLEMENTED_EXIT_CODE = 2` keeps its meaning and its export site, and **`8` is
-  reserved for contract skew** ([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md)).
+  `NOT_IMPLEMENTED_EXIT_CODE = 2` keeps its meaning and its export site.
   What is used today: **`0`** a clean drain *or* a latched circuit breaker — the portable "do not
-  restart" signal on all three supervisors — **`1`** a usage error such as a refused `--bind`,
-  **`4`** installed but not healthy (`status` only), **`10`** another process holds this machine's
-  runtime — the state directory is owned, or the port is already in use — **`11`** a state file
+  restart" signal on all three supervisors — **`1`** a usage error such as a refused `--bind` or a
+  `--scope` this command cannot write, **`3`** a precondition unmet with nothing written —
+  `connect` with no daemon ever bound here, or an agent configuration file that cannot be
+  understood — **`4`** installed but not healthy — `status`, and `mcp --attach` when nothing answers on the
+  socket — **`8`** contract skew between the shim and the daemon
+  ([ADR 0025](../../docs/adr/0025-daemon-updates-and-readiness.md) §Part two), **`10`** another
+  process holds this machine's runtime — the state directory is owned, or the port is already
+  in use — **`11`** a state file
   exists and cannot be read, **`12`** the token file exists and cannot be used, and **`70`**
   anything else. `EADDRINUSE` is deliberately `10` rather than `70`: a supervisor told `70`
   restarts a daemon whose port is held by something else, for ever.
@@ -205,7 +309,7 @@ Then the root procedure: `pnpm verify`.
   test scaffolding that becomes a supported surface.
 - **The guard is unconditional, and it is mounted before any route.**
   `createServer()` takes it as a *parameter*, so the TCP listener carries it, the IPC listener
-  (P1-9) carries none — filesystem permissions are that transport's authentication — and
+  carries none — filesystem permissions are that transport's authentication — and
   `services/media-service` carries its own at phase 3. Three rules inside it are not negotiable
   (ADR 0020 §Security): the `Host` allowlist is **exact string equality** against
   `{127.0.0.1, localhost, [::1]}:PORT` and never a parser, because `http://2130706433:8787` reaches
@@ -265,7 +369,15 @@ in `src/program.ts`, and — until it does something — register it as a stub t
 exits `NOT_IMPLEMENTED_EXIT_CODE`. Update the `toEqual` surface assertion in the same commit.
 
 **A route:** add it in `src/server.ts` and test it against a started server, not against the app
-object alone.
+object alone. Both listeners get it: the guard is mounted before every route, so a route that must
+*not* be reachable without the token needs saying so in words, not in a second application.
+
+**Anything under `src/mcp/`:** it is an agent-facing entry, so the first question is which of stdout
+and stderr it may write to — the answer is stderr, always. The in-process server takes a session
+directory and gives it back; the shim decides *before* it proxies and refuses with a documented exit
+code. Neither one may grow a tool list, a schema or a refusal of its own: those live in
+`@xplainer/mcp-server` and `src/backend.ts`, and a shim that knows what a tool is has become a
+second implementation of the contract.
 
 **A daemon module:** add it under `src/daemon/` as one named concept per file with a colocated
 `*.test.ts`, and give it the state directory as an argument rather than reading the environment —
@@ -296,6 +408,15 @@ the whole path — create, narrate, still, render — and reads the MP4 back wit
 Node. It is skipped only by `XPLAINER_SKIP_RENDER_TEST=1`, which CI does not set. Speech comes from
 `XPLAINER_TTS_FIXTURE`, a recorded WAV and its word spans; the narration port itself is never
 substituted.
+
+**An agent for `connect` to write:** add a module under `src/connect/` and a verb to the group in
+`src/commands/connect.ts`, and update the group's `toEqual` listing in `program.test.ts` in the same
+commit. Two rules are not negotiable: the entry comes from `connect/entry.ts` — a verb that composes
+its own command line is a second place for a token to appear — and the vendor's own writer is
+preferred to a file format reimplemented here, with a direct write only for the scope that vendor
+documents. Test it as a real spawned `xplainer connect` with a temporary `HOME` and a temporary
+`PATH`, assert against the file on disk, and read that file back with a parser that is **not** the
+one that wrote it.
 
 **An export:** add it to `src/index.ts` explicitly, run `pnpm api:report`, commit the `.api.md`.
 

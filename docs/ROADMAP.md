@@ -99,7 +99,12 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
   now also what unblocks the plugin bundles**, which declare `npx -y @xplainer/cli mcp` and
   cannot be submitted to a marketplace while that command exits 2.
 - A real `RenderBackend` implementation behind `packages/mcp-server`'s interface, replacing
-  the phase-0 stub whose methods return "not implemented in this phase".
+  the phase-0 stub whose methods returned "not implemented in this phase".
+  - *Landed 2026-09-06 (US-006):* `apps/cli/src/backend.ts` implements all eight tools over the
+    shared Remotion workspace — the four filesystem ones answer immediately, the three slow ones
+    enqueue against the daemon's job runner, and `explainer_job` relays `runner.get()`. The stub
+    and its exit code are gone; `grep -rn 'not implemented in this phase' apps packages` finds
+    nothing for these tools.
 - **The prerequisites of the supervised daemon
   ([ADR 0020](adr/0020-always-running-local-daemon.md)), which are here and not in phase 2
   because phase 1 would otherwise get each of them wrong.** ADR 0020 makes the local runtime an
@@ -245,6 +250,34 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
 - **P1-1** An agent, using only the installed skill, drives `create → put_source → narrate →
   still → render` to a finished 1920×1080 @ 30 fps MP4 with burned captions — on a headless
   Linux VM **and** on macOS.
+  - *Amended 2026-09-06 (US-010): the macOS half is proven; the Linux VM half is not.* `pnpm
+    e2e:macos` (`scripts/e2e/macos.mjs`, deliberately **not** part of `pnpm verify`) starts a real
+    `xplainer serve` in a temporary state directory, attaches an MCP client over `xplainer mcp
+    --attach` — the daemon's unix socket, no URL and no token — and drives all five calls against
+    Kokoro in Docker, polling `explainer_job` to `done` each time. The run of 2026-09-06 produced
+    a 491-frame, 16.37 s MP4: `ffprobe` reports 1920×1080, `30/1` fps, `h264` with an `aac`
+    stream, 13.67 ms from `timings.json`'s total, and `narration.wav` is 0.33 ms from that same
+    total. The captions are burned in, not merely configured: frame 257 extracted from the MP4
+    differs from the same frame of a captions-disabled render across 3.89% of the caption band
+    and 0.001% of a band of equal size above it. The artefacts are `e2e-sample.mp4` and the
+    transcript `e2e-macos.log`, both under `$COLLIE_ARTIFACTS_DIR`. **What it does not prove** is
+    the sentence's first clause: the driver is a script calling the tools in order, not a language
+    model reading `packages/skill`'s `SKILL.md` and deciding to. The tool path is proven; the
+    instructions above it are judged by P1-4 and by using the thing.
+  - *Pending: the headless Linux VM.* Nothing in the script is macOS-specific — it resolves
+    `ffmpeg` and `ffprobe` from `PATH` — so the run that settles the other half is the same one,
+    on a VM with Docker, `ffmpeg` and the Node and pnpm versions this repository pins:
+
+    ```bash
+    docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 \
+      ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    corepack enable && pnpm install --frozen-lockfile
+    COLLIE_ARTIFACTS_DIR=/tmp/xplainer-e2e XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm e2e:macos
+    docker stop xplainer-e2e-kokoro
+    ```
+
+    Remotion downloads a headless Chrome shell on that machine's first render, and the script's
+    name is the first thing that run should correct.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged

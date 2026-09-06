@@ -12,7 +12,7 @@
  * failure ADR 0020's own note describes: "the argument that a second `serve` is harmless because
  * the recorded port makes it exit `10` holds only at **bind**, and reconciliation happens earlier".
  *
- * Around that ordering sit the four things
+ * Around that ordering sit the five things
  * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §`serve` stays a foreground
  * process calls "prerequisites rather than extras", and each one is a module rather than a branch
  * here:
@@ -22,6 +22,14 @@
  *   requires the `Host` allowlist to be built after bind and `--port 0` must keep working. A token
  *   file that exists and cannot be used ends the process with `12`: a daemon that cannot enforce
  *   authentication must not serve.
+ * - **The IPC listener** (`../daemon/ipc.ts`), the second binding of ADR 0020 §The agent path is
+ *   IPC, not TCP: a unix socket — a named pipe on Windows — inside a `0700` directory under the
+ *   state directory, serving the same application with **no guard at all**, because "filesystem
+ *   permissions are the authentication … the socket is exactly as strong as the uid boundary".
+ *   That is the transport `xplainer mcp --attach` dials, which is why the entry
+ *   `xplainer connect` writes into an agent's configuration carries no URL and no token, and why
+ *   the whole DNS-rebinding class is absent from the path agents actually use rather than filtered
+ *   out of it. Its path is the ready line's `socket` field and `runtime.json`'s.
  * - **The `SIGTERM` handler** (`../daemon/shutdown.ts`), which is what makes this a process a
  *   supervisor can stop: drain for at most 20 s, close the listeners, remove `runtime.json` and the
  *   socket, exit `0`.
@@ -59,13 +67,14 @@ import {
 import { readDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_INTERNAL_EXIT_CODE } from "../daemon/exit-codes.js";
 import { createLoopbackGuard } from "../daemon/guard.js";
+import { type PreparedIpcSocket, prepareIpcSocket } from "../daemon/ipc.js";
 import { formatReadyLine, readyAnnouncement } from "../daemon/ready.js";
 import type { WorkerRegistry } from "../daemon/runner.js";
 import { installShutdownHandlers } from "../daemon/shutdown.js";
 import { type StartedDaemon, startDaemon } from "../daemon/start.js";
 import { loadOrMintToken, resolveTokenPath, TokenUnreadableError } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
-import { DEFAULT_PORT, startServer } from "../server.js";
+import { DEFAULT_PORT, IpcBindError, startServer } from "../server.js";
 
 /** The highest port a TCP listener can bind. */
 const MAX_PORT = 65535;
@@ -216,10 +225,24 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         root: daemon.workspaceRoot,
       });
 
+      // The `0700` directory and a socket path free of whatever the last run left behind, made
+      // after ownership so that clearing a stale socket cannot clear a *live* daemon's
+      // (ADR 0024 §Exclusive ownership is what makes that safe). A path this platform cannot bind
+      // is refused here, by length, rather than as an opaque `bind(2)` failure later.
+      let ipc: PreparedIpcSocket;
+      try {
+        ipc = prepareIpcSocket(stateDir);
+      } catch (error) {
+        await daemon.close();
+        io.writeErr(`${internalFailure(error).message}\n`);
+        io.exit(DAEMON_INTERNAL_EXIT_CODE);
+      }
+
       const bound = await startServer({
         backend,
         port: port.port,
         hostname: bind.hostname,
+        ipc: { path: ipc.path },
         guard: (boundPort) =>
           createLoopbackGuard({
             token,
@@ -240,6 +263,13 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         // A daemon that cannot bind must not keep the state directory: the next attempt, or the
         // supervisor's restart, has to be able to acquire it.
         await daemon.close();
+        // The IPC listener has its own error, and it names the socket rather than the port: a
+        // message saying "could not bind 127.0.0.1:8787" about a failed `listen()` on a socket
+        // sends the reader to look at the wrong thing entirely.
+        if (bound.error instanceof IpcBindError) {
+          io.writeErr(`${bound.error.message}\n`);
+          io.exit(DAEMON_INTERNAL_EXIT_CODE);
+        }
         // `EADDRINUSE` gets `10` rather than `70`, because a supervisor told `70` restarts a daemon
         // whose port is held by something else, for ever (ADR 0020 §Port and discovery).
         const failure = describeBindFailure(bound.error, {
@@ -250,12 +280,10 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         io.exit(failure.exitCode);
       }
 
-      // `socket: null` until the IPC listener lands (roadmap P1-9): the key is written from the
-      // first release so a reader never has to tell "no socket" apart from "an older daemon".
       daemon.markReady({
         port: bound.running.port,
         addresses: [bound.running.url],
-        socket: null,
+        socket: bound.running.socket,
         tokenFile: tokenPath,
         contractVersion: MCP_CONTRACT_VERSION,
       });
@@ -264,7 +292,9 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         stateDir,
         drain: (timeoutMs) => daemon.close(timeoutMs),
         listeners: [bound.running],
-        socketPath: null,
+        // A named pipe has no directory entry, so there is nothing to unlink and asking would be a
+        // different error rather than "already gone".
+        socketPath: ipc.removeOnShutdown ? bound.running.socket : null,
         log: (line) => {
           io.writeErr(`${line}\n`);
         },
@@ -282,6 +312,11 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         `xplainer serve: listening on ${bound.running.url} (MCP at ${bound.running.url}/mcp), ` +
           `port from ${port.source}; every TCP request needs the bearer token in ${tokenPath}.\n`,
       );
+      io.writeErr(
+        `xplainer serve: also listening on ${ipc.path}, where filesystem permissions are the ` +
+          "authentication and no token is asked for — that is the socket `xplainer mcp --attach` " +
+          "dials, and it is why an agent's configuration holds no URL and no secret.\n",
+      );
 
       await seams.onListening?.(daemon);
 
@@ -291,7 +326,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         formatReadyLine(
           readyAnnouncement({
             port: bound.running.port,
-            socket: null,
+            socket: bound.running.socket,
             contractVersion: MCP_CONTRACT_VERSION,
             pid: process.pid,
           }),

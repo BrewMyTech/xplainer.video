@@ -28,6 +28,12 @@ export const TS_SOURCE_HOOK = fileURLToPath(new URL("./ts-source-hook.ts", impor
 /** `xplainer serve` through the real command tree. */
 export const CHILD_SERVE = fileURLToPath(new URL("./child-serve.ts", import.meta.url));
 
+/** The whole command tree, with argv passed through — `mcp`, `mcp --attach`, anything. */
+export const CHILD_CLI = fileURLToPath(new URL("./child-cli.ts", import.meta.url));
+
+/** A daemon whose `/healthz` says whatever `XPLAINER_TEST_HEALTHZ` says, over the real socket. */
+export const CHILD_FAKE_DAEMON = fileURLToPath(new URL("./child-fake-daemon.ts", import.meta.url));
+
 /** A daemon that enqueues a job and then kills itself. */
 export const CHILD_DAEMON = fileURLToPath(new URL("./child-daemon.ts", import.meta.url));
 

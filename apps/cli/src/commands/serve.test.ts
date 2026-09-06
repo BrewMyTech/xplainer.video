@@ -20,14 +20,24 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { REMOTE_EXPOSURE_FLAG } from "../daemon/binding.js";
+import { IPC_DIR, IPC_SOCKET_FILE } from "../daemon/ipc.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { parseReadyLine, type ReadyAnnouncement, waitForReadyLine } from "../daemon/ready.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDirLayout } from "../daemon/state-dir.js";
@@ -79,6 +89,42 @@ async function serveUntilReady(
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   const token = readFileSync(env[TOKEN_FILE_ENV] ?? join(stateDir, TOKEN_FILE), "utf8").trim();
   return { child, ready, token };
+}
+
+/**
+ * One `GET /healthz`, over a TCP port or over a unix socket, with exactly the headers given.
+ *
+ * `node:http` rather than `fetch` for the same reason `server.test.ts` uses it: `fetch` writes the
+ * `Host` header itself and has no supported way to name a socket path at all. Both destinations go
+ * through this one function so that "the same request" in the assertions below is literally the
+ * same request, differing in nothing but where it was sent.
+ */
+function getHealthz(
+  target: { port: number } | { socketPath: string },
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const call = request(
+      {
+        ...("port" in target ? { host: "127.0.0.1", port: target.port } : target),
+        path: "/healthz",
+        method: "GET",
+        headers,
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    call.once("error", reject);
+    call.end();
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -252,16 +298,17 @@ describe("the ready line", () => {
     expect(ready.event).toBe("ready");
     expect(ready.pid).toBe(child.process.pid);
     expect(ready.contract_version).toBe(MCP_CONTRACT_VERSION);
-    // `null` until the IPC listener lands (roadmap P1-9), and present so a parent written against
-    // the line today keeps parsing when the socket arrives.
-    expect(ready.socket).toBeNull();
+    // The second listener, named: a parent reading this line learns the socket path without a
+    // request, which is the whole point of announcing rather than being polled.
+    expect(ready.socket).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
+    expect(existsSync(ready.socket ?? "")).toBe(true);
 
     const runtime = JSON.parse(
       readFileSync(stateDirLayout(stateDir).runtimeState, "utf8"),
     ) as Record<string, unknown>;
     expect(runtime.port).toBe(ready.port);
     expect(runtime.addresses).toEqual([`http://127.0.0.1:${ready.port}`]);
-    expect(runtime.socket).toBeNull();
+    expect(runtime.socket).toBe(ready.socket);
     // Announced *after* ownership, reconciliation and the bind: the listener answers immediately.
     const response = await fetch(`http://127.0.0.1:${ready.port}/healthz`, {
       headers: {
@@ -269,6 +316,67 @@ describe("the ready line", () => {
       },
     });
     expect(response.status).toBe(200);
+  }, 30_000);
+});
+
+/**
+ * ADR 0020 §The agent path is IPC, not TCP, as a running daemon: "the TCP binding passes the
+ * loopback guard, the IPC binding passes none … Filesystem permissions are the authentication."
+ *
+ * The pair of tests below is the whole claim, and it is only a claim about a **process**: the same
+ * bytes, sent to the same route of the same daemon, are refused on one listener and served on the
+ * other. Asserting either half alone would prove nothing — a socket that answered everything with a
+ * `200` would pass the second, and a guard that refused everything would pass the first.
+ */
+describe("the IPC listener", () => {
+  it("serves a request the TCP listener refuses, because the socket is the credential", async () => {
+    const stateDir = stateDirectory();
+    const { ready } = await serveUntilReady(CHILD_SERVE, stateDir);
+    const socketPath = ready.socket ?? "";
+
+    // One request, no `Authorization`, sent twice.
+    const overTcp = await getHealthz({ port: ready.port });
+    const overSocket = await getHealthz({ socketPath });
+
+    expect(overTcp.status).toBe(401);
+    expect(overTcp.body).toContain("UNAUTHORIZED");
+    expect(overSocket.status).toBe(200);
+    expect(JSON.parse(overSocket.body)).toEqual({
+      status: "ok",
+      version: expect.any(String),
+      contract_version: MCP_CONTRACT_VERSION,
+    });
+  }, 30_000);
+
+  it("puts the socket in a 0700 directory, which is what that authentication is", async () => {
+    const stateDir = stateDirectory();
+    const { ready } = await serveUntilReady(CHILD_SERVE, stateDir);
+    const socketPath = ready.socket ?? "";
+
+    expect(socketPath).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
+    expect(mode(dirname(socketPath))).toBe(octal(STATE_DIR_MODE));
+    expect(statSync(socketPath).isSocket()).toBe(true);
+  }, 30_000);
+
+  /**
+   * Step 6 of ADR 0024's drain is "remove `runtime.json` **and the socket**, exit `0`", and the
+   * socket half is why: a socket file that outlives its daemon is a path `mcp --attach` dials and
+   * finds nothing behind — a `ECONNREFUSED` where an honest `ENOENT` would have said "no daemon".
+   */
+  it("unlinks the socket on a clean shutdown, along with runtime.json", async () => {
+    const stateDir = stateDirectory();
+    const { child, ready } = await serveUntilReady(CHILD_SERVE, stateDir);
+    const socketPath = ready.socket ?? "";
+    expect(existsSync(socketPath)).toBe(true);
+
+    child.process.kill("SIGTERM");
+    const exit = await child.waitForExit();
+
+    expect(exit.code).toBe(0);
+    expect(existsSync(socketPath)).toBe(false);
+    // The directory stays: it is `0700` and the next start binds into it again.
+    expect(existsSync(dirname(socketPath))).toBe(true);
+    expect(readdirSync(stateDir)).not.toContain("runtime.json");
   }, 30_000);
 });
 

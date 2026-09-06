@@ -25,7 +25,7 @@ class Caption(BaseModel):
     )
     text: str = Field(
         ...,
-        description='The word. Whitespace-sensitive: every token except the first of a segment carries its leading space, so pages join correctly.',
+        description='The word. Whitespace-sensitive: every token except the first of the whole track carries its leading space, so pages join correctly. A segment boundary is not a page boundary, so the first word of a segment carries one too.',
     )
     startMs: int = Field(
         ..., description='Word start on the narration track, in milliseconds.', ge=0

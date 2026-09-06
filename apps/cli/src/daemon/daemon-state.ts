@@ -107,11 +107,12 @@ export type RuntimeState = {
    */
   addresses: string[];
   /**
-   * The IPC socket path, or `null` while the daemon has only a TCP listener.
+   * The IPC socket path — the unix socket, or the named pipe on Windows — or `null` for a
+   * TCP-only binding.
    *
-   * The key exists before the listener does (roadmap P1-9) so that a reader never has to tell "no
-   * socket" apart from "an older daemon". Whatever is here is removed on clean shutdown along with
-   * this file.
+   * `daemon/ipc.ts` puts it inside a `0700` directory, and whatever is here is removed on clean
+   * shutdown along with this file: a socket file that outlives its daemon is a path
+   * `xplainer mcp --attach` would dial and find nothing behind.
    */
   socket: string | null;
   started_at: string;

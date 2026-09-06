@@ -181,14 +181,16 @@ describe("planSegments — word spans", () => {
     expect(broken.timestampMs).toBe(Math.floor((broken.startMs + broken.endMs) / 2));
   });
 
-  it("gives the first caption of a segment no leading space and the rest one", () => {
+  it("gives the first caption of the track no leading space and every other one", () => {
     const plan = planSegments(narration, measuredSpeech(), RATE);
     const captions = buildCaptions(plan.segments);
 
     expect(at(captions, 0).text).toBe("What");
     expect(at(captions, 1).text).toBe(" if");
-    // "It" opens the third segment, so it starts a page and carries no space.
-    expect(at(captions, 7).text).toBe("It");
+    // "It" opens the third segment and still carries its space. A segment
+    // boundary is not a page boundary, so without it a page reads "broken?It";
+    // `captions.test.ts` holds that boundary case.
+    expect(at(captions, 7).text).toBe(" It");
   });
 
   it("drops a token that is empty once trimmed", () => {

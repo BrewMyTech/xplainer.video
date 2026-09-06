@@ -41,8 +41,9 @@ nothing more. The runtime lives in the CLI, not in Electron
 ([ADR 0016](adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)), and it is a
 supervised, always-running, per-user daemon rather than a foreground command
 ([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener — guarded,
-token-authenticated, draining on `SIGTERM` — `/healthz`, `/mcp` and the job runner exist today; the
-IPC socket, the shim's attach mode and the supervisor land at roadmap phases 1 and 2.
+token-authenticated, draining on `SIGTERM` — `/healthz`, `/mcp`, the job runner, the IPC socket and
+both modes of `xplainer mcp` and both verbs of `xplainer connect` exist today; the supervisor lands
+at roadmap phase 2.
 
 ## 3. Members
 
@@ -186,8 +187,13 @@ returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable
 The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
 scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
 runner, which `explainer_job` then reports on
-([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)). `mcp`, `setup`,
-`connect` and `daemon` are registered stub commands that name themselves on stderr and exit `2`.
+([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)).
+`xplainer connect claude` and `xplainer connect codex` put the `xplainer mcp --attach` command line
+into an agent's own configuration — through `claude mcp add`
+when that CLI is installed, else into `~/.claude.json`, and into `~/.codex/config.toml`'s
+`[mcp_servers.xplainer]` table, edited in place — after reading `daemon.json` to confirm a daemon
+has bound on this machine at all. `setup` and `daemon` are registered stub commands that name
+themselves on stderr and exit `2`.
 `serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
 left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
 `daemon.json`, `runtime.json` and `jobs/` are real. It also mints a `0600` bearer token in its
@@ -199,7 +205,7 @@ them with an authenticated `GET /healthz`. The workspace itself lives at `XPLAIN
 `<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
 files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
 tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
-rather than failing inside `spawn`. There is still no supervisor and no IPC listener.
+rather than failing inside `spawn`. There is still no supervisor.
 **Much of the rest of this section is phase 1 or phase 2**, and each paragraph says which.
 
 **Process model (phase 2, [ADR 0020](adr/0020-always-running-local-daemon.md)).** `xplainer serve`
@@ -207,7 +213,7 @@ becomes an installed, supervised, per-user daemon — systemd user unit, LaunchA
 Scheduled Task — installed by `xplainer daemon {install,uninstall,start,stop,restart,status,logs}`,
 running as the user and never as root, and never needing an administrator at install.
 
-**The two listeners (the IPC half is phase 2).** One application, two bindings: the TCP loopback
+**The two listeners.** One application, two bindings: the TCP loopback
 listener, and a unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer
 connect` writes a **stdio** entry pointing at `xplainer mcp --attach`, which proxies to that
 socket, so no URL and no token enter an agent configuration file. A browser can neither open a unix
@@ -235,12 +241,12 @@ owns it, never invented at the call site.
 |---:|---|---|---|
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
-| `3` | Precondition unmet | ADR 0020 | phase 2 |
-| `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`) |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`); `daemon install` phase 2 |
+| `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
 | `5` | Administrator privileges required | ADR 0020 | phase 2 |
 | `6` | No supported supervisor | ADR 0020 | phase 2 |
 | `7` | Port or label conflict | ADR 0020 | phase 2 |
-| `8` | Contract skew between shim and daemon | ADR 0025 | phase 1 |
+| `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
 | `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
 | `11` | State file unreadable | ADR 0020 | **built** |
 | `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
@@ -305,10 +311,11 @@ change attaches and only a removal refuses.
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners
 are bound — and parents wait for the announcement rather than sleeping. The primary mechanism on
 every platform is **one line of JSON on stdout**:
-`{"event":"ready","port":…,"socket":…,"contract_version":…,"pid":…}`, where `socket` is `null` until
-the IPC listener lands. That line is the whole of stdout — everything else `serve` says goes to
-stderr, so it must never move behind a `--quiet` flag or a log-level filter. A parent that spawned
-the daemon itself reads it from the pipe; a post-install hook restarting a *supervised* daemon
+`{"event":"ready","port":…,"socket":…,"contract_version":…,"pid":…}`, where `socket` is the IPC
+listener's path — the unix socket, or the named pipe on Windows — and is `null` only for a binding
+that was asked for no socket at all. That line is the whole of stdout — everything else `serve` says
+goes to stderr, so it must never move behind a `--quiet` flag or a log-level filter. A parent that
+spawned the daemon itself reads it from the pipe; a post-install hook restarting a *supervised* daemon
 cannot, because that stdout goes to the supervisor's log sink, so it waits on a supervisor-native
 report or an authenticated, bounded `GET /healthz` poll.
 > *Proposed mechanism, to be confirmed by spike P2-S4:* systemd `Type=notify`. `$NOTIFY_SOCKET` is

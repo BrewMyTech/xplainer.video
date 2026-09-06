@@ -1,0 +1,15 @@
+{
+  "voice": "af_heart",
+  "speed": 1.0,
+  "fps": 30,
+  "segments": [
+    {
+      "id": "one",
+      "text": "Segment one."
+    },
+    {
+      "id": "two",
+      "text": "Segment two."
+    }
+  ]
+}

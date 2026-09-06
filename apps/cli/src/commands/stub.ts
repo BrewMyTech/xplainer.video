@@ -3,7 +3,7 @@
  *
  * A command that is registered, appears in `--help`, names itself on stderr and
  * exits with a defined code is behaviour, not a placeholder — which is why the
- * plan (§4 S2.4b) scopes `mcp`, `setup` and `connect` this way rather than
+ * plan (§4 S2.4b) scoped `mcp`, `setup` and `connect` this way rather than
  * leaving them out of the binary until their phase arrives, and why the
  * `daemon` group's verbs are scoped the same way. Registering them now also
  * fixes the command surface AC-14b asserts, so adding the implementations later

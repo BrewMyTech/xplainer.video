@@ -22,11 +22,14 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
 > 1920×1080 MP4 with burnt-in captions. A test in `apps/cli` renders one on every run and
 > checks it with `ffprobe`.
 >
-> Still to come at roadmap phase 1: the Kokoro container as a supported install, the
-> first-run downloads, `xplainer connect`, and the IPC socket. `mcp`, `setup`, `connect` and
-> `daemon` still print what they are and exit 2, and you install the workspace's
-> `node_modules` yourself — no tool call downloads hundreds of megabytes behind your back.
-> Nothing here is published to npm yet.
+> `xplainer mcp` serves those tools over stdio, `xplainer mcp --attach` proxies a session to a
+> running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
+> into your agent's configuration — a command line, with no URL, no port and no token in it.
+>
+> Still to come at roadmap phase 1: the Kokoro container as a supported install and the
+> first-run downloads. `setup` and `daemon` still print what they are and exit 2, and you
+> install the workspace's `node_modules` yourself — no tool call downloads hundreds of
+> megabytes behind your back. Nothing here is published to npm yet.
 >
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) is what happens next, in order, with the criteria each
 > phase is judged by written down before it starts.

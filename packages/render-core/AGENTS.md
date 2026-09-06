@@ -75,6 +75,11 @@ Then the root procedure: `pnpm verify`.
   between two Kokoro spans is real silence — a breath, a comma — and a caption stretched across it
   reads as lag. `plan.test.ts` asserts the 100 ms gap the fixture carries survives into
   `captions.json`.
+- **Every caption token but the first of the whole track carries a leading space.**
+  `@remotion/captions` builds a page by concatenating `text` and cuts a new page by elapsed time,
+  never at a segment boundary it cannot see, so two segments routinely share a page. A bare first
+  word of a segment welded the burned caption into `segment one.Segment two`;
+  `src/narrate/captions.test.ts` holds that boundary against the `adjacent.json` fixture.
 - **A segment's spoken length is measured from its PCM frames**, never from its last word's
   `end_time`. A synthesised clip routinely runs past its last word, and a planner that inferred the
   length from the spans would shift every later segment earlier than the audio.
@@ -85,6 +90,11 @@ Then the root procedure: `pnpm verify`.
 - **`src/narrate/wav.ts` reads 16-bit integer PCM only.** Every other encoding is refused by name,
   because a zeroed frame is silence at that depth and is not at 8-bit or in µ-law, so a permissive
   reader would pad the track with clicks instead of failing.
+- **A chunk size of `0xffffffff` means "to the end of the payload", and every other overrun is
+  still a truncated file.** Kokoro answers `/dev/captioned_speech` from a streaming writer, so both
+  its `RIFF` and `data` sizes carry that sentinel even for `stream: false`; reading it as a length
+  is what made every live narration fail. The two cases look alike in a header and are opposites in
+  a track, so only the exact sentinel is honoured.
 - **A dry run is labelled.** `narrate()` reports `mode: "dry_run"` when it estimated rather than
   measured, so nothing downstream can mistake an invented timing for a measured one.
 - **`--public-dir` is `public/<slug>`, never the video's source directory.** `Root.tsx` fetches

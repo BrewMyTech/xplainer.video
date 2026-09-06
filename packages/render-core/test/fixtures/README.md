@@ -131,6 +131,13 @@ audio and real-shaped word timings with no Kokoro container anywhere.
 | `narrate/cause-words.json` | The same for `cause`, ending in a `.` token. |
 | `narrate/hook.wav` | 2.35 s of mono 16-bit PCM at 24 kHz — deliberately longer than the last word's `end_time`, which is what makes "measure the frames, do not infer from the spans" a testable claim. |
 | `narrate/cause.wav` | 0.75 s of the same, at a different frequency. |
+| `narrate/adjacent.json` | A two-segment narration script, both segments spoken, whose words spell the string `captions.test.ts` asserts on. It exists because the caption weld between adjacent segments needs two *spoken* neighbours, which `narration.json`'s silent middle segment deliberately denies it. |
+| `narrate/one-words.json` | Kokoro-shaped spans for `adjacent.json`'s first segment: `Segment`, `one`, and a trailing `.` as its own token. |
+| `narrate/two-words.json` | The same for its second segment: `Segment`, `two`, `.`. |
+
+The three `adjacent*` fixtures carry no WAV. `captions.test.ts` never decodes audio — it passes
+`planSegments()` a measured `spokenMs` directly — so a WAV there would pin nothing and would only
+invite the arithmetic to be re-derived from it.
 
 **The two WAVs were written by Python's standard-library `wave` module**, which is the encoder the
 reference implementation reads and writes with — deliberately not by this package's own

@@ -19,6 +19,17 @@
  * Chunks other than `fmt ` and `data` (`LIST`, `fact`, and whatever a future
  * server adds) are skipped, with the RIFF word-alignment padding byte honoured,
  * because ignoring an unknown chunk is what the container format is for.
+ *
+ * **A chunk size of `0xffffffff` means "to the end of the payload".** An encoder
+ * that writes the header before it knows the length has no size to put there,
+ * so it writes the all-ones sentinel and lets the file end where it ends. That
+ * is not a corner case here: `kokoro-fastapi` builds its response with a
+ * streaming writer and answers `/dev/captioned_speech` with `RIFF ffffffff …
+ * LIST … data ffffffff` even for `stream: false`, so reading that sentinel as a
+ * length is what makes every live narration fail with "claims 4294967295 bytes".
+ * It is honoured only as "everything that is left", and a size that is merely
+ * *too large* still fails — a truncated download must not be read as a short
+ * take.
  */
 
 import { NarrationError } from "./errors.js";
@@ -34,6 +45,12 @@ const HEADER_BYTES = 44;
 
 /** Size of the canonical `fmt ` chunk body, in bytes. */
 const FMT_CHUNK_BYTES = 16;
+
+/**
+ * The size a streaming writer puts in a chunk header when it does not yet know
+ * the length. Read as "everything that is left", never as a byte count.
+ */
+const UNKNOWN_CHUNK_SIZE = 0xffff_ffff;
 
 /** The PCM parameters two segments must agree on before their frames can be joined. */
 export type PcmFormat = {
@@ -127,12 +144,15 @@ export function decodeWav(bytes: Buffer): WavAudio {
 
   while (offset + 8 <= bytes.length) {
     const id = bytes.toString("ascii", offset, offset + 4);
-    const size = bytes.readUInt32LE(offset + 4);
+    const declared = bytes.readUInt32LE(offset + 4);
     const body = offset + 8;
+    // The sentinel is a statement that the length was unknown when the header was written, so the
+    // chunk runs to the end of what arrived. Anything else that overruns is a truncated payload.
+    const size = declared === UNKNOWN_CHUNK_SIZE ? bytes.length - body : declared;
     if (body + size > bytes.length) {
       throw new NarrationError(
         "WAV_UNREADABLE",
-        `WAV chunk "${id}" claims ${size} bytes but only ${bytes.length - body} remain.`,
+        `WAV chunk "${id}" claims ${declared} bytes but only ${bytes.length - body} remain.`,
       );
     }
     if (id === "fmt ") {

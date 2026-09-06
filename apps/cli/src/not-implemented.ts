@@ -1,7 +1,7 @@
 /**
  * The one wording, and the one exit code, for everything this phase defers.
  *
- * Spec §Non-Goals scopes `mcp`, `setup` and `connect` out of the scaffold, and
+ * Spec §Non-Goals scoped `mcp`, `setup` and `connect` out of the scaffold, and
  * the plan (§4 S2.4b) turns that into behaviour rather than a placeholder: the
  * commands are registered, they appear in `--help`, they say what happened on
  * stderr, and they exit with a defined non-zero code.

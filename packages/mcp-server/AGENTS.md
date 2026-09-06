@@ -10,6 +10,13 @@ title and description the generated manifest carries. Every surface that serves 
 `apps/cli` today, the hosted media service in its own repository — mounts the same registration, so
 there is exactly one implementation of "what the tools are".
 
+`apps/cli` reaches it three ways now, and this package knows about none of them: the Streamable HTTP
+`/mcp` route bound on a **TCP port**, the same route bound on a **unix socket**, and a **stdio**
+transport `xplainer mcp` connects in its own process. `xplainer mcp --attach` is the fourth caller
+and builds no server at all — it proxies an agent's stdio to that socket, so the session the agent
+opened is answered by the one registration behind it rather than by a second copy of the tool list
+living in the shim. Keep it that way: a proxy that parsed a tool call would be that second copy.
+
 The `RenderBackend` interface is the seam. This package knows the shape of a call and nothing about
 how it is answered.
 
@@ -27,6 +34,11 @@ package that owns the contract. It moved with spike P1-S3
 `xplainer mcp --attach` has to read the daemon's `contract_version` before an MCP session
 exists — it cannot depend on the MCP server to decide whether it may talk to one. Do not add a
 second definition here; `apps/cli` still must not have one either.
+
+That shim now exists (`apps/cli/src/mcp/attach.ts`), and it imports `isContractCompatible` and
+`MCP_CONTRACT_VERSION` from `@xplainer/protocol` rather than from here — which is the move working
+as intended, not an oversight to tidy up. It reaches this package only through the server it is
+proxying to.
 
 ## Commands
 

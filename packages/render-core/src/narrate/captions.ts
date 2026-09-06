@@ -10,10 +10,16 @@
  * fold extends the previous caption's end rather than replacing it, so the
  * punctuation's own span is kept.
  *
- * **Every token but the first of a segment carries a leading space.**
+ * **Every token but the very first carries a leading space.**
  * `@remotion/captions` joins a page by concatenating `text`, so a missing space
- * silently welds two words together. The first token of a segment carries none,
- * because a page never begins with a space.
+ * silently welds two words together. Only the first token of the whole track is
+ * bare: `createTikTokStyleCaptions` starts a new page precisely when a token
+ * begins with a space, and trims that space off the token it opens the page
+ * with, so a leading space is what *permits* a page break rather than what
+ * spoils one. A segment boundary is not a page boundary — pages are cut by
+ * elapsed time, not by segment — so the first word of a segment needs its space
+ * no less than every other word does, or `"one."` and `"Segment"` land in one
+ * page as `"one.Segment"`.
  */
 
 import type { Caption, Captions } from "@xplainer/protocol";
@@ -49,6 +55,9 @@ export function buildCaptions(segments: readonly PlannedSegment[]): Captions {
 
     for (const word of segment.words) {
       const previous = captions[captions.length - 1];
+      // The fold never reaches back across a segment boundary: it extends the
+      // previous caption's `endMs`, and the previous segment's last word is a
+      // whole inter-segment gap away.
       if (
         previous !== undefined &&
         captions.length > firstOfSegment &&
@@ -61,7 +70,7 @@ export function buildCaptions(segments: readonly PlannedSegment[]): Captions {
       }
 
       captions.push({
-        text: captions.length === firstOfSegment ? word.text : ` ${word.text}`,
+        text: captions.length === 0 ? word.text : ` ${word.text}`,
         startMs: word.startMs,
         endMs: word.endMs,
         timestampMs: midpoint(word.startMs, word.endMs),

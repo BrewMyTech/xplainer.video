@@ -157,7 +157,7 @@ workspace-wide change.
 
 | Path | What it is | What checks it |
 |---|---|---|
-| `scripts/` | The bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`) | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
+| `scripts/` | The bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`), and `e2e/macos.mjs`, which is a **proof** rather than a gate: `pnpm e2e:macos` needs Docker and several minutes of Chrome, so it is deliberately outside `pnpm verify` | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
 | `.github/workflows/` | CI and the desktop packaging workflow | `actionlint` (`AC-4a`) |
 | `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
 | `biome.json`, `ruff.toml` | Lint configuration for both languages | Changing either changes every member's `lint` |

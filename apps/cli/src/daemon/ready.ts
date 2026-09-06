@@ -31,10 +31,12 @@
  * a fact about the binary the parent just spawned, so it either knows it already or can ask
  * `/healthz` for it, while the contract version is the one a parent has to act on before it speaks.
  *
- * `socket` is `null` until the IPC listener exists (roadmap P1-9): "both listeners are bound" means
- * the TCP listener today, and the field is present-and-null rather than absent so that a parent
- * written against it now keeps parsing when the socket arrives. `pid` is here because a parent that
- * spawned the daemon through a shell wrapper may not otherwise know which process to signal.
+ * `socket` is the IPC endpoint's path — the unix socket, or the named pipe on Windows — so "both
+ * listeners are bound" is what the line now attests to. It stays nullable because a server bound
+ * without one is a supported shape (`services/media-service` binds no socket), and a parent that
+ * cannot use a path it has no filesystem access to needs to tell that from "an older daemon".
+ * `pid` is here because a parent that spawned the daemon through a shell wrapper may not otherwise
+ * know which process to signal.
  */
 
 import type { ChildProcess } from "node:child_process";
@@ -50,7 +52,7 @@ export type ReadyAnnouncement = {
   event: typeof READY_EVENT;
   /** The TCP port actually bound, resolved — so `--port 0` announces its real value. */
   port: number;
-  /** The IPC socket path, or `null` while the daemon has only its TCP listener. */
+  /** The IPC socket path (a named pipe on Windows), or `null` for a TCP-only binding. */
   socket: string | null;
   /** `MCP_CONTRACT_VERSION`, so a parent gets the skew answer without a handshake. */
   contract_version: string;

@@ -147,6 +147,13 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
+  it("lists exactly claude and codex under `connect --help`", async () => {
+    const { stdout, exitCode } = await run(["connect", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["claude", "codex"]);
+    expect(exitCode).toBe(0);
+  });
+
   it("lists exactly the seven lifecycle verbs under `daemon --help`", async () => {
     const { stdout, exitCode } = await run(["daemon", "--help"]);
 
@@ -162,6 +169,14 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
+  it("prints the connect group's help on stderr and exits 1 when no verb is given", async () => {
+    const { stdout, stderr, exitCode } = await run(["connect"]);
+
+    expect(stdout).toBe("");
+    expect(listedCommands(stderr)).toEqual(["claude", "codex"]);
+    expect(exitCode).toBe(1);
+  });
+
   it("prints the daemon group's help on stderr and exits 1 when no verb is given", async () => {
     const { stdout, stderr, exitCode } = await run(["daemon"]);
 
@@ -170,11 +185,30 @@ describe("xplainer", () => {
     expect(exitCode).toBe(1);
   });
 
+  /**
+   * `mcp` left the deferred list below when it gained an implementation, and this is what keeps
+   * that visible here: it is registered with the one flag that chooses between running the tools in
+   * this process and proxying them to the daemon's socket
+   * ([ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not
+   * TCP). What the two paths then *do* is asserted against real spawned processes in
+   * `commands/mcp.test.ts`; this is only the surface.
+   *
+   * Read off the command rather than out of rendered help, because a **subcommand's** `--help` is
+   * not routed through `CliIo`: `exitOverride()` and `configureOutput()` are not inherited by an
+   * added subcommand (see `program.ts`), so asking for it here would call the real `process.exit`.
+   */
+  it("offers mcp --attach, which is the entry `xplainer connect` writes for an agent", () => {
+    const mcp = createProgram().commands.find((command) => command.name() === "mcp");
+
+    expect(mcp?.options.map((option) => option.long)).toContain("--attach");
+    expect(mcp?.options.find((option) => option.long === "--attach")?.description).toContain(
+      "IPC socket",
+    );
+  });
+
   it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
     const deferred = [
-      ["mcp"],
       ["setup"],
-      ["connect"],
       ["daemon", "install"],
       ["daemon", "uninstall"],
       ["daemon", "start"],

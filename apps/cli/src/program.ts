@@ -1,11 +1,12 @@
 /**
  * The `xplainer` command surface.
  *
- * Six entries, fixed here and asserted in `program.test.ts`: `serve` and
- * `status`, which work; `mcp`, `setup` and `connect`, which report that they are
- * deferred and exit 2; and `daemon`, a group of seven verbs — `install`,
- * `uninstall`, `start`, `stop`, `restart`, `status`, `logs` — that report the
- * same thing and exit the same way (`commands/daemon.ts`).
+ * Six entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
+ * and `mcp`, which work; `connect`, a group of two verbs — `claude` and `codex` —
+ * which write an agent's stdio configuration (`commands/connect.ts`); `setup`,
+ * which reports that it is deferred and exits 2; and `daemon`, a group of seven
+ * verbs — `install`, `uninstall`, `start`, `stop`, `restart`, `status`, `logs` —
+ * that report the same thing and exit the same way (`commands/daemon.ts`).
  *
  * AC-14b was written against the first four and asserts an exact list, so both
  * later entries are added here deliberately rather than discovered as a red
@@ -28,7 +29,8 @@
  * implementation. Disabling it removes the *subcommand* only; `-h` and `--help`
  * are unaffected. The call is `helpCommand(false)` because this package pins
  * commander 15; on commander 12 and earlier it would be `addHelpCommand(false)`.
- * The `daemon` group has subcommands too, so it repeats the call.
+ * The `connect` and `daemon` groups have subcommands too, so each repeats the
+ * call.
  *
  * Output and termination go through `CliIo` rather than straight to the process
  * (see `io.ts`), and commander's own exits are routed the same way with
@@ -36,8 +38,8 @@
  * would have seen. In production `processIo.exit` is `process.exit`, so
  * commander's behaviour is unchanged: it writes help or a usage error and the
  * process ends with the code commander chose. Neither call is inherited by an
- * added subcommand, which is why `createDaemonCommand()` makes both again for
- * the group it owns.
+ * added subcommand, which is why `createConnectCommand()` and
+ * `createDaemonCommand()` each make both again for the group it owns.
  */
 
 import { Command } from "commander";

@@ -122,7 +122,7 @@ export declare function toJobErrorCode(value: string): JobErrorCode;
 ```ts
 export interface Caption {
     /**
-     * The word. Whitespace-sensitive: every token except the first of a segment carries its leading space, so pages join correctly.
+     * The word. Whitespace-sensitive: every token except the first of the whole track carries its leading space, so pages join correctly. A segment boundary is not a page boundary, so the first word of a segment carries one too.
      */
     text: string;
     /**

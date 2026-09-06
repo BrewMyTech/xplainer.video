@@ -80,7 +80,7 @@ export declare function createLocalBackend(options: CreateLocalBackendOptions): 
 /**
  * The one wording, and the one exit code, for everything this phase defers.
  *
- * Spec §Non-Goals scopes `mcp`, `setup` and `connect` out of the scaffold, and
+ * Spec §Non-Goals scoped `mcp`, `setup` and `connect` out of the scaffold, and
  * the plan (§4 S2.4b) turns that into behaviour rather than a placeholder: the
  * commands are registered, they appear in `--help`, they say what happened on
  * stderr, and they exit with a defined non-zero code.
@@ -141,7 +141,14 @@ export type RunningServer = {
     port: number;
     /** The origin the server answers on, with no trailing slash. */
     url: string;
-    /** Stop listening. Resolves once the server has closed. */
+    /**
+     * The IPC endpoint this server is also listening on, or `null` when it was not asked for one.
+     *
+     * A unix socket path, or a Windows named pipe name. It is what `serve` puts in the ready line and
+     * in `runtime.json`, and what a clean shutdown unlinks.
+     */
+    socket: string | null;
+    /** Stop listening — both listeners. Resolves once the server has closed. */
     close(): Promise<void>;
 };
 
@@ -164,6 +171,16 @@ export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
     hostname?: string;
     /** Built with the resolved port in the listen callback, and armed before any request arrives. */
     guard?: GuardFactory;
+    /**
+     * A second listener on a unix socket or Windows named pipe, serving the same app with no guard.
+     *
+     * `daemon/ipc.ts` produces the path, having made the `0700` directory that is this transport's
+     * whole authentication (ADR 0020 §The agent path is IPC, not TCP). Omit it and only the TCP
+     * listener is bound, which is what `services/media-service` wants.
+     */
+    ipc?: {
+        path: string;
+    };
 };
 
 /**

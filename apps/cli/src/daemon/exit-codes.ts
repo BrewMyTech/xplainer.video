@@ -9,6 +9,20 @@
  */
 
 /**
+ * A precondition this command needs was not met, and it has written nothing.
+ *
+ * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths states the
+ * rule this code serves: "**probe before writing; on refusal, write nothing, exit with the
+ * documented code, and print the one command that fixes it.**" That record's own first user is
+ * `daemon install` refusing a machine with no `setup` marker; `xplainer connect` is the second, and
+ * the condition is the one §Ordering names — "`connect` refuses to write an agent configuration
+ * pointing at a daemon that has never answered (`--force` overrides)". It is also what `connect`
+ * exits with when the file it would edit exists and cannot be understood, which is the same shape:
+ * a precondition of writing, unmet, with nothing written.
+ */
+export const PRECONDITION_UNMET_EXIT_CODE = 3;
+
+/**
  * The daemon is set up on this machine and is not answering.
  *
  * ADR 0020 gives `4` to "installed but not healthy", and `xplainer status` is the first command
@@ -17,6 +31,19 @@
  * is the same row for the same reason — "something is on our port that is not our daemon".
  */
 export const DAEMON_UNHEALTHY_EXIT_CODE = 4;
+
+/**
+ * `xplainer mcp --attach` and the daemon do not speak compatible tool contracts.
+ *
+ * [ADR 0025](../../../../docs/adr/0025-daemon-updates-and-readiness.md) §Part two: "when it deems
+ * the pair **incompatible**, exits with a new code **`8`** and a message naming both versions and a
+ * command that fixes it. Code `8` is the next free value after ADR 0020's `2`–`7`." It is the
+ * *contract* version that is compared and never the release — "Two releases that serve the same
+ * contract must attach cleanly" — and the predicate is `isContractCompatible` in
+ * `@xplainer/protocol`, which is major-compatible and treats an unparseable version as
+ * incompatible.
+ */
+export const CONTRACT_SKEW_EXIT_CODE = 8;
 
 /**
  * Another process already holds this machine's runtime.

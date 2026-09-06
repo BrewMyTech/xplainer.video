@@ -103,6 +103,59 @@ describe("decodeWav, against WAVs written by Python's wave module", () => {
   });
 });
 
+/**
+ * Rebuild a canonical WAV the way `kokoro-fastapi` writes one: the sizes it did not know when it
+ * wrote the header left at the all-ones sentinel, and a `LIST` chunk between `fmt ` and `data`.
+ *
+ * The layout is copied from a live container's answer to `POST /dev/captioned_speech` with
+ * `stream: false` — `RIFF ffffffff WAVE`, `fmt ` 16, `LIST` 26, `data ffffffff` — which is the
+ * shape every real narration decodes.
+ */
+function streamingWav(canonical: Buffer): Buffer {
+  const audio = decodeWav(canonical);
+  const head = Buffer.alloc(12);
+  head.write("RIFF", 0, "ascii");
+  head.writeUInt32LE(0xffff_ffff, 4);
+  head.write("WAVE", 8, "ascii");
+
+  const fmt = Buffer.from(canonical.subarray(12, 36));
+
+  const listBody = Buffer.alloc(26);
+  listBody.write("INFOISFT", 0, "ascii");
+  const list = Buffer.alloc(8);
+  list.write("LIST", 0, "ascii");
+  list.writeUInt32LE(listBody.length, 4);
+
+  const dataHeader = Buffer.alloc(8);
+  dataHeader.write("data", 0, "ascii");
+  dataHeader.writeUInt32LE(0xffff_ffff, 4);
+
+  return Buffer.concat([head, fmt, list, listBody, dataHeader, audio.data]);
+}
+
+describe("decodeWav, against the streaming header Kokoro actually sends", () => {
+  it("reads a data chunk sized 0xffffffff to the end of the payload", () => {
+    const canonical = fixture("cause.wav");
+
+    const streamed = decodeWav(streamingWav(canonical));
+
+    expect(streamed).toEqual(decodeWav(canonical));
+  });
+
+  it("keeps the LIST chunk between fmt and the sentinel-sized data out of the audio", () => {
+    const canonical = fixture("hook.wav");
+    const streaming = streamingWav(canonical);
+
+    const streamed = decodeWav(streaming);
+
+    expect(streamed.format).toEqual(KOKORO_FORMAT);
+    expect(streamed.data.length).toBe(decodeWav(canonical).data.length);
+    // The whole payload minus the 12-byte RIFF head, the 24-byte `fmt ` chunk, the 34-byte `LIST`
+    // chunk and the 8-byte `data` header: nothing of the container leaked into the samples.
+    expect(streamed.data.length).toBe(streaming.length - 12 - 24 - 34 - 8);
+  });
+});
+
 describe("decodeWav refuses what it cannot honestly read", () => {
   it("refuses bytes that are not RIFF/WAVE", () => {
     expect(() => decodeWav(Buffer.from("this is a JSON error body, not audio"))).toThrow(
@@ -142,6 +195,15 @@ describe("decodeWav refuses what it cannot honestly read", () => {
     const truncated = Buffer.from(fixture("cause.wav").subarray(0, 200));
 
     expect(() => decodeWav(truncated)).toThrow(/only \d+ remain/);
+  });
+
+  it("still refuses a size that is merely too large, so a truncated download is not read short", () => {
+    const truncated = Buffer.from(fixture("cause.wav").subarray(0, 200));
+    // One byte below the sentinel: a real length, and a wrong one. Only 0xffffffff means "to the
+    // end", so this stays the truncation it is.
+    truncated.writeUInt32LE(0xffff_fffe, 40);
+
+    expect(() => decodeWav(truncated)).toThrow(/claims 4294967294 bytes but only \d+ remain/);
   });
 
   it("throws a NarrationError carrying WAV_UNREADABLE", () => {
