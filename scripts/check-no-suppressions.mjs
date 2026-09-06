@@ -3,9 +3,10 @@
  * Suppression gate (plan T20; acceptance criteria AC-15e and AC-15f).
  *
  * One grep, in one place: `apps/`, `packages/` and `services/` may not contain
- * any of the five suppressions AC-15e names — `as any`, the two TypeScript
- * directive comments, a Biome ignore comment and a ruff `# noqa`. The literal
- * spellings are in `PATTERNS` below and appear nowhere else in this file, which
+ * any of the seven suppressions AC-15e names — `as any`, the two TypeScript
+ * directive comments, a Biome ignore comment, a ruff or flake8 `noqa` in any of
+ * its forms, and the two Python type-checker ignores. The literal spellings are
+ * in `PATTERNS` below and appear nowhere else in this file, which
  * is deliberate: written out in a comment they are suppressions themselves, and
  * Biome's own `noTsIgnore` rule says so. Every hit is printed with its file,
  * line and column, and the exit status is 1 if the count is anything other than
@@ -20,8 +21,19 @@
  * to change the gate deliberately, which is a diff a reviewer sees.
  *
  * WHY IT IS AN EQUALITY WITH ZERO AND NOT A RATCHET. Measured on this tree, the
- * count is zero across all five patterns. A baseline file would only invite the
+ * count is zero across all seven patterns. A baseline file would only invite the
  * count to be edited upwards one line at a time.
+ *
+ * WHY THE PYTHON HALF IS THREE PATTERNS AND NOT ONE. `noqa` has a line-level
+ * form and two file-level blanket forms — the tool name, a colon, then the
+ * directive — and the blanket forms silence a whole file rather than a line, so
+ * they are the ones worth catching most. An earlier revision matched only the
+ * line-level spelling, which meant `ruff check` could be turned into "All checks
+ * passed!" on any file without this gate noticing. The type checker has the same
+ * hole: both Python members run `pyright` as their `typecheck` script, and its
+ * two ignore comments turn a reported error into zero errors exactly the way the
+ * TypeScript directives do. Catching one language's escape hatches and not the
+ * other's would make the rule asymmetric rather than strict.
  *
  * WHY A SCRIPT AND NOT AN INLINE GREP. The same command runs in `pnpm verify`
  * and as its own CI step, and two copies of a grep drift. `AC-2c` avoids that
@@ -32,7 +44,7 @@
  * WHY `as any` IS CHECKED IN TYPESCRIPT FILES ONLY. It is TypeScript syntax. In
  * a `.mjs` or `.py` file the same three characters can only be English prose in
  * a comment, and reporting those would be a false failure with no fix but a
- * reword. The other four patterns are distinctive enough to check everywhere.
+ * reword. The other six patterns are distinctive enough to check everywhere.
  *
  * WHAT IS NOT SCANNED. Generated and installed output — `node_modules/`,
  * `dist/`, `out/`, `build/`, `release/`, `coverage/`, `__pycache__/` and every
@@ -90,15 +102,21 @@ const SKIPPED_DIRECTORIES = new Set([
 ]);
 
 /**
- * The five forbidden patterns. `extensions` narrows a pattern to the files where
+ * The seven forbidden patterns. `extensions` narrows a pattern to the files where
  * it can mean what the rule means; omitted, the pattern applies everywhere.
+ *
+ * The `noqa` pattern deliberately accepts an optional `<tool>:` prefix, because
+ * the file-level blanket forms are spelled that way and are the stronger
+ * suppression of the two.
  */
 const PATTERNS = [
   { name: "as any", regex: /\bas\s+any\b/g, extensions: TYPESCRIPT_EXTENSIONS },
   { name: "@ts-ignore", regex: /@ts-ignore\b/g },
   { name: "@ts-expect-error", regex: /@ts-expect-error\b/g },
   { name: "biome-ignore", regex: /biome-ignore\b/g },
-  { name: "# noqa", regex: /#\s*noqa\b/gi },
+  { name: "# noqa", regex: /#\s*(?:(?:ruff|flake8)\s*:\s*)?noqa\b/gi },
+  { name: "# type: ignore", regex: /#\s*type:\s*ignore\b/g },
+  { name: "# pyright: ignore", regex: /#\s*pyright:\s*ignore\b/g },
 ];
 
 /** A reported source line longer than this is truncated; the location is the useful part. */

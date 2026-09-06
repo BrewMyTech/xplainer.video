@@ -32,8 +32,9 @@ Then the root procedure: `pnpm verify`.
 ## Invariants
 
 - **No render or TTS code here, ever.** `AC-14f` greps `apps/desktop` for `@remotion/`, `remotion`,
-  `kokoro`, `captioned_speech` and `tts` and requires no hits — including in `package.json`. If you
-  need one of those, the work belongs in `apps/cli` or `packages/render-core`.
+  `kokoro`, `captioned_speech` and `tts` and requires no hits — including in `package.json`. It runs
+  as its own CI step, on a pristine checkout before the toolchain is installed. If you need one of
+  those, the work belongs in `apps/cli` or `packages/render-core`.
 - **`resolveDaemonUrl()` stays a pure function.** No filesystem, no process, no network: the caller
   reads `daemon.json` and passes `{ port }`. Its precedence is
   **configured remote URL → recorded port → `DEFAULT_DAEMON_PORT`**, and the comment tying the

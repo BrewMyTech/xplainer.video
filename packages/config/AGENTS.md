@@ -39,8 +39,11 @@ Then the root procedure: `pnpm verify`.
   before adopting it, and record the rationale in
   [`docs/ARCHITECTURE.md` §8](../../docs/ARCHITECTURE.md#8-conventions) — that is where the
   per-flag argument lives.
-- **`tsconfig/base.json` carries no comments.** It is parsed as strict JSON — `node -e` reads it in
-  the verification block — so a `//` comment breaks a gate. This is why the rationale is in the
+- **`tsconfig/base.json` carries no comments.** `src/tsconfig-base.test.ts` reads it with
+  `JSON.parse`, so a `//` comment throws and the test goes red — `tsc` itself accepts JSONC, and
+  that test is the only thing in the repository that does not. It also asserts AC-15a's ten flags
+  and AC-15d's absent one, so a flag quietly dropped from the shared preset fails `pnpm verify`
+  rather than turning a rule off for eight packages in silence. This is why the rationale is in the
   architecture document and not in the file.
 - **`private: true`, and it stays unpublished.** It is listed in `PRIVATE_MEMBERS` in
   `scripts/check-publish-contract.mjs`, and the checker fails in either direction if that changes.

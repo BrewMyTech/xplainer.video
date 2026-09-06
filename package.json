@@ -20,7 +20,7 @@
     "codegen": "turbo codegen",
     "lint:tiers": "node packages/config/bin/check-tiers.mjs",
     "check:no-suppressions": "node scripts/check-no-suppressions.mjs",
-    "check:codegen-fresh": "pnpm --filter @xplainer/protocol codegen && git diff --exit-code -- packages/protocol/src/generated packages/protocol/python/xplainer_protocol/generated",
+    "check:codegen-fresh": "pnpm --filter @xplainer/protocol codegen:check",
     "check:publish-contract": "node scripts/check-publish-contract.mjs",
     "api:report": "node scripts/api-report.mjs",
     "check:api-report": "node scripts/api-report.mjs --check",

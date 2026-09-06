@@ -416,13 +416,24 @@ in the root [`AGENTS.md`](../AGENTS.md).
    order.
 3. `pnpm --filter @xplainer/protocol codegen`, and commit the regenerated TypeScript and Python
    **in the same commit** (`AC-9c`).
-4. Nothing to register by hand: `createMcpServer()` iterates `TOOL_NAMES`. Implement the backend
-   method behind the `RenderBackend` seam.
-5. Update `packages/skill/SKILL.md` — its `explainer_*` names are asserted against `TOOL_NAMES` in
+4. Export the generated input and output types from `packages/protocol/src/index.ts`. The barrel is
+   an explicit named-export list, not a `export *`: a generated type nothing adds there is a type no
+   consumer can import.
+5. Nothing to *register* by hand — `createMcpServer()` iterates `TOOL_NAMES` — but three
+   hand-written surfaces still name the tools one at a time, and all three stop compiling until you
+   extend them: the `RenderBackend` interface in `packages/mcp-server/src/backend.ts`,
+   `createStubBackend()` in `apps/cli/src/backend.ts`, and whatever real backend implements the
+   seam. `server.test.ts` asserts `Object.keys(backend)` equals `TOOL_NAMES`, so a missing method is
+   a failing test rather than a runtime surprise.
+6. Update `packages/skill/SKILL.md` — its `explainer_*` names are asserted against `TOOL_NAMES` in
    `build.test.ts`.
-6. Note that the eight names are fixed by `AC-9b`; a ninth tool is a change to that criterion, made
+7. `pnpm api:report`, and commit `packages/protocol/api/protocol.api.md` — `TOOL_NAMES` is pinned
+   there as a literal tuple of the eight names — and `packages/mcp-server/api/mcp-server.api.md`,
+   which changes with `RenderBackend`. Codegen alone leaves `pnpm check:api-report` red.
+8. `pnpm changeset`. A new tool is user-visible in every published package that names it.
+9. Note that the eight names are fixed by `AC-9b`; a ninth tool is a change to that criterion, made
    deliberately.
-7. `pnpm verify`.
+10. `pnpm verify`.
 
 ### A new field on an existing schema
 
@@ -432,8 +443,9 @@ in the root [`AGENTS.md`](../AGENTS.md).
 4. A new **required** field is a breaking change to the contract; a new optional one is not. A new
    `error_code` enum member is neither until spike `P1-S3` settles it — see
    [`ROADMAP.md`](ROADMAP.md).
-5. Add a changeset if the change is user-visible in a published package.
-6. `pnpm verify`.
+5. If the field changes an exported declaration, `pnpm api:report` and commit the `.api.md`.
+6. Add a changeset if the change is user-visible in a published package.
+7. `pnpm verify`.
 
 ### A new CLI command
 

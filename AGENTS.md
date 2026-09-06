@@ -50,6 +50,15 @@ One thing `verify` deliberately does **not** cover: per-member task coverage (`A
 `AC-2g`). It asserts a property of the workspace roster that a local run cannot make false, so it
 stays a CI-only check.
 
+One gate is spelled differently in the two places it runs, on purpose. `check:codegen-fresh` calls
+`pnpm --filter @xplainer/protocol codegen:check`, which regenerates into memory and names any file
+whose contents differ from what is on disk. CI asserts the same property with `codegen` followed by
+`git diff --exit-code`, which is the literal command `AC-9c` names and is correct there because the
+checkout is pristine. Locally it is not: `git diff` reads the index, so the CI form fails on
+regenerated output that is merely unstaged — a red gate on correct work, with no message but a raw
+diff. `codegen:check` does not consult git at all, so it says the same thing whatever your index
+looks like.
+
 `pnpm check` is a **different**, narrower command — `turbo build lint typecheck test` and nothing
 else. It is the fast inner loop, and `README.md` §Getting started documents that same turbo
 invocation as the one-command check. Leave it as it is: it is not the post-change procedure, and
@@ -108,19 +117,27 @@ Each one, and the thing that catches you:
   said. *Enforcement: review. `check:docs-contract` does not read ADR bodies — this one is on you.*
 - **A `schemas/**` change needs its codegen in the same commit.** Run
   `pnpm --filter @xplainer/protocol codegen` and commit the regenerated TypeScript and Python.
-  *Enforcement: `AC-9c` — codegen then `git diff --exit-code` — as its own CI step (`AC-9d`).*
+  *Enforcement: `AC-9c` — codegen then `git diff --exit-code` — as its own CI step (`AC-9d`), and
+  `check:codegen-fresh` in `pnpm verify` locally.*
 - **Never hand-edit anything under `generated/`.** It is overwritten on the next codegen.
   *Enforcement: the same diff.*
 - **A user-visible change to a published package needs a changeset.** `pnpm changeset`.
-  *Enforcement: the release workflow; a missing changeset ships nothing.*
+  *Enforcement: review. There is no release workflow in this repository yet — `.github/workflows/`
+  holds `ci.yml` and `desktop.yml`, and neither reads `.changeset/` — so this is a convention until
+  one exists. Treat it as binding anyway: the changeset is the changelog entry, and it is written
+  while the reason for the change is still in front of you.*
 - **No `TODO`, `FIXME`, `.skip(` or `.only(` in committed source.** Not in a comment, not "just for
   now". *Enforcement: `AC-2c`, a CI grep over `apps/`, `packages/` and `services/` on a pristine
   tree.*
-- **No type or lint suppressions.** No `as any`, no `@ts-ignore`, no `@ts-expect-error`, no
-  `biome-ignore` reached for to satisfy a gate. If a gate is wrong, change the gate deliberately.
+- **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
+  `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the
+  file-level `# ruff: noqa` and `# flake8: noqa` — no `# type: ignore` and no `# pyright: ignore`,
+  reached for to satisfy a gate. If a gate is wrong, change the gate deliberately.
   *Enforcement: `pnpm check:no-suppressions` (`AC-15e`), early in CI.*
 - **`apps/desktop` contains no render or TTS code, ever.** *Enforcement: `AC-14f`, a grep for
-  `@remotion/`, `remotion`, `kokoro`, `captioned_speech` and `tts` across `apps/desktop`.*
+  `@remotion/`, `remotion`, `kokoro`, `captioned_speech` and `tts` across `apps/desktop` —
+  `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own CI step beside
+  AC-2c's.*
 - **After changing any `export` in a built package, run `pnpm api:report` and commit the result.**
   The `.api.md` diff is the review. *Enforcement: `pnpm check:api-report`.*
 - **`isolatedDeclarations` errors only appear under `build`.** It is set on the

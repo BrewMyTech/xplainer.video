@@ -13,7 +13,7 @@
 #
 #   check      The full quality gate, on ubuntu-latest. One discrete step per
 #              assertion so the job summary names the check that failed.
-#              (AC-2, AC-3b, AC-4a, AC-9, AC-12b)
+#              (AC-2, AC-3b, AC-4a, AC-9, AC-12b, AC-14f, AC-15e)
 #
 #   images     The one container build left. Still separate from `check` so
 #              that pulling the pinned upstream Kokoro CPU base image — which
@@ -105,6 +105,19 @@ jobs:
             --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' \
             apps packages services; then
             echo "::error::placeholder markers found in committed source; see AC-2c for the forbidden set"
+            exit 1
+          fi
+
+      # Same placement argument as AC-2c above, and the same shape: a pattern
+      # scan over repository sources that needs no toolchain, so it fails in
+      # seconds on a pristine tree. The command is the one AC-14f names,
+      # unchanged. `package.json` is in the path list deliberately — the way
+      # render or TTS code arrives in this app is a dependency, not a file.
+      - name: apps/desktop holds no render or TTS code (AC-14f)
+        run: |
+          if grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' \
+            apps/desktop/src apps/desktop/*.ts apps/desktop/package.json; then
+            echo "::error::render or TTS code reached apps/desktop; see AC-14f"
             exit 1
           fi
 
