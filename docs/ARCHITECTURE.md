@@ -177,14 +177,16 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 ## 6. The runtime
 
 **What exists today.** `apps/cli/src/server.ts` builds one Hono application — `GET /healthz`
-returning `{status, version}`, `POST /mcp` speaking Streamable HTTP, and `GET`/`DELETE /mcp`
-answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default. The eight tools are
-registered and return "not implemented in this phase" payloads
+returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable HTTP, and
+`GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
+The eight tools are registered and return "not implemented in this phase" payloads
 ([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)). `mcp`, `setup`,
 `connect` and `daemon` are registered stub commands that name themselves on stderr and exit `2`.
-There is no supervisor, no IPC listener, no guard middleware, no state on disk and no job store.
-**Almost everything in the rest of this section is phase 1 or phase 2**, and each paragraph says
-which.
+`serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
+left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
+`daemon.json`, `runtime.json` and `jobs/` are real. There is still no supervisor, no IPC listener and
+no guard middleware, and the eight tools are not yet wired to the runner.
+**Much of the rest of this section is phase 1 or phase 2**, and each paragraph says which.
 
 **Process model (phase 2, [ADR 0020](adr/0020-always-running-local-daemon.md)).** `xplainer serve`
 becomes an installed, supervised, per-user daemon — systemd user unit, LaunchAgent, or Windows
@@ -211,7 +213,7 @@ owns it, never invented at the call site.
 
 | Code | Meaning | Owner | Status |
 |---:|---|---|---|
-| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | phase 2 |
+| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | stall **built**; clean shutdown phase 1 |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
 | `3` | Precondition unmet | ADR 0020 | phase 2 |
 | `4` | Installed but not healthy | ADR 0020 | phase 2 |
@@ -219,8 +221,8 @@ owns it, never invented at the call site.
 | `6` | No supported supervisor | ADR 0020 | phase 2 |
 | `7` | Port or label conflict | ADR 0020 | phase 2 |
 | `8` | Contract skew between shim and daemon | ADR 0025 | phase 1 |
-| `10` | The recorded port is taken | ADR 0020 | phase 2 |
-| `11` | State file unreadable | ADR 0020 | phase 2 |
+| `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
+| `11` | State file unreadable | ADR 0020 | **built** |
 | `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | phase 2 |
 | `70` | Internal error | ADR 0020 | phase 2 |
 
@@ -233,10 +235,13 @@ states, and a job is always in exactly one of them: `queued`, `running`, `done`,
 - **Durability.** Job records outlive the process that wrote them, under the durable state directory
   in a `jobs/` subdirectory.
 
-  > *Proposed mechanism, to be confirmed by spike P1-S1:* one JSON file per job under an
-  > exclusively-owned directory, versus `node:sqlite` in WAL mode. The ownership primitive, the
-  > per-platform force of a directory flush and the means of confirming a worker's identity are
-  > P1-S1's too.
+  *Settled by spike P1-S1 on 2026-09-06 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+  §Note, 2026-09-06: P1-S1 settled), and built.* One JSON file per job, written
+  temp → `fsync` → `rename` → `fsync` the containing directory; `node:sqlite` WAL is rejected
+  because "leave this one record alone" is expressible per file and not per database schema.
+  Ownership is an `owner.lock` created `O_EXCL` whose staleness is inferred from the identity tuple
+  and whose takeover is confirmed by a read-back. A worker's identity is **(pid, process start time,
+  machine boot id)** and never the pid.
 
 - **Boot reconciliation.** Every `queued` or `running` job whose recorded pid is not alive, or whose
   recorded daemon boot-id differs from this one, is rewritten to `status: "error"`,
