@@ -83,3 +83,9 @@ jobs:
           name: xplainer-desktop-${{ matrix.os }}
           path: apps/desktop/release/*
           if-no-files-found: error
+          # Each run uploads ~1.9 GB across the three OSes. On 2026-09-07 seven
+          # runs at the default 90-day retention filled the repository's
+          # artifact quota and this step failed on every OS. Unsigned dev
+          # installers are reproducible by re-running the workflow, so they
+          # need only outlive a review, not a quarter.
+          retention-days: 5
