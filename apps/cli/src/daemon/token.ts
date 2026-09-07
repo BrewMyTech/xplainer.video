@@ -33,7 +33,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { ensureStateDirectory, flushDirectory } from "./durable-write.js";
 import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
-import { STATE_FILE_MODE } from "./state-dir.js";
+import { type SettingDecision, STATE_FILE_MODE, settingFlag } from "./state-dir.js";
 
 /** The environment variable the supervisor sets, carrying a *path* and never a value (R-SEC-6). */
 export const TOKEN_FILE_ENV = "XPLAINER_TOKEN_FILE";
@@ -86,13 +86,42 @@ export class TokenUnreadableError extends Error {
   }
 }
 
-/** Where the token lives: `XPLAINER_TOKEN_FILE`, or `token` inside the state directory. */
-export function resolveTokenPath(stateDir: string, env: TokenEnvironment = process.env): string {
-  const override = env[TOKEN_FILE_ENV];
-  if (override !== undefined && override.trim() !== "") {
-    return override;
+/** What {@link resolveTokenPathSetting} weighs, in precedence order. */
+export type TokenPathRequest = {
+  /** `serve --token-file`, which wins over the variable and the default. */
+  flag?: string | undefined;
+  env?: TokenEnvironment;
+};
+
+/**
+ * The whole precedence: `--token-file` → `XPLAINER_TOKEN_FILE` → `token` in the state directory.
+ *
+ * The flag exists for the same reason the variable does — a supervisor has to be able to put the
+ * token somewhere the daemon will find it — and it is above the variable because Task Scheduler's
+ * `<Exec>` action has no environment map to carry one. **Both forms name a path and never a value**,
+ * which is R-SEC-6 in one sentence: `/proc/<pid>/cmdline` is world-readable and
+ * `Get-ScheduledTaskInfo` prints a task's arguments, so an argv route is exactly as safe as the
+ * environment route was and no safer — and a `--token <value>` would have been neither.
+ */
+export function resolveTokenPathSetting(
+  stateDir: string,
+  request: TokenPathRequest = {},
+): SettingDecision {
+  const flag = settingFlag(request.flag);
+  if (flag !== undefined) {
+    return { path: flag, source: "flag" };
   }
-  return join(stateDir, TOKEN_FILE);
+  const env = request.env ?? process.env;
+  const override = settingFlag(env[TOKEN_FILE_ENV]);
+  if (override !== undefined) {
+    return { path: override, source: "environment" };
+  }
+  return { path: join(stateDir, TOKEN_FILE), source: "default" };
+}
+
+/** Where the token lives for a caller with no flag: `XPLAINER_TOKEN_FILE`, or the default. */
+export function resolveTokenPath(stateDir: string, env: TokenEnvironment = process.env): string {
+  return resolveTokenPathSetting(stateDir, { env }).path;
 }
 
 function describe(error: unknown): string {

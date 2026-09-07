@@ -13,7 +13,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -24,8 +24,14 @@ import { STATE_DIR_ENV, stateDirLayout } from "../daemon/state-dir.js";
 import { CHILD_SERVE, type SpawnedChild, spawnEntry } from "../daemon/testing/spawn-child.js";
 import { TOKEN_FILE } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
+import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { CLI_VERSION } from "../version.js";
-import { createStatusCommand, DAEMON_URL_ENV } from "./status.js";
+import {
+  createStatusCommand,
+  DAEMON_URL_ENV,
+  STATUS_REPORT_VERSION,
+  type StatusReport,
+} from "./status.js";
 
 /** Thrown in place of `process.exit`, carrying the code the command asked for. */
 class ExitSignal extends Error {
@@ -96,6 +102,19 @@ async function daemonOn(stateDir: string): Promise<{ child: SpawnedChild; port: 
   children.push(child.process);
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   return { child, port: ready.port };
+}
+
+/** Run `status --json` and parse the one object it wrote. */
+async function statusJson(
+  stateDir: string,
+  args: readonly string[] = [],
+): Promise<{ report: StatusReport; exitCode: number | undefined; stdout: string }> {
+  const invocation = await status(stateDir, ["--json", ...args]);
+  return {
+    report: JSON.parse(invocation.stdout) as StatusReport,
+    exitCode: invocation.exitCode,
+    stdout: invocation.stdout,
+  };
 }
 
 afterEach(() => {
@@ -234,5 +253,161 @@ describe("xplainer status", () => {
     };
 
     expect(createStatusCommand(silent).helpInformation()).toContain(DAEMON_URL_ENV);
+  });
+});
+
+/**
+ * `--json` is the surface `apps/desktop`'s discovery shells out to rather than reimplementing
+ * state-directory resolution, so what it must never make a caller do is parse a sentence. Every
+ * case here asserts the **condition code**, and the daemons are real: a stubbed `/healthz` would
+ * assert the one thing this command exists not to trust.
+ */
+describe("xplainer status --json", () => {
+  /**
+   * The story's own verification, end to end: a real daemon started with all three settings under
+   * a throwaway state directory, whose `status --json` reports each of them and whose socket and
+   * token are really at the given paths. Without the read-back this would be a report of what
+   * somebody intended rather than of what the process used.
+   */
+  it("reports the three settings a real daemon was started with", async () => {
+    const stateDir = stateDirectory();
+    const decoyStateDir = stateDirectory();
+    const tokenFile = join(stateDir, "delivered-token");
+    const socket = join(stateDir, "run", "x.sock");
+
+    const child = spawnEntry(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        SETTING_FLAGS.stateDir,
+        stateDir,
+        SETTING_FLAGS.tokenFile,
+        tokenFile,
+        SETTING_FLAGS.socket,
+        socket,
+      ],
+      { [STATE_DIR_ENV]: decoyStateDir },
+    );
+    children.push(child.process);
+    const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
+
+    const { report, exitCode } = await statusJson(stateDir);
+
+    expect(exitCode).toBeUndefined();
+    expect(report.schema_version).toBe(STATUS_REPORT_VERSION);
+    expect(report.condition).toBe("ready");
+    expect(report.exit_code).toBe(0);
+    expect(report.state_dir).toBe(stateDir);
+    expect(report.daemon.token_file).toBe(tokenFile);
+    expect(report.daemon.socket_path).toBe(socket);
+    expect(report.daemon.port).toBe(ready.port);
+    expect(report.health?.contract_version).toBe(MCP_CONTRACT_VERSION);
+    expect(report.health?.version).toBe(CLI_VERSION);
+    // Reported, and true: both files are where the report says they are.
+    expect(existsSync(tokenFile)).toBe(true);
+    expect(existsSync(socket)).toBe(true);
+    expect(ready.socket).toBe(socket);
+  }, 30_000);
+
+  /** R-SEC-6 on the reporting surface too: the path is the fact, the value never appears. */
+  it("carries the token's path and never the token itself", async () => {
+    const stateDir = stateDirectory();
+    await daemonOn(stateDir);
+    const token = readFileSync(join(stateDir, TOKEN_FILE), "utf8").trim();
+
+    const { stdout, report } = await statusJson(stateDir);
+
+    expect(report.daemon.token_file).toBe(join(stateDir, TOKEN_FILE));
+    expect(token.length).toBeGreaterThan(0);
+    expect(stdout).not.toContain(token);
+  }, 30_000);
+
+  /**
+   * "Nothing answered" is two different situations and only one of them is a problem to
+   * investigate: a machine with no daemon installed needs an install, and the desktop's `absent`
+   * outcome is exactly that. The two state files are what tells them apart.
+   */
+  it("says absent when nothing has ever bound here, and unreachable when something has", async () => {
+    const nothing = await statusJson(stateDirectory());
+    expect(nothing.report.condition).toBe("absent");
+    expect(nothing.report.exit_code).toBe(4);
+    expect(nothing.exitCode).toBe(4);
+
+    const recorded = stateDirectory();
+    writeFileSync(
+      stateDirLayout(recorded).daemonState,
+      JSON.stringify({ format_version: 1, port: 1, contract_version: MCP_CONTRACT_VERSION }),
+    );
+    const gone = await statusJson(recorded);
+    expect(gone.report.condition).toBe("unreachable");
+    expect(gone.report.probe.http_status).toBeNull();
+    expect(gone.report.probe.error).not.toBeNull();
+  }, 30_000);
+
+  /** One HTTP status, two conditions, because the remedies have nothing in common. */
+  it("tells a refused token apart from having no token to present", async () => {
+    const intruded = stateDirectory();
+    await daemonOn(intruded);
+    writeFileSync(join(intruded, TOKEN_FILE), "a-token-that-daemon-never-minted\n");
+    const refused = await statusJson(intruded);
+    expect(refused.report.condition).toBe("unauthorized");
+    expect(refused.report.probe.http_status).toBe(401);
+
+    const untokened = stateDirectory();
+    await daemonOn(untokened);
+    rmSync(join(untokened, TOKEN_FILE));
+    const empty = await statusJson(untokened);
+    expect(empty.report.condition).toBe("token_absent");
+    expect(empty.report.probe.http_status).toBe(401);
+  }, 30_000);
+
+  /**
+   * A latched breaker is not "not answering": no supervisor is going to start this daemon until
+   * `xplainer daemon restart` clears it, so the remedy is a command rather than an investigation.
+   */
+  it("says stalled when the breaker is latched, and carries the words it latched", async () => {
+    const stateDir = stateDirectory();
+    writeFileSync(
+      stateDirLayout(stateDir).daemonState,
+      JSON.stringify({
+        format_version: 1,
+        port: 1,
+        stalled: { at: "2026-09-06T00:00:00.000Z", reason: "five failed starts in a row" },
+      }),
+    );
+
+    const { report } = await statusJson(stateDir);
+
+    expect(report.condition).toBe("stalled");
+    expect(report.daemon.stalled).toEqual({
+      at: "2026-09-06T00:00:00.000Z",
+      reason: "five failed starts in a row",
+    });
+  });
+
+  /**
+   * Compatibility is a relation between a daemon and the shim asking, so this command reports the
+   * daemon's contract version and never decides for a caller whose own version it does not know.
+   */
+  it("reports the daemon's contract version rather than a verdict about it", async () => {
+    const stateDir = stateDirectory();
+    await daemonOn(stateDir);
+
+    const { report } = await statusJson(stateDir);
+
+    expect(report.health?.contract_version).toBe(MCP_CONTRACT_VERSION);
+    expect(report.condition).toBe("ready");
+  }, 30_000);
+
+  /** A state file that cannot be read has no report to write, so stdout stays empty. */
+  it("writes nothing to stdout when it exits 11 instead", async () => {
+    const stateDir = stateDirectory();
+    writeFileSync(stateDirLayout(stateDir).daemonState, "{ half a state file");
+
+    const { exitCode, stdout } = await status(stateDir, ["--json"]);
+
+    expect(exitCode).toBe(11);
+    expect(stdout).toBe("");
   });
 });

@@ -21,9 +21,18 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -39,6 +48,7 @@ import {
   spawnEntry,
   TS_SOURCE_HOOK,
 } from "../daemon/testing/spawn-child.js";
+import { launcherPath } from "../install/launcher.js";
 import { MCP_SESSIONS_DIR } from "../mcp/stdio-server.js";
 import { CLI_VERSION } from "../version.js";
 
@@ -212,10 +222,13 @@ describe("xplainer mcp --attach", () => {
   /**
    * ADR 0025 §Part two, exactly: an incompatible pair "exits with a new code **`8`** and a message
    * naming both versions and a command that fixes it". The command has to be one that exists *now*,
-   * which is why it names the release the daemon reported rather than a `daemon restart` verb that
-   * is still a phase-2 stub.
+   * and that is what changed in T10: it printed `npm i -g @xplainer/cli@<version>`, which no
+   * machine in this phase can run, because nothing is published and the phase-2 install runs the
+   * daemon out of a payload staged under the state directory. What it names instead is the stable
+   * launcher — here, absent, because this state directory holds no install — and the command that
+   * would create it.
    */
-  it("exits 8 naming both contract versions and a command that installs the daemon's release", async () => {
+  it("exits 8 naming both contract versions and a remediation this machine can run", async () => {
     const stateDir = stateDirectory();
     await fakeDaemonOn(stateDir, { version: "9.9.9-daemon", contract_version: "2" });
 
@@ -225,9 +238,35 @@ describe("xplainer mcp --attach", () => {
     expect(exit.code).toBe(CONTRACT_SKEW_EXIT_CODE);
     expect(shim.stderr()).toContain("tool contract 2");
     expect(shim.stderr()).toContain(`this shim speaks ${MCP_CONTRACT_VERSION}`);
-    expect(shim.stderr()).toContain("npm i -g @xplainer/cli@9.9.9-daemon");
+    expect(shim.stderr()).toContain("release 9.9.9-daemon");
+    expect(shim.stderr()).toContain(launcherPath(stateDir));
+    expect(shim.stderr()).toContain("xplainer daemon install");
+    expect(shim.stderr()).not.toContain("npm i -g");
     // Nothing was proxied: the refusal is a gate, and stdout is the JSON-RPC stream.
     expect(shim.stdout()).toBe("");
+  }, 60_000);
+
+  /**
+   * The other half of the same message: with an install's launcher present, the remediation is a
+   * path that exists, and running the session through it is the fix. That path is the one name a
+   * shim and a daemon share across an update, which is why it is what an agent's configuration
+   * holds.
+   */
+  it("names the installed launcher when there is one, as the shim to run instead", async () => {
+    const stateDir = stateDirectory();
+    await fakeDaemonOn(stateDir, { version: "9.9.9-daemon", contract_version: "2" });
+    const launcher = launcherPath(stateDir);
+    mkdirSync(dirname(launcher), { recursive: true });
+    writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
+    chmodSync(launcher, 0o700);
+
+    const shim = run(CHILD_CLI, ["mcp", "--attach"], { XPLAINER_STATE_DIR: stateDir });
+    const exit = await shim.waitForExit();
+
+    expect(exit.code).toBe(CONTRACT_SKEW_EXIT_CODE);
+    expect(shim.stderr()).toContain(`${launcher} mcp --attach`);
+    expect(shim.stderr()).toContain("xplainer daemon update");
+    expect(shim.stderr()).not.toContain("npm i -g");
   }, 60_000);
 
   /**

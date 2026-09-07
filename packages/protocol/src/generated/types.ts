@@ -415,6 +415,59 @@ export interface TimingsSegment {
   durationInFrames: number;
 }
 
+/**
+ * The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install "checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check compares the workspace it records against an incoming runtime's template pins. The three components are the two binaries a render needs — the Chrome Headless Shell that draws every frame, and the speech synthesiser every narration goes through, each recorded with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk — plus the workspace payload, which is recorded here rather than beside the runtime because it survives daemon updates while the runtime does not. Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.
+ */
+export interface Toolchain {
+  /**
+   * The shape of this document. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon.
+   */
+  format_version: number;
+  /**
+   * When `setup` finished acquiring what is recorded below. RFC 3339, so a support report can say how old the toolchain is without the file's mtime, which a copy or a restore rewrites.
+   */
+  created_at: string;
+  chrome: ToolchainComponent;
+  speech: ToolchainComponent;
+  workspace: ToolchainWorkspace;
+}
+
+/**
+ * One acquired binary: what it is, where it ended up, what it hashed to, and which route brought it.
+ */
+export interface ToolchainComponent {
+  /**
+   * The version acquired, exactly as its own provider spells it. Compared as a string and never parsed: an upgrade is reported to the user, and the daemon never applies one itself.
+   */
+  version: string;
+  /**
+   * The absolute path this component was resolved to. `install` checks that it still exists before it registers anything, which is the difference between "setup has been run" and "setup has been run and its results are still here".
+   */
+  path: string;
+  /**
+   * The SHA-256 of the acquired artefact, lowercase hex, as verified against the expected digest the toolchain manifest carries for this platform. Recorded so a later check can tell a replaced binary from a missing one.
+   */
+  sha256: string;
+  /**
+   * Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, `docker`, `bundle` or `url` for the three speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.
+   */
+  provider: string;
+}
+
+/**
+ * The workspace payload's own identity: which platform it was resolved for, and which template it resolved.
+ */
+export interface ToolchainWorkspace {
+  /**
+   * `<platform>-<arch>` as the payload's manifest records it — `darwin-arm64`, `linux-x64`, `win32-x64`. A workspace holds compiled dependencies, so a payload resolved for another platform is a different artefact even when every declared version matches.
+   */
+  platform: string;
+  /**
+   * The version of the workspace template this payload resolved. It is the template package's own version and not a pin, so a reader comparing pins reads the payload's manifest; this field says which template the pins came from.
+   */
+  version: string;
+}
+
 export interface VideoSummary {
   slug: Slug;
   /**

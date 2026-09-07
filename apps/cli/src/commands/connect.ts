@@ -7,13 +7,22 @@
  * ([ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not
  * TCP: "No URL and no token enter any agent configuration file").
  *
- * **Every run starts by proving there is a daemon.** ADR 0020 §Ordering — "`connect` refuses to
- * write an agent configuration pointing at a daemon that has never answered (`--force` overrides). A
- * working-looking config for a daemon that is not running is the single most likely first-run
- * support ticket" — and the proof is `daemon.json`'s recorded port, read through
- * `connect/preflight.ts`. The port is *not* written anywhere; it is read so that this command cannot
- * be assuming `8787`, and printed so that a user on a machine with two daemons can see which one
- * they just connected to.
+ * **Every run starts by proving there is a daemon — except the one that is offered when there is
+ * none.** ADR 0020 §Ordering — "`connect` refuses to write an agent configuration pointing at a
+ * daemon that has never answered (`--force` overrides). A working-looking config for a daemon that
+ * is not running is the single most likely first-run support ticket" — and the proof is
+ * `daemon.json`'s recorded port, read through `connect/preflight.ts`. The port is *not* written
+ * anywhere; it is read so that this command cannot be assuming `8787`, and printed so that a user
+ * on a machine with two daemons can see which one they just connected to.
+ *
+ * **`--spawn` writes the other entry, and bypasses that check.** It is what ADR 0020 §Degraded
+ * paths prints first in both no-supervisor cases, so it is offered at exactly the moment no daemon
+ * exists and `daemon install` has just refused; applying the preflight to it would make the
+ * remediation refuse itself. What it writes is `xplainer mcp` **without** `--attach` — the eight
+ * tools in the agent's own session, no supervision, no shared queue — and `connect/spawn.ts` is
+ * where that entry and its extra fallback are decided. Both verbs carry it: the remediation
+ * ADR 0020 prints names `claude` because that is the example it is written around, and a Codex user
+ * on the same supervisor-less machine has the same problem and the same answer.
  *
  * **The exit codes are the table's** (`docs/ARCHITECTURE.md` §6): `3` for a precondition that is not
  * met, with nothing written — no daemon has ever bound here, or the file to edit cannot be
@@ -51,6 +60,7 @@ import {
 import { describeEntry, findOnPath, resolveStdioEntry, type StdioEntry } from "../connect/entry.js";
 import { type PreflightResult, preflightDaemon } from "../connect/preflight.js";
 import { ConnectRefusal } from "../connect/refusal.js";
+import { resolveSpawnEntry } from "../connect/spawn.js";
 import type { VendorCliResult } from "../connect/vendor-cli.js";
 import { StateFileUnreadableError } from "../daemon/daemon-state.js";
 import {
@@ -64,6 +74,7 @@ import type { CliIo } from "../io.js";
 /** The flags both verbs share. */
 type CommonOptions = {
   force?: boolean;
+  spawn?: boolean;
 };
 
 /** What `xplainer connect claude` parses. */
@@ -91,6 +102,16 @@ type Preparation = {
  */
 function prepare(io: CliIo, verb: string, options: CommonOptions): Preparation {
   const stateDir = resolveStateDir();
+  if (options.spawn === true) {
+    // No preflight, on purpose: this is the entry offered when there is no daemon to prove. See
+    // `connect/spawn.ts` for why the check is bypassed rather than overridden with `--force`.
+    return {
+      entry: resolveSpawnEntry({ stateDir }),
+      daemonLine:
+        "  daemon:  none — this entry starts the tools inside each agent session and stops with " +
+        "it, so there is no warm process, no shared job queue and no desktop client",
+    };
+  }
   let daemon: PreflightResult;
   try {
     daemon = preflightDaemon({ stateDir, force: options.force === true });
@@ -106,7 +127,7 @@ function prepare(io: CliIo, verb: string, options: CommonOptions): Preparation {
     io.exit(PRECONDITION_UNMET_EXIT_CODE);
   }
   return {
-    entry: resolveStdioEntry(),
+    entry: resolveStdioEntry({ stateDir }),
     daemonLine:
       `  daemon:  port ${daemon.port}, from ${daemon.source} — the entry carries no URL, ` +
       "no port and no token",
@@ -177,6 +198,11 @@ function createClaudeCommand(io: CliIo): Command {
       CLAUDE_DEFAULT_SCOPE,
     )
     .option("--force", "write the entry even though no daemon has bound on this machine")
+    .option(
+      "--spawn",
+      "write an entry that starts `xplainer mcp` inside each agent session instead of attaching " +
+        "to a daemon — the form for a machine with no service manager",
+    )
     .action((options: ClaudeOptions) => {
       if (!CLAUDE_SCOPES.includes(options.scope)) {
         io.writeErr(
@@ -245,6 +271,11 @@ function createCodexCommand(io: CliIo): Command {
     .description("Register this daemon's stdio entry with Codex CLI")
     .option("--config <path>", "config.toml to edit (default: ~/.codex/config.toml)")
     .option("--force", "write the entry even though no daemon has bound on this machine")
+    .option(
+      "--spawn",
+      "write an entry that starts `xplainer mcp` inside each agent session instead of attaching " +
+        "to a daemon — the form for a machine with no service manager",
+    )
     .action((options: CodexOptions) => {
       const { entry, daemonLine } = prepare(io, "codex", options);
       const lines = [`  runs:    ${describeEntry(entry)}`, daemonLine];

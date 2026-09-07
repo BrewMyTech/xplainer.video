@@ -194,16 +194,31 @@ into an agent's own configuration — through that agent's own writer, `claude m
 `~/.codex/config.toml`'s `[mcp_servers.xplainer]` table, edited in place — after reading
 `daemon.json` to confirm a daemon has bound on this machine at all. Both verbs are re-runnable:
 `claude mcp add` refuses a name its scope already holds, so that refusal is answered with
-`claude mcp remove` and a second add. `setup` and `daemon` are registered stub commands that name
-themselves on stderr and exit `2`.
+`claude mcp remove` and a second add. What they name is the **stable launcher**
+`<state>/bin/xplainer` where an install has written one, then the binary on `PATH`, and only then
+`npx`: a runtime-directory install puts nothing on `PATH`, and a version-scoped runtime directory is
+the one path no agent configuration may hold. `--spawn` writes the other entry — `xplainer mcp`
+without `--attach`, the tools inside the agent's own session — and it is the only form that
+**bypasses** the daemon check, because it is the remediation ADR 0020 prints when there is no daemon
+to check for. `setup` and `daemon` are registered stub commands that name themselves on stderr and
+exit `2`; `daemon install`'s **read-only preflight** is built ahead of it — the setup marker
+`toolchain.json` (a checked schema in `packages/protocol`) and whether its recorded paths still
+exist, the supervisor and whether *this user* has a manager, the resolved program's executability,
+the port, the linger marker, a stale `launchctl` disable record and the token file, all without
+writing anything, including the linger marker whose creation belongs to the writing phase.
 `serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
 left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
 `daemon.json`, `runtime.json` and `jobs/` are real. It also mints a `0600` bearer token in its
 `0700` state directory and puts the **guard middleware** in front of every TCP route — `Host`
 allowlist built from the bound port, `Origin` validation, and the token on `/healthz` as well as
 `/mcp` — handles `SIGTERM` by draining, removing `runtime.json` and exiting `0`, and announces
-readiness with one line of JSON on stdout. `xplainer status` reads the two state files and confirms
-them with an authenticated `GET /healthz`. The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
+readiness with one line of JSON on stdout. It takes its three settings — `--state-dir`,
+`--token-file` and `--socket` — from flags above their environment variables, because Task
+Scheduler's `<Exec>` action has no per-action environment map, and writes all three into
+`daemon.json` at readiness. `xplainer status` reads the two state files and confirms them with an
+authenticated `GET /healthz`, in prose or, with `--json`, as one object carrying a stable condition
+code from a closed set (`ready`, `stalled`, `unauthorized`, `token_absent`, `unhealthy`,
+`unreachable`, `absent`). The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
 `<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
 files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
 tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
@@ -225,13 +240,18 @@ bearer token — because it is the surface a web page can reach. That middleware
 `createServer()` takes it as a parameter rather than a mode, so the IPC listener can carry none and
 `services/media-service` can carry its own.
 
-**Two state files, opposite lifetimes (both written today; `install` owns most of `daemon.json`
-from phase 2).** `daemon.json` is **durable** and must survive reboot; it records the port, socket
-path, token file path, supervisor kind and artefact path, resolved program and interpreter,
-lingering, log sink and installing version. `serve` writes only the fields it knows — the port it
-bound, the contract version, the token file's path, the flush verdict and the circuit breaker's
-history — and preserves every key it does not, because a `serve` that rewrote the file from its own
-narrow view would silently uninstall the daemon it is part of. `runtime.json` is **ephemeral**,
+**Two state files, opposite lifetimes (both written today; `install` fills its own half of
+`daemon.json` from phase 2).** `daemon.json` is **durable** and must survive reboot, and its fields
+are typed in `apps/cli/src/daemon/daemon-state.ts`: `port`, `contract_version`, `token_file`,
+`socket_path`, `directory_flush`, `recentStarts[]` and `stalled`, plus the installer's
+`supervisor_kind`, `supervisor_artefact`, `runtime_dir`, `launch_spec`, `program_source`,
+`linger_enabled_by_us`, `log_sink` and `installed_version`. **Two writers, split by field:** `serve`
+owns what a run establishes — the port and socket it bound, the contract version it speaks, the
+token file it read, the flush verdict and the breaker's history — and `daemon install` owns what an
+installation establishes. Every write is a read-modify-write that preserves keys it does not name,
+which is what makes the split safe in both directions: a `serve` that rewrote the file from its own
+narrow view would silently uninstall the daemon it is part of, and an `install` that rewrote it
+would throw away the crash history the breaker counts. `runtime.json` is **ephemeral**,
 written by `serve` at bind, removed on clean shutdown, and never trusted without a liveness check.
 The port is decided once, at install, and the recorded port is a contract — `connect`, `status`,
 `logs` and the desktop client all read it rather than guessing.
@@ -244,13 +264,13 @@ owns it, never invented at the call site.
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
-| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`); `daemon install` phase 2 |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`, and the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed) |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
-| `5` | Administrator privileges required | ADR 0020 | phase 2 |
-| `6` | No supported supervisor | ADR 0020 | phase 2 |
-| `7` | Port or label conflict | ADR 0020 | phase 2 |
+| `5` | Administrator privileges required: the supervisor is here and refuses *this* user the right the daemon needs — Windows `SCHED_S_BATCH_LOGON_PROBLEM`, or `--at-boot` (`ADMIN_REQUIRED_EXIT_CODE`) | ADR 0020 | **named** in `apps/cli/src/daemon/exit-codes.ts`. Both of its conditions — lingering denied, and the missing batch-logon right — can only be established by *attempting* the thing, so they belong to the install's writing phase rather than to its read-only preflight |
+| `6` | No supported supervisor on this machine, so there is nothing to install into — the remediation is the one that needs none, `xplainer connect claude --spawn` (`NO_SUPERVISOR_EXIT_CODE`) | ADR 0020 | **built** in the install preflight, in two conditions: no user service manager (`/run/systemd/system` absent, or `systemctl --user` reaching none), and a Task Scheduler that refuses a query. `--spawn` is built, so the remediation is runnable |
+| `7` | **Install-time preflight**: the port `install` is about to record is held, or a unit, label or task of that name is somebody else's. Nothing is registered and nothing is recorded — as against `10`, which is the same symptom found at `serve` time (`INSTALL_CONFLICT_EXIT_CODE`) | ADR 0020 | **built** in the install preflight for the port, which is bound and released rather than assumed, and named in words — the holding pid from `lsof` or `ss` where one answers |
 | `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
-| `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
+| `10` | **`serve`-time ownership**: another process holds this machine's runtime — the state directory is owned, or the recorded port is taken — by something that is running now (`OWNERSHIP_REFUSED_EXIT_CODE`) | ADR 0020, ADR 0024 | **built** |
 | `11` | State file unreadable | ADR 0020 | **built** |
 | `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
 | `70` | Internal error | ADR 0020 | **built** |

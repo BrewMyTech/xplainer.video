@@ -28,6 +28,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
@@ -50,6 +51,9 @@ import {
 } from "../daemon/testing/spawn-child.js";
 import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
+import type { CliIo } from "../io.js";
+import { SETTING_FLAGS } from "../runtime/launch-spec.js";
+import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
 const SHUTDOWN_BUDGET_MS = 25_000;
@@ -216,6 +220,133 @@ describe("the bearer token a daemon mints on its first start", () => {
     expect(exit.code).toBe(12);
     expect(child.stderr()).toContain("refusing to serve unauthenticated");
     expect(child.stdout()).toBe("");
+  }, 30_000);
+});
+
+/**
+ * The three settings, and the reason they are flags at all.
+ *
+ * Task Scheduler's `<Exec>` action carries a command, a working directory and arguments and has
+ * **no per-action environment map**, so on Windows an installed daemon told where its state lives
+ * only through `XPLAINER_STATE_DIR` would silently take the platform default while `daemon.json`
+ * recorded something else — and T17's consistency check would compare an environment that was never
+ * delivered. Every assertion below is therefore about a **real process**: what it read, what it
+ * bound, and what it wrote down afterwards.
+ */
+describe("the three settings options", () => {
+  /**
+   * The launch contract builds the argv this command has to parse. A spelling that changed on one
+   * side and not the other would be a daemon that refuses the vector its own installer wrote, so
+   * the two are compared rather than trusted to stay in step.
+   */
+  it("is spelled exactly as the launch contract emits it", () => {
+    const silent: CliIo = {
+      writeOut: () => {},
+      writeErr: () => {},
+      exit: (): never => {
+        throw new Error("not expected");
+      },
+    };
+
+    const flags = createServeCommand(silent)
+      .options.map((option) => option.long)
+      .filter((long): long is string => long !== null && long !== undefined);
+
+    expect(flags).toContain(SETTING_FLAGS.stateDir);
+    expect(flags).toContain(SETTING_FLAGS.tokenFile);
+    expect(flags).toContain(SETTING_FLAGS.socket);
+  });
+
+  it("takes each flag over its variable, and binds and writes where the flag said", async () => {
+    const stateDir = stateDirectory();
+    const decoyStateDir = stateDirectory();
+    const decoyToken = join(stateDirectory(), "decoy-token");
+    const tokenFile = join(stateDir, "delivered-token");
+    const socket = join(stateDir, "run", "x.sock");
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        SETTING_FLAGS.stateDir,
+        stateDir,
+        SETTING_FLAGS.tokenFile,
+        tokenFile,
+        SETTING_FLAGS.socket,
+        socket,
+      ],
+      { XPLAINER_STATE_DIR: decoyStateDir, [TOKEN_FILE_ENV]: decoyToken },
+    );
+    const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
+
+    // The socket the daemon announces is the one it was told to bind, and it answers there.
+    expect(ready.socket).toBe(socket);
+    const overSocket = await getHealthz({ socketPath: socket });
+    expect(overSocket.status).toBe(200);
+
+    // The token is a file at the given path, `0600`, and it is the token the TCP guard accepts.
+    expect(mode(tokenFile)).toBe(octal(STATE_FILE_MODE));
+    const token = readFileSync(tokenFile, "utf8").trim();
+    const overTcp = await getHealthz({ port: ready.port }, { authorization: `Bearer ${token}` });
+    expect(overTcp.status).toBe(200);
+
+    // The `0700` rule followed the path: it is the socket's own directory that is narrowed.
+    expect(mode(dirname(socket))).toBe(octal(STATE_DIR_MODE));
+
+    // The state directory is the flag's, and `daemon.json` records what this process used.
+    const daemonState = JSON.parse(
+      readFileSync(stateDirLayout(stateDir).daemonState, "utf8"),
+    ) as Record<string, unknown>;
+    expect(daemonState.token_file).toBe(tokenFile);
+    expect(daemonState.socket_path).toBe(socket);
+    expect(daemonState.port).toBe(ready.port);
+
+    // Nothing at all happened where the variables pointed.
+    expect(readdirSync(decoyStateDir)).toEqual([]);
+    expect(existsSync(decoyToken)).toBe(false);
+    // And the daemon said which input decided each one, so a delivery that silently did not
+    // arrive is visible in the log rather than only in a later failure.
+    expect(child.stderr()).toContain("settings from flag/flag/flag");
+  }, 30_000);
+
+  /**
+   * The other half of the two-writer split: `install` owns the supervisor fields and `serve` owns
+   * the run's, and a `serve` that rewrote `daemon.json` from its own narrow view would silently
+   * uninstall the daemon it is part of. Asserted against a real start, because the preservation is
+   * a property of the read-modify-write this process performs and not of a function call.
+   */
+  it("preserves every daemon.json field the installer owns while writing its own", async () => {
+    const stateDir = stateDirectory();
+    const installed = {
+      supervisor_kind: "launchd",
+      supervisor_artefact: "/Users/a/Library/LaunchAgents/video.xplainer.daemon.plist",
+      runtime_dir: "/state/runtime/1.0.0-abc",
+      launch_spec: {
+        executable: "/state/runtime/1.0.0-abc/bin/node",
+        argv: ["/entry.js", "serve"],
+        settings: { stateDir: "/state", tokenFile: "/state/token", socket: "/state/ipc/x.sock" },
+        cwd: "/state",
+      },
+      program_source: "runtime-dir",
+      linger_enabled_by_us: true,
+      log_sink: "/Users/a/Library/Logs/xplainer/daemon.log",
+      installed_version: "0.0.1-installed",
+    };
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(stateDirLayout(stateDir).daemonState, JSON.stringify(installed));
+
+    const { ready } = await serveUntilReady(CHILD_SERVE, stateDir);
+
+    const after = JSON.parse(readFileSync(stateDirLayout(stateDir).daemonState, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    for (const [key, value] of Object.entries(installed)) {
+      expect(after[key]).toEqual(value);
+    }
+    expect(after.port).toBe(ready.port);
+    expect(after.socket_path).toBe(ready.socket);
   }, 30_000);
 });
 

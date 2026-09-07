@@ -266,13 +266,15 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
           started_at: startedAt.toISOString(),
         });
         // The durable half. `port` is what a later `serve` binds and what `status` probes, so this
-        // write is what makes ADR 0020's "the recorded port is a contract" true; `token_file` and
-        // `contract_version` are here so a reader learns both without an HTTP call it may not be
-        // able to make.
+        // write is what makes ADR 0020's "the recorded port is a contract" true; `token_file`,
+        // `socket_path` and `contract_version` are here so a reader learns all three without an
+        // HTTP call it may not be able to make — and `socket_path` in particular is what a
+        // `--socket` was for, since a setting nothing records is a setting nothing can check.
         updateDaemonState(stateDir, {
           port: binding.port,
           contract_version: binding.contractVersion,
           token_file: binding.tokenFile,
+          socket_path: binding.socket,
         });
         markDaemonReady(stateDir, ownership.boot_nonce, now().toISOString());
       },

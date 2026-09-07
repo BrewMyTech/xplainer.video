@@ -42,6 +42,10 @@ import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import { STATE_DIR_ENV, stateDirLayout } from "../daemon/state-dir.js";
 import { CHILD_CLI, spawnEntry } from "../daemon/testing/spawn-child.js";
+import { launcherPath, writeLauncher } from "../install/launcher.js";
+import { resolveProgram } from "../install/program.js";
+import { stageRuntime } from "../install/stage.js";
+import { buildFixturePayload } from "../install/testing/payload.js";
 
 const scratch: string[] = [];
 const children: ChildProcess[] = [];
@@ -666,5 +670,133 @@ describe("what xplainer connect checks before it writes", () => {
 
     expect(run.code).toBe(11);
     expect(run.stderr).toContain("cannot be read as JSON");
+  }, 30_000);
+});
+
+/**
+ * What an installed machine gets, and what a machine where the install was *refused* gets.
+ *
+ * Both halves are about the same defect: before T10, a runtime-directory install left `xplainer`
+ * off `PATH` — the runtime lives under the state directory — so `connect` fell through to
+ * `npx -y @xplainer/cli`, an entry pointing at a package this phase does not publish. The first
+ * test is the fix, and the rest are `--spawn`, which is the remediation ADR 0020 prints first when
+ * there is no supervisor at all.
+ */
+describe("the entry connect writes on a machine with a runtime", () => {
+  /** A state directory holding a staged payload-1 artefact, as `runtime build` + an install leave it. */
+  function stateWithRuntime(port?: number): { stateDir: string; runtime: string } {
+    const stateDir = port === undefined ? temporary("state") : stateWithPort(port);
+    const payload = buildFixturePayload({
+      outDir: join(temporary("payload"), "payload"),
+      version: "3.1.4",
+      marker: "connect",
+      runnable: false,
+    });
+    return { stateDir, runtime: stageRuntime({ payloadDir: payload.outDir, stateDir }).path };
+  }
+
+  /** The entry `~/.claude.json` holds, written by this command's own writer. */
+  function writtenEntry(home: string): { command: string; args: string[] } {
+    const document = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")) as {
+      mcpServers: { xplainer: { command: string; args: string[] } };
+    };
+    return document.mcpServers.xplainer;
+  }
+
+  it("writes the stable launcher, never npx and never the version-scoped directory", async () => {
+    const home = temporary("home");
+    const { stateDir, runtime } = stateWithRuntime(8801);
+    const launcher = writeLauncher({
+      stateDir,
+      program: resolveProgram({ stateDir, runtimeDir: runtime }),
+    });
+
+    // Nothing on PATH: this is the machine the runtime-directory install produces.
+    const run = await connect(["claude"], {
+      HOME: home,
+      PATH: binWith({}),
+      [STATE_DIR_ENV]: stateDir,
+    });
+
+    expect(run.code).toBe(0);
+    expect(writtenEntry(home)).toEqual({
+      type: "stdio",
+      command: launcher.path,
+      args: ["mcp", "--attach"],
+    });
+    expect(launcher.path).toBe(launcherPath(stateDir));
+    expect(writtenEntry(home).command).not.toContain("npx");
+    expect(writtenEntry(home).command).not.toContain(runtime);
+    expect(run.stdout).toContain(`runs:    ${launcher.path} mcp --attach`);
+  }, 30_000);
+
+  /**
+   * The bypass, stated as the difference between two runs of the same command in the same state
+   * directory: without `--spawn` this exits `3` for want of a daemon, and with it exits `0`. That
+   * is the property ADR 0020 needs — the remediation for "there is no daemon" cannot itself refuse
+   * for want of one.
+   */
+  it("bypasses the daemon preflight under --spawn, and writes `mcp` without --attach", async () => {
+    const home = temporary("home");
+    const { stateDir, runtime } = stateWithRuntime();
+    const launcher = writeLauncher({
+      stateDir,
+      program: resolveProgram({ stateDir, runtimeDir: runtime }),
+    });
+    const environment = { HOME: home, PATH: binWith({}), [STATE_DIR_ENV]: stateDir };
+
+    const refused = await connect(["claude"], environment);
+    expect(refused.code).toBe(3);
+    expect(refused.stderr).toContain("no daemon has ever bound in");
+
+    const spawned = await connect(["claude", "--spawn"], environment);
+
+    expect(spawned.code).toBe(0);
+    expect(writtenEntry(home)).toEqual({
+      type: "stdio",
+      command: launcher.path,
+      args: ["mcp"],
+    });
+    expect(spawned.stdout).toContain("daemon:  none");
+  }, 30_000);
+
+  /**
+   * After a *refused* install there is no launcher, because writing one is part of the writing
+   * phase a preflight refusal never reaches — so the entry names the runtime that was staged.
+   */
+  it("names the staged runtime under --spawn when no install has written a launcher", async () => {
+    const home = temporary("home");
+    const { stateDir, runtime } = stateWithRuntime();
+    const program = resolveProgram({ stateDir, runtimeDir: runtime });
+
+    const run = await connect(["claude", "--spawn"], {
+      HOME: home,
+      PATH: binWith({}),
+      [STATE_DIR_ENV]: stateDir,
+    });
+
+    expect(run.code).toBe(0);
+    expect(existsSync(launcherPath(stateDir))).toBe(false);
+    expect(writtenEntry(home)).toEqual({
+      type: "stdio",
+      command: program.executable,
+      args: [program.entry, "mcp"],
+    });
+  }, 30_000);
+
+  /** Nothing staged and nothing installed is still an answer, and it is the plugin bundles' form. */
+  it("falls back to the published form under --spawn on a machine with nothing at all", async () => {
+    const home = temporary("home");
+
+    const run = await connect(["codex", "--spawn"], {
+      HOME: home,
+      PATH: binWith({}),
+      [STATE_DIR_ENV]: temporary("state"),
+    });
+
+    expect(run.code).toBe(0);
+    expect(readFileSync(join(home, ".codex", "config.toml"), "utf8")).toContain(
+      'args = ["-y", "@xplainer/cli", "mcp"]',
+    );
   }, 30_000);
 });

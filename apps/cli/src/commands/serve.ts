@@ -46,6 +46,19 @@
  * and `explainer_narrate`, `explainer_still` and `explainer_render` enqueue against the runner
  * `startDaemon()` handed back, which `explainer_job` then reports on.
  *
+ * **Three settings, and each one is a flag above its variable.** `--state-dir`, `--token-file` and
+ * `--socket` are what makes this command installable on all three supervisors: Windows' Task
+ * Scheduler `<Exec>` action carries a command, a working directory and arguments and has **no
+ * per-action environment map**, so a daemon that could only be told where its state lives through
+ * `XPLAINER_STATE_DIR` would silently take the platform default there while `daemon.json` recorded
+ * something else. The spellings are the launch contract's (`../runtime/launch-spec.ts`
+ * `SETTING_FLAGS`), the precedence is the flag over the variable as everywhere else in this CLI,
+ * and `--token-file` names a **path and never a token value**, so R-SEC-6 holds on the argv route
+ * exactly as it did on the environment one. `--socket` has no variable at all — `../daemon/ipc.ts`
+ * reads none — which is why all three travel in argv on every platform rather than only on Windows.
+ * All three are written into `daemon.json` at readiness, so `xplainer status --json` reports what
+ * this process used rather than what somebody intended.
+ *
  * **Never add `serve --detach`.** [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md)
  * rejects self-daemonisation outright: `launchd.plist(5)` EXPECTATIONS says a job **MUST NOT**
  * "call `daemon(3)`" or "do the moral equivalent … by calling `fork(2)` and have the parent process
@@ -72,18 +85,41 @@ import { formatReadyLine, readyAnnouncement } from "../daemon/ready.js";
 import type { WorkerRegistry } from "../daemon/runner.js";
 import { installShutdownHandlers } from "../daemon/shutdown.js";
 import { type StartedDaemon, startDaemon } from "../daemon/start.js";
-import { loadOrMintToken, resolveTokenPath, TokenUnreadableError } from "../daemon/token.js";
+import { resolveStateDirSetting, STATE_DIR_ENV } from "../daemon/state-dir.js";
+import {
+  loadOrMintToken,
+  resolveTokenPathSetting,
+  TOKEN_FILE_ENV,
+  TokenUnreadableError,
+} from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT, IpcBindError, startServer } from "../server.js";
 
 /** The highest port a TCP listener can bind. */
 const MAX_PORT = 65535;
 
+/**
+ * The three settings flags, spelled exactly as the launch contract emits them.
+ *
+ * `SETTING_FLAGS` in `../runtime/launch-spec.ts` is the pin, and `serve.test.ts` asserts these
+ * three strings against it: the contract builds an argv this command has to parse, so a spelling
+ * that changed on one side and not the other would be a daemon that refuses the vector its own
+ * installer wrote. They are literals here rather than an import because a command should not pull
+ * the artefact assembler into the process every time it starts, and a test that compares the two
+ * makes them one edit apart just as surely.
+ */
+const STATE_DIR_FLAG = "--state-dir";
+const TOKEN_FILE_FLAG = "--token-file";
+const SOCKET_FLAG = "--socket";
+
 /** What commander parses out of the command line. */
 type ServeOptions = {
   port?: number;
   bind?: string;
   iUnderstandRemoteExposure?: boolean;
+  stateDir?: string;
+  tokenFile?: string;
+  socket?: string;
 };
 
 /**
@@ -158,6 +194,18 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       REMOTE_EXPOSURE_FLAG,
       "acknowledge that a non-loopback --bind exposes this daemon beyond this machine",
     )
+    .option(
+      `${STATE_DIR_FLAG} <path>`,
+      `durable state directory; overrides ${STATE_DIR_ENV}, then the platform default`,
+    )
+    .option(
+      `${TOKEN_FILE_FLAG} <path>`,
+      `file holding the bearer token — a path, never the token; overrides ${TOKEN_FILE_ENV}`,
+    )
+    .option(
+      `${SOCKET_FLAG} <path>`,
+      "IPC socket (named pipe on Windows); its directory is made 0700 on every start",
+    )
     .action(async (options: ServeOptions) => {
       // Refused before anything is acquired or written: a bind this daemon will not serve is a
       // usage error, and a usage error that has already taken the state directory is a usage error
@@ -171,7 +219,12 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         io.exit(USAGE_EXIT_CODE);
       }
 
+      // Flag → variable → platform default, decided before ownership is attempted, because the
+      // directory this resolves is the directory the lock is taken in.
+      const stateDirSetting = resolveStateDirSetting({ flag: options.stateDir });
+
       const outcome = await startDaemon({
+        stateDir: stateDirSetting.path,
         log: (line) => {
           io.writeErr(`${line}\n`);
         },
@@ -189,7 +242,8 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // R-SEC-4 and R-SEC-5. Minted here only when the file does not exist, and only once ownership
       // is held, so two daemons cannot race to create it. Exit `12` for a file that exists and
       // cannot be used: a daemon that cannot enforce authentication must not serve.
-      const tokenPath = resolveTokenPath(stateDir);
+      const tokenSetting = resolveTokenPathSetting(stateDir, { flag: options.tokenFile });
+      const tokenPath = tokenSetting.path;
       let token: string;
       try {
         const minted = loadOrMintToken(tokenPath, stateDir);
@@ -230,7 +284,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // is refused here, by length, rather than as an opaque `bind(2)` failure later.
       let ipc: PreparedIpcSocket;
       try {
-        ipc = prepareIpcSocket(stateDir);
+        ipc = prepareIpcSocket({ stateDir, flag: options.socket });
       } catch (error) {
         await daemon.close();
         io.writeErr(`${internalFailure(error).message}\n`);
@@ -315,6 +369,16 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         `xplainer serve: also listening on ${ipc.path}, where filesystem permissions are the ` +
           "authentication and no token is asked for — that is the socket `xplainer mcp --attach` " +
           "dials, and it is why an agent's configuration holds no URL and no secret.\n",
+      );
+      // Which input decided each setting, said once. A supervisor that cannot deliver a variable —
+      // Task Scheduler's `<Exec>` has no environment map — is exactly the case where a daemon
+      // silently taking the platform default looks identical to one taking the setting it was
+      // given, and the difference is only visible in a line like this or in `status --json`.
+      io.writeErr(
+        `xplainer serve: settings from ${stateDirSetting.source}/${tokenSetting.source}/` +
+          `${ipc.source} — state directory ${stateDir}, token file ${tokenPath}, socket ` +
+          `${ipc.path}; all three are recorded in daemon.json, which is what ` +
+          "`xplainer status --json` reports.\n",
       );
 
       await seams.onListening?.(daemon);

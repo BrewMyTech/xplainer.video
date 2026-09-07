@@ -222,6 +222,24 @@ describe("xplainer", () => {
     );
   });
 
+  /**
+   * `--spawn` is the leading remediation in ADR 0020's two no-supervisor degraded paths, so it has
+   * to be a flag that exists on both verbs rather than a sentence in a message. What it *writes* is
+   * asserted against real configuration files in `commands/connect.test.ts`; this is the surface,
+   * read off the commands for the same reason `mcp --attach` is above.
+   */
+  it("offers connect claude --spawn and connect codex --spawn, which two refusals print", () => {
+    const connect = createProgram().commands.find((command) => command.name() === "connect");
+
+    for (const verb of ["claude", "codex"]) {
+      const command = connect?.commands.find((entry) => entry.name() === verb);
+      expect(command?.options.map((option) => option.long)).toContain("--spawn");
+      expect(command?.options.find((option) => option.long === "--spawn")?.description).toContain(
+        "no service manager",
+      );
+    }
+  });
+
   it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
     const deferred = [
       ["setup"],

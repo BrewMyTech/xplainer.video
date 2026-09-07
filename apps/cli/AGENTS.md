@@ -40,12 +40,12 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `reconciler.ts` | Boot reconciliation: terminal records, worker teardown, `workers_uncertain`, output quarantine |
 | `process-group.ts` | `SIGTERM` then `SIGKILL` to a worker's whole process group |
 | `runner.ts` | `enqueue` / `get` / `tail` / `cancel` / `drain` over a serial queue of child-process workers |
-| `daemon-state.ts` | `daemon.json` and `runtime.json`, and the circuit breaker's `recentStarts[]`/`stalled` |
+| `daemon-state.ts` | `daemon.json` and `runtime.json`, the breaker's `recentStarts[]`/`stalled`, and the installer's own fields |
 | `start.ts` | The ordering: ownership → reconciliation → the runner, handed to `commands/serve.ts` to bind |
 | `workers.ts` | The registry `start.ts` registers: one `WorkerSpec` per job kind, and the last gate before Chrome |
 | `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600` |
 | `guard.ts` | The four layers every TCP request passes: `Host`, `Origin`, the token, the redacted log |
-| `ipc.ts` | The socket path, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
+| `ipc.ts` | The socket path and `--socket`, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
 | `binding.ts` | Which addresses `--bind` may take, and the port precedence — two pure functions, no I/O |
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
@@ -59,12 +59,24 @@ Windows, or `XPLAINER_STATE_DIR` — holds:
 ```
 owner.lock          the ownership artefact: pid, start token, boot id, nonce (0600)
 token               DURABLE. 32 random bytes, base64url, 0600 — or wherever XPLAINER_TOKEN_FILE says
-daemon.json         DURABLE. port, contract version, token_file, directory_flush, recentStarts[], stalled
+toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versions, resolved paths,
+                    sha256 and provider, and the workspace payload's platform and version. A
+                    checked contract (`packages/protocol/schemas/toolchain.json`), because `setup`
+                    writes it and the install preflight and `daemon update` both read it
+daemon.json         DURABLE. serve writes port, contract_version, token_file, socket_path,
+                    directory_flush, recentStarts[], stalled; install writes supervisor_kind,
+                    supervisor_artefact, runtime_dir, launch_spec, program_source,
+                    linger_enabled_by_us, log_sink, installed_version
 runtime.json        EPHEMERAL. this run's pid, run id, boot id, bound port, addresses, socket
-ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown
+ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown.
+                    `serve --socket` moves it, and the 0700 rule follows the path
 jobs/job-000001.json   one record per job, temp-then-rename, with a bounded log tail
 jobs/corrupt/          records that could not be parsed, moved aside rather than deleted
 mcp/session-XXXXXX/    one `xplainer mcp` stdio session's private job store, removed when it ends
+runtime/<version>-<digest>/   one staged payload-1 artefact per content, materialised by
+                    temp dir → rename so a half-copied runtime is never visible under its own name
+bin/xplainer[.cmd]  the generated two-line launcher: the one path a consumer may hold across an
+                    update, rewritten by the update transaction as another temp → rename
 ```
 
 **The two files have opposite lifetimes and that is the whole point** (ADR 0020 §Port and
@@ -72,6 +84,8 @@ discovery): `daemon.json` must survive a reboot, `runtime.json` is written at bi
 trusted without a liveness check. `recentStarts[]` and `stalled` are in the **durable** one —
 ADR 0020 first put them in `runtime.json`, and its own dated note records why that was wrong, since
 on Linux `runtime.json` lives in systemd's `RuntimeDirectory=` and is deleted on every clean stop.
+`socket_path` is durable for the same reason and `runtime.json`'s `socket` is not a duplicate of it:
+one is the path a consumer needs while the daemon is **down**, the other is what this run bound.
 
 ### `src/backend.ts` and `src/workers/` — the eight tools, and what carries them out
 
@@ -128,15 +142,21 @@ here:
 ### `src/connect/` — the entry an agent is given, and who writes it
 
 `xplainer connect claude` and `xplainer connect codex` write **one stdio entry** —
-`xplainer mcp --attach`, or `npx -y @xplainer/cli mcp --attach` on a machine where the binary is not
-on `PATH` — into the agent's own configuration, and nothing else goes in it: no URL, no port and no
-token, because the transport is the daemon's unix socket and filesystem permissions are its
-authentication ([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is
-IPC, not TCP).
+`<state>/bin/xplainer mcp --attach` where an install wrote that launcher, else `xplainer mcp
+--attach` if the binary is on `PATH`, else `npx -y @xplainer/cli mcp --attach` — into the agent's own
+configuration, and nothing else goes in it: no URL, no port and no token, because the transport is
+the daemon's unix socket and filesystem permissions are its authentication
+([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not TCP).
+The launcher comes first because a runtime-directory install puts nothing on `PATH`, so without it
+an installed machine wrote the `npx` form and pointed an agent at a package this phase does not
+publish. **`--spawn` writes the other entry** — `mcp` without `--attach`, the tools inside the
+agent's session — and it is the one form that bypasses the daemon check, because it is what ADR 0020
+prints when there is no daemon and no supervisor to arrange one.
 
 | Module | What it owns |
 |---|---|
-| `entry.ts` | The command line itself: the real `PATH` lookup, and the two forms it chooses between |
+| `entry.ts` | The command line itself: the stable launcher, the real `PATH` lookup, and `npx` — in that order |
+| `spawn.ts` | `--spawn`'s entry: `mcp` without `--attach`, and the staged runtime as one more fallback |
 | `preflight.ts` | The check before any write: `daemon.json`'s recorded port, or a refusal and exit `3` |
 | `claude.ts` | `claude mcp add` when that CLI is on `PATH` — remove-then-add over a name it already holds — else `~/.claude.json`'s `mcpServers` |
 | `codex.ts` | `codex mcp add` when that CLI is on `PATH`, else the `[mcp_servers.xplainer]` table in `~/.codex/config.toml`, edited in place |
@@ -144,6 +164,56 @@ IPC, not TCP).
 | `toml-tables.ts` | Where that table starts and ends, and the declarations it refuses to duplicate |
 | `atomic-write.ts` | temp → `rename` over somebody else's file, keeping the mode that file had |
 | `refusal.ts` | `ConnectRefusal`: one sentence and one exit code from the documented table |
+
+### `src/install/` — where the program comes from, and the one name that survives an update
+
+`src/runtime/` builds a relocatable payload; this directory is what happens to one afterwards. The
+phase-2 default install has nothing published to fetch, so the program is a **payload-1 artefact
+staged under the state directory**, and because that directory is named `<version>-<digest>` no
+consumer may hold its path — which is what the launcher is for.
+
+| Module | What it owns |
+|---|---|
+| `program.ts` | The four ordered sources — `explicit`, `sea-binary`, `package-manager`, `runtime-dir` — and the interpreter and entry each one resolves to |
+| `stage.ts` | `<state>/runtime/<version>-<digest>/`: the content-addressed name, the sibling temp dir, the one `rename`, and what is staged already |
+| `launcher.ts` | `<state>/bin/xplainer[.cmd]`: the generated two-line script, and its rewrite as one more small-file temp → rename |
+| `preflight.ts` | Every question an install asks before it writes: the setup marker, the supervisor, the program, the port, lingering, the disable record, the token file |
+| `supervisors/` | The three artefact renderers — the systemd unit, the LaunchAgent plist, the Task Scheduler document — behind one `SupervisorAdapter` |
+| `testing/` | A real, small payload-1 artefact whose entry is a miniature daemon, so a launch can be proved by launching |
+
+Two of the four sources **refuse** this phase, by name: `sea-binary` is phase 4 and
+`package-manager` is what a publish adds. They are branches rather than absences because falling
+through to the default would record `runtime-dir` in the one field whose job is to say where the
+program came from. The launcher is the path `connect` writes, the desktop shells out to and
+`attach.ts` names in its skew message; nothing else is allowed to hold a version-scoped directory —
+with one stated exception, `connect --spawn` on a machine where the install was *refused* and so
+wrote no launcher.
+
+**The preflight is read-only, and that is the property to preserve when adding to it.** ADR 0020's
+rule for every degraded path is "probe before writing; on refusal, write nothing, exit with the
+documented code, and print the one command that fixes it", and `preflight.ts` is the probing half in
+full: it reads `test -e /var/lib/systemd/linger/$USER` and **never** attempts
+`loginctl enable-linger`, because creating that marker is a write inside the phase that must not
+make one. The three commands it runs — `systemctl --user is-system-running`,
+`launchctl print-disabled gui/<uid>`, `schtasks /Query` — are queries, and a command that cannot
+start is an answer rather than an error. systemd is detected by `/run/systemd/system`, which is what
+`sd_booted(3)` checks, and never by `command -v systemctl`, which reports a supervisor on exactly
+the Debian container that has none. Its refusals carry codes from the table and invent none: `3` for
+the setup marker and for a program that will not execute, `6` for no user manager and for a Task
+Scheduler that refuses a query, `7` for a held port. The two `5`s — lingering denied, no batch-logon
+right — are the writing phase's, because neither can be established without attempting it.
+
+**The three renderers are pure, and every setting they emit travels in the argv.** Each takes a
+`LaunchSpec` and answers with a path, a mode, the name its own supervisor addresses the daemon by,
+and the exact bytes — nothing under `supervisors/` writes a file, which is what makes all three
+platforms verifiable on one machine. `Environment=` and `EnvironmentVariables` are kept for the
+state directory and the token file so a reader of a unit or a plist still sees them, but they are
+never the only emission: `<Exec>` has no environment map and **`--socket` has no variable at all**,
+so `ExecStart=`, `ProgramArguments` and `<Arguments>` carry `LaunchSpec.argv` verbatim and the
+renderers refuse a contract whose argv lost a flag its `settings` still name. The values are fixed
+by measurement rather than preference — `Type=exec` with no `NotifyAccess=` (ADR 0025's 2026-09-08
+note), `KillMode=mixed` with `TimeoutStopSec=45s`, and `ExitTimeOut=45` as its macOS counterpart
+(ADR 0024's) — and the golden tests assert the whole file, not a key at a time.
 
 ## Public surface
 
@@ -183,7 +253,14 @@ node apps/cli/dist/bin.js serve --port 8787 > "$XPLAINER_STATE_DIR/stdout" &
 head -n 1 "$XPLAINER_STATE_DIR/stdout"           # {"event":"ready","port":…,"socket":…,…}
 curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
 node apps/cli/dist/bin.js status                 # the two state files, confirmed by a real probe
+node apps/cli/dist/bin.js status --json | jq .   # the same facts, with a stable condition code
 kill %1 && wait %1                               # drains, removes runtime.json, exits 0
+
+# The three settings as a supervisor delivers them: flags, above the variables, all read back into
+# daemon.json. `--socket` names a directory this daemon makes 0700 on every start.
+SETTINGS=$(mktemp -d)
+node apps/cli/dist/bin.js serve --port 0 \
+  --state-dir "$SETTINGS" --token-file "$SETTINGS/token" --socket "$SETTINGS/run/x.sock"
 
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
 
@@ -199,8 +276,18 @@ HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
 cat "$FAKE_HOME/.codex/config.toml"
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
 
-# The `[runner]` half of the artefact gate: `pnpm e2e:runtime` on ubuntu, macos and windows.
+# The entry for a machine with no service manager: `mcp` without --attach, and no daemon check.
+# It is what the install preflight's two exit-6 messages lead with, so it must work with no
+# daemon.json, no launch record and nothing staged.
+HOME=$FAKE_HOME XPLAINER_STATE_DIR=$(mktemp -d) node apps/cli/dist/bin.js connect claude --spawn
+
+# The `[runner]` halves. The artefact gate — narration, then payload 2 and its D1/D2/D3
+# assertions — on ubuntu, macos and windows; then the two platform spikes on the machines a
+# developer has none of, including the Task Scheduler half that runs nowhere else. Both workflows
+# are registered from the default branch, so a new one has to reach `main` before either line
+# resolves at all; `--ref` then chooses whose code runs.
 gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
+gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -362,10 +449,17 @@ Then the root procedure: `pnpm verify`.
   exists and cannot be read, **`12`** the token file exists and cannot be used, and **`70`**
   anything else. `EADDRINUSE` is deliberately `10` rather than `70`: a supervisor told `70`
   restarts a daemon whose port is held by something else, for ever.
-- **`src/daemon/testing/` never ships.** `tsconfig.build.json` excludes it, so the fake worker, the
-  spawned child entries and the TypeScript source hook are type-checked and linted but never
-  compiled into `dist/` and never reach a tarball. Test scaffolding that a consumer could import is
-  test scaffolding that becomes a supported surface.
+  **`5`, `6` and `7` are named and documented and nothing exits with them yet** — `daemon install`
+  is the first caller of all three. `7` and `10` are the pair to keep straight: **`7` is
+  install-time preflight** ("the port I am about to record is held", nothing registered, nothing
+  recorded) and **`10` is `serve`-time ownership** ("the state directory or the recorded port is
+  taken" by a process running now). Same symptom, two lifecycles, two remediations, and
+  `daemon/exit-codes.test.ts` asserts that §6's rows still say which is which.
+- **No `testing/` directory ever ships.** `tsconfig.build.json` excludes `src/**/testing/**`, so
+  `daemon/testing/`'s fake worker, spawned child entries and TypeScript source hook, and
+  `install/testing/`'s fixture payload, are type-checked and linted but never compiled into `dist/`
+  and never reach a tarball. Test scaffolding that a consumer could import is test scaffolding that
+  becomes a supported surface.
 - **The guard is unconditional, and it is mounted before any route.**
   `createServer()` takes it as a *parameter*, so the TCP listener carries it, the IPC listener
   carries none — filesystem permissions are that transport's authentication — and
@@ -378,6 +472,32 @@ Then the root procedure: `pnpm verify`.
   are never logged at all, and every rejection *is* logged with its reason and the offending value.
   The allowlist is built **after** bind, from the port the OS gave us, which is why `startServer()`
   takes a `GuardFactory` and `--port 0` keeps working.
+- **Three settings, and each flag is above its variable.** `serve` takes `--state-dir`,
+  `--token-file` and `--socket`, spelled exactly as `src/runtime/launch-spec.ts`'s `SETTING_FLAGS`
+  emits them — a spelling that changed on one side only is a daemon that refuses the argv its own
+  installer wrote, which is why `serve.test.ts` compares the two rather than trusting them to stay
+  in step. The flags exist because **Task Scheduler's `<Exec>` action has no per-action environment
+  map**: a daemon told where its state lives only through `XPLAINER_STATE_DIR` would silently take
+  the platform default on Windows while `daemon.json` recorded something else. `--token-file` names
+  a **path and never a value**, so R-SEC-6 holds on the argv route exactly as it did on the
+  environment one; `--socket` has **no variable at all**, which is why all three travel in argv on
+  every platform rather than only where they must. All three are written into `daemon.json` at
+  readiness, so `status --json` reports what the process used and not what somebody intended, and
+  `serve` logs which of flag, variable and default decided each one. The `0700` rule follows
+  `--socket`: the directory narrowed is the one the socket is actually in, so point the flag at a
+  directory dedicated to the socket — `%t/xplainer`, not `$HOME`.
+- **`status --json` answers with a condition code from a closed set**, never with prose: `ready`,
+  `stalled`, `unauthorized`, `token_absent`, `unhealthy`, `unreachable`, `absent`
+  (`STATUS_CONDITIONS`). It is what `apps/desktop`'s discovery shells out to instead of
+  reimplementing state-directory resolution, so a new member is added here and to that mapping
+  together. Two things are deliberately **not** conditions: contract compatibility, which is a
+  relation between a daemon and *the shim asking* and so is reported as the daemon's
+  `contract_version` for the caller's own `isContractCompatible()`; and "switched off in Login
+  Items", which is supervisor state that HTTP and our own files cannot see and that `daemon status`
+  reaches with the documented supervisor queries. The document is one object on one line and carries
+  no secret. The two refusals that happen before a report exists — a state file that cannot be read
+  (`11`) and a `--url` that is not an endpoint (`1`) — write a sentence to stderr and nothing to
+  stdout, so a caller tells them apart by exit code rather than by parsing an error object.
 - **The bearer token travels as a path, never as a value** (R-SEC-6): `XPLAINER_TOKEN_FILE` names a
   file, `/proc/<pid>/cmdline` is world-readable and `systemctl --user show` prints `Environment=`.
   `daemon/token.ts` is the only reader of that file; the guard is handed a string. And it is not a

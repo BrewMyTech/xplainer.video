@@ -85,4 +85,30 @@ describe("the exit-code table", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  /**
+   * The one distinction a reader gets wrong on their own: `7` and `10` are the same symptom seen at
+   * two different moments, and the table has to say which is which or the pair is worse than one
+   * code would have been. Asserted against the rows rather than against a docblock, because the
+   * table is what an operator reads.
+   */
+  it("says which of `7` and `10` is the install and which is the start", () => {
+    const table = readFileSync(ARCHITECTURE, "utf8");
+    const rowFor = (code: number): string =>
+      table.match(new RegExp(`^\\| \`${code}\` \\|.*$`, "m"))?.[0] ?? "";
+
+    expect(rowFor(7)).toContain("Install-time preflight");
+    expect(rowFor(7)).toContain("INSTALL_CONFLICT_EXIT_CODE");
+    expect(rowFor(10)).toContain("`serve`-time ownership");
+    expect(rowFor(10)).toContain("OWNERSHIP_REFUSED_EXIT_CODE");
+    expect(rowFor(5)).toContain("ADMIN_REQUIRED_EXIT_CODE");
+    expect(rowFor(6)).toContain("NO_SUPERVISOR_EXIT_CODE");
+
+    expect([
+      exitCodes.ADMIN_REQUIRED_EXIT_CODE,
+      exitCodes.NO_SUPERVISOR_EXIT_CODE,
+      exitCodes.INSTALL_CONFLICT_EXIT_CODE,
+      exitCodes.OWNERSHIP_REFUSED_EXIT_CODE,
+    ]).toEqual([5, 6, 7, 10]);
+  });
 });

@@ -7,13 +7,26 @@
  * agent session. So the lookup is exercised against real files with real modes — an executable, a
  * file that is merely present, and a Windows-shaped `PATHEXT` — rather than against a stubbed
  * `existsSync`.
+ *
+ * The third form is the one an installed machine gets and the reason the launcher exists: a
+ * runtime-directory install puts nothing on `PATH`, so before it was checked here every such
+ * machine wrote the `npx` entry — a configuration pointing at a package this phase does not
+ * publish, on the one machine that already has the code.
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ATTACH_ARGS, CLI_PACKAGE, describeEntry, findOnPath, resolveStdioEntry } from "./entry.js";
+import { launcherPath } from "../install/launcher.js";
+import {
+  ATTACH_ARGS,
+  CLI_PACKAGE,
+  describeEntry,
+  findOnPath,
+  installedLauncher,
+  resolveStdioEntry,
+} from "./entry.js";
 
 const scratch: string[] = [];
 
@@ -103,5 +116,48 @@ describe("resolveStdioEntry", () => {
       expect(line).not.toMatch(/token/i);
       expect(line).not.toMatch(/\d{4}/);
     }
+  });
+});
+describe("the stable launcher", () => {
+  /** A state directory whose `bin/xplainer` is there, and runnable, or there and not. */
+  function stateWithLauncher(mode: number): string {
+    const stateDir = join(binDirectory(), "state");
+    const launcher = launcherPath(stateDir, "darwin");
+    mkdirSync(dirname(launcher), { recursive: true });
+    writeFileSync(launcher, '#!/bin/sh\nexec /nowhere "$@"\n');
+    chmodSync(launcher, mode);
+    return stateDir;
+  }
+
+  it("is chosen over a binary on PATH, because it is the name an update rewrites", () => {
+    const stateDir = stateWithLauncher(0o700);
+    const path = binDirectory();
+    executable(path, "xplainer");
+
+    const entry = resolveStdioEntry({ env: { PATH: path }, platform: "darwin", stateDir });
+
+    expect(entry).toEqual({
+      command: launcherPath(stateDir, "darwin"),
+      args: [...ATTACH_ARGS],
+      source: "launcher",
+    });
+  });
+
+  /** A launcher an interrupted install left with a mode nobody can run is not an answer. */
+  it("is skipped when it exists and cannot be executed", () => {
+    const stateDir = stateWithLauncher(0o600);
+
+    expect(installedLauncher(stateDir, "darwin")).toBeNull();
+    expect(
+      resolveStdioEntry({ env: { PATH: binDirectory() }, platform: "darwin", stateDir }),
+    ).toEqual({ command: "npx", args: ["-y", CLI_PACKAGE, ...ATTACH_ARGS], source: "npx" });
+  });
+
+  /** A caller with no state directory in hand asks about `PATH` only, and reads no environment. */
+  it("is not looked for at all when no state directory is offered", () => {
+    const path = binDirectory();
+    executable(path, "xplainer");
+
+    expect(resolveStdioEntry({ env: { PATH: path }, platform: "darwin" }).source).toBe("path");
   });
 });

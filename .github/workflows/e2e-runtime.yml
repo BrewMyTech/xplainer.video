@@ -1,39 +1,43 @@
 # The `[runner]` half of the batch-1 artefact gate: `scripts/e2e/runtime.mjs` on
 # all three runner operating systems.
 #
-# WHAT IT CLOSES, AND WHAT IT DOES NOT. T2 and T3 each end with a `[runner]`
-# criterion, and B1 could prove only their local halves — macOS arm64 and a
-# Debian arm64 container — because nothing in `.github/workflows/` ran the gate
-# at all. One script, three machines nobody owns, from a clean checkout with the
-# Node `.node-version` pins and no state. That is T3's `[runner]` criterion
+# WHAT IT CLOSES. T2 and T3 each end with a `[runner]` criterion, and B1 could
+# prove only their local halves — macOS arm64 and a Debian arm64 container —
+# because nothing in `.github/workflows/` ran the gate at all. One script, three
+# machines nobody owns, from a clean checkout with the Node `.node-version` pins
+# and no state. That is T3's `[runner]` criterion
 # whole ("`pnpm e2e:runtime` also exits 0 on ubuntu-latest, macos-latest and
-# windows-latest"), and T2's ("the same build, verify and three assertions") as
-# far as the gate itself reaches: `runtime build` and `runtime verify` on each
-# runner, the second `verify` after the run to prove the payload was not written
-# into, and the POSIX form of D1's scrubbed-`PATH` check. **D1's
-# `remotion versions`, D2's `verify --workspace` and D3's `npm-cli.js --version`
-# are not here**, because all three need payload 2 — a real `npm ci` of the
-# template's pins — which this gate deliberately does not build. Those three
-# stay proven locally only until a job builds payload 2 on a runner.
+# windows-latest"), and T2's ("the same build, verify and three assertions")
+# whole as well: `runtime build`, `runtime verify`, the second `verify` after
+# the run to prove the payload was not written into, and — since the gate now
+# builds payload 2 as well — **D1's `remotion versions`, D2's
+# `verify --workspace` and D3's `npm-cli.js --version`, each through the moved
+# payload's own interpreter on a `PATH` that resolves no `node`**. Those three
+# were proven on a developer's machine when B1 shipped and nowhere else; a
+# runner is where "on every platform" stops being an assumption.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. The gate assembles a real runtime
 # artefact — the pinned interpreter, npm and five packages, ~147 MB measured —
-# moves it out of the checkout and narrates through it. On `push` that is three
-# runners' worth of it on every commit, and on Windows the move can cost more
-# again: `os.tmpdir()` and the workspace are not guaranteed to share a volume
-# there, and `runtime.mjs` answers the `EXDEV` that follows by copying the whole
-# payload byte for byte instead of renaming it. `ci.yml` is the gate that runs
-# on every push; this is the proof, and a proof is run when you want it. It
-# is the same argument that keeps `pnpm e2e:render` and `e2e-linux.yml` out of
-# `pnpm verify`.
+# moves it out of the checkout, narrates through it, and then installs payload 2
+# from the registry with the npm that travelled inside it. On `push` that is
+# three runners' worth of it on every commit, and on Windows the move can cost
+# more again: `os.tmpdir()` and the workspace are not guaranteed to share a
+# volume there, and `runtime.mjs` answers the `EXDEV` that follows by copying
+# the whole payload byte for byte instead of renaming it. `ci.yml` is the gate
+# that runs on every push; this is the proof, and a proof is run when you want
+# it. It is the same argument that keeps `pnpm e2e:render` and `e2e-linux.yml`
+# out of `pnpm verify`.
 #
 # WHY IT NEEDS NOTHING INSTALLED. Unlike `e2e-linux.yml` there is no ffmpeg
-# step, no Chrome library list and no Kokoro service: the gate stops at
-# narration, which is the last step that needs nothing but the artefact.
-# `explainer_still` and `explainer_render` need payload 2 and the toolchain and
-# are T33 in B6, and speech comes from `XPLAINER_TTS_FIXTURE`, a directory the
-# script records on the spot. So the whole platform dependency of this job is a
-# Node the script never puts on the child's `PATH`.
+# step, no Chrome library list and no Kokoro service: the three tools stop at
+# narration, and speech comes from `XPLAINER_TTS_FIXTURE`, a directory the
+# script records on the spot. `explainer_still` and `explainer_render` need a
+# Chrome headless shell on top of payload 2 and are T33 in B6. So the whole
+# platform dependency of this job is a Node the script never puts on the child's
+# `PATH` — plus **the network**, which payload 2's `npm ci` of the template's
+# pins needs and which is the one thing here that can fail for a reason that is
+# not this repository's code. A registry outage looks like `npm ci` exiting
+# non-zero in the transcript, and it is named there.
 #
 # WHY NO `defaults: run: shell:`. `ci.yml` pins bash across its own three-OS
 # matrix because its steps are bash — a `$(…)` into `$GITHUB_OUTPUT`, an array
@@ -73,11 +77,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    # The gate itself is a minute of work. The budget is for everything around
-    # it on a cold runner — the install, a full `turbo build` with no cache, and
-    # on Windows the cross-volume copy of the assembled artefact, which is a
-    # real file copy rather than a `rename`.
-    timeout-minutes: 45
+    # The gate's own MCP half is a minute of work. The budget is for everything
+    # around it on a cold runner — the install, a full `turbo build` with no
+    # cache, payload 2's `npm ci` and the two hash walks over the tree it
+    # produces, and on Windows the cross-volume copy of the assembled artefact,
+    # which is a real file copy rather than a `rename`.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -105,7 +110,10 @@ jobs:
       # upload below names that path. Setting it from `github.workspace` would
       # only put a mixed-separator string into the Windows leg's environment for
       # no gain.
-      - name: Artefact gate — create → put_source → narrate (T2, T3)
+      # One command, and it is the whole of both `[runner]` criteria: the moved
+      # artefact drives create → put_source → narrate over MCP stdio, then
+      # builds payload 2 with its own npm and runs D1, D2 and D3 against it.
+      - name: Artefact gate — narrate, then payload 2 and D1/D2/D3 (T2, T3)
         run: pnpm e2e:runtime
 
       # `always()`, because the transcript of a failed run is the thing worth

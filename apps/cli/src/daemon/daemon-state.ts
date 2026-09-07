@@ -28,14 +28,25 @@
  * killing anything, and the daemon exits `0` when it trips — the portable "do not restart" signal
  * on all three supervisors.
  *
- * Every write is a read-modify-write that **preserves keys this daemon does not know about**. Phase
- * 2's `xplainer daemon install` owns most of `daemon.json` — the socket path, the token file path,
- * the supervisor kind and artefact, the installing version — and a `serve` that rewrote the file
- * from its own narrow view would silently uninstall the daemon it is part of.
+ * **Two writers, one file, and the split is by field.** `serve` owns what a *run* establishes — the
+ * port it bound, the socket it bound, the contract version it speaks, the token file it read, the
+ * flush verdict and the breaker's history. `xplainer daemon install` owns what an *installation*
+ * establishes — the supervisor kind and artefact, the runtime directory, the launch spec, the
+ * program source, whether this install enabled lingering, the log sink and the installing version.
+ * Every write here is a read-modify-write that **preserves keys it does not name**, which is what
+ * makes that split safe in both directions: a `serve` that rewrote the file from its own narrow
+ * view would silently uninstall the daemon it is part of, and an `install` that rewrote it would
+ * throw away the crash history the breaker counts.
+ *
+ * The installer's fields are typed and parsed here even though nothing in this batch writes them,
+ * because the alternative is `Record<string, unknown>` at every reader: `status --json` reports
+ * them, the consistency check compares them, and `uninstall` acts on `linger_enabled_by_us`. A
+ * field that is only preserved is a field nobody can read without casting.
  */
 
 import { readFileSync, unlinkSync } from "node:fs";
 import process from "node:process";
+import type { LaunchSpec } from "../runtime/launch-spec.js";
 import { flushDirectory, writeJsonDurably } from "./durable-write.js";
 import { STATE_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { stateDirLayout } from "./state-dir.js";
@@ -68,6 +79,49 @@ export type StallRecord = {
   reason: string;
 };
 
+/**
+ * Which supervisor holds the daemon on this machine.
+ *
+ * The three names are the three renderers, and they are the same spellings `SettingsEmission` in
+ * `../runtime/launch-spec.ts` uses for the forms those supervisors accept, so a reader never has to
+ * map one vocabulary onto the other.
+ */
+export type SupervisorKind = "systemd" | "launchd" | "task-scheduler";
+
+/** Every {@link SupervisorKind}, for a caller validating one it read off disk. */
+export const SUPERVISOR_KINDS: readonly SupervisorKind[] = ["systemd", "launchd", "task-scheduler"];
+
+/**
+ * Where `install` got the program it registered.
+ *
+ * `runtime-dir` is the phase-2 default and the only one a machine with nothing published can reach
+ * by itself; `explicit` is `install --program`; `sea-binary` is accepted and unused this phase; and
+ * `package-manager` is the branch a publish adds, which changes this value and nothing else,
+ * because the assembler, the launch contract, the renderers and the update transaction never ask
+ * where the payload came from.
+ */
+export type ProgramSource = "runtime-dir" | "explicit" | "sea-binary" | "package-manager";
+
+/** Every {@link ProgramSource}, for a caller validating one it read off disk. */
+export const PROGRAM_SOURCES: readonly ProgramSource[] = [
+  "runtime-dir",
+  "explicit",
+  "sea-binary",
+  "package-manager",
+];
+
+/**
+ * The launch contract `install` rendered into the supervisor artefact, exactly as it was written.
+ *
+ * It is `LaunchSpec` itself rather than a second declaration of the same four fields, so a field
+ * added to the contract is a field this file records without an edit and a field renamed there
+ * cannot quietly keep its old name here. Recorded rather than recomputed, because the question a
+ * consistency check asks is "is what the supervisor loaded still what we wrote", and a value
+ * derived at read time answers a different question — it would agree with itself after a settings
+ * change nobody ever delivered.
+ */
+export type RecordedLaunchSpec = LaunchSpec;
+
 /** The fields of `daemon.json` this daemon reads and writes. Others are preserved untouched. */
 export type DaemonState = {
   format_version: number;
@@ -83,8 +137,39 @@ export type DaemonState = {
    * `systemctl --user show` prints `Environment=`, so the value never appears anywhere but the file.
    */
   token_file: string | null;
+  /**
+   * The IPC socket this run bound — the unix socket, or the named pipe on Windows.
+   *
+   * Durable, unlike `runtime.json`'s `socket`, and for a different reader: this is the path a
+   * consumer needs when the daemon is *not* running, and the one `serve --socket` moved. `serve`
+   * writes it at the same moment it writes the port, so it always describes the process that
+   * actually bound rather than what an installer intended.
+   */
+  socket_path: string | null;
   /** What a directory flush did on this platform, recorded once rather than thrown. */
   directory_flush: string | null;
+  /** Which supervisor `install` registered the daemon with, or `null` on a machine with none. */
+  supervisor_kind: SupervisorKind | null;
+  /** The unit, plist or task XML `install` wrote, by path — the file `uninstall` removes. */
+  supervisor_artefact: string | null;
+  /** The staged payload-1 directory this daemon runs out of, `<state>/runtime/<version>-<digest>/`. */
+  runtime_dir: string | null;
+  /** The launch contract that was rendered into {@link DaemonState.supervisor_artefact}. */
+  launch_spec: RecordedLaunchSpec | null;
+  /** Where `install` got the program it registered. */
+  program_source: ProgramSource | null;
+  /**
+   * Whether **this install** created `/var/lib/systemd/linger/$USER`.
+   *
+   * Three-valued on purpose: `true` means uninstall must remove the marker, `false` means the
+   * marker was already there and is somebody else's, and `null` means nothing has decided —
+   * which is not the same as `false` and must not roll back a setting this daemon never made.
+   */
+  linger_enabled_by_us: boolean | null;
+  /** Where the supervisor sends this daemon's output: a log file's path, or `journald`. */
+  log_sink: string | null;
+  /** The release that wrote this record, so a skew between it and `/healthz` is readable. */
+  installed_version: string | null;
   recentStarts: DaemonStart[];
   stalled: StallRecord | null;
 };
@@ -182,6 +267,53 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function asNullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/** One of a closed set, or `null` — never a string this daemon would then branch on blindly. */
+function asMember<T extends string>(value: unknown, members: readonly T[]): T | null {
+  return typeof value === "string" && (members as readonly string[]).includes(value)
+    ? (value as T)
+    : null;
+}
+
+function asStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? [...(value as string[])]
+    : null;
+}
+
+/**
+ * A launch spec off disk, or `null` for anything that is not one.
+ *
+ * All four fields are required together, because a half-read spec is worse than none: a consistency
+ * check that compared a recorded `argv` against a loaded one while the settings were missing would
+ * report agreement it never established. `daemon.json` is a file a person can edit, so this is a
+ * parse and not a cast.
+ */
+function asLaunchSpec(value: unknown): RecordedLaunchSpec | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const argv = asStringArray(candidate.argv);
+  const executable = asNullableString(candidate.executable);
+  const cwd = asNullableString(candidate.cwd);
+  const settings = candidate.settings;
+  if (argv === null || executable === null || cwd === null) {
+    return null;
+  }
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+    return null;
+  }
+  const { stateDir, tokenFile, socket } = settings as Record<string, unknown>;
+  if (typeof stateDir !== "string" || typeof tokenFile !== "string" || typeof socket !== "string") {
+    return null;
+  }
+  return { executable, argv, settings: { stateDir, tokenFile, socket }, cwd };
+}
+
 /** Read `daemon.json`, filling in the defaults of a directory that has never held one. */
 export function readDaemonState(stateDir: string): DaemonState {
   const raw = readObject(stateDirLayout(stateDir).daemonState);
@@ -191,7 +323,16 @@ export function readDaemonState(stateDir: string): DaemonState {
     port: typeof raw.port === "number" ? raw.port : null,
     contract_version: asNullableString(raw.contract_version),
     token_file: asNullableString(raw.token_file),
+    socket_path: asNullableString(raw.socket_path),
     directory_flush: asNullableString(raw.directory_flush),
+    supervisor_kind: asMember(raw.supervisor_kind, SUPERVISOR_KINDS),
+    supervisor_artefact: asNullableString(raw.supervisor_artefact),
+    runtime_dir: asNullableString(raw.runtime_dir),
+    launch_spec: asLaunchSpec(raw.launch_spec),
+    program_source: asMember(raw.program_source, PROGRAM_SOURCES),
+    linger_enabled_by_us: asNullableBoolean(raw.linger_enabled_by_us),
+    log_sink: asNullableString(raw.log_sink),
+    installed_version: asNullableString(raw.installed_version),
     recentStarts: asStarts(raw.recentStarts),
     stalled: asStall(raw.stalled),
   };

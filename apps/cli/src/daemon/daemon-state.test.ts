@@ -64,10 +64,102 @@ describe("readDaemonState", () => {
       port: null,
       contract_version: null,
       token_file: null,
+      socket_path: null,
       directory_flush: null,
+      supervisor_kind: null,
+      supervisor_artefact: null,
+      runtime_dir: null,
+      launch_spec: null,
+      program_source: null,
+      linger_enabled_by_us: null,
+      log_sink: null,
+      installed_version: null,
       recentStarts: [],
       stalled: null,
     });
+  });
+
+  /**
+   * The installer's half of the file, read back as the typed fields the consumers want: `status`
+   * reports them, the consistency check compares them, and `uninstall` acts on
+   * `linger_enabled_by_us`. A field that is only *preserved* is a field nobody can read without a
+   * cast at every call site.
+   */
+  it("reads back every field the installer writes", () => {
+    const stateDir = stateDirectory();
+    const launchSpec = {
+      executable: "/state/runtime/1.0.0-abc/bin/node",
+      argv: [
+        "/state/runtime/1.0.0-abc/lib/node_modules/@xplainer/cli/dist/bin.js",
+        "serve",
+        "--port",
+        "8787",
+        "--state-dir",
+        "/state",
+        "--token-file",
+        "/state/token",
+        "--socket",
+        "/run/user/1000/xplainer/xplainer.sock",
+      ],
+      settings: {
+        stateDir: "/state",
+        tokenFile: "/state/token",
+        socket: "/run/user/1000/xplainer/xplainer.sock",
+      },
+      cwd: "/state",
+    };
+    writeFileSync(
+      stateDirLayout(stateDir).daemonState,
+      JSON.stringify({
+        socket_path: "/run/user/1000/xplainer/xplainer.sock",
+        supervisor_kind: "systemd",
+        supervisor_artefact: "/home/a/.config/systemd/user/xplainer.service",
+        runtime_dir: "/state/runtime/1.0.0-abc",
+        launch_spec: launchSpec,
+        program_source: "runtime-dir",
+        linger_enabled_by_us: true,
+        log_sink: "journald",
+        installed_version: "1.0.0",
+      }),
+    );
+
+    const state = readDaemonState(stateDir);
+
+    expect(state.socket_path).toBe("/run/user/1000/xplainer/xplainer.sock");
+    expect(state.supervisor_kind).toBe("systemd");
+    expect(state.supervisor_artefact).toBe("/home/a/.config/systemd/user/xplainer.service");
+    expect(state.runtime_dir).toBe("/state/runtime/1.0.0-abc");
+    expect(state.launch_spec).toEqual(launchSpec);
+    expect(state.program_source).toBe("runtime-dir");
+    expect(state.linger_enabled_by_us).toBe(true);
+    expect(state.log_sink).toBe("journald");
+    expect(state.installed_version).toBe("1.0.0");
+  });
+
+  /**
+   * `daemon.json` is a file a person can edit, so a value outside the closed set is `null` rather
+   * than a string a later `switch` would fall through. And a *half* launch spec is `null` outright:
+   * a consistency check handed an `argv` with no `settings` would report agreement it never
+   * established.
+   */
+  it("refuses a supervisor, a program source and a launch spec it cannot trust", () => {
+    const stateDir = stateDirectory();
+    writeFileSync(
+      stateDirLayout(stateDir).daemonState,
+      JSON.stringify({
+        supervisor_kind: "upstart",
+        program_source: "curl-bash",
+        linger_enabled_by_us: "yes",
+        launch_spec: { executable: "/bin/node", argv: ["serve"], cwd: "/state" },
+      }),
+    );
+
+    const state = readDaemonState(stateDir);
+
+    expect(state.supervisor_kind).toBeNull();
+    expect(state.program_source).toBeNull();
+    expect(state.linger_enabled_by_us).toBeNull();
+    expect(state.launch_spec).toBeNull();
   });
 
   it("refuses to guess about a file it cannot parse, with the exit code that names the condition", () => {

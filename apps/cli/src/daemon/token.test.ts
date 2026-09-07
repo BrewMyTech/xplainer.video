@@ -18,6 +18,7 @@ import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
 import {
   loadOrMintToken,
   resolveTokenPath,
+  resolveTokenPathSetting,
   TOKEN_BYTES,
   TOKEN_FILE,
   TOKEN_FILE_ENV,
@@ -59,6 +60,40 @@ describe("resolveTokenPath", () => {
     expect(resolveTokenPath("/state", { [TOKEN_FILE_ENV]: "   " })).toBe(
       join("/state", TOKEN_FILE),
     );
+  });
+});
+
+/**
+ * The flag is above the variable for the reason the state directory's is: `<Exec>` carries
+ * arguments and no environment. It is a **path** on both routes, which is what keeps R-SEC-6 true —
+ * `/proc/<pid>/cmdline` is world-readable and `Get-ScheduledTaskInfo` prints a task's arguments, so
+ * argv is exactly as safe as the environment was, and a `--token <value>` would have been neither.
+ */
+describe("resolveTokenPathSetting", () => {
+  it("puts --token-file above XPLAINER_TOKEN_FILE and above the default", () => {
+    expect(
+      resolveTokenPathSetting("/state", {
+        flag: "/run/user/1000/xplainer/token",
+        env: { [TOKEN_FILE_ENV]: "/from/the/environment" },
+      }),
+    ).toEqual({ path: "/run/user/1000/xplainer/token", source: "flag" });
+  });
+
+  it("falls back to the variable, then to the state directory, saying which", () => {
+    expect(
+      resolveTokenPathSetting("/state", { env: { [TOKEN_FILE_ENV]: "/from/the/environment" } }),
+    ).toEqual({ path: "/from/the/environment", source: "environment" });
+    expect(resolveTokenPathSetting("/state", { env: {} })).toEqual({
+      path: join("/state", TOKEN_FILE),
+      source: "default",
+    });
+  });
+
+  it("ignores a blank flag rather than resolving the token to nothing", () => {
+    expect(resolveTokenPathSetting("/state", { flag: "  ", env: {} })).toEqual({
+      path: join("/state", TOKEN_FILE),
+      source: "default",
+    });
   });
 });
 
