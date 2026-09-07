@@ -133,7 +133,7 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly serve, status, mcp, setup, connect and daemon under --help", async () => {
+  it("lists exactly serve, status, mcp, setup, connect, daemon and runtime under --help", async () => {
     const { stdout, exitCode } = await run(["--help"]);
 
     expect(listedCommands(stdout)).toEqual([
@@ -143,6 +143,7 @@ describe("xplainer", () => {
       "setup",
       "connect",
       "daemon",
+      "runtime",
     ]);
     expect(exitCode).toBe(0);
   });
@@ -169,6 +170,13 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
+  it("lists exactly build and verify under `runtime --help`", async () => {
+    const { stdout, exitCode } = await run(["runtime", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["build", "verify"]);
+    expect(exitCode).toBe(0);
+  });
+
   it("prints the connect group's help on stderr and exits 1 when no verb is given", async () => {
     const { stdout, stderr, exitCode } = await run(["connect"]);
 
@@ -182,6 +190,14 @@ describe("xplainer", () => {
 
     expect(stdout).toBe("");
     expect(listedCommands(stderr)).toContain("install");
+    expect(exitCode).toBe(1);
+  });
+
+  it("prints the runtime group's help on stderr and exits 1 when no verb is given", async () => {
+    const { stdout, stderr, exitCode } = await run(["runtime"]);
+
+    expect(stdout).toBe("");
+    expect(listedCommands(stderr)).toEqual(["build", "verify"]);
     expect(exitCode).toBe(1);
   });
 

@@ -493,6 +493,11 @@ const MUST_SHIP_FILES = [
     path: "template/tailwind.css",
     why: "Style entrypoint the scaffolded scenes import.",
   },
+  {
+    package: "@xplainer/render-core",
+    path: "template/package-lock.json",
+    why: "Pinned dependency resolution consumed by setup through npm ci.",
+  },
 
   // --- Scaffold templates the agent reads, writes and then edits -----------
   //

@@ -26,6 +26,7 @@
     "check:api-report": "node scripts/api-report.mjs --check",
     "check:docs-contract": "node scripts/check-docs-contract.mjs",
     "e2e:render": "node scripts/e2e/render.mjs",
+    "e2e:runtime": "node scripts/e2e/runtime.mjs",
     "e2e:render:linux": "node scripts/e2e/linux.mjs",
     "e2e:macos": "node scripts/e2e/render.mjs"
   },

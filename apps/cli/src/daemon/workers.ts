@@ -12,7 +12,18 @@
  *   `SIGTERM` mid-narration has to reach one killable process group like every other job.
  * - **`explainer_still` and `explainer_render`** are the pinned Remotion CLI, spawned with the argv
  *   `@xplainer/render-core`'s `stillArgs()` / `renderArgs()` build. Not `npx`: `REMOTION_BIN`
- *   records why, and {@link remotionBinary} resolves the workspace's own install.
+ *   records why, and {@link remotionWorker} resolves the workspace's own install.
+ *
+ * **All three are `<interpreter> <entry file>`, and that is decision D1.**
+ * `node_modules/.bin/remotion` is a symlink to a file whose first line is `#!/usr/bin/env node`,
+ * so spawning it directly makes
+ * the kernel hand it to `/usr/bin/env`, which searches the **child's** `PATH`: measured exit `127`
+ * under `PATH=/usr/bin:/bin`, on exactly the machine class this runtime is built for. So the two
+ * Remotion workers resolve `@remotion/cli`'s own `bin` entry with `runtime/launch-spec.ts` and run
+ * it under `process.execPath` — which is `<runtime>/bin/node` when the daemon came out of a payload
+ * — the same shape the narration worker has always had. `PATH` is **not** injected through
+ * `WorkerSpec.env`: `runner.ts` would merge it happily, and it would leak an interpreter onto the
+ * `PATH` of everything the worker starts, Chrome and ffmpeg included.
  *
  * **The last gate before Chrome starts lives here** (ADR 0018, layer 4). A factory runs in the
  * daemon, in process, at the moment the job leaves the queue — so this is where `scaffoldVideo()`
@@ -34,7 +45,7 @@ import { fileURLToPath } from "node:url";
 import type { JobType } from "@xplainer/protocol";
 import {
   assertRenderable,
-  remotionBinary,
+  REMOTION_BIN,
   renderArgs,
   scaffoldVideo,
   stillArgs,
@@ -43,6 +54,7 @@ import {
   workspaceNotInstalledMessage,
 } from "@xplainer/render-core";
 import { readJobRequest } from "../job-request.js";
+import { findInstalledPackage, type NodeEntry, resolveNodeEntry } from "../runtime/launch-spec.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
 import { acquireVideoWriteLock } from "./video-lock.js";
@@ -84,17 +96,23 @@ function narrateWorkerCommand(): { command: string; args: string[] } {
 }
 
 /**
- * The Remotion CLI for this workspace, or a refusal naming the one command that fixes it.
+ * The Remotion CLI for this workspace as an interpreter and an argv, or a refusal naming the one
+ * command that fixes it.
  *
  * Resolved per job rather than once, so a workspace installed while the daemon is running starts
  * working without a restart.
+ *
+ * The package directory is what is looked for, not `node_modules/.bin/remotion`: the shim is the
+ * thing D1 removes, and a package present without an entry is a different failure from a package
+ * that was never installed — `findInstalledPackage()` answering `null` is the second one, and it is
+ * the one a user fixes with `npm install`.
  */
-function requireRemotion(root: string): string {
-  const binary = remotionBinary(root);
-  if (binary === null) {
+function remotionWorker(root: string, args: readonly string[]): NodeEntry {
+  const packageDir = findInstalledPackage(root, "@remotion/cli");
+  if (packageDir === null) {
     throw new Error(workspaceNotInstalledMessage(root));
   }
-  return binary;
+  return resolveNodeEntry(packageDir, REMOTION_BIN, { args });
 }
 
 /**
@@ -171,15 +189,19 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
       assertReadyToRender(video.source, video.publicDir);
-      return {
-        command: requireRemotion(root),
-        args: stillArgs({
+      const worker = remotionWorker(
+        root,
+        stillArgs({
           slug,
           output: stillOutput(video, request.frame),
           publicDir: video.publicDir,
           frame: request.frame,
           scale: request.scale,
         }),
+      );
+      return {
+        command: worker.executable,
+        args: worker.argv,
         cwd: root,
         release: lockVideo(slug, "explainer_still", record.job_id),
       };
@@ -190,9 +212,13 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
       assertReadyToRender(video.source, video.publicDir);
+      const worker = remotionWorker(
+        root,
+        renderArgs({ slug, output: video.mp4, publicDir: video.publicDir }),
+      );
       return {
-        command: requireRemotion(root),
-        args: renderArgs({ slug, output: video.mp4, publicDir: video.publicDir }),
+        command: worker.executable,
+        args: worker.argv,
         cwd: root,
         release: lockVideo(slug, "explainer_render", record.job_id),
       };

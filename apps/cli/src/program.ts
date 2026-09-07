@@ -1,12 +1,20 @@
 /**
  * The `xplainer` command surface.
  *
- * Six entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
+ * Seven entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
  * and `mcp`, which work; `connect`, a group of two verbs — `claude` and `codex` —
  * which write an agent's stdio configuration (`commands/connect.ts`); `setup`,
- * which reports that it is deferred and exits 2; and `daemon`, a group of seven
+ * which reports that it is deferred and exits 2; `daemon`, a group of seven
  * verbs — `install`, `uninstall`, `start`, `stop`, `restart`, `status`, `logs` —
- * that report the same thing and exit the same way (`commands/daemon.ts`).
+ * that report the same thing and exit the same way (`commands/daemon.ts`); and
+ * `runtime`, a group of two verbs — `build` and `verify` — that assemble and
+ * re-hash the two relocatable payloads (`commands/runtime.ts`).
+ *
+ * **`runtime` is a build-time command living in the shipped binary on purpose.**
+ * `runtime build --workspace` installs the template that ships inside
+ * `@xplainer/render-core`, which is exactly the route `setup --workspace` takes
+ * on a machine with no Node, so the assembler a runner runs and the assembler a
+ * user reaches are one implementation rather than two.
  *
  * AC-14b was written against the first four and asserts an exact list, so both
  * later entries are added here deliberately rather than discovered as a red
@@ -46,6 +54,7 @@ import { Command } from "commander";
 import { createConnectCommand } from "./commands/connect.js";
 import { createDaemonCommand } from "./commands/daemon.js";
 import { createMcpCommand } from "./commands/mcp.js";
+import { createRuntimeCommand } from "./commands/runtime.js";
 import { createServeCommand } from "./commands/serve.js";
 import { createSetupCommand } from "./commands/setup.js";
 import { createStatusCommand } from "./commands/status.js";
@@ -77,6 +86,7 @@ export function createProgram(io: CliIo = processIo): Command {
   program.addCommand(createSetupCommand(io));
   program.addCommand(createConnectCommand(io));
   program.addCommand(createDaemonCommand(io));
+  program.addCommand(createRuntimeCommand(io));
 
   return program;
 }

@@ -10,6 +10,12 @@
  * The argv itself is compared against `@xplainer/render-core`'s own builders rather than against a
  * string written here — those builders are what pin the Remotion CLI contract, and a copy of their
  * output in this file would be a second contract that only used to agree.
+ *
+ * **What the Remotion cases now assert is D1.** The command is the *interpreter*, the first
+ * argument is `@remotion/cli`'s own `bin` entry, and `node_modules/.bin/remotion` — the symlink to
+ * a `#!/usr/bin/env node` script that measured exit `127` under `PATH=/usr/bin:/bin` — is never
+ * spawned, is not what makes a workspace count as installed, and is present in the fixture
+ * precisely so that a factory that reached for it again would be caught.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import {
+  REMOTION_BIN,
   readScaffoldTemplate,
   renderArgs,
   scaffoldVideo,
@@ -66,13 +73,34 @@ function narratedVideo(slug: string): void {
   writeFileSync(video.audio, Buffer.alloc(64));
 }
 
-/** Give the workspace a Remotion CLI, and answer with the path a factory should choose. */
+/**
+ * Give the workspace a Remotion CLI the way npm installs one, and answer with the entry file a
+ * factory should spawn.
+ *
+ * Both halves are real: the package with its own `bin` map, and the `.bin` shim npm creates beside
+ * it. The shim is written on every platform under both names, so a factory that resolved through it
+ * would find something and the assertions below would still catch it — the entry file is the only
+ * path that is not a shim.
+ */
 function pretendInstalled(): string {
+  const packageDir = join(root, "node_modules", "@remotion", "cli");
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(
+    join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@remotion/cli",
+      version: "4.0.495",
+      bin: { remotion: "remotion-cli.js", remotionb: "remotionb-cli.js" },
+    }),
+  );
+  const entry = join(packageDir, "remotion-cli.js");
+  writeFileSync(entry, "#!/usr/bin/env node\n");
   const bin = join(root, "node_modules", ".bin");
   mkdirSync(bin, { recursive: true });
-  const binary = join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion");
-  writeFileSync(binary, "#!/bin/sh\n");
-  return binary;
+  for (const name of ["remotion", "remotion.cmd"]) {
+    writeFileSync(join(bin, name), "#!/bin/sh\n");
+  }
+  return entry;
 }
 
 beforeEach(() => {
@@ -86,9 +114,9 @@ afterEach(() => {
 });
 
 describe("the render worker", () => {
-  it("is the pinned Remotion CLI with render-core's own argv, run from the workspace root", () => {
+  it("is this interpreter running Remotion's own entry, with render-core's argv after it", () => {
     narratedVideo("demo");
-    const binary = pretendInstalled();
+    const entry = pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     const spec = createWorkerRegistry({ root }).explainer_render?.(
@@ -96,14 +124,49 @@ describe("the render worker", () => {
     );
 
     const video = videoPaths(root, "demo");
-    expect(spec?.command).toBe(binary);
-    expect(spec?.args).toEqual(
-      renderArgs({ slug: "demo", output: video.mp4, publicDir: video.publicDir }),
-    );
+    expect(spec?.command).toBe(process.execPath);
+    expect(spec?.args).toEqual([
+      entry,
+      ...renderArgs({ slug: "demo", output: video.mp4, publicDir: video.publicDir }),
+    ]);
     expect(spec?.cwd).toBe(root);
     expect(spec?.env).toBeUndefined();
     // The fifth field is the video's write lock, asserted for what it does further down.
     expect(typeof spec?.release).toBe("function");
+  });
+
+  /**
+   * D1, stated as the two things that must both hold. The shim exists in the fixture under both
+   * names, so "never the shim" is a claim about what was chosen and not about what was available;
+   * and `env` stays absent because `runner.ts` merges `WorkerSpec.env` into the child's
+   * environment, where a `PATH` entry would reach Chrome and ffmpeg as well as Remotion.
+   */
+  it("spawns neither the .bin shim nor a PATH the worker's own children would inherit", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    const spec = createWorkerRegistry({ root }).explainer_render?.(
+      record(1, "explainer_render", "demo"),
+    );
+
+    const shim = join(root, "node_modules", ".bin");
+    expect(existsSync(join(shim, "remotion"))).toBe(true);
+    const spawned = [spec?.command ?? "", ...(spec?.args ?? [])];
+    expect(spawned.some((part) => part.startsWith(shim))).toBe(false);
+    expect(spec?.env).toBeUndefined();
+  });
+
+  it("refuses a workspace that has only the .bin shim, because the shim is not the CLI", () => {
+    narratedVideo("demo");
+    const bin = join(root, "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, REMOTION_BIN), "#!/usr/bin/env node\n");
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    expect(() =>
+      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+    ).toThrow(/npm install/);
   });
 
   it("restores an engine-owned file that drifted, before the render is built", () => {
@@ -140,9 +203,9 @@ describe("the render worker", () => {
 });
 
 describe("the still worker", () => {
-  it("carries the frame and the scale the request recorded", () => {
+  it("carries the frame and the scale the request recorded, behind the same interpreter", () => {
     narratedVideo("demo");
-    const binary = pretendInstalled();
+    const entry = pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_still", slug: "demo", frame: 12, scale: 1 });
 
     const spec = createWorkerRegistry({ root }).explainer_still?.(
@@ -150,16 +213,17 @@ describe("the still worker", () => {
     );
 
     const video = videoPaths(root, "demo");
-    expect(spec?.command).toBe(binary);
-    expect(spec?.args).toEqual(
-      stillArgs({
+    expect(spec?.command).toBe(process.execPath);
+    expect(spec?.args).toEqual([
+      entry,
+      ...stillArgs({
         slug: "demo",
         output: stillOutput(video, 12),
         publicDir: video.publicDir,
         frame: 12,
         scale: 1,
       }),
-    );
+    ]);
     expect(spec?.cwd).toBe(root);
     expect(spec?.env).toBeUndefined();
     expect(typeof spec?.release).toBe("function");
