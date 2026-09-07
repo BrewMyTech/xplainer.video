@@ -157,7 +157,7 @@ workspace-wide change.
 
 | Path | What it is | What checks it |
 |---|---|---|
-| `scripts/` | The bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`), and `e2e/render.mjs` with its Linux wrapper `e2e/linux.mjs`, which are a **proof** rather than a gate: `pnpm e2e:render` and `pnpm e2e:render:linux` need Docker and several minutes of Chrome, so they are deliberately outside `pnpm verify`. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
+| `scripts/` | The bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`), and `e2e/render.mjs` with its Linux wrapper `e2e/linux.mjs` — a **proof** rather than a gate, deliberately outside `pnpm verify` for the reason `e2e/render.mjs`'s docblock gives. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
 | `.github/workflows/` | CI, the desktop packaging workflow, and `e2e-linux.yml` — `workflow_dispatch` only, because it renders a real video | `actionlint` (`AC-4a`) |
 | `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
 | `infra/e2e/` | The Debian image `pnpm e2e:render:linux` builds to run that proof on Linux, and its own `Dockerfile.dockerignore`. Not a Compose file, and not reachable from one | The run itself; nothing else builds it |

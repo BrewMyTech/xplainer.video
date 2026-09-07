@@ -276,13 +276,8 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     gh workflow run e2e-linux.yml --ref main   # the same proof on a GitHub runner
     ```
 
-    `pnpm e2e:render:linux` (`scripts/e2e/linux.mjs`) builds `infra/e2e/Dockerfile` —
-    `node:24-bookworm-slim` at the `.node-version` pin, plus `ffmpeg`, the Chrome headless shell's
-    Debian library set, `fonts-liberation`, this repository installed with
-    `pnpm install --frozen-lockfile`, `pnpm turbo build`, and Remotion's browser already
-    downloaded — starts its own `ghcr.io/remsky/kokoro-fastapi-cpu:latest` container on a private
-    Docker network, waits for `/v1/audio/voices`, runs `pnpm e2e:render` inside the image against
-    it, and removes both containers and the network afterwards, on the failure path too.
+    What that image holds and what the wrapper does with it is written once, in
+    [`infra/README.md` §The end-to-end proof image](../infra/README.md#the-end-to-end-proof-image).
 
     The run of **2026-09-07**, image `xplainer-e2e-linux:local` on Docker 29.4.0 `linux/arm64`
     (Node v24.20.0, `linux arm64`, `/usr/bin/ffmpeg`), passed in 30 seconds: Kokoro answered with
@@ -297,9 +292,8 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
 
     The repeatable form is `.github/workflows/e2e-linux.yml`, job **`end-to-end render (linux)`**,
     on `ubuntu-latest` with Kokoro as a service container and the transcript and MP4 uploaded as
-    the `e2e-linux` artifact. It is `workflow_dispatch` **only** — it renders a real video, so it
-    is run when the proof is wanted, not on every push — which is the same argument that keeps
-    `pnpm e2e:render` out of `pnpm verify`.
+    the `e2e-linux` artifact. It is `workflow_dispatch` **only**, for the reason its own header
+    gives.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged

@@ -14,10 +14,9 @@
  *   a captions-disabled render, which is what makes "with burned captions" a measurement.
  *
  * **Nothing in it is platform-specific.** It resolves `ffmpeg` and `ffprobe` from `PATH` and takes
- * every other coordinate from the environment, which is why it is `render.mjs` and no longer
- * `macos.mjs`: P1-1 is judged on macOS **and** on headless Linux, and one script settles both. The
- * Linux half runs this same file inside the container `infra/e2e/Dockerfile` builds — see
- * `scripts/e2e/linux.mjs`, which is `pnpm e2e:render:linux`.
+ * every other coordinate from the environment: P1-1 is judged on macOS **and** on headless Linux,
+ * and one script settles both. The Linux half runs this same file inside the container
+ * `infra/e2e/Dockerfile` builds — see `scripts/e2e/linux.mjs`, which is `pnpm e2e:render:linux`.
  *
  * **It is not part of `pnpm verify`, and it must not become part of it.** It needs Docker, a
  * multi-gigabyte model container and several minutes of Chrome; a gate that cannot run on a
@@ -41,8 +40,9 @@
  * ```
  *
  * Environment it reads: `XPLAINER_TTS_URL` (default `http://127.0.0.1:8880`),
- * `COLLIE_ARTIFACTS_DIR` (default `<repo>/.session/artifacts`), `XPLAINER_FFMPEG` and
- * `XPLAINER_FFPROBE` (default: whatever is on `PATH`).
+ * `XPLAINER_TTS_WAIT_MS` (default `120000`), `COLLIE_ARTIFACTS_DIR` (default
+ * `<repo>/.session/artifacts`), `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` (default: whatever is on
+ * `PATH`).
  *
  * Everything it prints is also written to `<artifacts>/e2e-render.log`, line by line as it happens,
  * so a run that dies mid-render still leaves its transcript behind.
@@ -79,6 +79,17 @@ const CLI = join(REPO, "apps", "cli", "dist", "bin.js");
 
 /** Where the Kokoro container answers. */
 const TTS_URL = (process.env.XPLAINER_TTS_URL ?? "").trim() || "http://127.0.0.1:8880";
+
+/**
+ * How long {@link requireKokoro} waits for that container.
+ *
+ * A knob because the two ways this script is started wait for different things. Run by hand, the
+ * container is already up and this is a precondition check that should fail fast with the command
+ * that starts one; run by `scripts/e2e/linux.mjs`, the container was created seconds ago and its
+ * voice pack takes minutes, so that wrapper passes its own budget. That is the whole reason it
+ * needs no separate readiness probe of its own.
+ */
+const TTS_WAIT_MS = Number.parseInt(process.env.XPLAINER_TTS_WAIT_MS ?? "", 10) || 120_000;
 
 /** Where the transcript and the sample MP4 are left for a human to look at. */
 const ARTIFACTS =
@@ -431,25 +442,42 @@ function wavDurationMs(path) {
   return (dataBytes / byteRate) * 1000;
 }
 
-/** Wait until the Kokoro container answers, or say exactly how to start one. */
+/**
+ * Wait until Kokoro answers with a voice list, or say exactly how to start one.
+ *
+ * A server that has bound its port but not finished loading its voices answers `/v1/audio/voices`
+ * with an empty list, so the readiness condition is a non-empty one — anything less lets the
+ * narration start against a server that cannot speak yet. Every attempt keeps why it failed, so the
+ * message at the deadline names the reason rather than only the address.
+ */
 async function requireKokoro() {
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    const answered = await fetch(`${TTS_URL}/v1/audio/voices`)
-      .then((response) => response.ok)
-      .catch(() => false);
-    if (answered) {
-      const body = await fetch(`${TTS_URL}/v1/audio/voices`).then((response) => response.json());
-      const voices = Array.isArray(body.voices) ? body.voices.length : 0;
-      say(`  kokoro at ${TTS_URL} answers /v1/audio/voices with ${voices} voice(s)`);
-      return;
+  const deadline = Date.now() + TTS_WAIT_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    let described = "";
+    try {
+      const response = await fetch(`${TTS_URL}/v1/audio/voices`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      const voices = response.ok ? (await response.json()).voices : null;
+      if (Array.isArray(voices) && voices.length > 0) {
+        say(
+          `  kokoro at ${TTS_URL} answers /v1/audio/voices with ${voices.length} voice(s), on attempt ${attempt}`,
+        );
+        return;
+      }
+      described = `HTTP ${response.status}`;
+    } catch (error) {
+      described = error instanceof Error ? error.message : String(error);
     }
-    if (Date.now() > deadline) {
+    if (Date.now() >= deadline) {
       throw new Error(
-        `no Kokoro server at ${TTS_URL}. Start one with:\n` +
+        `no Kokoro server at ${TTS_URL} after ${attempt} attempts (${described}). Start one with:\n` +
           "  docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 " +
           "ghcr.io/remsky/kokoro-fastapi-cpu:latest",
       );
+    }
+    if (attempt % 10 === 0) {
+      say(`  waiting for kokoro at ${TTS_URL} (attempt ${attempt}): ${described}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }

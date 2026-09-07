@@ -10,16 +10,12 @@
 #
 # It is NOT built by `pnpm verify` and NOT built in the push-triggered CI jobs.
 # `scripts/e2e/linux.mjs` (`pnpm e2e:render:linux`) builds and runs it, and
-# `.github/workflows/e2e-linux.yml` runs the same script on a GitHub runner
-# without this image, because a runner already is a Linux box.
+# `.github/workflows/e2e-linux.yml` runs the same script without this image.
 #
 #   docker build -f infra/e2e/Dockerfile -t xplainer-e2e-linux .
 #
-# The build context is the repository root, filtered by
-# `infra/e2e/Dockerfile.dockerignore` beside this file — BuildKit prefers a
-# `<dockerfile>.dockerignore` over the context root's `.dockerignore`, which is
-# what keeps this proof's ignore rules out of the root of a repository whose
-# Compose files belong to another tool.
+# The build context is the repository root, filtered by the
+# `Dockerfile.dockerignore` beside this file, which says why it lives there.
 
 # Pinned by the caller from `.node-version`, so the container runs the Node this
 # repository pins rather than whatever `24` resolves to today. The default is
@@ -77,6 +73,14 @@ COPY packages/tts-client/package.json packages/tts-client/
 COPY services/tts-sidecar/package.json services/tts-sidecar/
 RUN corepack install && pnpm install --frozen-lockfile
 
+# Chrome, downloaded at build time. Remotion fetches its headless shell on first
+# use; leaving that to run time would put a multi-hundred-megabyte download
+# inside the measured render and make a network failure look like a render
+# failure. It goes here, above the sources, because it lands in
+# `node_modules/.remotion` and depends on nothing but the install above — below
+# them, every edit to a single source file paid for the download again.
+RUN pnpm exec remotion browser ensure
+
 COPY . .
 
 # The second install is not a repeat: `injectWorkspacePackages` hard-copies each
@@ -91,12 +95,6 @@ RUN pnpm install --frozen-lockfile
 # the cache this leaves behind, so it costs a second and still guarantees the
 # CLI under test is this commit's.
 RUN pnpm turbo build
-
-# Chrome, downloaded at build time. Remotion fetches its headless shell on first
-# use; leaving that to run time would put a multi-hundred-megabyte download
-# inside the measured render and make a network failure look like a render
-# failure.
-RUN pnpm exec remotion browser ensure
 
 # `render.mjs` writes its transcript and its sample MP4 here. The caller
 # bind-mounts a host directory over it; without one the artefacts stay in the

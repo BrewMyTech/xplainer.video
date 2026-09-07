@@ -71,11 +71,6 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
-      # ffmpeg is what the CLI muxes with and what the proof probes with;
-      # everything after it is the Chrome headless shell's shared-library set.
-      # Remotion downloads the shell, never the system libraries it links, and a
-      # missing one surfaces as a Chrome that dies before printing anything.
-      #
       # Four of the names moved in Ubuntu's 64-bit time_t transition and the
       # runner image is pinned by GitHub rather than by us, so each of those is
       # tried in its new spelling and then in its old one instead of hard-coding
@@ -107,7 +102,6 @@ jobs:
             fi
           done
           sudo apt-get install -y -qq "${packages[@]}"
-          ffprobe -version | head -1
 
       - name: pnpm install --frozen-lockfile
         run: pnpm install --frozen-lockfile
@@ -118,19 +112,18 @@ jobs:
       - name: Build every member
         run: pnpm turbo build
 
-      # The service's own health check has already passed by the time any step
-      # runs, so this is evidence rather than a wait: it puts the voice count in
-      # the log next to the URL the render is about to use.
-      - name: Kokoro answers on localhost:8880
-        run: |
-          set -euo pipefail
-          curl -fsS --retry 10 --retry-all-errors --retry-delay 6 \
-            http://localhost:8880/v1/audio/voices \
-            | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log("kokoro offers "+b.voices.length+" voices")'
-
+      # No readiness step before this one: the service's own health check has
+      # already passed by the time any step runs, and `render.mjs` waits for the
+      # same endpoint and logs the voice count it saw into the transcript below.
       - name: End-to-end render (P1-1)
         env:
           XPLAINER_TTS_URL: http://localhost:8880
+          # The same ten-minute patience `scripts/e2e/linux.mjs` gives its own
+          # Kokoro container. The service health check gates on the voices
+          # route answering, not on the voice list being loaded, and a CPU
+          # runner loads it slowly; the script's 120 s default is for a
+          # developer's already-warm server.
+          XPLAINER_TTS_WAIT_MS: "600000"
           COLLIE_ARTIFACTS_DIR: ${{ github.workspace }}/.session/artifacts
         run: pnpm e2e:render
 

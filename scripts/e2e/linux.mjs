@@ -8,10 +8,9 @@
  * pnpm e2e:render:linux
  * ```
  *
- * WHY A WRAPPER AND NOT A COMPOSE FILE. The proof is a sequence with a decision in the middle —
- * build the image, start Kokoro, *wait until it answers*, run, copy the artefacts out, tear
- * everything down whether or not it passed — and the last step has to happen on the failure path
- * too, which is exactly what a Compose file cannot express. The repository's Compose files are
+ * WHY A WRAPPER AND NOT A COMPOSE FILE. The proof is a sequence whose last step — copy the
+ * artefacts out, then remove both the containers and the network — has to run whether or not it
+ * passed, which is exactly what a Compose file cannot express. The repository's Compose files are
  * also generated and owned elsewhere; this proof stays out of them and uses plain `docker build`,
  * `docker run` and `docker network`.
  *
@@ -61,13 +60,19 @@ const DOCKER = (process.env.XPLAINER_DOCKER ?? "").trim() || "docker";
 const NETWORK = "xplainer-e2e-linux";
 const KOKORO = "xplainer-e2e-kokoro-linux";
 const RUNNER = "xplainer-e2e-render-linux";
-const PROBE_CONTAINER = "xplainer-e2e-probe-linux";
 const IMAGE = "xplainer-e2e-linux:local";
 
 /** The same pinned CPU image `infra/docker-compose.tts.yml` and P1-3 use. */
 const KOKORO_IMAGE = "ghcr.io/remsky/kokoro-fastapi-cpu:latest";
 
-/** Kokoro loads its voice pack on boot; on a cold pull that is minutes, not seconds. */
+/**
+ * Kokoro loads its voice pack on boot; on a cold pull that is minutes, not seconds.
+ *
+ * Handed to `render.mjs` as `XPLAINER_TTS_WAIT_MS` rather than spent in a probe container here.
+ * `render.mjs` already waits for the same endpoint before it narrates, and it waits from inside the
+ * network on the address the render will actually use — so a second probe would prove nothing more
+ * and would keep its evidence out of the transcript this run copies to the host.
+ */
 const KOKORO_READY_TIMEOUT_MS = 600_000;
 
 /**
@@ -82,39 +87,6 @@ const ARTEFACTS = [
   ["e2e-frame-captioned.png", "e2e-linux-frame-captioned.png"],
   ["e2e-frame-nocaptions.png", "e2e-linux-frame-nocaptions.png"],
 ];
-
-/**
- * The readiness probe, run inside a throwaway container on the same network — so it proves the
- * address the render will actually use, which a probe from the host cannot do for a container that
- * publishes no port. It is this repository's own image rather than a curl image so the wait costs
- * no extra pull.
- */
-const PROBE = `
-const [url, budget] = process.argv.slice(1);
-const deadline = Date.now() + Number(budget);
-for (let attempt = 1; ; attempt += 1) {
-  let described = "";
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    const voices = response.ok ? (await response.json()).voices : null;
-    if (Array.isArray(voices) && voices.length > 0) {
-      console.log(\`ready on attempt \${attempt}: HTTP \${response.status}, \${voices.length} voices\`);
-      process.exit(0);
-    }
-    described = \`HTTP \${response.status}\`;
-  } catch (error) {
-    described = error instanceof Error ? error.message : String(error);
-  }
-  if (Date.now() >= deadline) {
-    console.error(\`gave up after \${attempt} attempts: \${described}\`);
-    process.exit(1);
-  }
-  if (attempt === 1 || attempt % 10 === 0) {
-    console.log(\`  waiting for kokoro (attempt \${attempt}): \${described}\`);
-  }
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-}
-`;
 
 function say(text) {
   process.stdout.write(`${text}\n`);
@@ -150,7 +122,6 @@ function dockerQuietly(args) {
  */
 function teardown() {
   dockerQuietly(["rm", "-f", RUNNER]);
-  dockerQuietly(["rm", "-f", PROBE_CONTAINER]);
   dockerQuietly(["rm", "-f", KOKORO]);
   dockerQuietly(["network", "rm", NETWORK]);
 }
@@ -238,24 +209,6 @@ function main() {
     ["run", "--detach", "--name", KOKORO, "--network", NETWORK, KOKORO_IMAGE],
     "kokoro container",
   );
-  docker(
-    [
-      "run",
-      "--rm",
-      "--name",
-      PROBE_CONTAINER,
-      "--network",
-      NETWORK,
-      IMAGE,
-      "node",
-      "--input-type=module",
-      "-e",
-      PROBE,
-      `http://${KOKORO}:8880/v1/audio/voices`,
-      String(KOKORO_READY_TIMEOUT_MS),
-    ],
-    "kokoro readiness",
-  );
 
   section("render");
   docker(
@@ -270,6 +223,8 @@ function main() {
       "--shm-size=1g",
       "--env",
       `XPLAINER_TTS_URL=http://${KOKORO}:8880`,
+      "--env",
+      `XPLAINER_TTS_WAIT_MS=${KOKORO_READY_TIMEOUT_MS}`,
       "--env",
       "COLLIE_ARTIFACTS_DIR=/artifacts",
       "--volume",
@@ -302,7 +257,7 @@ try {
   collect();
   section("teardown");
   teardown();
-  say(`  removed ${RUNNER}, ${PROBE_CONTAINER}, ${KOKORO} and the network ${NETWORK}`);
+  say(`  removed ${RUNNER}, ${KOKORO} and the network ${NETWORK}`);
 }
 
 process.exit(exitCode);
