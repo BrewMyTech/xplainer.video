@@ -4,7 +4,14 @@ import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
-import { ENGINE_OWNED_FILES, TOOL_NAMES } from "./index.js";
+import {
+  ENGINE_OWNED_FILES,
+  isContractCompatible,
+  JOB_ERROR_CODE_VALUES,
+  MCP_CONTRACT_VERSION,
+  TOOL_NAMES,
+  toJobErrorCode,
+} from "./index.js";
 
 /**
  * These tests guard the contract itself, not the code that reads it.
@@ -300,5 +307,78 @@ describe("the deliberate divergences from max", () => {
     const schema = readJson("tools/explainer_create.output.json");
     expect(schema.required).not.toContain("write_source_to");
     expect(Object.keys(schema.properties as JsonObject)).toContain("write_source_to");
+  });
+});
+
+describe("MCP_CONTRACT_VERSION", () => {
+  it("is the manifest's contract version, not any package's release version", () => {
+    expect(MCP_CONTRACT_VERSION).toBe(manifest.version);
+  });
+});
+
+/**
+ * The predicate the `xplainer mcp --attach` shim applies before it proxies
+ * anything (ADR 0025 §Part two, settled by spike P1-S3). It is major-compatible
+ * rather than exact, so the first additive bump does not exit `8` on every live
+ * agent session — which is the whole reason the enum below can be open.
+ */
+describe("isContractCompatible", () => {
+  it("accepts an equal pair", () => {
+    expect(isContractCompatible("1", "1")).toBe(true);
+    expect(isContractCompatible(MCP_CONTRACT_VERSION, MCP_CONTRACT_VERSION)).toBe(true);
+  });
+
+  it("accepts a compatible-but-different pair, in both directions", () => {
+    // The daemon has gained an error_code member and the shim has not, or the
+    // other way round. Both attach: this is the case that makes an additive
+    // change a minor one.
+    expect(isContractCompatible("1.1", "1")).toBe(true);
+    expect(isContractCompatible("1", "1.1")).toBe(true);
+    expect(isContractCompatible("1.2.3", "1.0.0")).toBe(true);
+  });
+
+  it("refuses a pair whose majors differ", () => {
+    expect(isContractCompatible("2", "1")).toBe(false);
+    expect(isContractCompatible("1", "2")).toBe(false);
+    expect(isContractCompatible("2.0.0", "1.9.9")).toBe(false);
+  });
+
+  it("refuses a version it cannot parse, rather than guessing it is fine", () => {
+    for (const unparseable of ["", "v1", "1.", ".1", "1.x", "1-beta", "01a", "1.2.3.4", " 1"]) {
+      expect(isContractCompatible(unparseable, "1"), unparseable).toBe(false);
+      expect(isContractCompatible("1", unparseable), unparseable).toBe(false);
+    }
+  });
+});
+
+/**
+ * The TypeScript half of the tolerance ADR 0024's P1-S3 note decided. The union
+ * type is erased at runtime and therefore proves nothing on its own; the
+ * generated decoder is what a consumer actually calls.
+ */
+describe("toJobErrorCode", () => {
+  it("returns every known member unchanged", () => {
+    for (const value of JOB_ERROR_CODE_VALUES) {
+      expect(toJobErrorCode(value)).toBe(value);
+    }
+  });
+
+  it("decodes a member this build does not know as the documented fallback", () => {
+    expect(toJobErrorCode("disk_full")).toBe("internal");
+    expect(toJobErrorCode("")).toBe("internal");
+  });
+
+  it("is not fooled by a property inherited from Object.prototype", () => {
+    // A plain object lookup would answer `toString` with a function; the table
+    // is null-safe because it is built from the enum and frozen, and this is the
+    // case that would otherwise leak a non-member out of the decoder.
+    expect(toJobErrorCode("toString")).toBe("internal");
+    expect(toJobErrorCode("constructor")).toBe("internal");
+  });
+
+  it("lists exactly the schema's members, in schema order", () => {
+    const schema = readJson("job-error-code.json");
+    expect([...JOB_ERROR_CODE_VALUES]).toEqual(schema.enum);
+    expect(Object.isFrozen(JOB_ERROR_CODE_VALUES)).toBe(true);
   });
 });

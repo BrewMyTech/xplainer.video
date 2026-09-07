@@ -1,5 +1,5 @@
 /**
- * The tier boundary rule (plan §2 P4, §4 S1.3; acceptance criterion AC-3).
+ * The tier boundary rule (acceptance criterion AC-3, ADR 0003).
  *
  * The workspace is split into two tiers. `hosted` packages are the ones that
  * stay private and run on our own infrastructure; `open-later` packages are the

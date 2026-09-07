@@ -11,14 +11,25 @@ rendered anywhere but your machine.
 This repository is the whole local product: the `xplainer` CLI daemon, an optional Electron
 client, the render core, the MCP tool contract, and the agent skill that drives them.
 
-> ### Status: scaffold
+> ### Status: it renders
 >
-> **No video renders yet.** Every package builds, lints, typechecks and tests, on macOS,
-> Linux and Windows, and the shape below is real — but rendering, TTS, narration and the
-> first-run downloads land at roadmap phase 1. `xplainer serve` answers `/healthz` and
-> registers the MCP tools; the tools return "not implemented in this phase", and `mcp`,
-> `setup`, `connect` and `daemon` print what they are and exit 2. Nothing here is published
-> to npm yet.
+> **A video renders end to end, locally.** `xplainer serve` answers `/healthz`, serves the
+> eight MCP tools, owns its state directory, drains on `SIGTERM` and announces readiness, and
+> `xplainer status` reports whether it is up. The tools do real work against a shared Remotion
+> workspace on your machine: `explainer_create` scaffolds a video, `explainer_narrate`
+> measures the voiceover and writes the timings every scene length comes from, and
+> `explainer_still` and `explainer_render` drive the pinned Remotion CLI to a PNG and a
+> 1920×1080 MP4 with burnt-in captions. A test in `apps/cli` renders one on every run and
+> checks it with `ffprobe`.
+>
+> `xplainer mcp` serves those tools over stdio, `xplainer mcp --attach` proxies a session to a
+> running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
+> into your agent's configuration — a command line, with no URL, no port and no token in it.
+>
+> Still to come at roadmap phase 1: the Kokoro container as a supported install and the
+> first-run downloads. `setup` and `daemon` still print what they are and exit 2, and you
+> install the workspace's `node_modules` yourself — no tool call downloads hundreds of
+> megabytes behind your back. Nothing here is published to npm yet.
 >
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) is what happens next, in order, with the criteria each
 > phase is judged by written down before it starts.
@@ -72,9 +83,21 @@ pnpm --filter @xplainer/cli dev -- serve          # daemon on http://127.0.0.1:8
 pnpm --filter @xplainer/cli build && node apps/cli/dist/bin.js serve --port 8787
 ```
 
-`serve` exposes `GET /healthz` and a Streamable HTTP MCP endpoint at `/mcp`. It runs anywhere
-Node runs, including a headless Linux VM with no desktop environment — that is the constraint
-the whole local design was chosen against
+`serve` exposes `GET /healthz` and a Streamable HTTP MCP endpoint at `/mcp`. **Both need a
+bearer token**, which the first start mints at `0600` inside its state directory and names on
+stderr — an always-listening loopback port is reachable from any web page you visit, so the
+daemon also checks `Host` and `Origin` on every request
+([ADR 0020](docs/adr/0020-always-running-local-daemon.md) §Security):
+
+```bash
+export XPLAINER_STATE_DIR=$(mktemp -d)            # or let it use this platform's default
+node apps/cli/dist/bin.js serve --port 8787 &
+curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
+node apps/cli/dist/bin.js status                  # where the daemon is, and whether it answers
+```
+
+It runs anywhere Node runs, including a headless Linux VM with no desktop environment — that
+is the constraint the whole local design was chosen against
 ([ADR 0016](docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)).
 
 From roadmap phase 2 the daemon is *installed* rather than started by hand — a `systemd --user`

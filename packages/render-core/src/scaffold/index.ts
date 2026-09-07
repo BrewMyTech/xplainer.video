@@ -45,8 +45,8 @@ import { fileURLToPath } from "node:url";
 import { ENGINE_OWNED_FILES as ENGINE_OWNED_FILES_FROM_PROTOCOL } from "@xplainer/protocol";
 
 /**
- * The five files the engine owns, in the order `_SCAFFOLD` declares them in
- * `explainer_mcp.py:254-260`. The order is part of the contract: `created`,
+ * The five files the engine owns, in the order the reference implementation's
+ * scaffold declares them. The order is part of the contract: `created`,
  * `skipped` and `restored` are reported in it.
  *
  * This list is the reserved set `explainer_put_source` rejects, matched as
@@ -144,8 +144,8 @@ export function readScaffoldTemplate(name: ScaffoldFile): Buffer {
  *
  * Ownership decides what happens to a file that is already there:
  *
- *   * agent-owned — left untouched and reported in `skipped`, always
- *     (`explainer_mcp.py:324-331`);
+ *   * agent-owned — left untouched and reported in `skipped`, always, as in
+ *     the reference implementation;
  *   * engine-owned — compared against the template; identical bytes are
  *     `skipped`, different bytes are rewritten and reported in `restored`.
  */

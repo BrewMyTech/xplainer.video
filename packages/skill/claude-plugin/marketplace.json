@@ -17,7 +17,7 @@
         "url": "https://xplainer.video"
       },
       "homepage": "https://xplainer.video",
-      "license": "UNLICENSED",
+      "license": "Apache-2.0",
       "category": "design",
       "keywords": [
         "explainer",

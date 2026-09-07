@@ -279,3 +279,74 @@ describe("KokoroClient base URL", () => {
     expect(firstCall(calls).url).toBe("http://localhost:8880/dev/captioned_speech");
   });
 });
+
+/**
+ * The live half of P1-3: the pinned contract, against a Kokoro server that is actually running.
+ *
+ * Everything above this line proves what the client *sends*; nothing above it can tell whether the
+ * server still answers that. Those are different failures — a Kokoro release that renamed
+ * `/dev/captioned_speech`, or that stopped returning `timestamps` for a non-streaming request,
+ * breaks the product while every stubbed test above stays green — so this block talks to a real
+ * container and asserts the two things the narration port cannot work without: a voice list, and
+ * word spans beside real WAV bytes.
+ *
+ * It is gated on `XPLAINER_TTS_URL`, the same variable the daemon's narration worker reads
+ * (`apps/cli/src/workers/speech.ts`), so one exported URL runs this suite and the end-to-end script
+ * against the same server. Unset — which is CI, and any machine with no container — the block does
+ * not run at all: a required live dependency would make `pnpm verify` fail for a reason that has
+ * nothing to do with the change under test.
+ *
+ *   docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 \
+ *     ghcr.io/remsky/kokoro-fastapi-cpu:latest
+ *   XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm --filter @xplainer/tts-client test
+ */
+const LIVE_URL = (process.env.XPLAINER_TTS_URL ?? "").trim();
+
+/** CPU synthesis of one sentence is seconds, not milliseconds, and a cold container is slower. */
+const LIVE_TIMEOUT_MS = 120_000;
+
+/** The voice `narrate.py` defaults to, and the one the end-to-end script speaks with. */
+const LIVE_VOICE = "af_heart";
+
+describe.skipIf(LIVE_URL === "")("KokoroClient against a live Kokoro server", () => {
+  it(
+    "lists voices from the running server",
+    async () => {
+      const voices = await new KokoroClient({ baseUrl: LIVE_URL }).listVoices();
+
+      expect(voices.length).toBeGreaterThan(0);
+      expect(voices).toContain(LIVE_VOICE);
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
+  it(
+    "returns WAV audio and one word span per word from /dev/captioned_speech",
+    async () => {
+      const text = "The pinned contract holds against a live server.";
+      const client = new KokoroClient({ baseUrl: LIVE_URL });
+
+      const result = await client.captionedSpeech({ text, voice: LIVE_VOICE });
+
+      // A WAV, not an error page and not the raw stream a `stream: true` request would have
+      // returned: `RIFF….WAVE` is the header the narration port decodes.
+      const audio = Buffer.from(result.audio, "base64");
+      expect(audio.subarray(0, 4).toString("ascii")).toBe("RIFF");
+      expect(audio.subarray(8, 12).toString("ascii")).toBe("WAVE");
+      expect(audio.byteLength).toBeGreaterThan(1000);
+
+      // The half that fails silently. `return_timestamps: true` is the flag that produces these,
+      // and without them every scene duration would have to be guessed.
+      expect(result.timestamps.length).toBeGreaterThan(0);
+      const spoken = result.timestamps.map((span) => span.word).join(" ");
+      expect(spoken.toLowerCase()).toContain("pinned");
+      expect(spoken.toLowerCase()).toContain("server");
+      for (const span of result.timestamps) {
+        expect(span.end_time).toBeGreaterThan(span.start_time);
+      }
+      const last = result.timestamps[result.timestamps.length - 1];
+      expect(last?.end_time ?? 0).toBeGreaterThan(0);
+    },
+    LIVE_TIMEOUT_MS,
+  );
+});

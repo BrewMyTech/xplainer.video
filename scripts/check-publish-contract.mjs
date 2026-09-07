@@ -20,16 +20,30 @@
  *   Per file in the tarball    no source maps, no TypeScript source (a .d.ts is
  *                              not source), nothing under a `src/` directory,
  *                              no tests or fixtures, no Python bytecode.
- *   Per shipped .js            no `sourceMappingURL` comment left behind.
- *   Per package                LICENSE and NOTICE are IN the tarball, and the
- *                              `license` field carries the SPDX identifier.
+ *   Per shipped file           no `sourceMappingURL` comment left behind in a
+ *                              `.js`, and nowhere the name of the private
+ *                              repository the hosted tier moved to.
+ *   Per package                LICENSE, NOTICE and README.md are IN the
+ *                              tarball, and the manifest carries the SPDX
+ *                              licence, the homepage, the repository (with the
+ *                              member's `directory`) and the author.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
  *   Whole workspace            the publishable set is exactly the declared six.
  *
+ * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every
+ * invocation — see SELF_TESTS. A gate whose rules cannot be shown to fire is
+ * indistinguishable from a gate that passes vacuously, and this one guards a
+ * publish that cannot be taken back. The tests live in this file rather than in
+ * a member's `vitest` suite for one reason: `pnpm verify` runs `turbo test`
+ * over the members and then runs THIS script, so a test that lives here cannot
+ * be skipped, cannot be forgotten when the rule list grows (an uncovered rule
+ * is a hard failure), and cannot drift out of sync with the rules it tests.
+ *
  * Exit codes:
  *   0  nothing leaks
- *   1  at least one leak, licence gap, or publishable-set drift
+ *   1  at least one leak, licence or metadata gap, publishable-set drift, or a
+ *      rule that failed its own negative test
  *   2  the checker could not run (no workspace root, npm pack failed, a member
  *      has not been built, a manifest cannot be read)
  *
@@ -48,6 +62,7 @@
  * is the licence itself, not this script.
  */
 
+import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -75,6 +90,39 @@ const MEMBER_ROOTS = ["apps", "packages", "services"];
 const LICENCE_FILE = "LICENSE";
 const NOTICE_FILE = "NOTICE";
 const EXPECTED_LICENSE = "Apache-2.0";
+
+/**
+ * The page npm renders, and the three manifest fields that make it useful.
+ *
+ * Without a `README.md` the npm page for a package renders blank, which for
+ * `@xplainer/cli` is the page a human reads before deciding to install a daemon
+ * on their machine. `homepage`, `repository` and `author` are what turn that
+ * page from an anonymous tarball into something with a provenance a reader can
+ * follow; `repository.directory` is what makes "view source" land in the right
+ * member of a monorepo rather than at its root.
+ *
+ * npm auto-includes a package-root `README.md` regardless of the `files`
+ * allowlist, so the check below is not about the allowlist — it is about the
+ * file existing at all. None of the six had one until the first publish was
+ * being prepared.
+ */
+const README_FILE = "README.md";
+const EXPECTED_HOMEPAGE = "https://xplainer.video";
+const EXPECTED_REPOSITORY = "https://github.com/BrewMyTech/xplainer.video";
+const EXPECTED_AUTHOR = "Rishav Anand <rishav@brewmytech.com>";
+
+/**
+ * The name of the private repository the hosted tier moved to (ADR 0023).
+ *
+ * It must not appear in anything a stranger downloads. This is phase-0 gate 1
+ * re-asserted where it can be checked mechanically — against what npm actually
+ * ships rather than against the working tree — because the working-tree form of
+ * the check has a blind spot the tarball form does not: generated output.
+ * Twelve JSON Schema `description` strings carried the name, and the generated
+ * TypeScript and pydantic derived from them carried it into `dist/`, so a grep
+ * over hand-written source would have reported the repository clean.
+ */
+const PRIVATE_REPOSITORY_NAME = "xplainer-hosted";
 
 /**
  * The publishable set, declared rather than discovered.
@@ -220,7 +268,168 @@ const CONTENT_RULES = [
     matches: (text) =>
       text.includes(`//# ${"sourceMappingURL"}=`) || text.includes(`//@ ${"sourceMappingURL"}=`),
   },
+  {
+    id: "no-private-repository-name",
+    label: `the private repository's name ("${PRIVATE_REPOSITORY_NAME}") in the tarball`,
+    detail:
+      "The hosted tier was relocated to a private repository (ADR 0023) and its name has no " +
+      "business in a public artefact: it names something a reader cannot open, and it is the " +
+      "one string in the split that a stranger should never have received. Fix it at the " +
+      "source the file was generated from — a schema description, a comment — never by " +
+      "patching dist/.",
+    appliesTo: () => true,
+    matches: (text) => text.includes(PRIVATE_REPOSITORY_NAME),
+  },
 ];
+
+/**
+ * ============================================================================
+ * MANIFEST RULES — what `package.json` must say about the published package.
+ * ============================================================================
+ *
+ * Separate from the file rules because they read the manifest rather than the
+ * tarball's file list, and separate from each other because they fail
+ * independently: adding `homepage` and forgetting `repository` is the obvious
+ * mistake and it is silent — npm publishes a package with a blank sidebar
+ * without a word of complaint.
+ *
+ * `check` returns the sentence to print, or `null` when the manifest is fine.
+ * It takes the roster entry too, because `repository.directory` is the one
+ * field whose correct value differs per member.
+ */
+const MANIFEST_RULES = [
+  {
+    id: "license-is-spdx",
+    check: (manifest) =>
+      manifest.license === EXPECTED_LICENSE
+        ? null
+        : `package.json "license" is ${JSON.stringify(manifest.license)}, expected ` +
+          `${JSON.stringify(EXPECTED_LICENSE)}. "UNLICENSED" tells npm and every consumer ` +
+          "that no right to use the software is granted at all, which is the opposite of the " +
+          `grant in ${LICENCE_FILE}.`,
+  },
+  {
+    id: "homepage-is-the-product-site",
+    check: (manifest) =>
+      manifest.homepage === EXPECTED_HOMEPAGE
+        ? null
+        : `package.json "homepage" is ${JSON.stringify(manifest.homepage)}, expected ` +
+          `${JSON.stringify(EXPECTED_HOMEPAGE)}. It is the link npm puts in the page's ` +
+          "sidebar, and a missing one leaves the package looking unattributed.",
+  },
+  {
+    id: "repository-names-this-repo-and-member",
+    check: (manifest, member) => {
+      const declared = manifest.repository;
+      if (declared === undefined || declared === null || typeof declared !== "object") {
+        return (
+          'package.json has no "repository" object. Without it npm shows no source link, and ' +
+          "a reader of a published tarball has nowhere to go to read what they installed."
+        );
+      }
+      if (normaliseRepositoryUrl(declared.url) !== EXPECTED_REPOSITORY) {
+        return (
+          `package.json "repository.url" is ${JSON.stringify(declared.url)}, expected ` +
+          `${JSON.stringify(EXPECTED_REPOSITORY)} (a "git+" prefix and a ".git" suffix are ` +
+          "the conventional spelling and are accepted)."
+        );
+      }
+      if (declared.directory !== member.dir) {
+        return (
+          `package.json "repository.directory" is ${JSON.stringify(declared.directory)}, ` +
+          `expected ${JSON.stringify(member.dir)}. This is a monorepo, so without the ` +
+          "directory every package's source link lands on the repository root instead of on " +
+          "the member a reader is looking at."
+        );
+      }
+      return null;
+    },
+  },
+  {
+    id: "author-is-the-owner",
+    check: (manifest) =>
+      manifest.author === EXPECTED_AUTHOR
+        ? null
+        : `package.json "author" is ${JSON.stringify(manifest.author)}, expected the string ` +
+          `${JSON.stringify(EXPECTED_AUTHOR)}. One spelling across all six, so the npm ` +
+          "author page collects them rather than splitting them across near-identical names.",
+  },
+];
+
+/**
+ * ============================================================================
+ * PRESENCE RULES — the three files that have to be in every tarball.
+ * ============================================================================
+ *
+ * npm auto-includes `README*` and `LICENSE*`/`LICENCE*` from a package root but
+ * NOT a hyphenated name: verified on npm 11.19.0, a package-root
+ * `LICENSE-BINARY` alongside `files: ["dist"]` does not ship, and the same file
+ * named in `files` does. So the licence rules pass only once each manifest names
+ * the file or a prepack copies it in, while the README rule fails only when the
+ * file does not exist at all.
+ *
+ * Three rules rather than one loop over three names, because they fail
+ * independently and for different reasons — naming one in `files` and
+ * forgetting the other is the obvious mistake, and it is silent.
+ *
+ * `sameAsRoot` marks the two that are copies of a repository-root file: six
+ * copies of a legal document must not drift into six different documents.
+ */
+const PRESENCE_RULES = [
+  {
+    id: "license-in-tarball",
+    file: LICENCE_FILE,
+    sameAsRoot: true,
+    label: `${LICENCE_FILE} is not in the tarball`,
+    detail:
+      "A user who installs this package receives no grant of any kind. npm does not " +
+      `auto-include a hyphenated licence filename, so ${LICENCE_FILE} must be named in the ` +
+      'manifest "files" array or copied into the package by a prepack script.',
+    driftLabel: `${LICENCE_FILE} differs from the repository root copy`,
+    driftDetail:
+      "Two different grants would be shipping under one name. Copy the root file rather than " +
+      "maintaining a second one.",
+  },
+  {
+    id: "notice-in-tarball",
+    file: NOTICE_FILE,
+    sameAsRoot: true,
+    label: `${NOTICE_FILE} is not in the tarball`,
+    detail:
+      `${EXPECTED_LICENSE} section 4(d) requires the NOTICE file to travel with the work. ` +
+      `Shipping ${LICENCE_FILE} without it means the package does not satisfy the licence it ` +
+      `declares. Name ${NOTICE_FILE} in the manifest "files" array.`,
+    driftLabel: `${NOTICE_FILE} differs from the repository root copy`,
+    driftDetail:
+      "Attribution would vary by package. Copy the root file rather than maintaining a second " +
+      "one.",
+  },
+  {
+    id: "readme-in-tarball",
+    file: README_FILE,
+    sameAsRoot: false,
+    label: `${README_FILE} is not in the tarball`,
+    detail:
+      "The package's npm page renders blank, which is the page a human reads before deciding " +
+      "to install this. npm auto-includes a package-root README.md regardless of the " +
+      `"files" allowlist, so this means there is no ${README_FILE} in the package at all.`,
+  },
+];
+
+/**
+ * `git+https://…/x.git`, `https://…/x.git` and `https://…/x` are the same
+ * repository, and npm normalises between them. Comparing the raw string would
+ * make the rule fail on the conventional spelling, so it is normalised first.
+ */
+function normaliseRepositoryUrl(url) {
+  if (typeof url !== "string") {
+    return null;
+  }
+  return url
+    .replace(/^git\+/, "")
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+}
 
 /**
  * ============================================================================
@@ -373,10 +582,235 @@ const MUST_SHIP_TREES = [
       "The published tool contract. Consumers validate against these, so they are a complete " +
       "description of the tools by design and cannot be withheld.",
   },
+  {
+    package: "@xplainer/render-core",
+    dir: "template",
+    why:
+      "The Remotion workspace copied onto the user's machine. A file added here has to ship " +
+      "the day it is added or the scaffolded workspace is incomplete on a user's disk and " +
+      "renders nothing — and the four files named individually above could not catch a fifth.",
+  },
 ];
 
 /** Directories never walked when checking a must-ship tree. */
 const TREE_SKIP_DIRECTORIES = new Set(["node_modules", "dist", ".turbo", "__pycache__"]);
+
+/**
+ * The id under which the MUST_SHIP_FILES mechanism is self-tested.
+ *
+ * It is not a rule in any of the three tables — it is one function,
+ * {@link inspectMustShipFile} — but it fails in the same way a rule does and it
+ * is the sole remaining guard on the four exempt paths (ADR 0022 says so in as
+ * many words), so it is held to the same standard: show it firing.
+ */
+const MUST_SHIP_RULE_ID = "must-ship-file";
+
+/** The same, for the MUST_SHIP_TREES mechanism: a whole directory, nothing dropped. */
+const MUST_SHIP_TREE_RULE_ID = "must-ship-tree";
+
+/**
+ * ============================================================================
+ * SELF-TESTS — the negative test each rule has to pass before it is trusted.
+ * ============================================================================
+ *
+ * Two samples per rule: one value that violates it and one that does not. The
+ * runner asserts the rule fires on the first and stays silent on the second,
+ * and it fails when a rule has NO entry here — so the table cannot fall behind
+ * the rule list.
+ *
+ * Both halves earn their place. Without the violating sample a rule that had
+ * been broken into a permanent `false` would report a clean tarball forever,
+ * which is the exact failure mode ADR 0023 recorded for the tier check when its
+ * real-graph half went vacuous. Without the clean sample a rule that had been
+ * widened into a permanent `true` would fail a correct publish, which is
+ * noisier but gets "fixed" by weakening the rule.
+ *
+ * Samples are shaped by the rule's kind: a tarball path for a FILE_RULE,
+ * `{ path, text }` for a CONTENT_RULE, `{ manifest, member }` for a
+ * MANIFEST_RULE, and `{ entry, shipped, files }` for the must-ship mechanism.
+ */
+const SELF_TEST_MEMBER = { dir: "packages/example", name: "@xplainer/example" };
+
+const SELF_TEST_MANIFEST = {
+  name: SELF_TEST_MEMBER.name,
+  license: EXPECTED_LICENSE,
+  homepage: EXPECTED_HOMEPAGE,
+  repository: {
+    type: "git",
+    url: `git+${EXPECTED_REPOSITORY}.git`,
+    directory: SELF_TEST_MEMBER.dir,
+  },
+  author: EXPECTED_AUTHOR,
+};
+
+const selfTestManifest = (overrides) => ({
+  manifest: { ...SELF_TEST_MANIFEST, ...overrides },
+  member: SELF_TEST_MEMBER,
+});
+
+const SELF_TESTS = [
+  // --- FILE_RULES ---------------------------------------------------------
+  {
+    rule: "no-source-map",
+    violating: "dist/index.js.map",
+    clean: "dist/index.js",
+  },
+  {
+    rule: "no-typescript-source",
+    violating: "dist/index.ts",
+    // A .d.ts ends with `.ts` too, and it is the one thing this rule must let
+    // through: it is the API specification a consumer's tsc requires.
+    clean: "dist/index.d.ts",
+  },
+  {
+    rule: "no-src-directory",
+    violating: "src/index.js",
+    // Only a whole path segment counts. `src-helpers` merely starts with it.
+    clean: "dist/src-helpers/index.js",
+  },
+  {
+    rule: "no-tests-or-fixtures",
+    violating: "dist/scaffold.test.js",
+    clean: "dist/scaffold.js",
+  },
+  {
+    rule: "no-tests-or-fixtures",
+    violating: "python/tests/test_models.py",
+    clean: "python/xplainer_protocol/models.py",
+  },
+  {
+    rule: "no-python-bytecode",
+    violating: "python/xplainer_protocol/__pycache__/models.cpython-313.pyc",
+    clean: "python/xplainer_protocol/models.py",
+  },
+
+  // --- CONTENT_RULES ------------------------------------------------------
+  {
+    rule: "no-source-mapping-url",
+    // Assembled from parts, like the rule itself, so this file's own text is
+    // not a match when the repository is grepped for the comment.
+    violating: {
+      path: "dist/index.js",
+      text: `export {};\n//# ${"sourceMappingURL"}=index.js.map\n`,
+    },
+    clean: { path: "dist/index.js", text: "export {};\n" },
+  },
+  {
+    rule: "no-private-repository-name",
+    violating: {
+      path: "dist/index.d.ts",
+      text: `/** Relocated to BrewMyTech/${PRIVATE_REPOSITORY_NAME}. */\n`,
+    },
+    clean: { path: "dist/index.d.ts", text: "/** Relocated to a private repository. */\n" },
+  },
+
+  // --- MANIFEST_RULES -----------------------------------------------------
+  {
+    rule: "license-is-spdx",
+    violating: selfTestManifest({ license: "UNLICENSED" }),
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "homepage-is-the-product-site",
+    violating: selfTestManifest({ homepage: undefined }),
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "repository-names-this-repo-and-member",
+    violating: selfTestManifest({ repository: undefined }),
+    // The conventional `git+…​.git` spelling npm normalises must be accepted.
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "repository-names-this-repo-and-member",
+    // The failure that matters in a monorepo: right repository, wrong member,
+    // so every package's "view source" link lands on the root.
+    violating: selfTestManifest({
+      repository: { type: "git", url: EXPECTED_REPOSITORY, directory: "packages/somewhere-else" },
+    }),
+    clean: selfTestManifest({
+      repository: { type: "git", url: EXPECTED_REPOSITORY, directory: SELF_TEST_MEMBER.dir },
+    }),
+  },
+  {
+    rule: "author-is-the-owner",
+    violating: selfTestManifest({ author: { name: "Rishav Anand" } }),
+    clean: selfTestManifest({}),
+  },
+
+  // --- PRESENCE_RULES -----------------------------------------------------
+  {
+    rule: "license-in-tarball",
+    violating: ["dist/index.js", "NOTICE", "README.md"],
+    clean: ["dist/index.js", "LICENSE", "NOTICE", "README.md"],
+  },
+  {
+    rule: "license-in-tarball-matches-root",
+    violating: { packageText: "Apache License, Version 2.0", rootText: "All rights reserved." },
+    clean: { packageText: "Apache License, Version 2.0", rootText: "Apache License, Version 2.0" },
+  },
+  {
+    rule: "notice-in-tarball",
+    // The obvious mistake: LICENSE named in `files`, NOTICE forgotten. §4(d)
+    // makes that non-compliant with the licence the manifest itself declares.
+    violating: ["dist/index.js", "LICENSE", "README.md"],
+    clean: ["dist/index.js", "LICENSE", "NOTICE", "README.md"],
+  },
+  {
+    rule: "notice-in-tarball-matches-root",
+    violating: { packageText: "Copyright 2026 Someone Else", rootText: "Copyright 2026 xplainer" },
+    clean: { packageText: "Copyright 2026 xplainer", rootText: "Copyright 2026 xplainer" },
+  },
+  {
+    rule: "readme-in-tarball",
+    violating: ["dist/index.js", "LICENSE", "NOTICE"],
+    clean: ["dist/index.js", "LICENSE", "NOTICE", "README.md"],
+  },
+
+  // --- The must-ship mechanism --------------------------------------------
+  {
+    rule: MUST_SHIP_RULE_ID,
+    violating: {
+      entry: { path: "SKILL.md", why: "…" },
+      shipped: ["dist/index.js"],
+      files: { "SKILL.md": "prose" },
+    },
+    clean: {
+      entry: { path: "SKILL.md", why: "…" },
+      shipped: ["SKILL.md", "dist/index.js"],
+      files: { "SKILL.md": "prose" },
+    },
+  },
+  {
+    rule: MUST_SHIP_RULE_ID,
+    // The anti-transformation half: it ships, but a build step rewrote it.
+    violating: {
+      entry: { path: "dist/skills/SKILL.md", identicalTo: "SKILL.md", why: "…" },
+      shipped: ["dist/skills/SKILL.md"],
+      files: { "SKILL.md": "prose", "dist/skills/SKILL.md": "prose, minified" },
+    },
+    clean: {
+      entry: { path: "dist/skills/SKILL.md", identicalTo: "SKILL.md", why: "…" },
+      shipped: ["dist/skills/SKILL.md"],
+      files: { "SKILL.md": "prose", "dist/skills/SKILL.md": "prose" },
+    },
+  },
+  {
+    rule: MUST_SHIP_TREE_RULE_ID,
+    // The case the per-file entries above cannot catch: a file added to the
+    // tree on disk that the tarball does not carry.
+    violating: {
+      tree: { dir: "schemas", why: "…" },
+      shipped: ["schemas/manifest.json"],
+      listing: ["manifest.json", "tools/explainer_create.input.json"],
+    },
+    clean: {
+      tree: { dir: "schemas", why: "…" },
+      shipped: ["schemas/manifest.json", "schemas/tools/explainer_create.input.json"],
+      listing: ["manifest.json", "tools/explainer_create.input.json"],
+    },
+  },
+];
 
 // ---------------------------------------------------------------------------
 
@@ -508,6 +942,178 @@ async function packMember(root, member) {
   return parsed[0].files.map((file) => file.path);
 }
 
+/**
+ * Judge one MUST_SHIP_FILES entry against a tarball.
+ *
+ * Pure on purpose, so the self-tests can drive it: `shipped` is the set of
+ * tarball paths and `bytesOf` reads a package-relative path, returning `null`
+ * when it is not on disk. Returns the finding to record, or `null`.
+ */
+function inspectMustShipFile(entry, shipped, bytesOf) {
+  if (!shipped.has(entry.path)) {
+    return {
+      label: `${entry.path} MUST ship and is missing from the tarball`,
+      detail: entry.why,
+    };
+  }
+  if (entry.identicalTo === undefined) {
+    return null;
+  }
+  const shippedBytes = bytesOf(entry.path);
+  const sourceBytes = bytesOf(entry.identicalTo);
+  if (shippedBytes === null || sourceBytes === null) {
+    return {
+      label: `${entry.path} cannot be compared against ${entry.identicalTo}`,
+      detail: "One of the two is not on disk.",
+    };
+  }
+  if (!shippedBytes.equals(sourceBytes)) {
+    return {
+      label: `${entry.path} differs from ${entry.identicalTo}`,
+      detail:
+        `${entry.why} It must ship byte-for-byte; a build step that rewrote it (minifier, ` +
+        "obfuscator, formatter) breaks the product.",
+    };
+  }
+  return null;
+}
+
+/**
+ * Judge one MUST_SHIP_TREES entry against a tarball.
+ *
+ * Pure for the same reason as {@link inspectMustShipFile}: `listing` is what is
+ * on disk under the tree, relative to it, and `shipped` is the tarball's path
+ * set. Returns the tree-relative paths that were dropped, which is empty when
+ * nothing was.
+ */
+function inspectMustShipTree(tree, shipped, listing) {
+  return listing.filter((relativePath) => !shipped.has(`${tree.dir}/${relativePath}`));
+}
+
+/**
+ * Whether a package's copy of a root-owned file still matches the root's.
+ *
+ * Pure. `null` for either side means there is nothing to compare — the presence
+ * rule above is what reports a missing file, and reporting it twice would read
+ * as two problems.
+ */
+function inspectRootCopy(rule, packageBytes, rootBytes) {
+  if (packageBytes === null || rootBytes === null) {
+    return null;
+  }
+  return packageBytes.equals(rootBytes)
+    ? null
+    : { label: rule.driftLabel, detail: rule.driftDetail };
+}
+
+/** The package's own copy of a root-owned file, or null when it is not on disk. */
+function bytesOfRootOwnedFile(root, memberDir, file) {
+  const diskPath = toDiskPath(root, memberDir, file);
+  return existsSync(diskPath) ? readFileSync(diskPath) : null;
+}
+
+/** Every rule the self-tests have to cover, by id, with the kind of sample it takes. */
+function indexRules() {
+  const index = new Map();
+  for (const rule of FILE_RULES) {
+    index.set(rule.id, { kind: "file", rule });
+  }
+  for (const rule of CONTENT_RULES) {
+    index.set(rule.id, { kind: "content", rule });
+  }
+  for (const rule of MANIFEST_RULES) {
+    index.set(rule.id, { kind: "manifest", rule });
+  }
+  for (const rule of PRESENCE_RULES) {
+    index.set(rule.id, { kind: "presence", rule });
+    if (rule.sameAsRoot) {
+      index.set(`${rule.id}-matches-root`, { kind: "root-copy", rule });
+    }
+  }
+  index.set(MUST_SHIP_RULE_ID, { kind: "must-ship", rule: null });
+  index.set(MUST_SHIP_TREE_RULE_ID, { kind: "must-ship-tree", rule: null });
+  return index;
+}
+
+/** Whether `rule` reports a problem for `sample`. */
+function ruleFires(kind, rule, sample) {
+  if (kind === "file") {
+    return rule.matches(sample);
+  }
+  if (kind === "content") {
+    return rule.appliesTo(sample.path) && rule.matches(sample.text);
+  }
+  if (kind === "manifest") {
+    return rule.check(sample.manifest, sample.member) !== null;
+  }
+  if (kind === "presence") {
+    return !new Set(sample).has(rule.file);
+  }
+  if (kind === "root-copy") {
+    const toBytes = (text) => (text === null ? null : Buffer.from(text, "utf8"));
+    return inspectRootCopy(rule, toBytes(sample.packageText), toBytes(sample.rootText)) !== null;
+  }
+  if (kind === "must-ship-tree") {
+    return inspectMustShipTree(sample.tree, new Set(sample.shipped), sample.listing).length > 0;
+  }
+  const bytesOf = (path) =>
+    Object.hasOwn(sample.files, path) ? Buffer.from(sample.files[path], "utf8") : null;
+  return inspectMustShipFile(sample.entry, new Set(sample.shipped), bytesOf) !== null;
+}
+
+const describeSample = (sample) => {
+  const text = typeof sample === "string" ? JSON.stringify(sample) : JSON.stringify(sample);
+  return text.length > 160 ? `${text.slice(0, 157)}…` : text;
+};
+
+/**
+ * Run every rule against its own violating and clean sample.
+ *
+ * A rule with no self-test is a failure, not an omission: it is the case where
+ * this gate would go on reporting clean tarballs after the rule stopped being
+ * able to fail, and nobody would know.
+ */
+function runSelfTests() {
+  const problems = [];
+  const index = indexRules();
+  const covered = new Set();
+
+  for (const test of SELF_TESTS) {
+    const entry = index.get(test.rule);
+    if (entry === undefined) {
+      problems.push(
+        `self-test names unknown rule "${test.rule}". Rule ids are: ` +
+          `${[...index.keys()].join(", ")}.`,
+      );
+      continue;
+    }
+    covered.add(test.rule);
+    if (!ruleFires(entry.kind, entry.rule, test.violating)) {
+      problems.push(
+        `rule "${test.rule}" did NOT fire on ${describeSample(test.violating)}, which violates ` +
+          "it. The rule can no longer fail, so every tarball it checks passes vacuously.",
+      );
+    }
+    if (ruleFires(entry.kind, entry.rule, test.clean)) {
+      problems.push(
+        `rule "${test.rule}" fired on ${describeSample(test.clean)}, which does not violate it. ` +
+          "It would fail a correct publish.",
+      );
+    }
+  }
+
+  for (const id of index.keys()) {
+    if (!covered.has(id)) {
+      problems.push(
+        `rule "${id}" has no self-test. Add one to SELF_TESTS: a value that violates the rule ` +
+          "and a value that does not.",
+      );
+    }
+  }
+
+  return problems;
+}
+
 /** Check one publishable member. Returns grouped findings. */
 function inspectMember(root, member, tarballPaths) {
   const findings = createFindings();
@@ -556,95 +1162,40 @@ function inspectMember(root, member, tarballPaths) {
     }
   }
 
-  // --- The licence must be inside the tarball ------------------------------
-  //
-  // npm auto-includes README* and LICENSE*/LICENCE* from a package root, but
-  // NOT a hyphenated name: verified on npm 11.19.0, a package-root
-  // LICENSE-BINARY alongside files: ["dist"] does not ship, and the same file
-  // named in `files` does. So this passes only once each manifest names it, or
-  // a prepack copies it in.
-  if (!shipped.has(LICENCE_FILE)) {
-    findings.note(
-      `${LICENCE_FILE} is not in the tarball`,
-      "A user who installs this package receives no grant of any kind. npm does not " +
-        `auto-include a hyphenated licence filename, so ${LICENCE_FILE} must be named in the ` +
-        'manifest "files" array or copied into the package by a prepack script.',
-    );
-  } else {
-    const shippedLicencePath = toDiskPath(root, member.dir, LICENCE_FILE);
-    if (existsSync(shippedLicencePath)) {
-      const rootLicence = readFileSync(join(root, LICENCE_FILE));
-      if (!readFileSync(shippedLicencePath).equals(rootLicence)) {
-        findings.note(
-          `${LICENCE_FILE} differs from the repository root copy`,
-          "Two different grants would be shipping under one name. Copy the root file rather " +
-            "than maintaining a second one.",
-        );
-      }
+  // --- Three files that have to be inside the tarball ----------------------
+  for (const rule of PRESENCE_RULES) {
+    if (ruleFires("presence", rule, tarballPaths)) {
+      findings.note(rule.label, rule.detail);
+    }
+    if (!rule.sameAsRoot) {
+      continue;
+    }
+    const packageCopy = bytesOfRootOwnedFile(root, member.dir, rule.file);
+    const rootCopy = existsSync(join(root, rule.file)) ? readFileSync(join(root, rule.file)) : null;
+    const drift = inspectRootCopy(rule, packageCopy, rootCopy);
+    if (drift !== null) {
+      findings.note(drift.label, drift.detail);
     }
   }
 
-  // NOTICE is not decoration. Apache-2.0 section 4(d) obliges anyone who
-  // redistributes the work to carry the NOTICE with it, so a tarball shipping
-  // LICENSE alone does not comply with the licence its own manifest claims.
-  // Checked separately from LICENSE because they fail independently: naming one
-  // in `files` and forgetting the other is the obvious mistake, and it is silent.
-  if (!shipped.has(NOTICE_FILE)) {
-    findings.note(
-      `${NOTICE_FILE} is not in the tarball`,
-      `${EXPECTED_LICENSE} section 4(d) requires the NOTICE file to travel with the work. ` +
-        `Shipping ${LICENCE_FILE} without it means the package does not satisfy the licence ` +
-        `it declares. Name ${NOTICE_FILE} in the manifest "files" array.`,
-    );
-  } else {
-    const shippedNoticePath = toDiskPath(root, member.dir, NOTICE_FILE);
-    if (existsSync(shippedNoticePath)) {
-      const rootNotice = readFileSync(join(root, NOTICE_FILE));
-      if (!readFileSync(shippedNoticePath).equals(rootNotice)) {
-        findings.note(
-          `${NOTICE_FILE} differs from the repository root copy`,
-          "Attribution would vary by package. Copy the root file rather than maintaining a " +
-            "second one.",
-        );
-      }
-    }
-  }
-
-  // --- The manifest must point at that licence -----------------------------
+  // --- The manifest must say who published this and where it came from -----
   const manifest = readManifest(root, member.dir);
-  if (manifest.license !== EXPECTED_LICENSE) {
-    findings.note(
-      `package.json "license" is ${JSON.stringify(manifest.license)}`,
-      `Expected ${JSON.stringify(EXPECTED_LICENSE)}. "UNLICENSED" tells npm and every ` +
-        "consumer that no right to use the software is granted at all, which is the opposite " +
-        `of the grant in ${LICENCE_FILE}.`,
-    );
+  for (const rule of MANIFEST_RULES) {
+    const problem = rule.check(manifest, member);
+    if (problem !== null) {
+      findings.note(problem, `Rule: ${rule.id}.`);
+    }
   }
 
   // --- Files that must ship, and must ship untransformed -------------------
+  const bytesOf = (path) => {
+    const diskPath = toDiskPath(root, member.dir, path);
+    return existsSync(diskPath) ? readFileSync(diskPath) : null;
+  };
   for (const entry of MUST_SHIP_FILES.filter((item) => item.package === member.name)) {
-    if (!shipped.has(entry.path)) {
-      findings.note(`${entry.path} MUST ship and is missing from the tarball`, entry.why);
-      continue;
-    }
-    if (entry.identicalTo === undefined) {
-      continue;
-    }
-    const shippedPath = toDiskPath(root, member.dir, entry.path);
-    const sourcePath = toDiskPath(root, member.dir, entry.identicalTo);
-    if (!existsSync(shippedPath) || !existsSync(sourcePath)) {
-      findings.note(
-        `${entry.path} cannot be compared against ${entry.identicalTo}`,
-        "One of the two is not on disk.",
-      );
-      continue;
-    }
-    if (!readFileSync(shippedPath).equals(readFileSync(sourcePath))) {
-      findings.note(
-        `${entry.path} differs from ${entry.identicalTo}`,
-        `${entry.why} It must ship byte-for-byte; a build step that rewrote it (minifier, ` +
-          "obfuscator, formatter) breaks the product.",
-      );
+    const problem = inspectMustShipFile(entry, shipped, bytesOf);
+    if (problem !== null) {
+      findings.note(problem.label, problem.detail);
     }
   }
 
@@ -655,16 +1206,13 @@ function inspectMember(root, member, tarballPaths) {
       findings.note(`${tree.dir}/ MUST ship and does not exist on disk`, tree.why);
       continue;
     }
-    for (const relativePath of listTree(absoluteDir)) {
-      const tarballPath = `${tree.dir}/${relativePath}`;
-      if (!shipped.has(tarballPath)) {
-        findings.add(
-          `must-ship-tree:${tree.dir}`,
-          `files under ${tree.dir}/ that MUST ship and are missing from the tarball`,
-          tree.why,
-          tarballPath,
-        );
-      }
+    for (const relativePath of inspectMustShipTree(tree, shipped, listTree(absoluteDir))) {
+      findings.add(
+        `${MUST_SHIP_TREE_RULE_ID}:${tree.dir}`,
+        `files under ${tree.dir}/ that MUST ship and are missing from the tarball`,
+        tree.why,
+        `${tree.dir}/${relativePath}`,
+      );
     }
   }
 
@@ -816,6 +1364,21 @@ async function main() {
         "no licence for the packages to ship.\n",
     );
     return 2;
+  }
+
+  // The rules judge themselves before they judge anything else. If one of them
+  // cannot fail, nothing it says about a real tarball is worth reading, so this
+  // returns rather than continuing on to report a reassuring "clean".
+  const selfTestProblems = runSelfTests();
+  if (selfTestProblems.length > 0) {
+    process.stderr.write(
+      "check-publish-contract: the gate failed its own tests, so it was not run against the " +
+        "packages.\n",
+    );
+    for (const problem of selfTestProblems) {
+      process.stderr.write(`  x ${problem}\n`);
+    }
+    return 1;
   }
 
   const rosterProblems = checkRoster(root);

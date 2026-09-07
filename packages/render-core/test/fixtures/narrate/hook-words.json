@@ -1,0 +1,42 @@
+[
+  {
+    "word": "What",
+    "start_time": 0.05,
+    "end_time": 0.28
+  },
+  {
+    "word": "if",
+    "start_time": 0.3,
+    "end_time": 0.42
+  },
+  {
+    "word": "your",
+    "start_time": 0.44,
+    "end_time": 0.63
+  },
+  {
+    "word": "build",
+    "start_time": 0.65,
+    "end_time": 0.95
+  },
+  {
+    "word": "was",
+    "start_time": 1.05,
+    "end_time": 1.2
+  },
+  {
+    "word": "already",
+    "start_time": 1.22,
+    "end_time": 1.62
+  },
+  {
+    "word": "broken",
+    "start_time": 1.64,
+    "end_time": 2.0
+  },
+  {
+    "word": "?",
+    "start_time": 2.0,
+    "end_time": 2.1
+  }
+]

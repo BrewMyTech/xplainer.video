@@ -402,3 +402,368 @@ Stated here so the split is not inferred from the roadmap alone:
 - **Whether a cancel tool should exist.** `cancelled` is in both enums and there is still no
   `explainer_cancel` in the eight tools; ADR 0008 already records that adding one is a protocol
   change, and this record does not make it.
+
+## Note, 2026-09-06: P1-S1 settled
+
+Spike **P1-S1** has reported. This note records the four mechanisms the body above marks
+*proposed*, each with the measurement that produced it. It amends nothing: every decision above —
+ownership precedes reconciliation precedes bind, records are durable and outlive the process that
+wrote them, the write is durable before the `job_id` is returned, and a recorded pid is not an
+identity — stands exactly as written. What follows is the mechanism under each.
+
+The evidence is one run of [`apps/cli/spikes/p1-s1-ownership.mjs`](../../apps/cli/spikes/p1-s1-ownership.mjs),
+committed with this note. It is a **check, not a demonstration**: it exits non-zero if any
+ownership expectation fails, so a later change that breaks one is caught by running it rather than
+by reading it. The run quoted below is `darwin/arm64`, Node v24.20.0, libuv 1.52.1, APFS on the
+internal SSD, 2026-09-06, and it exited `0`. **Linux and Windows were not measured.** Where this
+note speaks about them it cites their documentation and says which sentences are unmeasured.
+
+### Ownership
+
+**Decided: an `owner.lock` file in the state directory, created with `O_EXCL`, carrying the
+identity tuple; staleness is inferred from that tuple, and a takeover is confirmed by read-back
+before it is believed.**
+
+The record is `{format_version, pid, start_time, boot_nonce, hostname, acquired_at}`, written
+through `fs.openSync(path, "wx")` — `O_CREAT|O_EXCL|O_WRONLY` — then `fsync`ed, with the containing
+directory `fsync`ed after it. Acquisition is:
+
+1. `O_EXCL` create. Success is ownership, and it is the only path with no inference in it.
+2. `EEXIST` → read the lock and classify the holder by the **tuple**, never by the pid alone.
+   Alive-and-matching refuses with exit `10` **having written nothing**. Three conditions are
+   stale: not alive; alive but with a different start time, which is pid reuse; and zero-length,
+   which is an acquirer that died between the `O_EXCL` and the write.
+3. Takeover of a stale lock: re-read and confirm the bytes are unchanged, `unlink`, `O_EXCL` create
+   again, then wait 100 ms, read back, and check the `boot_nonce` is still ours. A process that
+   lost that race exits `10` — and because ownership precedes reconciliation, it exits before it
+   has rewritten anything.
+
+**Why a lock file and not an advisory lock.** ADR 0024's spike text asks whether `flock`/`LockFileEx`
+is preferable to a file whose staleness has to be inferred. It would be — a kernel-released lock
+needs no inference at all — but Node core exposes neither, so it is reachable only through a native
+dependency, and ADR 0020 makes `npx` the supported install path. The price of inference is step 3's
+100 ms settle, paid only on the crash-recovery path.
+
+The six scenarios, each in its own state directory and each run in a child process so the exit code
+is the real one:
+
+```text
+  [A] a fresh state directory: O_EXCL creates the lock
+      [try 98755] O_EXCL create succeeded; directory flush after it: ok
+      [try 98755] outcome=acquired
+    PASS  exit code: got 0, wanted 0
+      lock file:
+      { "format_version": 1, "pid": 98755, "start_time": "Sun Sep  6 19:07:22 2026",
+        "boot_nonce": "e9da686f-1757-499f-b1bc-359897e0a421",
+        "hostname": "Rishavs-MacBook-Pro.local", "acquired_at": "2026-09-06T13:37:22.689Z" }
+
+  [B] a second acquirer while the holder is alive: refused, and it wrote nothing
+      [try 98823] O_EXCL create refused with EEXIST — inspecting the holder
+      [try 98823] holder: pid 98799 is alive and started "Sun Sep  6 19:07:22 2026"
+      [try 98823] refusing with exit 10, having written nothing
+    PASS  exit code: got 10, wanted 10
+    PASS  state directory unchanged: got "owner.lock size=230 mtimeMs=1788701842740.5764
+          sha256:6c3d7d3eeb2631a7", wanted "owner.lock size=230 mtimeMs=1788701842740.5764
+          sha256:6c3d7d3eeb2631a7"
+    PASS  the holder was still alive throughout: got null, wanted null
+
+  [C] the same directory after the holder is SIGKILLed: taken over
+      holder exit: code=null signal=SIGKILL
+    PASS  the holder died by SIGKILL, not on its own: got "SIGKILL", wanted "SIGKILL"
+      [try 98871] holder: pid 98799 is not alive
+      [try 98871] took over the stale lock; directory flush after it: ok
+      [try 98871] read-back after 100 ms confirms the lock is ours
+    PASS  exit code: got 0, wanted 0
+
+  [D] a lock naming a live pid whose start time does not match: pid reuse, taken over
+      [try 98943] holder: pid 98752 is alive but started "Sun Sep  6 19:07:22 2026",
+                  not "Thu Jan  1 00:00:00 1970" — the number was reused
+    PASS  exit code: got 0, wanted 0
+
+  [E] a lock naming the same live pid AND its real start time: refused (control for D)
+      [try 98995] holder: pid 98752 is alive and started "Sun Sep  6 19:07:22 2026"
+    PASS  exit code: got 10, wanted 10
+
+  [F] a zero-length lock — an acquirer that died between O_EXCL and the write: taken over
+      [try 99044] holder: zero-length lock: an acquirer died between O_EXCL and the write
+    PASS  exit code: got 0, wanted 0
+```
+
+`[B]` is the criterion this record cares about most: the refusing process hashed the state directory
+before and after itself, and the size, mtime and SHA-256 of every file were identical. `[D]` and
+`[E]` are the pair — same live pid, opposite verdicts — that show the identity is the tuple and not
+the number.
+
+**Still open, and honestly so.** ADR 0024's spike text also asks how `O_EXCL` behaves on a network
+or container-shared home directory. **That was not measured** — this run had no NFS or SMB mount —
+so it stays open. The phase-1 store therefore treats the state directory as local storage and
+claims nothing about a shared home; whoever needs that answer runs the same script against such a
+mount.
+
+### Storage shape
+
+**Decided: one JSON file per job under `jobs/`, written temp-then-`rename` — option 3a above
+stands, and `node:sqlite` is rejected.**
+
+Measured, 200 records of the realistic shape, on the machine named above:
+
+| Shape | Per durable record |
+|---|---|
+| JSON, temp-then-rename, no flush | 0.166 ms |
+| JSON, `fdatasyncSync` on the file | 4.245 ms |
+| JSON, `fsyncSync` on the file | 4.073 ms |
+| **JSON, `fsyncSync` on the file and then the directory** | **7.339 ms** |
+| **`node:sqlite` WAL, `synchronous=FULL`, `fullfsync=ON`** | **3.684 ms** |
+| `node:sqlite` WAL, `synchronous=FULL`, `fullfsync=OFF` (the default) | 0.072 ms |
+| `node:sqlite` WAL, `synchronous=NORMAL` (the default) | 0.019 ms |
+
+The two bold rows are the only fair comparison, and getting to them was itself a finding: SQLite's
+unix VFS calls plain `fsync(2)` unless `PRAGMA fullfsync` is on, while Node's `fsyncSync` on macOS
+is already `fcntl(F_FULLFSYNC)` (see §Write durability). Timed against each other with the pragma
+off, a `node:sqlite` insert looks 100× faster than a JSON write; it is doing a weaker flush, which
+on Apple's own account may never reach the platters.
+
+Two more measurements, same run:
+
+- **Listing**, which is what `explainer_list` costs: `readdir` plus read plus parse over 200 JSON
+  files is **4.3 ms**; one indexed `SELECT` over the same 200 rows is **0.4 ms**.
+- **Crash consistency**, which is the only part of this that is about correctness: a child announced
+  each id only once its write had returned, then `SIGKILL`ed itself. Both shapes recovered
+  **20 of 20**. WAL bought no measured crash advantage over temp-then-rename with both flushes.
+
+**The reason.** At equal durability the file store costs 3.7 ms more per durable record. A job takes
+on the order of three durable writes — enqueue, start, finish — so the choice is worth about 11 ms
+per job, against renders measured in tens of seconds. Nothing in the timings decides this, and the
+crash test declines to decide it either. What decides it is a rule already written above:
+§An unknown format version is not corruption requires that a record written by a **newer** daemon is
+left untouched and reported `daemon_restarted`, because ADR 0025's rollback step depends on newer
+state surviving a downgrade. That rule is **per record**, and SQLite has one schema for the whole
+file: a newer daemon that migrates the table has already changed state the rolled-back daemon must
+still read, and cannot decline to touch. One file per job makes "leave this one alone" expressible;
+one database does not.
+
+The body above named its own change-of-mind condition — a WAL database that meets the same crash
+criteria "with materially less hand-written recovery code". Measured, it is not materially less.
+Ownership, boot reconciliation, the identity tuple and the bounded log tail are the same code either
+way. SQLite removes exactly one branch, the torn-write case that scenario `[F]` exercises, and adds
+schema migration plus the wider corruption blast radius the body already names.
+
+**The rejected option's strongest point, stated rather than buried:** at equal durability
+`node:sqlite` WAL is almost exactly twice as cheap per durable record — 3.684 ms against 7.339 ms —
+because one commit is one `F_FULLFSYNC` where the file store needs two, one for the file and one for
+the directory entry. It also needs no bespoke torn-write handling at all; `[F]` is precisely the
+class of bug the file store now has to write and keep tested. If the runner ever issues enough
+durable writes for 3.7 ms each to show up in a job's wall-clock time, that is the number to reopen
+this on, and `node:sqlite` costs no dependency to reach for.
+
+### Write durability
+
+**Decided: temp file → `fsync` the file → close → `rename` → `fsync` the containing directory, on
+every platform, with the directory flush attempted and its failure recorded rather than thrown.**
+
+What each platform actually promises:
+
+- **Linux.** `fsync(2)` on the file is not enough on its own:
+  "Calling `fsync()` does not necessarily ensure that the entry in the directory containing the file
+  has also reached disk. For that an explicit `fsync()` on a file descriptor for the directory is
+  also needed."
+  ([`fsync(2)`, man7.org](https://man7.org/linux/man-pages/man2/fsync.2.html)) Both flushes are real
+  and both are required. **Unmeasured here** — the spike ran on macOS — though the script's Linux
+  branch reads `/proc/<pid>/stat` and runs unchanged there.
+- **macOS.** Apple's `fsync(2)` is explicitly *weaker* than Linux's: "while `fsync()` will flush all
+  data from the host to the drive […] the drive itself may not physically write the data to the
+  platters for quite some time", and it names `F_FULLFSYNC` as the answer
+  ([`fsync(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)).
+  `F_FULLFSYNC` "does the same thing as `fsync(2)` then asks the drive to flush all buffered data to
+  the permanent storage device […] acts as a barrier […] currently implemented on HFS, MS-DOS (FAT),
+  Universal Disk Format (UDF) and APFS file systems"
+  ([`fcntl(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)).
+  **Measured, this costs nothing extra to get from Node:** libuv's `uv__fs_fsync` on `__APPLE__`
+  issues `fcntl(F_FULLFSYNC)` and falls back to `F_BARRIERFSYNC` and then `fsync`
+  ([`src/unix/fs.c`](https://github.com/libuv/libuv/blob/v1.x/src/unix/fs.c)), and Node 24.20.0
+  bundles libuv 1.52.1. The timings corroborate the source: `fdatasyncSync` costs the same as
+  `fsyncSync` (4.245 ms against 4.073 ms), which is only true if both take that one path, and 4 ms
+  is a device-cache flush — a page-cache-only write measured 0.166 ms. So the store gets Apple's
+  strongest guarantee with no native module and no `fcntl` binding, and there is **no cheaper flush
+  available from Node on macOS** if one were ever wanted. `fsyncSync` on a *directory* descriptor
+  also succeeds on APFS (`ok` in every scenario above) and costs 3.27 ms per record on top of the
+  file's 4.07 ms.
+- **Windows.** There is no directory handle to sync. `FlushFileBuffers` "flushes the buffers of a
+  specified file and causes all buffered data to be written to a file", and the handle must have
+  `GENERIC_WRITE` access
+  ([`FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers));
+  Win32 documents no equivalent for a directory handle. **Unmeasured** — no Windows machine was in
+  this spike.
+
+**What the store therefore does.** The same four steps everywhere, because three of them are
+identical and the fourth degrades cleanly: the directory flush goes through a helper that opens the
+directory, `fsync`s it, and **returns a string instead of throwing**, so a platform that refuses is
+a recorded fact and not a crashed daemon. On Linux and macOS it returns `ok` and the guarantee is
+complete. On Windows it will fail at the open, and the daemon logs that once at startup as a known
+platform limitation. Windows then gets its durability a different way: the `job_id` is appended to a
+single `jobs/index.jsonl` that is flushed with `FlushFileBuffers` before the tool call returns —
+appending to a file that already exists creates no directory entry, so it needs no directory flush
+to be durable. That is the Windows plan, not a measurement, and it is confirmed when phase 1's
+Windows half is built.
+
+### Process identity
+
+**Decided: the identity of a recorded process is the triple (pid, process start time, daemon boot
+id) — never the pid.**
+
+Per platform, and what each costs:
+
+- **macOS:** `ps -o lstart= -p <pid>`. Resolution is **one second**; the token is a formatted date.
+- **Linux:** field 22 of `/proc/<pid>/stat`, the start time in clock ticks since boot — finer
+  (1/100 s at the usual `USER_HZ`) and immune to a locale-formatted date. Implemented in the script,
+  unrun here.
+- **Windows:** the process creation time — `Win32_Process.CreationDate`, or `Process.StartTime` —
+  at 100 ns. Unmeasured.
+
+The macOS probe, from the run above:
+
+```text
+  $ ps -o pid=,lstart= -p $$        (this process, pid 98752)
+      98752 Sun Sep  6 19:07:22 2026
+  ps exit status: 0
+  identity token this platform yields: "Sun Sep  6 19:07:22 2026"
+  platform: darwin  node: v24.20.0  libuv: 1.52.1
+  a child that has already exited (pid 99555): isAlive=false, token=null
+```
+
+Two measurements shape how the store uses this. First, **reading the token is a process spawn and
+costs about 4.5 ms** — found the hard way, when an earlier revision of the script called it once per
+record and made every storage-shape number 4.5 ms per record, hiding the thing being measured. So
+the token is read once per acquisition and once per worker at reconciliation, **never per write**.
+Second, **an exited pid yields `isAlive=false` and `token=null`**, so a null token is
+indistinguishable from "gone" and must never on its own license a kill.
+
+**`workers_uncertain: true` is set on a reconciled job when, for at least one recorded worker, the
+daemon can decide neither "this is the process I recorded" nor "this is a stranger".** Exactly two
+cases reach that:
+
+1. the pid is alive and its start token **cannot be read** — `ps` fails, or the process belongs to
+   another user and the platform refuses; and
+2. the **record carries no start token** for that worker, because the daemon that wrote it could not
+   read one.
+
+It is **not** set when the pid is not alive; when the pid is alive and the tokens **differ**, which
+is a positive identification of a stranger and is certain (scenario `[D]`); or when the recorded
+daemon boot id differs from this boot, because then nothing recorded can still be running and there
+is nothing to be uncertain about. On this spike's evidence `workers_uncertain` is the exception
+rather than the rule: across the six scenarios the same classifier returned a definite verdict every
+time, and the only input that maps to case 2 is `[F]`, a record with no identity in it at all.
+
+The same "no identity recorded" input has **opposite** safe defaults in the two places it is used,
+which is worth stating because it looks like an inconsistency and is not. For the **lock**, no
+identity means *take it over*: a lock nobody can prove is held would otherwise block the daemon for
+ever. For a **worker**, no identity means *do not kill, set `workers_uncertain`*: a process nobody
+can prove is ours is a stranger, and §What happens when identity cannot be established already
+prices that at a quarantined output directory rather than a kill.
+
+One residual risk is named rather than closed. When the tuple **matches**, macOS's one-second
+resolution cannot exclude a pid that was recycled to a process started in the same wall-clock
+second, which on this platform would take a full traversal of the pid space inside that second. The
+daemon does not attempt a stronger guess; §A recorded PID is not an identity's own driver — a wrong
+kill is worse than a leaked process — is what makes quarantine the answer, and the finer Linux and
+Windows tokens narrow the window on those platforms rather than on this one.
+
+## Note, 2026-09-06: P1-S3 settled — §Extending the `error_code` enum is closed
+
+Spike **P1-S3** has reported, and this note closes the one question
+§Extending the `error_code` enum left open: **whether adding a member is a minor or a breaking
+contract change.** The rest of that section is unchanged and remains the policy — the enum stays
+small and general, an addition is expected rather than exceptional, and the schema and its generated
+code change in one commit.
+
+**Decided: adding an `error_code` member is a minor contract change.** It moves the minor component
+of `schemas/manifest.json`'s `version`; it does not move the major; and under the major-compatible
+predicate P1-S3 chose, a shim already attached to a daemon that gained a member stays attached.
+
+**Why, and what makes it true rather than merely declared.** This section declined to answer in
+2026-09-06's original text because the answer depended on two things it did not own: the shim's
+compatibility predicate, and whether a generated consumer could tolerate a value it had never heard
+of. Both are now settled in
+[ADR 0025 §Note, 2026-09-06: P1-S3 settled](0025-daemon-updates-and-readiness.md), which carries the
+measurements. The short form:
+
+- The predicate is **major-compatible**, so a minor bump does not exit `8` on a live agent session.
+  Under an exact predicate the "minor" classification would have been a lie in practice: every
+  addition would have severed every attached shim until its daemon restarted.
+- Unknown-value tolerance turned out to be **achievable in both languages**, at a measured codegen
+  cost. `schemas/manifest.json` gains an `open_enums` table naming `JobErrorCode` and its fallback,
+  and `scripts/codegen.mjs` emits a decoder from it in each language: an `enum._missing_` hook on
+  the generated Python `StrEnum`, and a `toJobErrorCode()` function beside a frozen
+  `JOB_ERROR_CODE_VALUES` tuple in TypeScript, where the union type alone gave a consumer nothing to
+  call. An unrecognised member decodes to `internal`; a non-string still fails.
+
+**Why not breaking.** That was the live alternative, and it is refused on this record's own evidence:
+§Extending the `error_code` enum states that "adding a member is **expected**, not exceptional" and
+that "the first real implementation will want an eighth". Classifying the most routine change the
+enum has as a major bump would make every one of them an interruption for every agent session on the
+machine.
+
+**What a contributor adding a member does now.** Add it to `schemas/job-error-code.json`, run
+`pnpm --filter @xplainer/protocol codegen`, commit the regenerated output in the same commit
+(AC-9c), and move the **minor** component of `schemas/manifest.json`'s `version`. Nothing else: the
+decoders are generated, so no consumer has a list to update, and the fallback means a consumer built
+against the older contract keeps parsing.
+
+**What is deliberately not bought.** The fallback discards the unrecognised string — an agent
+holding a decoded value sees `internal` and cannot recover `disk_full` from it. That is the price of
+a closed, greppable type, and it is affordable only because `error` is never rewritten and carries
+the human-readable half of the same failure. §Extending the `error_code` enum's first bullet already
+draws that line between the two fields; this note relies on it.
+
+## Note, 2026-09-07: `workers_uncertain` is narrower than US-005 asked for, and that is this record
+
+US-005 criterion 4 was worded "a worker that does not match is left alone and the record carries
+`workers_uncertain: true`"; `apps/cli/src/daemon/reconciler.ts:186-197` sets the flag only when
+identity cannot be *read*, and leaves a positively identified stranger alone with no flag — which is
+what §Note, 2026-09-06 §Process identity decides above ("it is **not** set … when the tokens
+**differ**, which is a positive identification of a stranger and is certain"), and both branches are
+tested at `reconciler.test.ts:153` and `:182`. The code follows this record and not the criterion's
+looser wording; the deviation simply had not been written down.
+
+## Note, 2026-09-07: ownership of the store is not ownership of the workspace — one writer per video
+
+§Scope names the hazard this note closes: "The record's orphaned worker processes … race a retry
+over the same output directory … Two writers to one video directory is a corrupted output that
+neither process reports." §Exclusive ownership was the answer, and while the daemon was the only
+thing that ran jobs it was a complete one — the lock on the state directory implied the workspace,
+because the default workspace root is *inside* that directory and only its owner ran a worker.
+
+**Phase 1 broke that implication, deliberately.** `xplainer mcp` — the `npx -y @xplainer/cli mcp`
+bundle path, with no daemon behind it — was given the real worker registry over
+`resolveWorkspaceRoot(stateDir)`, the same root a running daemon resolves, while explicitly **not**
+taking `owner.lock`: a bundle entry that refused to start because a daemon happened to be running
+would defeat its own reason to exist. So a daemon and any number of stdio sessions can hold the same
+workspace at once. Each has its own job store, so the *records* never collide; the *files* are one
+set, and `out/<slug>/explainer.mp4` and `public/<slug>/timings.json` had no exclusion at all.
+
+**Decided: the exclusion is keyed by the video, not by the process.**
+`<workspace>/locks/<slug>.lock` (`apps/cli/src/daemon/video-lock.ts`) is taken when a job leaves the
+queue and released when its record reaches a terminal state. Three consequences are the decision:
+
+- **It is taken in the worker factory, last.** The factory is already ADR 0018's layer 4 — the last
+  gate before Chrome starts — and it is the only in-process moment between "queued" and "spawned".
+  Taking it *after* every refusal above it is what stops a job that is refused for a missing caption
+  file from leaving behind a lock that would then refuse the retry it just asked for.
+- **It is released in `finish()`**, the single function every terminal outcome passes through —
+  clean exit, non-zero exit, an unspawnable command, a cancellation, a drain — because a lock a
+  crashed render never gave back would refuse that video for the life of the daemon, which is worse
+  than the race it prevents. A `SIGKILL`ed process leaves a stale file, and the next acquirer
+  classifies the holder with the same tuple §Note, 2026-09-06 §Ownership settles and takes it over.
+- **A held video fails one job, not the process.** `VideoBusyError` names the holder and says to
+  retry, and the runner turns it into an `error`/`internal` record an agent can poll to a
+  conclusion. Refusing to *start* would have been the ownership answer, and it is the wrong one
+  here: the second caller is a legitimate agent on a machine that supports several.
+
+**What this does not decide.** The direct, synchronous tools — `explainer_create`,
+`explainer_put_source`, `explainer_put_media` — are not behind this lock. They are millisecond file
+writes rather than minute-long process groups, and the interleaving they can produce is one an agent
+can already produce inside a single daemon by calling `put_source` during its own render; that is a
+question about tool ordering, not about two processes, and it is left open here rather than answered
+badly. The `requests/` document is likewise still keyed by job id per store, so two stores can
+overwrite one another's; `agreedSlug()` turns that into a named, retryable failure rather than a
+wrong render, and moving those documents into the store that owns them is phase 2's to do.

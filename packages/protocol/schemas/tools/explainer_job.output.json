@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerJobOutput",
-  "description": "State of one explainer job. Shape from max/server/explainer_mcp.py:464-477 with one deliberate divergence: the `command` field max returns is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.",
+  "description": "State of one explainer job. Shape ported from the reference implementation with one deliberate divergence: the `command` field it returned is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.",
   "type": "object",
   "additionalProperties": false,
   "required": [

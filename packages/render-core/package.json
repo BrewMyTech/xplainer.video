@@ -3,6 +3,13 @@
   "version": "0.0.0",
   "type": "module",
   "description": "Remotion workspace template, the ownership-aware video scaffold generator (engine-owned composition shell, agent-owned scenes) and the render preflight.",
+  "homepage": "https://xplainer.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrewMyTech/xplainer.video.git",
+    "directory": "packages/render-core"
+  },
+  "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
   "xplainer": {
     "tier": "open-later"
@@ -30,11 +37,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@xplainer/protocol": "workspace:*"
+    "@xplainer/protocol": "workspace:*",
+    "@xplainer/tts-client": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@xplainer/config": "workspace:*",
+    "ajv": "8.20.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

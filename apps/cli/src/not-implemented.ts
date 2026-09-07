@@ -1,13 +1,16 @@
 /**
  * The one wording, and the one exit code, for everything this phase defers.
  *
- * Spec §Non-Goals scopes `mcp`, `setup` and `connect` out of the scaffold, and
+ * Spec §Non-Goals scoped `mcp`, `setup` and `connect` out of the scaffold, and
  * the plan (§4 S2.4b) turns that into behaviour rather than a placeholder: the
  * commands are registered, they appear in `--help`, they say what happened on
- * stderr, and they exit with a defined non-zero code. The stub `RenderBackend`
- * in `backend.ts` reports the same thing through the MCP error channel, so an
- * agent that calls a tool and a human who runs a command are told the same
- * thing in the same words.
+ * stderr, and they exit with a defined non-zero code.
+ *
+ * It is about **commands** and nothing else. The eight tools once reported the
+ * same wording through the MCP error channel; they no longer do, because
+ * `backend.ts` implements them against the local Remotion workspace. Adding a
+ * tool back to this wording would be adding a tool that answers a poll with
+ * prose instead of a job.
  *
  * `2` distinguishes "this command exists but does nothing yet" from commander's
  * own `1` for a usage error, so a caller can tell a deferred command apart from

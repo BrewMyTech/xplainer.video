@@ -118,3 +118,51 @@ glob change in one tool cannot quietly pull the fixtures back into a type graph.
 The suffix changes the filename and never a byte of content: the comparison in
 `scaffold.test.ts` stays byte-for-byte, and `.gitattributes` pins
 `* text=auto eol=lf` so it still holds on a Windows checkout (AC-13c).
+
+## Narration fixtures — `narrate/`
+
+`src/narrate/*.test.ts` read these. They exist so the narration port can be tested against real
+audio and real-shaped word timings with no Kokoro container anywhere.
+
+| Fixture | What it is |
+| --- | --- |
+| `narrate/narration.json` | A three-segment narration script: a spoken hook, a silent `beat` with `holdSeconds: 2`, and a spoken `cause` with `holdSeconds: 3`. Every pacing branch in one document. |
+| `narrate/hook-words.json` | Kokoro-shaped `{word, start_time, end_time}` spans for the hook, including a 100 ms silence between `build` and `was` and a trailing `?` as its own token. |
+| `narrate/cause-words.json` | The same for `cause`, ending in a `.` token. |
+| `narrate/hook.wav` | 2.35 s of mono 16-bit PCM at 24 kHz — deliberately longer than the last word's `end_time`, which is what makes "measure the frames, do not infer from the spans" a testable claim. |
+| `narrate/cause.wav` | 0.75 s of the same, at a different frequency. |
+| `narrate/adjacent.json` | A two-segment narration script, both segments spoken, whose words spell the string `captions.test.ts` asserts on. It exists because the caption weld between adjacent segments needs two *spoken* neighbours, which `narration.json`'s silent middle segment deliberately denies it. |
+| `narrate/one-words.json` | Kokoro-shaped spans for `adjacent.json`'s first segment: `Segment`, `one`, and a trailing `.` as its own token. |
+| `narrate/two-words.json` | The same for its second segment: `Segment`, `two`, `.`. |
+
+The three `adjacent*` fixtures carry no WAV. `captions.test.ts` never decodes audio — it passes
+`planSegments()` a measured `spokenMs` directly — so a WAV there would pin nothing and would only
+invite the arithmetic to be re-derived from it.
+
+**The two WAVs were written by Python's standard-library `wave` module**, which is the encoder the
+reference implementation reads and writes with — deliberately not by this package's own
+`encodeWav()`. A reader tested only against its own writer proves that two bugs agree; these prove
+the reader handles a container it did not produce. They hold a quiet sine rather than silence, so
+`decodeWav()` returning zeroes would fail rather than pass.
+
+Regenerate them only if the arithmetic they pin deliberately changes, and update the millisecond
+constants in `plan.test.ts` in the same edit — `HOOK_SPOKEN_MS` and `CAUSE_SPOKEN_MS` are those
+files' real durations, and the assertions are written out as arithmetic rather than as snapshots so
+a changed fixture fails loudly instead of re-baselining itself.
+
+```sh
+uv run --no-sync --project packages/protocol python - <<'PY'
+import math, struct, wave
+for name, seconds, freq in (("hook", 2.35, 220.0), ("cause", 0.75, 330.0)):
+    frames = int(round(24000 * seconds))
+    data = b"".join(
+        struct.pack("<h", int(8000 * math.sin(2 * math.pi * freq * n / 24000)))
+        for n in range(frames)
+    )
+    with wave.open(f"packages/render-core/test/fixtures/narrate/{name}.wav", "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(data)
+PY
+```

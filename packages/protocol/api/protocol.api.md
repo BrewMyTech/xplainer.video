@@ -12,6 +12,31 @@ that changes this file is a change to the public surface.
 
 Entry point: `dist/index.d.ts`
 
+## `dist/contract-version.d.ts`
+
+```ts
+/**
+ * Whether a shim speaking `shim` may attach to a daemon speaking `daemon`.
+ *
+ * True when both versions parse and share a major component. The relation is
+ * **symmetric** on purpose: a newer shim meeting an older daemon is the upgrade
+ * case, and an older shim meeting a newer daemon is the not-yet-restarted-agent
+ * case, and neither is more dangerous than the other once unknown enum members
+ * decode instead of throwing.
+ *
+ * A version this build cannot parse is **incompatible**, never "probably fine".
+ * That is the fail-closed direction: the cost of refusing is one legible error
+ * naming both versions, and the cost of attaching anyway is the illegible
+ * failure ADR 0025 was written to eliminate.
+ *
+ * @param daemon The contract version the daemon advertised, from `/healthz`'s
+ *   `contract_version` or the ready line's `contract`.
+ * @param shim This process's own {@link MCP_CONTRACT_VERSION}.
+ * @returns `true` if the pair may speak to each other.
+ */
+export declare function isContractCompatible(daemon: string, shim: string): boolean;
+```
+
 ## `dist/generated/manifest.d.ts`
 
 ```ts
@@ -46,6 +71,50 @@ export declare const ENGINE_OWNED_FILES: readonly ["index.ts", "types.ts", "Root
 
 /** One of the engine-owned scaffold file names. */
 export type EngineOwnedFile = (typeof ENGINE_OWNED_FILES)[number];
+
+/**
+ * The version of the **tool contract**, from `schemas/manifest.json`.
+ *
+ * Not a release version. `@xplainer/cli` and the hosted image each have their
+ * own `version`, and the MCP `initialize` handshake reports *that* in
+ * `serverInfo.version`, which is why the handshake cannot be used to detect
+ * contract skew. This number is what `xplainer serve` advertises on
+ * `GET /healthz` as `contract_version` and what
+ * {@link isContractCompatible} compares
+ * ([ADR 0025](../../../../docs/adr/0025-daemon-updates-and-readiness.md)
+ * §Note, 2026-09-06: P1-S3 settled).
+ *
+ * It lives here, in the package that owns the contract, rather than in
+ * `@xplainer/mcp-server`: the `xplainer mcp --attach` shim must read it
+ * before any MCP session exists, and `@xplainer/protocol` is the one package
+ * every surface already depends on.
+ */
+export declare const MCP_CONTRACT_VERSION: string;
+```
+
+## `dist/generated/open-enums.d.ts`
+
+```ts
+/**
+ * Every JobErrorCode member this build of the contract knows, in schema order.
+ *
+ * Frozen for the same reason as `TOOL_NAMES`: the list lives in
+ * `schemas/job-error-code.json`, and no consumer gets to extend or narrow it at
+ * runtime. A daemon newer than this build may send a member that is not in
+ * here; {@link toJobErrorCode} is how such a value is decoded.
+ */
+export declare const JOB_ERROR_CODE_VALUES: readonly ["daemon_restarted", "daemon_shutdown", "toolchain_missing", "render_failed", "tts_failed", "cancelled", "internal"];
+
+/**
+ * Decode a JobErrorCode off the wire, falling back to `internal` for a member
+ * this build does not know.
+ *
+ * The enum is **open**: adding a member is a minor contract change, and a minor
+ * bump must not break a shim that is already attached, so an unrecognised value
+ * decodes rather than throwing. The detail is not lost — `error` carries the
+ * human-readable half of the same failure and is never rewritten.
+ */
+export declare function toJobErrorCode(value: string): JobErrorCode;
 ```
 
 ## `dist/generated/types.d.ts`
@@ -53,7 +122,7 @@ export type EngineOwnedFile = (typeof ENGINE_OWNED_FILES)[number];
 ```ts
 export interface Caption {
     /**
-     * The word. Whitespace-sensitive: every token except the first of a segment carries its leading space, so pages join correctly.
+     * The word. Whitespace-sensitive: every token except the first of the whole track carries its leading space, so pages join correctly. A segment boundary is not a page boundary, so the first word of a segment carries one too. Punctuation is the one exception, and it has two halves: a punctuation-only token later in a segment is folded into the word before it and never becomes a caption of its own, while a punctuation-only token that OPENS a segment cannot be folded — the fold would stretch the previous caption across the whole inter-segment gap — so it is emitted as its own caption, keeping its own span, and it is emitted bare. A leading space there would render "Alpha , beta"; the word after it inside the same segment still carries its space, so the two words across the boundary stay separated.
      */
     text: string;
     /**
@@ -87,7 +156,7 @@ export interface ExplainerCreateInput {
 }
 
 /**
- * Result of explainer_create. Shape from max/server/explainer_mcp.py:333-347, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.
+ * Result of explainer_create. Shape ported from the reference implementation, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.
  */
 export interface ExplainerCreateOutput {
     slug: Slug;
@@ -114,7 +183,7 @@ export interface ExplainerCreateOutput {
 }
 
 /**
- * Arguments for explainer_job. Shape and default from max/server/explainer_mcp.py:457.
+ * Arguments for explainer_job. Shape and default ported from the reference implementation.
  */
 export interface ExplainerJobInput {
     /**
@@ -128,7 +197,7 @@ export interface ExplainerJobInput {
 }
 
 /**
- * State of one explainer job. Shape from max/server/explainer_mcp.py:464-477 with one deliberate divergence: the `command` field max returns is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.
+ * State of one explainer job. Shape ported from the reference implementation with one deliberate divergence: the `command` field it returned is dropped. On a hosted backend that string is the server's own shell invocation, so returning it leaks host paths and the render topology for no benefit to the agent. The contract has to be identical local and hosted, so it is dropped from both.
  */
 export interface ExplainerJobOutput {
     /**
@@ -167,7 +236,7 @@ export interface ExplainerListInput {
 }
 
 /**
- * Every explainer video the caller owns and what each one has so far. Shape from max/server/explainer_mcp.py:494-507, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.
+ * Every explainer video the caller owns and what each one has so far. Shape ported from the reference implementation, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.
  */
 export interface ExplainerListOutput {
     /**
@@ -177,7 +246,7 @@ export interface ExplainerListOutput {
 }
 
 /**
- * Arguments for explainer_narrate. Shape from max/server/explainer_mcp.py:362-367, minus the session_name argument, which was max's internal job-routing detail and is not part of this contract.
+ * Arguments for explainer_narrate. Shape ported from the reference implementation, minus the session_name argument, which was its internal job-routing detail and is not part of this contract.
  */
 export interface ExplainerNarrateInput {
     slug: Slug;
@@ -189,7 +258,7 @@ export interface ExplainerNarrateInput {
 }
 
 /**
- * Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope from max/server/explainer_mcp.py:293-297.
+ * Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope ported from the reference implementation.
  */
 export interface ExplainerNarrateOutput {
     /**
@@ -288,7 +357,7 @@ export interface ExplainerRenderOutput {
 }
 
 /**
- * Arguments for explainer_still. Shape and defaults from max/server/explainer_mcp.py:430-432.
+ * Arguments for explainer_still. Shape and defaults ported from the reference implementation.
  */
 export interface ExplainerStillInput {
     slug: Slug;
@@ -322,7 +391,7 @@ export interface ExplainerStillOutput {
 }
 
 /**
- * Machine-readable reason a job ended in error, which an agent can branch on. It never replaces `error`: that field always carries the human-readable detail, and this one only says which class of failure produced it. `daemon_restarted`: the daemon restarted while the job was in flight, so the work was lost rather than rejected — retry the same call. `daemon_shutdown`: the daemon stopped before the job finished — retry once it is running again. `toolchain_missing`: a required binary is not installed — do not retry until it is, because every attempt fails the same way. `render_failed`: the render ran and failed — read `error`, fix the source, then retry. `tts_failed`: narration synthesis failed — retry once, and treat a second identical failure as a problem with the narration rather than the run. `cancelled`: a caller cancelled the job — do not retry unless the caller asks again. `internal`: an unclassified failure — retry once, and report `error` verbatim if it repeats. This enum is expected to grow as failure modes are told apart; what adding a member costs a consumer is settled in ADR 0024 and spike P1-S3, not here.
+ * Machine-readable reason a job ended in error, which an agent can branch on. It never replaces `error`: that field always carries the human-readable detail, and this one only says which class of failure produced it. `daemon_restarted`: the daemon restarted while the job was in flight, so the work was lost rather than rejected — retry the same call. `daemon_shutdown`: the daemon stopped before the job finished — retry once it is running again. `toolchain_missing`: a required binary is not installed — do not retry until it is, because every attempt fails the same way. `render_failed`: the render ran and failed — read `error`, fix the source, then retry. `tts_failed`: narration synthesis failed — retry once, and treat a second identical failure as a problem with the narration rather than the run. `cancelled`: a caller cancelled the job — do not retry unless the caller asks again. `internal`: an unclassified failure — retry once, and report `error` verbatim if it repeats. This enum is expected to grow as failure modes are told apart, and it is OPEN: adding a member is a minor contract change, and a consumer that meets a value it does not recognise falls back to `internal` instead of rejecting the record. Both generated bindings already do that — `toJobErrorCode()` in TypeScript and the `_missing_` hook on the Python enum — so branch on the decoded value and quote `error` for the detail. What adding a member costs is settled in ADR 0024's note of 2026-09-06.
  */
 export type JobErrorCode = "daemon_restarted" | "daemon_shutdown" | "toolchain_missing" | "render_failed" | "tts_failed" | "cancelled" | "internal";
 
@@ -337,7 +406,7 @@ export interface JobOutput {
 }
 
 /**
- * Lifecycle state of a queued explainer job. The five values are the ones max's job queue reports (max/server/explainer_mcp.py:453) and are the complete set: a job is always in exactly one of them.
+ * Lifecycle state of a queued explainer job. The five values are the ones the reference implementation's job queue reports and are the complete set: a job is always in exactly one of them.
  */
 export type JobState = "queued" | "running" | "done" | "error" | "cancelled";
 
@@ -390,7 +459,7 @@ export interface NarrationSegment {
 }
 
 /**
- * Identifier for one explainer video. Lowercase letters, digits and hyphens; must start with a letter or digit; at most 64 characters. Ported verbatim from max/server/explainer_mcp.py:36 (SLUG_RE), because the slug is also a directory name on every backend.
+ * Identifier for one explainer video. Lowercase letters, digits and hyphens; must start with a letter or digit; at most 64 characters. Ported verbatim from the reference implementation's SLUG_RE, because the slug is also a directory name on every backend.
  */
 export type Slug = string;
 
@@ -406,7 +475,7 @@ export interface SourceFile {
 }
 
 /**
- * Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors max/server/explainer_mcp.py::_TYPES_TS and the writer at max/.explainers/scripts/narrate.py:290-297.
+ * Measured segment timing, written to timings.json beside the narration audio. This document — never a hand-written number — is the single source of truth for scene durations. Shape mirrors the reference implementation's timings type and its narration writer.
  */
 export interface Timings {
     /**

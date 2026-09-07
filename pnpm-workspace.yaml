@@ -16,6 +16,27 @@ catalog:
   typescript: 7.0.2
   vitest: 5.0.0
 
+# packageExtensions: @remotion/bundler's webpack loader does
+# `require.resolve("typescript")` and then calls `typescript.sys.readFile`
+# (@remotion/bundler 4.0.495, dist/esbuild-loader/index.js:39). This workspace
+# pins `typescript: 7.0.2`, whose package `exports["."]` is `lib/version.cjs` —
+# a version stub with no compiler API and no `sys` — so the loader crashes with
+# `Cannot read properties of undefined (reading 'readFile')` the moment
+# apps/cli's render test bundles a composition against this repository's
+# installed Remotion. A real user's workspace never hits it: it installs
+# `typescript: 5.7.3` from packages/render-core/template/package.json into its
+# own node_modules, and @remotion/bundler resolves that one.
+#
+# So the bundler is given the TypeScript major it was written against, nested
+# under itself by the hoisted linker's conflict rule. Nothing else in the
+# workspace resolves it: `tsc`, `tsgo` and every member's typecheck keep the
+# 7.0.2 the catalog pins. Remove this when @remotion/bundler stops calling the
+# TypeScript 5 API, or when TypeScript 7 grows `sys` on its main export.
+packageExtensions:
+  "@remotion/bundler":
+    dependencies:
+      typescript: 5.7.3
+
 # --- Install settings ---------------------------------------------------------
 #
 # The linker and engine settings below are ALSO written in .npmrc, which is

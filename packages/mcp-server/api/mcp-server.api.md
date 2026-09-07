@@ -110,9 +110,16 @@ export declare const MCP_SERVER_NAME: string;
 /**
  * Version reported in the handshake when the caller does not supply one.
  *
- * This is the contract version from `schemas/manifest.json`, not a release
- * number: a process that has its own version — the CLI, the media-service —
- * passes it through {@link CreateMcpServerOptions}.
+ * This is the contract version, not a release number: a process that has its own
+ * version — the CLI, the media-service — passes it through
+ * {@link CreateMcpServerOptions}.
+ *
+ * It is **re-exported from `@xplainer/protocol`**, where it moved when spike
+ * P1-S3 settled (ADR 0025 §Note, 2026-09-06). The name stays here because every
+ * caller already imports it from this package, but the value now comes from the
+ * package that owns the contract — which is what lets the
+ * `xplainer mcp --attach` shim read it without depending on the MCP server, and
+ * before any MCP session exists.
  */
 export declare const MCP_CONTRACT_VERSION: string;
 

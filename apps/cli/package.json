@@ -3,6 +3,13 @@
   "version": "0.0.0",
   "type": "module",
   "description": "The xplainer local runtime: the `xplainer` binary and the HTTP/MCP server core shared with the hosted media-service.",
+  "homepage": "https://xplainer.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrewMyTech/xplainer.video.git",
+    "directory": "apps/cli"
+  },
+  "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
   "xplainer": {
     "tier": "open-later"
@@ -34,12 +41,23 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@xplainer/mcp-server": "workspace:*",
     "@xplainer/protocol": "workspace:*",
+    "@xplainer/render-core": "workspace:*",
+    "@xplainer/tts-client": "workspace:*",
     "commander": "15.0.0",
     "hono": "4.13.5"
   },
   "devDependencies": {
+    "@remotion/captions": "4.0.495",
+    "@remotion/cli": "4.0.495",
+    "@remotion/media": "4.0.495",
+    "@remotion/tailwind-v4": "4.0.495",
     "@types/node": "catalog:",
     "@xplainer/config": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.495",
+    "smol-toml": "1.8.0",
+    "tailwindcss": "4.0.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

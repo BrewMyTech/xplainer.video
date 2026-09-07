@@ -359,3 +359,257 @@ whose Context is a forward reference to this one.
   unchanged and is not extended.
 - **Anything about the hosted tier.** `services/media-service` is deployed, not installed, and
   nothing here applies to it.
+
+## Note, 2026-09-06: P1-S3 settled
+
+Spike **P1-S3** has reported. This note answers the four linked questions §Part two hands it —
+(a) the advertisement, (b) the predicate, (c) its interaction with
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md)'s enum-extension policy, and (d) whether
+unknown-value tolerance is achievable per language and at what codegen cost. It amends nothing
+above: the *behaviour* this record decided — an incompatible pair exits `8` naming both versions
+and a remediation that exists — stands exactly as written, and the mechanism marked *proposed*
+under it is what follows. ADR 0024 carries the matching note, because that is where the enum lives.
+
+Everything measured below was measured on `darwin/arm64`, Node v24.20.0, Python 3.13.15,
+pydantic 2.13.5, `datamodel-code-generator` 0.76.2, `json-schema-to-typescript` 16.0.0,
+Ajv 8.20.0, on 2026-09-06.
+
+### (a) Advertisement — `contract_version` on `GET /healthz`
+
+**Decided: the daemon advertises its contract version as `contract_version` in the `/healthz`
+JSON body, and `MCP_CONTRACT_VERSION` moves to `@xplainer/protocol`.**
+
+`GET /healthz` now answers `{"status":"ok","version":…,"contract_version":…}` at
+`apps/cli/src/server.ts`, where it previously answered `{status, version}`. `version` is unchanged
+and is still the **release** number — `options.version ?? CLI_VERSION` — so the two numbers sit
+side by side in one body and neither can be mistaken for the other. `apps/cli/src/server.test.ts`
+covers both: that `contract_version` equals `MCP_CONTRACT_VERSION`, and that binding the server with
+an explicit release version of `9.9.9-…` moves `version` and leaves `contract_version` alone.
+
+Why this candidate and not the other two §Part two listed:
+
+- **An `instructions` or `_meta` field on the `initialize` result** is only readable *after* an MCP
+  session has been opened. The shim's whole job at that point is to decide whether it may open one:
+  a check that requires the session it is gating is not a gate. The `/healthz` body is readable
+  with one unauthenticated-shaped `GET` before any transport is connected. (From P1-7 that request
+  carries the bearer token like every other TCP route; over the unix socket of P1-9 the filesystem
+  is the auth. Neither changes where the number lives.)
+- **A dedicated read-only MCP resource** has the same ordering problem and adds a surface to the
+  contract to carry one string.
+- **`serverInfo.version`** was already refuted in the body above and is not revisited.
+
+The ready line §Part three defines already carries `"contract"`, and this note deliberately keeps
+both: a parent that spawned the daemon reads the line from the pipe and needs no request at all,
+while `xplainer mcp --attach` is not that parent and reads `/healthz`. They are one fact published
+twice, from one constant, which is why the constant had to move.
+
+**`MCP_CONTRACT_VERSION` now lives in `packages/protocol`.** It is generated into
+`src/generated/manifest.ts` from `schemas/manifest.json`'s `version` and exported from
+`src/index.ts`, so it appears in `api/protocol.api.md`. It is generated rather than hand-written
+because `packages/protocol` builds with `rootDir: "src"`, so a `schemas/manifest.json` import from
+inside `src/` does not compile — the same reason `TOOL_NAMES` is generated. `@xplainer/mcp-server`
+re-exports the name from `src/server.ts`, so every existing caller and
+`packages/mcp-server/api/mcp-server.api.md`'s entry keep working; what changed is where the value
+comes from. The move is what lets the shim read the number without depending on the MCP server,
+which is the package it may be about to refuse to talk to.
+
+### (b) The predicate — major-compatible, and `isContractCompatible` in `@xplainer/protocol`
+
+**Decided: major-compatible. Two contract versions may speak to each other when both parse and
+their major components are equal.**
+
+`isContractCompatible(daemon, shim)` is exported from `@xplainer/protocol`
+(`src/contract-version.ts`), with tests for an equal pair, a compatible-but-different pair in both
+directions (`1.1` against `1`, and `1` against `1.1`), an incompatible pair (`2` against `1`), and
+nine unparseable strings.
+
+The reasoning is the one §Part two names and question 3 sharpens. A shim is spawned per session and
+the daemon is not, so under an **exact** predicate the first additive contract change would exit `8`
+on every agent session that is alive when the daemon restarts — for a change that added a value
+nobody had to understand. That is the outcome "compare the contract, not the release" exists to
+prevent, one level down. So additive changes move the minor component and attach; a change that
+removes or repurposes something moves the major and refuses.
+
+Two properties are deliberate and are tested:
+
+- **It is symmetric.** A newer shim meeting an older daemon is the just-upgraded case; an older shim
+  meeting a newer daemon is the long-lived-agent case. Neither is more dangerous than the other once
+  unknown enum members decode instead of throwing, which is (d).
+- **An unparseable version is incompatible, not "probably fine".** The cost of refusing is one
+  legible error naming both versions; the cost of attaching anyway is the illegible failure this
+  record was written to eliminate.
+
+**Measured, the two predicates agree on everything that ships today**, which is worth writing down
+because it means this choice buys nothing now and everything later:
+`schemas/manifest.json`'s `version` is `"1"` — a bare major, not `"1.0.0"` — so exact equality and
+major equality select the same pairs until the first minor bump. The first minor bump is the eighth
+`error_code`.
+
+### (c) The enum-extension policy — a minor change, and ADR 0024 now says so
+
+**Decided: adding an `error_code` member is a minor contract change.** It moves the minor component
+of the contract version and not the major, so under the predicate above a shim that is already
+attached stays attached; and because both generated decoders tolerate an unrecognised value (d), the
+record it receives also parses.
+
+This is the seam question 3 named, and the two halves are one decision: a minor classification is
+only honest if a consumer can survive the value. Classifying the addition as **breaking** was the
+alternative, and it was rejected on ADR 0024's own evidence — that record states plainly that
+"adding a member is expected, not exceptional" and that "the first real implementation will want an
+eighth". A policy that turns each expected addition into a major bump would exit `8` on every live
+session for the most routine change the enum has.
+
+ADR 0024 §Extending the `error_code` enum is closed by its own dated note, which is where a
+contributor adding a member will be reading.
+
+### (d) Tolerance — achievable in both languages, at a measured codegen cost
+
+**Decided: tolerate. Both generated bindings decode an unrecognised member as `internal` rather
+than rejecting the record, and the codegen change that does it has landed with tests in both
+languages.**
+
+**What codegen emitted before this change**, measured by running it and reading the output.
+
+TypeScript, `src/generated/types.ts`:
+
+```ts
+export type JobErrorCode =
+  | "daemon_restarted"
+  | "daemon_shutdown"
+  ...
+```
+
+Python, `python/xplainer_protocol/generated/models.py`:
+
+```python
+class JobErrorCode(StrEnum):
+    daemon_restarted = 'daemon_restarted'
+    ...
+    internal = 'internal'
+```
+
+**What each does with an unknown member.** The TypeScript union is erased at runtime, so nothing
+rejects anything — and nothing *decodes* anything either: a consumer that wants a value it can
+branch on has no function to call, so "TypeScript consumers are unaffected" is true about failure
+and misleading about capability. The Python model rejects outright:
+
+```text
+1 validation error for ExplainerJobOutput
+error_code
+  Input should be 'daemon_restarted', 'daemon_shutdown', 'toolchain_missing', 'render_failed',
+  'tts_failed', 'cancelled' or 'internal'
+  [type=enum, input_value='disk_full', input_type=str]
+```
+
+That is the measurement the body above predicted, reproduced.
+
+**What makes an unknown member decode, per language.**
+
+- **Python:** an `enum._missing_` hook on the generated `StrEnum`. Pydantic v2 routes enum
+  validation through `EnumType.__call__`, so `_missing_` is the one hook it consults; measured, a
+  class with `_missing_` returning `cls.internal` accepts `'disk_full'` and yields
+  `JobErrorCode.internal`, while `None` still parses as `None`. The generated hook returns `None`
+  for a **non-string** input, which is `enum`'s way of saying the lookup really failed, so `7` is
+  still a `ValidationError`: tolerance is for a newer contract, not for a malformed record.
+  `datamodel-code-generator` has no option that emits this, so codegen appends it.
+- **TypeScript:** a generated `toJobErrorCode(value: string): JobErrorCode` beside a frozen
+  `JOB_ERROR_CODE_VALUES` tuple, in a new `src/generated/open-enums.ts`. The type needed nothing;
+  the *consumer* needed a decoder.
+
+**Where "this enum is open" is declared.** In `schemas/manifest.json`, as
+`"open_enums": { "JobErrorCode": "internal" }` — a title-to-fallback table codegen reads the way it
+already reads `engine_owned_files`. **A vendor keyword in the schema document itself was tried
+first and rejected on a measurement:** a strict Ajv 2020 instance — which is what
+`packages/protocol`'s own test builds, and `schemas/**` is a *published* surface a consumer may
+compile the same way — fails outright with
+
+```text
+strict mode: unknown keyword: "x-open-enum"
+```
+
+`manifest.json` is a data document nothing compiles as a schema, so it can carry contract facts that
+a schema document cannot.
+
+**The codegen cost, measured.** `scripts/codegen.mjs` grows by 265 lines and loses 5 — 140 lines of
+code, most of which is the TypeScript template it emits, and 111 of comment. It adds one output
+file, taking codegen from five generated files to six. Determinism, which AC-9c depends on, is
+preserved and was checked rather than assumed: two consecutive `codegen` runs over an unchanged
+`schemas/` produce byte-identical output in both languages. Every step of the Python post-processing
+asserts what it found — the `class JobErrorCode(StrEnum):` header, the two-blank-line separator the
+generator puts between definitions, and the presence of the fallback member — and throws otherwise,
+so a `datamodel-code-generator` upgrade that changed the emitted shape fails the build instead of
+quietly emitting a strict enum and making this note false.
+
+**One defect the tests caught, recorded because it is the kind that survives review.** The first
+version of the emitted decoder was an object literal indexed by the wire value, so
+`toJobErrorCode("toString")` returned `Object.prototype.toString` — a function, from a decoder whose
+return type says `JobErrorCode`. The generated lookup is a `Map`, and the test that found it is kept.
+
+**What this costs the caller.** The original string is not preserved: an unknown code decodes to
+`internal` and is gone. That is acceptable only because `error` is never rewritten and carries the
+human-readable half of the same failure, which is exactly the division of labour
+[ADR 0024](0024-durable-jobs-and-boot-reconciliation.md) gives the two fields. A consumer that wants
+the raw value reads the untyped JSON; a consumer that wants to branch calls the decoder.
+
+**The third option §Part two costed — typing the wire field as an open `string`** with the enum
+published alongside as documentation — is rejected. It buys the same tolerance and gives up the
+greppable contract, and the measured cost of keeping the enum is one classmethod and one function,
+both generated.
+
+## Note, 2026-09-07: the ready line as shipped — this shape, and not §Part three's sketch
+
+**Correcting two passages in this record, neither of which is edited.** §Part three sketches the
+line as
+
+```json
+{"xplainer":"ready","contract":"…","version":"…","port":…,"socket":"…"}
+```
+
+and §Note, 2026-09-06 §(a) says "The ready line §Part three defines already carries `"contract"`".
+Neither describes what US-007 and US-008 built. What ships, byte for byte from a live `serve` on a
+throwaway state directory:
+
+```json
+{"event":"ready","port":8787,"socket":"/…/ipc/xplainer.sock","contract_version":"1","pid":36439}
+```
+
+**Decided: that shape is the artefact.** `{event, port, socket, contract_version, pid}`, one line,
+once, on stdout, after ownership, reconciliation and both binds. `apps/cli/src/daemon/ready.ts` is
+its only writer and its only parser; `apps/cli/src/daemon/ready.test.ts` asserts the exact bytes and
+the rejection of five near-misses, and `apps/cli/AGENTS.md` §Commands now waits on it with
+`head -n 1` over a fifo rather than sleeping. Everything §Part three *decides* is unchanged — one
+line, exactly once, at that point, on every platform, never behind a `--quiet` flag, and stdout is
+nothing else. What changes is four key names, and the reasons are these, recorded here rather than
+only in the source file (root `AGENTS.md`: a record is corrected by a dated note, and reasoning that
+lives only in a docblock is reasoning a reader of the record never meets).
+
+**`event` rather than an `xplainer` key.** The sketch's discriminant is the *product name*, which
+says which program wrote the line and not what the line is. §Part three decides "exactly one line of
+JSON on stdout" at a defined point; it does not decide that no second kind of line may ever exist,
+and phase 2's supervised daemon is the obvious place a second one appears. A field named for what it
+discriminates is what lets that arrive without breaking a parser written today — `parseReadyLine`
+returns `null` for `{"event":"stopping",…}` rather than mistaking it for readiness, which is a test
+case. `apps/cli/AGENTS.md` states the consequence as an invariant: a second kind of stdout line
+means a second `event` value, never a bare line.
+
+**`contract_version` rather than `contract`.** Spelled exactly as the `/healthz` body spells it, and
+read from the same `MCP_CONTRACT_VERSION` constant in `@xplainer/protocol`. §Note, 2026-09-06 §(a)
+already decided these are "one fact published twice, from one constant"; two spellings of it would
+have made a parent reading the pipe and a shim polling the endpoint compare two different field
+names for one value, which is how the second copy drifts.
+
+**No `version`.** The release number is a fact about the binary the parent has just spawned: it
+either knows it already or can ask `/healthz`, which carries both numbers side by side. The contract
+version is the one a parent must act on *before* it speaks, so it is the one the pipe carries. This
+is the same division §Part two draws between the contract and the release, applied to the line.
+
+**`socket` is kept, and `pid` is added.** `socket` is what makes "both listeners are bound" a thing
+the line attests to rather than a thing §Part three asserts; it is nullable because a server bound
+without one is supported (`services/media-service` binds no socket), and a parent with no filesystem
+access to the path has to tell that case from "an older daemon". `pid` is here because a parent that
+spawned the daemon through a shell wrapper otherwise does not know which process to signal, and the
+whole point of waiting for this line is to be able to manage what you started.
+
+**What was not reconsidered.** The `/healthz` half of §Note, 2026-09-06 §(a) stands unchanged: the
+shim reads `contract_version` there, not from the ready line, because `xplainer mcp --attach` is not
+the daemon's parent and has no pipe to read.

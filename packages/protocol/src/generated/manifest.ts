@@ -48,3 +48,22 @@ export const ENGINE_OWNED_FILES: readonly ["index.ts", "types.ts", "Root.tsx", "
 
 /** One of the engine-owned scaffold file names. */
 export type EngineOwnedFile = (typeof ENGINE_OWNED_FILES)[number];
+
+/**
+ * The version of the **tool contract**, from `schemas/manifest.json`.
+ *
+ * Not a release version. `@xplainer/cli` and the hosted image each have their
+ * own `version`, and the MCP `initialize` handshake reports *that* in
+ * `serverInfo.version`, which is why the handshake cannot be used to detect
+ * contract skew. This number is what `xplainer serve` advertises on
+ * `GET /healthz` as `contract_version` and what
+ * {@link isContractCompatible} compares
+ * ([ADR 0025](../../../../docs/adr/0025-daemon-updates-and-readiness.md)
+ * §Note, 2026-09-06: P1-S3 settled).
+ *
+ * It lives here, in the package that owns the contract, rather than in
+ * `@xplainer/mcp-server`: the `xplainer mcp --attach` shim must read it
+ * before any MCP session exists, and `@xplainer/protocol` is the one package
+ * every surface already depends on.
+ */
+export const MCP_CONTRACT_VERSION: string = "1";

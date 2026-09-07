@@ -1,8 +1,9 @@
 {
-  "$comment": "The contract manifest: the authoritative list of the eight explainer tools — for each, the JSON Schema that defines its input and its output — and the authoritative list of the scaffold files the engine owns. This is a data document, not a schema. Every surface that speaks the protocol — the TypeScript MCP server, the hosted FastAPI server, the plugin bundles — derives its tool list from here, so a tool cannot be added to one surface and forgotten on another. The tool order below is the contract order and is preserved by codegen into TOOL_NAMES; engine_owned_files is preserved into ENGINE_OWNED_FILES the same way.",
+  "$comment": "The contract manifest: the authoritative list of the eight explainer tools — for each, the JSON Schema that defines its input and its output — and the authoritative list of the scaffold files the engine owns. This is a data document, not a schema. Every surface that speaks the protocol — the TypeScript MCP server, the hosted FastAPI server, the plugin bundles — derives its tool list from here, so a tool cannot be added to one surface and forgotten on another. The tool order below is the contract order and is preserved by codegen into TOOL_NAMES; engine_owned_files is preserved into ENGINE_OWNED_FILES the same way. open_enums names the string enums a consumer must decode leniently, mapping each to the member an unrecognised value falls back to; codegen turns each entry into a tolerant decoder in both languages, which is what makes adding a member a minor contract change (ADR 0024 §Note, 2026-09-06: P1-S3 settled).",
   "name": "xplainer",
   "version": "1",
   "engine_owned_files": ["index.ts", "types.ts", "Root.tsx", "Captions.tsx", "Video.tsx"],
+  "open_enums": { "JobErrorCode": "internal" },
   "tools": [
     {
       "name": "explainer_create",

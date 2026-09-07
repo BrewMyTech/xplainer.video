@@ -40,9 +40,10 @@ into an agent's configuration. `apps/desktop` is **one optional GUI client** of 
 nothing more. The runtime lives in the CLI, not in Electron
 ([ADR 0016](adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)), and it is a
 supervised, always-running, per-user daemon rather than a foreground command
-([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener, `/healthz`
-and `/mcp` exist today; the IPC socket, the shim's attach mode, the supervisor and the job runner
-land at roadmap phases 1 and 2.
+([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener — guarded,
+token-authenticated, draining on `SIGTERM` — `/healthz`, `/mcp`, the job runner, the IPC socket and
+both modes of `xplainer mcp` and both verbs of `xplainer connect` exist today; the supervisor lands
+at roadmap phase 2.
 
 ## 3. Members
 
@@ -63,7 +64,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `packages/config` | `@xplainer/config` | open-later | no | yes | no | TypeScript | Shared tsconfig presets, the tier-boundary rule, and the three `xplainer-*` build binaries. | [AGENTS.md](../packages/config/AGENTS.md) |
 | `packages/mcp-server` | `@xplainer/mcp-server` | open-later | yes | yes | yes | TypeScript | Backend-agnostic registration of the eight tools onto an MCP server, across a `RenderBackend` seam. | [AGENTS.md](../packages/mcp-server/AGENTS.md) |
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
-| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
+| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
 | `packages/skill` | `@xplainer/skill` | open-later | yes | no | no | TypeScript | The agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle. | [AGENTS.md](../packages/skill/AGENTS.md) |
 | `packages/tts-client` | `@xplainer/tts-client` | open-later | yes | yes | yes | TypeScript | Kokoro-FastAPI request and response shaping: the two endpoints and the payload flags narration depends on. | [AGENTS.md](../packages/tts-client/AGENTS.md) |
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
@@ -96,9 +97,12 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 |---|---|---|
 | `apps/cli` | `@xplainer/mcp-server` | dependencies |
 | `apps/cli` | `@xplainer/protocol` | dependencies |
+| `apps/cli` | `@xplainer/render-core` | dependencies |
+| `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
+| `packages/render-core` | `@xplainer/tts-client` | dependencies |
 | `packages/skill` | `@xplainer/protocol` | devDependencies |
 
 Banned specifiers — no file in an open-later root may import these:
@@ -129,7 +133,9 @@ An equality check that reads as a permission list is how a forbidden edge gets d
 legitimacy, so the two are stated apart on purpose.
 
 **Direction of travel.** `packages/protocol` is the sink — it depends on nothing in the workspace,
-and four members depend on it. `apps/cli` composes `mcp-server` and `protocol`. `apps/desktop`
+and four members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
+`tts-client`: the tool registration, the contract, the workspace and scaffold, and the speech client
+its narration worker drives. `apps/desktop`
 depends only on `apps/cli`, and takes it as an **injected** production dependency
 (`injectWorkspacePackages: true`, `dedupeInjectedDeps: false`) so that electron-builder packs a real
 directory rather than a symlink.
@@ -176,52 +182,78 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 ## 6. The runtime
 
 **What exists today.** `apps/cli/src/server.ts` builds one Hono application — `GET /healthz`
-returning `{status, version}`, `POST /mcp` speaking Streamable HTTP, and `GET`/`DELETE /mcp`
-answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default. The eight tools are
-registered and return "not implemented in this phase" payloads
-([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)). `mcp`, `setup`,
-`connect` and `daemon` are registered stub commands that name themselves on stderr and exit `2`.
-There is no supervisor, no IPC listener, no guard middleware, no state on disk and no job store.
-**Almost everything in the rest of this section is phase 1 or phase 2**, and each paragraph says
-which.
+returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable HTTP, and
+`GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
+The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
+scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
+runner, which `explainer_job` then reports on
+([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)).
+`xplainer connect claude` and `xplainer connect codex` put the `xplainer mcp --attach` command line
+into an agent's own configuration — through that agent's own writer, `claude mcp add` or
+`codex mcp add`, wherever it is on `PATH`, and otherwise into `~/.claude.json` or into
+`~/.codex/config.toml`'s `[mcp_servers.xplainer]` table, edited in place — after reading
+`daemon.json` to confirm a daemon has bound on this machine at all. Both verbs are re-runnable:
+`claude mcp add` refuses a name its scope already holds, so that refusal is answered with
+`claude mcp remove` and a second add. `setup` and `daemon` are registered stub commands that name
+themselves on stderr and exit `2`.
+`serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
+left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
+`daemon.json`, `runtime.json` and `jobs/` are real. It also mints a `0600` bearer token in its
+`0700` state directory and puts the **guard middleware** in front of every TCP route — `Host`
+allowlist built from the bound port, `Origin` validation, and the token on `/healthz` as well as
+`/mcp` — handles `SIGTERM` by draining, removing `runtime.json` and exiting `0`, and announces
+readiness with one line of JSON on stdout. `xplainer status` reads the two state files and confirms
+them with an authenticated `GET /healthz`. The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
+`<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
+files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
+tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
+rather than failing inside `spawn`. There is still no supervisor.
+**Much of the rest of this section is phase 1 or phase 2**, and each paragraph says which.
 
 **Process model (phase 2, [ADR 0020](adr/0020-always-running-local-daemon.md)).** `xplainer serve`
 becomes an installed, supervised, per-user daemon — systemd user unit, LaunchAgent, or Windows
 Scheduled Task — installed by `xplainer daemon {install,uninstall,start,stop,restart,status,logs}`,
 running as the user and never as root, and never needing an administrator at install.
 
-**The two listeners (phase 2).** One application, two bindings: the TCP loopback listener, and a
-unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer connect` writes a
-**stdio** entry pointing at `xplainer mcp --attach`, which proxies to that socket, so no URL and no
-token enter an agent configuration file. A browser can neither open a unix socket nor spawn a
-process, which is what puts the DNS-rebinding class structurally outside the path agents use. The
-TCP listener keeps a **guard middleware** — origin and host checks plus a bearer token — because it
-is the surface a web page can reach.
+**The two listeners.** One application, two bindings: the TCP loopback
+listener, and a unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer
+connect` writes a **stdio** entry pointing at `xplainer mcp --attach`, which proxies to that
+socket, so no URL and no token enter an agent configuration file. A browser can neither open a unix
+socket nor spawn a process, which is what puts the DNS-rebinding class structurally outside the
+path agents use. The TCP listener keeps a **guard middleware** — origin and host checks plus a
+bearer token — because it is the surface a web page can reach. That middleware is **built**:
+`createServer()` takes it as a parameter rather than a mode, so the IPC listener can carry none and
+`services/media-service` can carry its own.
 
-**Two state files, opposite lifetimes (phase 2).** `daemon.json` is **durable**, written by
-`install`, and must survive reboot; it records the port, socket path, token file path, supervisor
-kind and artefact path, resolved program and interpreter, lingering, log sink and installing
-version. `runtime.json` is **ephemeral**, written by `serve` at bind, removed on clean shutdown, and
-never trusted without a liveness check. The port is decided once, at install, and the recorded port
-is a contract — `connect`, `status`, `logs` and the desktop client all read it rather than guessing.
+**Two state files, opposite lifetimes (both written today; `install` owns most of `daemon.json`
+from phase 2).** `daemon.json` is **durable** and must survive reboot; it records the port, socket
+path, token file path, supervisor kind and artefact path, resolved program and interpreter,
+lingering, log sink and installing version. `serve` writes only the fields it knows — the port it
+bound, the contract version, the token file's path, the flush verdict and the circuit breaker's
+history — and preserves every key it does not, because a `serve` that rewrote the file from its own
+narrow view would silently uninstall the daemon it is part of. `runtime.json` is **ephemeral**,
+written by `serve` at bind, removed on clean shutdown, and never trusted without a liveness check.
+The port is decided once, at install, and the recorded port is a contract — `connect`, `status`,
+`logs` and the desktop client all read it rather than guessing.
 
 **Exit codes.** One table, and a new code is added to it and to the successor of the record that
 owns it, never invented at the call site.
 
 | Code | Meaning | Owner | Status |
 |---:|---|---|---|
-| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | phase 2 |
+| `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
+| `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
-| `3` | Precondition unmet | ADR 0020 | phase 2 |
-| `4` | Installed but not healthy | ADR 0020 | phase 2 |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`); `daemon install` phase 2 |
+| `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
 | `5` | Administrator privileges required | ADR 0020 | phase 2 |
 | `6` | No supported supervisor | ADR 0020 | phase 2 |
 | `7` | Port or label conflict | ADR 0020 | phase 2 |
-| `8` | Contract skew between shim and daemon | ADR 0025 | phase 1 |
-| `10` | The recorded port is taken | ADR 0020 | phase 2 |
-| `11` | State file unreadable | ADR 0020 | phase 2 |
-| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | phase 2 |
-| `70` | Internal error | ADR 0020 | phase 2 |
+| `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
+| `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
+| `11` | State file unreadable | ADR 0020 | **built** |
+| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
+| `70` | Internal error | ADR 0020 | **built** |
 
 **Job lifecycle (phase 1, [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)).** Five
 states, and a job is always in exactly one of them: `queued`, `running`, `done`, `error`,
@@ -232,10 +264,13 @@ states, and a job is always in exactly one of them: `queued`, `running`, `done`,
 - **Durability.** Job records outlive the process that wrote them, under the durable state directory
   in a `jobs/` subdirectory.
 
-  > *Proposed mechanism, to be confirmed by spike P1-S1:* one JSON file per job under an
-  > exclusively-owned directory, versus `node:sqlite` in WAL mode. The ownership primitive, the
-  > per-platform force of a directory flush and the means of confirming a worker's identity are
-  > P1-S1's too.
+  *Settled by spike P1-S1 on 2026-09-06 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+  §Note, 2026-09-06: P1-S1 settled), and built.* One JSON file per job, written
+  temp → `fsync` → `rename` → `fsync` the containing directory; `node:sqlite` WAL is rejected
+  because "leave this one record alone" is expressible per file and not per database schema.
+  Ownership is an `owner.lock` created `O_EXCL` whose staleness is inferred from the identity tuple
+  and whose takeover is confirmed by a read-back. A worker's identity is **(pid, process start time,
+  machine boot id)** and never the pid.
 
 - **Boot reconciliation.** Every `queued` or `running` job whose recorded pid is not alive, or whose
   recorded daemon boot-id differs from this one, is rewritten to `status: "error"`,
@@ -246,8 +281,8 @@ states, and a job is always in exactly one of them: `queued`, `running`, `done`,
 - **An unknown format version is a rollback signal, not corruption**, so state written by a newer
   version is preserved rather than deleted.
 
-**Drain (phase 1 behaviour, phase 2 reach).** `SIGTERM` stops new jobs with a named "shutting down"
-error, gives in-flight jobs at most **20 s** to checkpoint, hard-stops Chrome and ffmpeg children,
+**Drain (built; phase 2 reach).** `SIGTERM` stops new jobs with a named "shutting down" error,
+gives in-flight jobs at most **20 s** to checkpoint, hard-stops Chrome and ffmpeg children,
 marks anything still `running` *or* `queued` as `error` with `error_code: "daemon_shutdown"`,
 removes `runtime.json` and the socket, and exits `0` — the portable "do not restart" signal on all
 three supervisors. Twenty seconds plus teardown fits inside the 25-second budget.
@@ -266,19 +301,26 @@ contend for exclusive ownership.
 **Version skew.** `xplainer mcp --attach` is spawned per session; the daemon is not, so a Tuesday
 shim can meet a Monday daemon. An incompatible pair exits `8`, naming both versions and a command
 the user can actually run at that point.
-> *Proposed mechanism, to be confirmed by spike P1-S3:* the contract-version advertisement itself,
-> the compatibility predicate, and whether any consumer can tolerate an unknown `error_code` value.
-> `serverInfo.version` is **not** the contract version — `apps/cli/src/server.ts` passes
-> `CLI_VERSION` into `createMcpServer`, so the handshake reports the release version. An explicit
-> advertisement is required; its shape is open.
+*Settled by spike P1-S3 on 2026-09-06 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)
+§Note, 2026-09-06: P1-S3 settled).* The daemon advertises the contract version as `contract_version`
+in the `/healthz` body — readable before an MCP session exists, which an `initialize` result is not.
+`serverInfo.version` is **not** the contract version: `apps/cli/src/server.ts` passes `CLI_VERSION`
+into `createMcpServer`, so the handshake reports the release number, and both numbers now appear
+side by side in that one body. `MCP_CONTRACT_VERSION` lives in `@xplainer/protocol`, which also
+exports `isContractCompatible(daemon, shim)`; the predicate is **major-compatible**, so an additive
+change attaches and only a removal refuses.
 
-**Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), phase 1).** The daemon announces
+**Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), built).** The daemon announces
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners
 are bound — and parents wait for the announcement rather than sleeping. The primary mechanism on
-every platform is **one line of JSON on stdout**. A parent that spawned the daemon itself reads it
-from the pipe; a post-install hook restarting a *supervised* daemon cannot, because that stdout goes
-to the supervisor's log sink, so it waits on a supervisor-native report or an authenticated,
-bounded `GET /healthz` poll.
+every platform is **one line of JSON on stdout**:
+`{"event":"ready","port":…,"socket":…,"contract_version":…,"pid":…}`, where `socket` is the IPC
+listener's path — the unix socket, or the named pipe on Windows — and is `null` only for a binding
+that was asked for no socket at all. That line is the whole of stdout — everything else `serve` says
+goes to stderr, so it must never move behind a `--quiet` flag or a log-level filter. A parent that
+spawned the daemon itself reads it from the pipe; a post-install hook restarting a *supervised* daemon
+cannot, because that stdout goes to the supervisor's log sink, so it waits on a supervisor-native
+report or an authenticated, bounded `GET /healthz` poll.
 > *Proposed mechanism, to be confirmed by spike P2-S4:* systemd `Type=notify`. `$NOTIFY_SOCKET` is
 > an `AF_UNIX` datagram socket and `node:dgram` is UDP-only, so `sd_notify` costs a dependency or a
 > native addon. ADR 0020's `Type=exec` is **not** amended until the spike settles.
@@ -304,7 +346,7 @@ The fixes are small and mechanical. The seven that landed, as worked examples:
 |---|---|---|
 | `packages/mcp-server/src/put-source-guard.ts` — `EngineOwnedPathError.code` | TS9012 | `readonly code: typeof ENGINE_OWNED_PATH_ERROR_CODE = …` |
 | `packages/mcp-server/src/server.ts` — `MCP_SERVER_NAME` | TS9010 | `export const MCP_SERVER_NAME: string = manifest.name;` |
-| `packages/mcp-server/src/server.ts` — `MCP_CONTRACT_VERSION` | TS9010 | `export const MCP_CONTRACT_VERSION: string = manifest.version;` |
+| `packages/protocol/src/generated/manifest.ts` — `MCP_CONTRACT_VERSION` | TS9010 | **generator change** in `scripts/codegen.mjs`: `export const MCP_CONTRACT_VERSION: string = "…";`. It moved out of `packages/mcp-server/src/server.ts` with spike P1-S3 and is re-exported from there. |
 | `packages/protocol/src/generated/manifest.ts` — `TOOL_NAMES` | TS9010 | **generator change** in `scripts/codegen.mjs`: emit the literal tuple type before `Object.freeze([…])` |
 | `packages/protocol/src/generated/manifest.ts` — `ENGINE_OWNED_FILES` | TS9010 | **generator change**, same shape |
 | `packages/render-core/src/scaffold/index.ts` — `ENGINE_OWNED_FILES` | TS9010 | `export const ENGINE_OWNED_FILES: typeof ENGINE_OWNED_FILES_FROM_PROTOCOL = …` |
@@ -403,11 +445,14 @@ in the root [`AGENTS.md`](../AGENTS.md).
 4. Add the member to `PUBLISHABLE_MEMBERS` **or** `PRIVATE_MEMBERS` in
    `scripts/check-publish-contract.mjs`. There is no third option: the checker fails on a member it
    does not know, in either direction.
-5. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
+5. If it is publishable, it also needs a `README.md` — or its npm page renders blank — plus
+   `license`, `homepage`, `author` and a `repository` whose `directory` names this member. The
+   same checker asserts all five, and each rule there carries its own negative test.
+6. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
    `pnpm api:report`.
-6. Write its `AGENTS.md` and its one-line `CLAUDE.md`, and add its row to
+7. Write its `AGENTS.md` and its one-line `CLAUDE.md`, and add its row to
    [§3 Members](#3-members).
-7. `pnpm install` (a new member changes the workspace), then `pnpm verify`.
+8. `pnpm install` (a new member changes the workspace), then `pnpm verify`.
 
 ### A new MCP tool
 
@@ -422,7 +467,7 @@ in the root [`AGENTS.md`](../AGENTS.md).
 5. Nothing to *register* by hand — `createMcpServer()` iterates `TOOL_NAMES` — but three
    hand-written surfaces still name the tools one at a time, and all three stop compiling until you
    extend them: the `RenderBackend` interface in `packages/mcp-server/src/backend.ts`,
-   `createStubBackend()` in `apps/cli/src/backend.ts`, and whatever real backend implements the
+   `createLocalBackend()` in `apps/cli/src/backend.ts`, and whatever other backend implements the
    seam. `server.test.ts` asserts `Object.keys(backend)` equals `TOOL_NAMES`, so a missing method is
    a failing test rather than a runtime surprise.
 6. Update `packages/skill/SKILL.md` — its `explainer_*` names are asserted against `TOOL_NAMES` in
@@ -441,8 +486,10 @@ in the root [`AGENTS.md`](../AGENTS.md).
 2. `pnpm --filter @xplainer/protocol codegen`; commit the generated output in the same commit.
 3. Never touch `src/generated/` or `python/xplainer_protocol/generated/` by hand.
 4. A new **required** field is a breaking change to the contract; a new optional one is not. A new
-   `error_code` enum member is neither until spike `P1-S3` settles it — see
-   [`ROADMAP.md`](ROADMAP.md).
+   `error_code` enum member is a **minor** change — move the minor component of
+   `schemas/manifest.json`'s `version` and nothing else, because both generated decoders fall back
+   to `internal` on a member they do not know ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+   §Note, 2026-09-06: P1-S3 settled).
 5. If the field changes an exported declaration, `pnpm api:report` and commit the `.api.md`.
 6. Add a changeset if the change is user-visible in a published package.
 7. `pnpm verify`.

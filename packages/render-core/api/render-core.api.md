@@ -12,6 +12,387 @@ that changes this file is a change to the public surface.
 
 Entry point: `dist/index.d.ts`
 
+## `dist/narrate/build.d.ts`
+
+```ts
+/**
+ * The one thing `narrate()` needs from a speech server.
+ *
+ * Structural rather than `KokoroClient` so a caller can supply a client built
+ * with its own base URL or transport, and so a test can pass the real client
+ * over a stub `fetch`. `KokoroClient` satisfies it as it stands.
+ */
+export type SpeechSynthesiser = {
+    captionedSpeech(request: CaptionedSpeechRequest): Promise<CaptionedSpeechResponse>;
+};
+
+/** Whether the timings were measured from real speech or invented by a dry run. */
+export type NarrateMode = "kokoro" | "dry_run";
+
+/** Arguments for one narration run. */
+export type NarrateOptions = {
+    /** The narration spec, as `explainer_narrate` received it. */
+    readonly narration: Narration;
+    /** The video's public directory: where the three files are written. */
+    readonly outDir: string;
+    /** Speech server. Defaults to a `KokoroClient` on the configured base URL. */
+    readonly client?: SpeechSynthesiser;
+    /** Skip the server entirely and estimate every segment. Defaults to `false`. */
+    readonly dryRun?: boolean;
+    /** Track filename inside `outDir`. Defaults to `narration.wav`. */
+    readonly audioFile?: string;
+};
+
+/** What one narration run produced, in memory and on disk. */
+export type NarrateResult = {
+    /** `"dry_run"` when the timings were estimated rather than measured. */
+    readonly mode: NarrateMode;
+    /** The `timings.json` document, as written. */
+    readonly timings: Timings;
+    /** The `captions.json` document, as written. */
+    readonly captions: Captions;
+    /** Path of the narration track. */
+    readonly audioPath: string;
+    /** Path of `timings.json`. */
+    readonly timingsPath: string;
+    /** Path of `captions.json`. */
+    readonly captionsPath: string;
+};
+
+/**
+ * Narrate one video: synthesise or estimate, measure, plan, concatenate, write.
+ *
+ * @throws NarrationError when the script is empty, a word span is unusable, a
+ *   segment's audio is not readable 16-bit PCM, or the server changes format
+ *   between segments.
+ */
+export declare function narrate(options: NarrateOptions): Promise<NarrateResult>;
+```
+
+## `dist/narrate/captions.d.ts`
+
+```ts
+/**
+ * Build the caption track from a plan's absolute word spans.
+ *
+ * The result validates against `packages/protocol/schemas/captions.json`.
+ * `confidence` is always `null`: Kokoro synthesised the audio, so the timings
+ * are exact rather than a recogniser's guess, and a fabricated number there
+ * would be worse than none.
+ */
+export declare function buildCaptions(segments: readonly PlannedSegment[]): Captions;
+```
+
+## `dist/narrate/errors.d.ts`
+
+```ts
+/**
+ * Why narration could not be built. Each value names a distinct defect, so a
+ * caller can decide whether to retry, re-synthesise or refuse.
+ */
+export type NarrationErrorCode = 
+/** The narration script carries no segments, so there is nothing to speak. */
+"NO_SEGMENTS"
+/** One measured-speech entry per segment was expected; a different number arrived. */
+ | "SEGMENT_COUNT_MISMATCH"
+/** A word span is unusable: not finite, negative, or ending before it starts. */
+ | "WORD_SPAN_INVALID"
+/** The bytes are not a RIFF/WAVE container, or not the 16-bit PCM this reads. */
+ | "WAV_UNREADABLE"
+/** Two segments came back in different audio formats; they cannot be concatenated. */
+ | "AUDIO_FORMAT_MISMATCH";
+
+/** A narration build that cannot produce a correct track, captions or timings. */
+export declare class NarrationError extends Error {
+    /** Which defect this is, for a caller that branches rather than logs. */
+    readonly code: NarrationErrorCode;
+    constructor(code: NarrationErrorCode, message: string);
+}
+```
+
+## `dist/narrate/estimate.d.ts`
+
+```ts
+/** An invented segment: how long it would take to say, and where each word would fall. */
+export type SpeechEstimate = {
+    /** Estimated spoken length, in milliseconds. */
+    readonly durationMs: number;
+    /** Word spans in seconds from the start of the segment, Kokoro's own shape. */
+    readonly words: readonly WordTimestamp[];
+};
+
+/**
+ * Estimate one segment: a plausible duration, and word spans weighted by length
+ * so a long word occupies more of it than a short one.
+ *
+ * The spans tile the segment exactly, with no silence between them. That is
+ * deliberately unlike real speech — and it is why a dry run proves the pipeline
+ * and never the pacing.
+ */
+export declare function estimateSpeech(text: string): SpeechEstimate;
+```
+
+## `dist/narrate/pacing.d.ts`
+
+```ts
+/** Silence before the first word, so the video does not open mid-syllable. */
+export declare const LEAD_IN_MS = 400;
+
+/** Silence between two segments: the beat that separates one scene from the next. */
+export declare const GAP_MS = 620;
+
+/** Silence after the last word, so it lands before the video cuts. */
+export declare const TAIL_MS = 800;
+
+/**
+ * Sample rate the narration track is built at when the server has not told us
+ * otherwise — Kokoro's own output rate, and the rate a dry run invents.
+ *
+ * A live run overrides this with the rate of the first WAV the server returns
+ * and rejects any later segment that disagrees; this value is only the fallback
+ * for a track with no speech in it at all.
+ */
+export declare const DEFAULT_SAMPLE_RATE = 24000;
+
+/** Frame rate used when the narration script names none (`narrate.py:191`). */
+export declare const DEFAULT_FPS = 30;
+
+/** Voice used when the narration script names none (`narrate.py:192`). */
+export declare const DEFAULT_VOICE = "af_heart";
+
+/** Filename of the narration track, relative to the video's public directory. */
+export declare const NARRATION_AUDIO_FILE = "narration.wav";
+
+/** Filename of the measured segment timings, relative to the same directory. */
+export declare const TIMINGS_FILE = "timings.json";
+
+/** Filename of the word-level caption track, relative to the same directory. */
+export declare const CAPTIONS_FILE = "captions.json";
+```
+
+## `dist/narrate/plan.d.ts`
+
+```ts
+/**
+ * What was measured for one segment: how long its audio actually plays, and the
+ * word spans the server reported for it.
+ *
+ * `spokenMs` is separate from the words on purpose. A synthesised clip is
+ * routinely longer than its last `end_time` — trailing breath, decay, the
+ * model's own tail — so a planner that inferred the length from the spans would
+ * cut every segment short and shift the whole track earlier than the audio.
+ */
+export type SegmentSpeech = {
+    /** Length of this segment's audio, in milliseconds, measured from its frames. */
+    readonly spokenMs: number;
+    /** Word spans in seconds from the start of the segment, as the server reported them. */
+    readonly words: readonly WordTimestamp[];
+};
+
+/** One word, moved from segment-relative seconds onto the whole track in milliseconds. */
+export type PlannedWord = {
+    /** The token, trimmed. Punctuation tokens survive; `captions.ts` folds them. */
+    readonly text: string;
+    /** Absolute start on the narration track, in milliseconds. */
+    readonly startMs: number;
+    /** Absolute end on the narration track, from the server's `end_time`. */
+    readonly endMs: number;
+};
+
+/** One segment's place on the track, and every word inside it. */
+export type PlannedSegment = {
+    /** The narration segment's id, which is how a scene finds its own timing. */
+    readonly id: string;
+    /** Zero-based position in the narration. */
+    readonly index: number;
+    /** Segment start, in milliseconds. */
+    readonly startMs: number;
+    /** Segment end — after its hold padding and the gap that follows it. */
+    readonly endMs: number;
+    /** `startMs` as a frame number, for Remotion's `Sequence`. */
+    readonly from: number;
+    /** Segment length in frames, never below 1. */
+    readonly durationInFrames: number;
+    /** Every word of this segment, in absolute track milliseconds. */
+    readonly words: readonly PlannedWord[];
+    /** Silence written after this segment's speech: hold padding plus the gap. */
+    readonly trailingSilenceSamples: number;
+};
+
+/** Everything the two documents and the track builder need, and nothing else. */
+export type NarrationPlan = {
+    /** Frame rate the frame numbers are expressed in. */
+    readonly fps: number;
+    /** Sample rate the silence counts are expressed in. */
+    readonly sampleRate: number;
+    /** Total track length in milliseconds, rounded. */
+    readonly totalMs: number;
+    /** Total composition length in frames, never below 1. */
+    readonly durationInFrames: number;
+    /** Silence before the first segment, in samples. */
+    readonly leadInSamples: number;
+    /** Silence after the last segment, in samples. */
+    readonly tailSamples: number;
+    /** One entry per narration segment, in narration order. */
+    readonly segments: readonly PlannedSegment[];
+};
+
+/**
+ * Place every segment and every word on the narration track.
+ *
+ * @param narrationScript the narration spec, as `explainer_narrate` received it
+ * @param perSegmentWords one entry per segment of `narrationScript`, in the same
+ *   order: the measured spoken length and the server's word spans
+ * @param sampleRate rate the track is built at, which fixes how silence is
+ *   quantised. Defaults to Kokoro's own rate.
+ *
+ * @throws NarrationError `NO_SEGMENTS` when the script is empty,
+ *   `SEGMENT_COUNT_MISMATCH` when the two lists are different lengths, and
+ *   `WORD_SPAN_INVALID` for a span that is not finite, is negative, or ends
+ *   before it starts.
+ */
+export declare function planSegments(narrationScript: Narration, perSegmentWords: readonly SegmentSpeech[], sampleRate?: number): NarrationPlan;
+```
+
+## `dist/narrate/timings.d.ts`
+
+```ts
+/**
+ * Render a plan as the `timings.json` document.
+ *
+ * @param plan what `planSegments()` measured
+ * @param audio filename of the narration track, relative to the video's public
+ *   directory — the same directory this document is written to
+ */
+export declare function buildTimings(plan: NarrationPlan, audio: string): Timings;
+```
+
+## `dist/narrate/track.d.ts`
+
+```ts
+/**
+ * Assemble the narration track: lead-in, then every segment's speech followed
+ * by its hold padding and gap, then the tail.
+ *
+ * @param plan the plan those segments were placed by
+ * @param speech one buffer of PCM frames per segment, in narration order; an
+ *   empty buffer for a segment with no text
+ * @param format the PCM format every buffer is in, whose sample rate must be
+ *   the rate the plan quantised its silence at
+ *
+ * @throws NarrationError `AUDIO_FORMAT_MISMATCH` when the format and the plan
+ *   disagree about the sample rate, or when there is not exactly one buffer per
+ *   planned segment.
+ */
+export declare function buildTrack(plan: NarrationPlan, speech: readonly Buffer[], format: PcmFormat): WavAudio;
+
+/**
+ * The format `next` must agree with, or the first one seen.
+ *
+ * The reference implementation's `Track._configure` (`narrate.py:81-89`) raises
+ * on a mismatch rather than resampling, and so does this: two segments in
+ * different formats concatenated byte-wise produce a track that plays the
+ * second one at the wrong pitch, which is a failure nobody would think to look
+ * for.
+ */
+export declare function reconcileFormat(current: PcmFormat | undefined, next: PcmFormat): PcmFormat;
+```
+
+## `dist/narrate/wav.d.ts`
+
+```ts
+/** The PCM parameters two segments must agree on before their frames can be joined. */
+export type PcmFormat = {
+    /** Interleaved channel count. Kokoro sends 1. */
+    readonly channels: number;
+    /** Bytes per sample per channel. Always 2 here — this reader is 16-bit only. */
+    readonly sampleWidth: number;
+    /** Samples per second. */
+    readonly sampleRate: number;
+};
+
+/** One decoded WAV: its format, and the raw interleaved frames of its `data` chunk. */
+export type WavAudio = {
+    readonly format: PcmFormat;
+    /** The `data` chunk payload verbatim — no resampling, no conversion. */
+    readonly data: Buffer;
+};
+
+/** Bytes one frame occupies: one sample on every channel. */
+export declare function pcmFrameBytes(format: PcmFormat): number;
+
+/**
+ * How long `byteLength` bytes of `format` frames play for, in milliseconds.
+ *
+ * This is the *only* way a segment's spoken length is obtained. Deriving it
+ * from the last word's `end_time` instead would silently drop whatever Kokoro
+ * renders after it, and the track would then be longer than `timings.json` says
+ * it is.
+ */
+export declare function pcmDurationMs(format: PcmFormat, byteLength: number): number;
+
+/**
+ * Whole samples of silence that fit in `ms` at `sampleRate`, truncated
+ * (`narrate.py:100`).
+ *
+ * Truncating rather than rounding is copied deliberately: the planner and the
+ * track builder both call this, so the milliseconds the plan reports and the
+ * samples the track contains are the same arithmetic and cannot drift apart by
+ * an accumulated fraction of a sample.
+ */
+export declare function silenceSamples(sampleRate: number, ms: number): number;
+
+/** `samples` of silence: zeroed frames, which is what 0 means in signed PCM. */
+export declare function silentFrames(format: PcmFormat, samples: number): Buffer;
+
+/** Whether two segments' audio can be concatenated without conversion. */
+export declare function samePcmFormat(a: PcmFormat, b: PcmFormat): boolean;
+
+/**
+ * Parse a RIFF/WAVE container holding 16-bit integer PCM.
+ *
+ * @throws NarrationError `WAV_UNREADABLE` on anything else — a truncated file, a
+ *   missing `fmt ` or `data` chunk, a compressed encoding, or a sample depth
+ *   this reader does not handle. Each message names what was found, because the
+ *   caller's next question is always "then what did the server send?".
+ */
+export declare function decodeWav(bytes: Buffer): WavAudio;
+
+/**
+ * Write a canonical 44-byte-header WAV around `data` (`narrate.py:104-109`).
+ *
+ * No `LIST` chunk, no `fact` chunk, no padding: the input is 16-bit PCM, whose
+ * frame size is even, so the `data` payload never needs the RIFF alignment byte.
+ */
+export declare function encodeWav(audio: WavAudio): Buffer;
+```
+
+## `dist/narrate/write.d.ts`
+
+```ts
+/**
+ * Write `timings.json` into `outDir`, creating the directory if needed.
+ *
+ * @returns the path written
+ */
+export declare function writeTimings(outDir: string, timings: Timings): string;
+
+/**
+ * Write `captions.json` into `outDir`, creating the directory if needed.
+ *
+ * @returns the path written
+ */
+export declare function writeCaptions(outDir: string, captions: Captions): string;
+
+/**
+ * Write the narration track into `outDir` under `audioFile`, creating the
+ * directory if needed.
+ *
+ * @returns the path written
+ */
+export declare function writeNarrationTrack(outDir: string, audioFile: string, track: WavAudio): string;
+```
+
 ## `dist/preflight.d.ts`
 
 ```ts
@@ -89,10 +470,10 @@ export declare const REMOTION_BIN = "remotion";
 /** The composition id every scaffolded video registers in `Root.tsx`. */
 export declare const COMPOSITION_ID = "Explainer";
 
-/** Default still frame, from `explainer_still`'s signature (`explainer_mcp.py:430`). */
+/** Default still frame, from `explainer_still`'s signature in the reference implementation. */
 export declare const DEFAULT_STILL_FRAME = 90;
 
-/** Default still scale, from `explainer_still`'s signature (`explainer_mcp.py:430`). */
+/** Default still scale, from `explainer_still`'s signature in the reference implementation. */
 export declare const DEFAULT_STILL_SCALE = 0.5;
 
 /** Where a video's entry point sits inside the Remotion workspace. */
@@ -115,13 +496,13 @@ export type StillArgsInput = RenderArgsInput & {
 };
 
 /**
- * argv for a full render, mirroring `explainer_mcp.py:416-419`:
+ * argv for a full render, mirroring the reference implementation's command:
  * `remotion render videos/<slug>/index.ts Explainer <output> --public-dir=<publicDir>`
  */
 export declare function renderArgs({ slug, output, publicDir }: RenderArgsInput): string[];
 
 /**
- * argv for a single still, mirroring `explainer_mcp.py:442-446`:
+ * argv for a single still, mirroring the reference implementation's command:
  * `remotion still videos/<slug>/index.ts Explainer <output> --frame=<n> --scale=<n> --public-dir=<publicDir>`
  *
  * Flag order matches the reference implementation exactly, so a diff against it
@@ -134,8 +515,8 @@ export declare function stillArgs({ slug, output, publicDir, frame, scale, }: St
 
 ```ts
 /**
- * The five files the engine owns, in the order `_SCAFFOLD` declares them in
- * `explainer_mcp.py:254-260`. The order is part of the contract: `created`,
+ * The five files the engine owns, in the order the reference implementation's
+ * scaffold declares them. The order is part of the contract: `created`,
  * `skipped` and `restored` are reported in it.
  *
  * This list is the reserved set `explainer_put_source` rejects, matched as
@@ -218,10 +599,152 @@ export declare function readScaffoldTemplate(name: ScaffoldFile): Buffer;
  *
  * Ownership decides what happens to a file that is already there:
  *
- *   * agent-owned — left untouched and reported in `skipped`, always
- *     (`explainer_mcp.py:324-331`);
+ *   * agent-owned — left untouched and reported in `skipped`, always, as in
+ *     the reference implementation;
  *   * engine-owned — compared against the template; identical bytes are
  *     `skipped`, different bytes are rewritten and reported in `restored`.
  */
 export declare function scaffoldVideo(dir: string): ScaffoldResult;
+```
+
+## `dist/workspace.d.ts`
+
+```ts
+/**
+ * The shared Remotion workspace: one install, many videos (roadmap P1-1).
+ *
+ * The layout is the reference implementation's, and every path below is derived from it:
+ *
+ * ```
+ * <root>/
+ *   node_modules/          installed once, shared by every video
+ *   package.json           the pinned Remotion versions, copied from this package's template/
+ *   remotion.config.ts     Tailwind, JPEG frames, overwrite
+ *   tailwind.css
+ *   tsconfig.json
+ *   videos/<slug>/         the engine-owned shell and the agent's Scenes.tsx
+ *   public/<slug>/         narration.wav, captions.json, timings.json and media/
+ *   out/<slug>/            the rendered MP4 and the stills
+ * ```
+ *
+ * **The split between `videos/` and `public/` is load-bearing.** `--public-dir` is what Remotion
+ * serves `staticFile()` from, and `Root.tsx` fetches `timings.json` and `captions.json` through it
+ * at metadata time. Point it at the video's source directory instead and the composition still
+ * renders — silently, at `Root.tsx`'s `durationInFrames={300}` placeholder — so the two directories
+ * are separate here and {@link videoPaths} is the only place that pairs them.
+ *
+ * **Nothing here installs anything.** {@link materialiseWorkspace} copies four template files and
+ * creates three directories; it never runs a package manager. Installing hundreds of megabytes is a
+ * visible step a user takes, never something a tool call does behind an agent's back — so
+ * {@link remotionBinary} answers `null` for a workspace that has never been installed and
+ * {@link workspaceNotInstalledMessage} is the sentence a caller shows instead of failing later with
+ * an `ENOENT` from `spawn`.
+ *
+ * This module writes directories and copies files. It spawns nothing and renders nothing:
+ * `render/args.ts` builds the argv, and the caller spawns it.
+ */
+/** Where one video's source lives, under the workspace root. */
+export declare const VIDEOS_DIR = "videos";
+
+/** Where one video's `staticFile()` assets live — narration, captions, timings and media. */
+export declare const PUBLIC_DIR = "public";
+
+/** Where renders and stills land. */
+export declare const OUT_DIR = "out";
+
+/** The media subdirectory of a video's public directory, which `explainer_put_media` writes into. */
+export declare const MEDIA_DIR = "media";
+
+/** The MP4 `explainer_render` writes, from the reference implementation's own output name. */
+export declare const RENDERED_FILE = "explainer.mp4";
+
+/**
+ * The narration spec `explainer_narrate` records for its worker.
+ *
+ * The worker is a separate process, so the spec it is about to speak has to reach it as a file.
+ * It lives in the video's public directory beside the three documents narration produces, which is
+ * also what lets a failed run be inspected after the fact.
+ */
+export declare const NARRATION_SPEC_FILE = "narration.json";
+
+/**
+ * The workspace files copied verbatim out of this package's `template/`.
+ *
+ * `package.json` pins Remotion, React and Tailwind; `remotion.config.ts` enables Tailwind and JPEG
+ * frames; `tailwind.css` is what a video's `index.ts` imports; `tsconfig.json` is for the editor.
+ * They are copied rather than generated so the shipped template stays the only copy of these bytes.
+ */
+export declare const WORKSPACE_FILES: readonly ["package.json", "remotion.config.ts", "tailwind.css", "tsconfig.json"];
+
+/** One of the four workspace-level template files. */
+export type WorkspaceFile = (typeof WORKSPACE_FILES)[number];
+
+/** Every path one video owns, all derived from the workspace root and the slug. */
+export type VideoPaths = {
+    /** The video's slug. */
+    slug: string;
+    /** `<root>/videos/<slug>` — the source directory, where the scaffold writes. */
+    source: string;
+    /** `<root>/public/<slug>` — Remotion's `--public-dir` for this video. */
+    publicDir: string;
+    /** `<root>/public/<slug>/media` — where `explainer_put_media` writes. */
+    media: string;
+    /** `<root>/public/<slug>/timings.json` — the one source of every scene duration. */
+    timings: string;
+    /** `<root>/public/<slug>/captions.json`. */
+    captions: string;
+    /** `<root>/public/<slug>/narration.wav`. */
+    audio: string;
+    /** `<root>/public/<slug>/narration.json` — the spec the narrate worker reads. */
+    narrationSpec: string;
+    /** `<root>/out/<slug>` — where renders and stills land. */
+    out: string;
+    /** `<root>/out/<slug>/explainer.mp4`. */
+    mp4: string;
+};
+
+/** What one {@link materialiseWorkspace} call did to the workspace root. */
+export type WorkspaceResult = {
+    /** Template files this call wrote, in {@link WORKSPACE_FILES} order. */
+    created: WorkspaceFile[];
+    /** Template files that were already there and were left exactly as they were. */
+    skipped: WorkspaceFile[];
+};
+
+/** Expand a workspace root and a slug into every path that video owns. */
+export declare function videoPaths(root: string, slug: string): VideoPaths;
+
+/** The PNG one still renders to, named after the frame it captured. */
+export declare function stillOutput(paths: VideoPaths, frame: number): string;
+
+/**
+ * Create the workspace root and copy the four template files in, never overwriting one.
+ *
+ * Never overwriting matters more here than it looks: `package.json` is what a package manager
+ * recorded `node_modules/` against, so rewriting it from the template on every `explainer_create`
+ * would silently un-pin a workspace someone had already installed.
+ */
+export declare function materialiseWorkspace(root: string): WorkspaceResult;
+
+/**
+ * The Remotion CLI this workspace resolves, or `null` when nothing has been installed.
+ *
+ * Walks the ancestors the way Node's own module resolution does, so a workspace installed in place
+ * (`<root>/node_modules/.bin/remotion`) and one nested inside an already-installed tree both work.
+ * `null` — rather than a guessed path — is what lets a caller say "run `npm install` in `<root>`"
+ * instead of failing later inside `spawn`.
+ *
+ * Deliberately not `npx`: `REMOTION_BIN` in `render/args.ts` records why, and resolving the local
+ * binary is the half of that decision this function owns.
+ */
+export declare function remotionBinary(root: string): string | null;
+
+/** Whether {@link remotionBinary} can find a Remotion CLI for this workspace. */
+export declare function isWorkspaceInstalled(root: string): boolean;
+
+/** The one sentence a caller shows for a workspace whose dependencies were never installed. */
+export declare function workspaceNotInstalledMessage(root: string): string;
+
+/** Every slug with a source directory under `<root>/videos`, in sorted order. */
+export declare function listVideoSlugs(root: string): string[];
 ```

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerCreateOutput",
-  "description": "Result of explainer_create. Shape from max/server/explainer_mcp.py:333-347, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.",
+  "description": "Result of explainer_create. Shape ported from the reference implementation, with write_source_to made optional because only a local backend can hand back a path the agent may write to directly.",
   "type": "object",
   "additionalProperties": false,
   "required": ["slug", "created", "already_present", "put_media_in", "next"],

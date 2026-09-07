@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerListOutput",
-  "description": "Every explainer video the caller owns and what each one has so far. Shape from max/server/explainer_mcp.py:494-507, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.",
+  "description": "Every explainer video the caller owns and what each one has so far. Shape ported from the reference implementation, minus the workspace path and the installed flag: both describe the server's own disk, which a hosted backend must not expose and a local one does not need to repeat.",
   "type": "object",
   "additionalProperties": false,
   "required": ["videos"],

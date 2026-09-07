@@ -16,7 +16,7 @@ export {
   normaliseVoiceList,
   resolveBaseUrl,
   VOICES_PATH,
-} from "./client";
+} from "./client.js";
 export type {
   CaptionedSpeechPayload,
   CaptionedSpeechRequest,
@@ -28,4 +28,4 @@ export type {
   VoiceListEntry,
   VoiceListResponse,
   WordTimestamp,
-} from "./types";
+} from "./types.js";

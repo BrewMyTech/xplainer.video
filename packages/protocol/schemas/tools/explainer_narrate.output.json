@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerNarrateOutput",
-  "description": "Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope from max/server/explainer_mcp.py:293-297.",
+  "description": "Acknowledgement that narration was queued. Narration takes tens of seconds, so it never blocks the tool call; poll explainer_job for the result. Envelope ported from the reference implementation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["job_id", "status", "what", "poll"],

@@ -6,11 +6,14 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 **Request and response shaping for Kokoro-FastAPI**, and nothing else. It builds the exact JSON body
 posted to the TTS server, normalises the voice list, and types what comes back. It does not
-synthesise, does not touch audio, does not compute timings and does not own a process — those land
-at roadmap phase 1 with the narration port.
+synthesise, does not touch audio, does not compute timings and does not own a process. The narration
+port landed in phase 1 and lives in [`@xplainer/render-core`](../render-core/AGENTS.md), which
+depends on this package: `src/narrate/build.ts` drives `KokoroClient`, and `WordTimestamp` from here
+is the measured input every timing downstream is derived from.
 
-It declares no workspace dependencies. It is published, emits declarations, and carries
-`api/tts-client.api.md`.
+It declares no runtime workspace dependencies — `@xplainer/config` is a devDependency, for the
+shared lint and TypeScript configuration and nothing else. It is published, emits declarations, and
+carries `api/tts-client.api.md`.
 
 ## Public surface
 
@@ -24,6 +27,11 @@ the request/response types including `WordTimestamp` and the `FetchLike` seam.
 ```bash
 pnpm --filter @xplainer/tts-client test
 pnpm turbo build --filter @xplainer/tts-client   # where TS9010 appears
+
+# The live half, against a real container (P1-3). Skipped when the variable is unset.
+docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 \
+  ghcr.io/remsky/kokoro-fastapi-cpu:latest
+XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm --filter @xplainer/tts-client test
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -42,6 +50,12 @@ Then the root procedure: `pnpm verify`.
   `resolveBaseUrl()` is given the environment, so a test can pass one and a caller can pass another.
   A module-scope read makes the package untestable and its behaviour dependent on import order.
 - **`fetch` is injected**, through the `FetchLike` seam, for the same reason.
+- **The live suite is gated, never required.** `client.test.ts`'s last block talks to a real Kokoro
+  server and runs only when `XPLAINER_TTS_URL` is set — the same variable the daemon's narration
+  worker reads, so one export drives both it and `pnpm e2e:macos`. It is what catches a server that
+  renamed an endpoint or stopped returning `timestamps`, which every stubbed test above it would
+  stay green through. Making it mandatory would make `pnpm verify` fail on any machine with no
+  container, which is most of them, so it stays a skip.
 - **`isolatedDeclarations` is on `tsconfig.build.json`**, so `TS9010` surfaces under
   `pnpm turbo build` — not under `typecheck`, and not in your editor.
 
