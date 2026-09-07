@@ -1,0 +1,136 @@
+# The `[runner]` half of the batch-1 artefact gate: `scripts/e2e/runtime.mjs` on
+# all three runner operating systems.
+#
+# WHAT IT CLOSES. T2 and T3 each end with a `[runner]` criterion, and B1 could
+# prove only their local halves — macOS arm64 and a Debian arm64 container —
+# because nothing in `.github/workflows/` ran the gate at all. One script, three
+# machines nobody owns, from a clean checkout with the Node `.node-version` pins
+# and no state. That is T3's `[runner]` criterion
+# whole ("`pnpm e2e:runtime` also exits 0 on ubuntu-latest, macos-latest and
+# windows-latest"), and T2's ("the same build, verify and three assertions")
+# whole as well: `runtime build`, `runtime verify`, the second `verify` after
+# the run to prove the payload was not written into, and — since the gate now
+# builds payload 2 as well — **D1's `remotion versions`, D2's
+# `verify --workspace` and D3's `npm-cli.js --version`, each through the moved
+# payload's own interpreter on a `PATH` that resolves no `node`**. Those three
+# were proven on a developer's machine when B1 shipped and nowhere else; a
+# runner is where "on every platform" stops being an assumption.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The gate assembles a real runtime
+# artefact — the pinned interpreter, npm and five packages, ~147 MB measured —
+# moves it out of the checkout, narrates through it, and then installs payload 2
+# from the registry with the npm that travelled inside it. On `push` that is
+# three runners' worth of it on every commit, and on Windows the move can cost
+# more again: `os.tmpdir()` and the workspace are not guaranteed to share a
+# volume there, and `runtime.mjs` answers the `EXDEV` that follows by copying
+# the whole payload byte for byte instead of renaming it. `ci.yml` is the gate
+# that runs on every push; this is the proof, and a proof is run when you want
+# it. It is the same argument that keeps `pnpm e2e:render` and `e2e-linux.yml`
+# out of `pnpm verify`.
+#
+# WHY IT NEEDS NOTHING INSTALLED. Unlike `e2e-linux.yml` there is no ffmpeg
+# step, no Chrome library list and no Kokoro service: the three tools stop at
+# narration, and speech comes from `XPLAINER_TTS_FIXTURE`, a directory the
+# script records on the spot. `explainer_still` and `explainer_render` need a
+# Chrome headless shell on top of payload 2 and are T33 in B6. So the whole
+# platform dependency of this job is a Node the script never puts on the child's
+# `PATH` — plus **the network**, which payload 2's `npm ci` of the template's
+# pins needs and which is the one thing here that can fail for a reason that is
+# not this repository's code. A registry outage looks like `npm ci` exiting
+# non-zero in the transcript, and it is named there.
+#
+# WHY NO `defaults: run: shell:`. `ci.yml` pins bash across its own three-OS
+# matrix because its steps are bash — a `$(…)` into `$GITHUB_OUTPUT`, an array
+# of apt package names. Every step here is a single bare command with no
+# operator, no substitution and no quoting in it, which is as valid in the
+# pwsh that windows-latest defaults to as in the bash the other two default to.
+# Pinning a shell those steps do not need would only hide the Windows leg behind
+# Git Bash, and this is the run that exercises `runtime.mjs`'s `win32` branch
+# for the first time — its `pnpm.cmd` spawn, its `node.exe` launch contract, its
+# `EXDEV` copy and its `PATHEXT` scrub. Let Windows be Windows here.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
+# branch**: until this file is on `main` the API answers a dispatch of it with
+# 422 whatever `--ref` says, which is GitHub's own rule and not a repository
+# setting. Once it is there, `--ref` chooses which branch's code the run
+# executes, so a branch under review is dispatched by name.
+#
+#   gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow e2e-runtime.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+name: e2e-runtime
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: runtime gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # The point of the matrix is three answers, not one verdict: a Windows
+      # failure must not cancel the macOS and Linux legs that are the evidence
+      # for the other two thirds of the criterion.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    # The gate's own MCP half is a minute of work. The budget is for everything
+    # around it on a cold runner — the install, a full `turbo build` with no
+    # cache, payload 2's `npm ci` and the two hash walks over the tree it
+    # produces, and on Windows the cross-volume copy of the assembled artefact,
+    # which is a real file copy rather than a `rename`.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The gate runs `pnpm turbo build` itself, so this step is not what makes
+      # the CLI current — it is what separates a build failure from a gate
+      # failure in the job summary.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # `COLLIE_ARTIFACTS_DIR` is deliberately unset: the script's own default
+      # is `<repo>/.session/artifacts`, the repository is the workspace, and the
+      # upload below names that path. Setting it from `github.workspace` would
+      # only put a mixed-separator string into the Windows leg's environment for
+      # no gain.
+      # One command, and it is the whole of both `[runner]` criteria: the moved
+      # artefact drives create → put_source → narrate over MCP stdio, then
+      # builds payload 2 with its own npm and runs D1, D2 and D3 against it.
+      - name: Artefact gate — narrate, then payload 2 and D1/D2/D3 (T2, T3)
+        run: pnpm e2e:runtime
+
+      # `always()`, because the transcript of a failed run is the thing worth
+      # downloading — the gate names its failed assertion on the last line of
+      # it. `if-no-files-found: error` then keeps a run that produced nothing at
+      # all from reporting a green upload over an empty artifact. The name
+      # carries the OS because upload-artifact refuses a name two jobs share.
+      - name: Upload the transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-runtime-${{ matrix.os }}
+          path: .session/artifacts/e2e-runtime.log
+          if-no-files-found: error
+          # A log, reproducible by re-running the workflow, times three runners
+          # per dispatch. `desktop.yml` filled this repository's artifact quota
+          # at the 90-day default on 2026-09-07 and every upload in every
+          # workflow failed until it was cleared; five days outlives reading the
+          # run that produced it and nothing more.
+          retention-days: 5

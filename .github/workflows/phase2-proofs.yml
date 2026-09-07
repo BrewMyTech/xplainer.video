@@ -1,0 +1,204 @@
+# The `[runner]` halves of the two phase-2 platform spikes: P2-S4 (systemd
+# readiness) and P2-S5 (the drain adapters).
+#
+# WHAT IT CLOSES. Both spikes exit `0` only when every expectation in them held,
+# so each is a check and not a demo — but a check is only evidence about the
+# machines it ran on. B2 ran them on macOS and, for the Linux half, in a
+# privileged container on a developer's arm64 Docker Desktop. Two of their
+# criteria are about machines nobody owns:
+#
+#   * **T5**, criterion 7 — the readiness spike exits `0` on `ubuntu-latest`,
+#     which is a real x86-64 Linux VM rather than a container on somebody's
+#     laptop.
+#   * **T6**, criterion 7 — the drain spike exits `0` on `ubuntu-latest` **and
+#     on `windows-latest`**. Windows is the half that matters most: the Task
+#     Scheduler cases were written from the documentation and had never been
+#     executed anywhere, which the ADR note says in those words. This job is
+#     where that sentence stops being true, in one direction or the other.
+#
+# WHY A FILE OF ITS OWN, AND A DEVIATION RECORDED. T5's criterion names
+# `.github/workflows/e2e-linux.yml`. That workflow has one job, it starts a
+# multi-gigabyte Kokoro service container and renders a whole video in it, and a
+# `workflow_dispatch` runs **every** job in the file it names — so putting a
+# 60-second spike there would either pay 40 minutes of render for it or need an
+# input to switch the render off, and neither is worth it. `e2e-runtime.yml` is
+# the other candidate and is a three-OS matrix of one script with its own
+# argument for existing. So the spikes get their own dispatch, and this
+# paragraph is the record of the deviation rather than a silent one.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The same rule the other two proofs
+# follow. These jobs boot service managers, register and tear down system-level
+# units and scheduled tasks, and time restarts — minutes of wall clock whose
+# answer changes only when a supervisor or an adapter changes. `ci.yml` is the
+# gate that runs on every push; this is a proof, and a proof is run when you
+# want it.
+#
+# WHY NOTHING IS UPLOADED. Both spikes write their whole transcript to stdout
+# and nothing to disk, so the job log **is** the artefact: it carries the host
+# banner, every case, every measured millisecond and the `check` line that
+# settled each expectation. There is nothing left to upload, which also keeps
+# this workflow clear of the artifact-storage quota that `desktop.yml` filled on
+# 2026-09-07 and that failed every upload in every workflow until it cleared.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
+# branch**: until this file is on `main` the API answers a dispatch of it with
+# 422 whatever `--ref` says, which is GitHub's own rule and not a repository
+# setting. Once it is there, `--ref` chooses which branch's code the run
+# executes, so a branch under review is dispatched by name.
+#
+#   gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow phase2-proofs.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+name: phase-2 proofs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike-p2-s4:
+    name: P2-S4 systemd readiness (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Nine cases, five timed starts in two of them, and a `turbo build` with no
+    # cache before any of it. The budget also has to cover the fallback: if this
+    # runner has no per-user manager the spike boots one in a privileged
+    # container it builds first, which is a Debian image and a Node copy.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The spike does not build anything itself: every unit it installs names
+      # a payload assembled by `xplainer runtime build`, and that command is
+      # `apps/cli/dist/bin.js`. An unbuilt `dist/` is a refusal on its first
+      # page, so the build is a step of its own and a build failure is legible
+      # as one.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # WHICH SYSTEMD THE SPIKE WILL MEASURE, ON THE RECORD. The spike measures
+      # a per-user manager directly when `systemctl --user is-system-running`
+      # answers, and otherwise boots one inside a privileged container and
+      # re-executes itself in there. Both are real measurements and the
+      # transcript says which happened, in its own words: the direct path opens
+      # with a `host` section naming the manager's uid and `XDG_RUNTIME_DIR`,
+      # and the container path opens with the line "this host has no systemd
+      # user manager — booting one in a container".
+      #
+      # A hosted runner starts with neither: the job is not a login session, so
+      # no `user@<uid>.service` has been started for it. `enable-linger` is what
+      # starts one with no login — and it is not a fixture, it is the same
+      # condition the shipped `--user` unit needs on a real machine, which is
+      # why creating it here measures the product's own arrangement rather than
+      # a container's. `XDG_RUNTIME_DIR` is exported for the steps that follow
+      # because the client library needs the bus address and no login session
+      # set one. Both probes are printed, before and after, and neither is
+      # allowed to fail the job: if the manager still cannot be reached the
+      # spike's own container path takes over and says so.
+      - name: A per-user systemd manager, and what this runner had before
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "XDG_RUNTIME_DIR before: ${XDG_RUNTIME_DIR:-<unset>}"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "XDG_RUNTIME_DIR after:  $runtime_dir"
+          echo "Linger:                 $(loginctl show-user "$(id -un)" --property=Linger 2>&1 || true)"
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+          case "$state" in
+            running|degraded|starting)
+              echo "=> the spike will measure this runner's own systemd directly" ;;
+            *)
+              echo "=> no per-user manager here: the spike will boot one in a privileged container and say so" ;;
+          esac
+
+      - name: Spike P2-S4 — readiness (T5)
+        run: node apps/cli/spikes/p2-s4-readiness.mjs
+
+  spike-p2-s5:
+    name: P2-S5 drain adapters (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Two answers, not one verdict: the Windows leg is the half that has never
+      # run anywhere, and a Linux failure must not cancel it.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    # Six systemd cases or five Task Scheduler ones, each with a restart and a
+    # drain whose whole point is that it takes seconds. No build precedes them.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # No `pnpm install` and no build in this job, deliberately: this spike
+      # imports nothing but Node's own modules and writes its stub listener into
+      # a scratch directory at run time, so a dependency tree would be a step
+      # that can fail for a reason the measurement is not about. It is also what
+      # makes the Windows leg cheap enough to run on every dispatch — and the
+      # Windows leg needs no preparation at all, which is why the step below is
+      # skipped there: Task Scheduler is running on any Windows box, and the
+      # spike registers its own throwaway task under `\xplainer\` and removes
+      # it in a `finally`.
+      #
+      # The Linux leg needs what the P2-S4 job needs and for the same reason —
+      # see that job's comment for why lingering is the product's own
+      # arrangement rather than a fixture, and for how the transcript tells a
+      # direct measurement from a containerised one.
+      - name: A per-user systemd manager, and what this runner had before
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+          case "$state" in
+            running|degraded|starting)
+              echo "=> the spike will measure this runner's own systemd directly" ;;
+            *)
+              echo "=> no per-user manager here: the spike will boot one in a privileged container and say so" ;;
+          esac
+
+      - name: Spike P2-S5 — the drain adapters (T6)
+        run: node apps/cli/spikes/p2-s5-drain.mjs
