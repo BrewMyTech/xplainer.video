@@ -198,6 +198,9 @@ FAKE_HOME=$(mktemp -d)
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
 cat "$FAKE_HOME/.codex/config.toml"
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
+
+# The `[runner]` half of the artefact gate: `pnpm e2e:runtime` on ubuntu, macos and windows.
+gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
 ```
 
 Then the root procedure: `pnpm verify`.

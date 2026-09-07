@@ -526,6 +526,19 @@ that phase 0 only declared a dependency on.
   dependency" path an early draft assumed does not exist. Settles
   [ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Part three — readiness and the open
   question in [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of 2026-09-06.
+  - *Amended 2026-09-08 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Note, 2026-09-08:
+    P2-S4 settled):* **reported, and the mechanism is named there.** `Type=notify` is rejected and
+    `Type=exec` stands with no `NotifyAccess=` beside it; the readiness wait is the caller's, an
+    authenticated `GET /healthz` polled with a bounded timeout and a named failure. Measured in
+    `apps/cli/spikes/p2-s4-readiness.mjs` against systemd 252 with the unit launching the payload-1
+    artefact: `Type=exec` returns from `systemctl --user start` in 4.5 ms with nothing usable behind
+    it (0/5 authenticated `200`s at that instant, first `200` at 130 ms), `Type=notify` returns in
+    125.3 ms with 5/5. It is rejected on cost: Node cannot write `READY=1` at all, so the notifier
+    is a child and `NotifyAccess=all` follows; that setting also lets `MAINPID=` move the main
+    process off the one systemd forked, which was measured, so the unit type does not preserve the
+    foreground-process invariant; and macOS and Windows need the `/healthz` wait regardless. The
+    residual — `Type=exec` reports `active` for a daemon that never becomes ready — and the
+    measured route that would close it are recorded in the note.
 - **P2-S5 (spike)** The drain is reachable on all three platforms through one application-level
   operation: a kill strategy on Linux that signals the main process rather than the whole
   cgroup (the default `KillMode=control-group` signals Chrome and ffmpeg at the same instant,
@@ -533,6 +546,21 @@ that phase 0 only declared a dependency on.
   kickstart -k`'s graceful behaviour is unverified and `Restart-ScheduledTask` is not a
   standard cmdlet, so both need a method rather than a name. Settles
   [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Drain on planned restart.
+  - *Amended 2026-09-08 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md) §Note,
+    2026-09-08: P2-S5 settled):* **reported on two of the three platforms, and the third is named
+    as unmeasured.** One application-level drain over the IPC listener, three adapters that differ
+    only in the restart command — `systemctl --user start xplainer`,
+    `launchctl kickstart gui/$(id -u)/video.xplainer.daemon`,
+    `schtasks /Run /TN "\xplainer\<user>-daemon"`. Measured in `apps/cli/spikes/p2-s5-drain.mjs`,
+    which binds its own stub listener because the production route is T13's: on macOS 26.5 (13/13
+    expectations) and on systemd 252 in `infra/e2e/Dockerfile.systemd` (11/11). `KillMode=mixed`
+    signalled only the main process while the default signalled the child in the *same
+    millisecond*; `TimeoutStopSec` was measured to be escalation and not a drain. **`launchctl
+    kickstart -k` is graceful** — `SIGTERM` first, the command blocks for the drain, and the grace
+    is bounded by `ExitTimeOut`, so the plist's `ExitTimeOut=45` is the counterpart of
+    `TimeoutStopSec=45s`. The **Windows row is a design, not a measurement**: no Windows host was
+    reachable, the spike's Task Scheduler arm is `[runner]` on `windows-latest`, and the note says
+    so rather than letting the table imply otherwise.
 - **P2-12** A supervisor-initiated restart during a job drains: the job either completes or
   reports `error` with `error_code: "daemon_shutdown"`; queued jobs report the same; no Chrome
   or ffmpeg process survives; the process exits within 25 seconds; and the supervisor's grace

@@ -86,8 +86,23 @@ const REPO = fileURLToPath(new URL("../../", import.meta.url));
 /** The built CLI that assembles the artefact. `pnpm turbo build` below makes it this commit's. */
 const CLI = join(REPO, "apps", "cli", "dist", "bin.js");
 
-/** pnpm's own name, which is a `.cmd` shim on Windows and not an executable file elsewhere. */
-const PNPM = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+/**
+ * The one spawn of pnpm in this script — `pnpm turbo build` — in the form `execFileSync` takes it.
+ *
+ * On POSIX that is pnpm's own name and two arguments, spawned directly. On Windows pnpm is a
+ * `pnpm.cmd` shim, which is not an image the kernel can execute, and since the April 2024 security
+ * release Node refuses to hand one to `CreateProcess` at all: `spawn`, `execFile` and their sync
+ * forms throw `spawn EINVAL` on a `.bat` or a `.cmd` unless `shell` is set, which is the fix for
+ * CVE-2024-27980. So Windows goes through `cmd.exe` — and as **one command string with no argument
+ * array**, because passing arguments *and* `shell: true` is a runtime deprecation in Node 24
+ * (DEP0190, measured: it prints a `DeprecationWarning` on every run) whose whole subject is the
+ * escaping a shell hop skips. Nothing is interpolated into that string; it is the same two literals
+ * the POSIX branch passes, and nothing else in this script is spawned through a shell at all.
+ */
+const PNPM_BUILD =
+  process.platform === "win32"
+    ? { command: "pnpm.cmd turbo build", args: [], shell: true }
+    : { command: "pnpm", args: ["turbo", "build"], shell: false };
 
 /** Where the transcript is left for a human to look at. */
 const ARTIFACTS =
@@ -555,7 +570,10 @@ async function main() {
   say(`  artifacts:   ${ARTIFACTS}`);
 
   section("build");
-  const built = run(PNPM, ["turbo", "build"], { cwd: REPO });
+  const built = run(PNPM_BUILD.command, PNPM_BUILD.args, {
+    cwd: REPO,
+    shell: PNPM_BUILD.shell,
+  });
   for (const line of built.trim().split("\n").slice(-4)) {
     say(`  ${line}`);
   }

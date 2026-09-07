@@ -1,0 +1,94 @@
+# The systemd host for spikes P2-S4 (`apps/cli/spikes/p2-s4-readiness.mjs`) and
+# P2-S5 (`apps/cli/spikes/p2-s5-drain.mjs`): a Debian image that boots real
+# systemd as PID 1 so a unit can be installed, started and inspected the way a
+# user's machine would. P2-S5 reuses this image under the tag P2-S4 builds
+# rather than adding a second one: both need the same thing — a booted systemd
+# with a per-user manager — and a second Dockerfile would be a second thing to
+# keep correct. Each spike runs it under its own container name, so the two can
+# be run side by side.
+#
+# WHY A BOOTED CONTAINER AND NOT A VM. P2-S4 asks which readiness mechanism a
+# systemd unit should use. Everything the question turns on — whether
+# `systemctl start` returns before or after the service is usable, whether a
+# `READY=1` from a process that is not the main one is accepted, what
+# `NotifyAccess` does to it, and where the manager's `MainPID` ends up — is
+# behaviour of the service manager itself, and a container that boots the real
+# `systemd` binary settles all of it. P2-S5's questions are the same kind —
+# which processes a stop signals and when, and whether `systemctl restart` waits
+# for the drain — so the same image answers both. Anybody with Docker can
+# re-run either; a VM image cannot be checked into this repository.
+#
+# It is NOT built by `pnpm verify` and is not part of any push-triggered job.
+# `apps/cli/spikes/p2-s4-readiness.mjs` and `apps/cli/spikes/p2-s5-drain.mjs`
+# each build and run it.
+#
+# The image COPYs nothing from this repository — the checkout arrives as a
+# read-only bind mount at run time — so it is built against an EMPTY context and
+# never the repository root:
+#
+#   docker build -f infra/e2e/Dockerfile.systemd -t xplainer-p2s4-systemd "$(mktemp -d)"
+#
+# HOW IT MUST BE RUN. systemd needs a writable cgroup hierarchy and its own
+# `/run`; the spike runs it as the manual for a systemd container prescribes:
+#
+#   docker run -d --privileged --cgroupns=host \
+#     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
+#     -v <checkout>:/repo:ro xplainer-p2s4-systemd
+#
+# `--privileged` is what lets PID 1 mount and write the hierarchy. This is a
+# throwaway measurement container on the developer's own machine; nothing about
+# the shipped product needs it.
+FROM debian:bookworm-slim
+
+# `systemd-sysv` is what provides `/sbin/init`; `dbus` and `libpam-systemd` are
+# what a per-user manager (`systemctl --user`) needs before it can exist at all,
+# which is the instance the shipped unit will live in. `libpam-systemd` is not
+# optional and not obvious: without it `user@<uid>.service` starts, fails to
+# `dlopen(pam_systemd.so)`, and dies with "Trying to run as user instance, but
+# $XDG_RUNTIME_DIR is not set" — measured in this image before the line was
+# added. `systemd-notify(1)`, the one candidate mechanism Node can reach without
+# a native addon, ships inside the `systemd` package itself and needs no line.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    systemd \
+    systemd-sysv \
+    libpam-systemd \
+    dbus \
+    procps \
+  && rm -rf /var/lib/apt/lists/*
+
+# Units that only slow a measurement container's boot down or fail in it. Boot
+# time is on the critical path of every start this spike times, and a manager
+# that reaches `running` rather than `degraded` keeps `is-system-running` a
+# usable readiness check for the container itself.
+RUN systemctl mask \
+    systemd-udevd.service \
+    systemd-udev-trigger.service \
+    systemd-firstboot.service \
+    systemd-timesyncd.service \
+    systemd-resolved.service \
+    systemd-networkd.service \
+    console-getty.service \
+    getty.target
+
+# The interpreter the *spike harness* runs on, and the one `xplainer runtime
+# build` copies into payload 1. It is the pinned version from `.node-version`,
+# taken from the official image rather than from Debian's archive, so the
+# artefact this spike measures carries the same Node the repository pins. The
+# unit under test never reaches this copy: it names the payload's own
+# `bin/node`, inside the artefact.
+COPY --from=node:24.20.0-bookworm-slim /usr/local /usr/local
+
+# A real, unprivileged user, because the shipped unit is a `--user` unit. The
+# home directory is where the per-user manager's units go, and lingering (which
+# is what starts `user@<uid>.service` with no login) is enabled by the spike at
+# run time rather than baked in, so that a failure to start one is observable as
+# a failure rather than as an image that would not boot.
+RUN useradd --create-home --uid 1000 --shell /bin/bash xplainer
+
+# `systemd` exits on SIGRTMIN+3, and `docker stop` sends SIGTERM, which PID 1
+# reads as "reboot". Without this a stop takes the full 10-second kill timeout.
+STOPSIGNAL SIGRTMIN+3
+
+ENV container=docker
+CMD ["/sbin/init"]

@@ -767,3 +767,125 @@ question about tool ordering, not about two processes, and it is left open here 
 badly. The `requests/` document is likewise still keyed by job id per store, so two stores can
 overwrite one another's; `agreedSlug()` turns that into a named, retryable failure rather than a
 wrong render, and moving those documents into the store that owns them is phase 2's to do.
+
+## Note, 2026-09-08: P2-S5 settled — one drain, three restart adapters, and `kickstart -k` measured
+
+Spike **P2-S5** has reported. It answers the mechanism §Drain on planned restart left open — "how
+each supervisor is persuaded to allow it" — and it changes nothing this record *decides*: the drain
+is still the same six steps, still capped at 20 s, and still ends in exit `0` as the portable "do
+not restart" signal. The block above marked **Proposed mechanism, to be confirmed by spikes P2-S4
+and P2-S5** is answered here rather than edited.
+
+**Decided: one application-level drain reached over the IPC listener, and three adapters that
+differ only in how the supervisor is asked to start again.** On Linux `KillMode=mixed` is required
+and its reason is now measured rather than argued; on macOS `launchctl kickstart -k` is **graceful**
+— it sends `SIGTERM` first and waits — so it is the counterpart of `systemctl --user restart` and
+not the kill this record called it; on Windows the route over the named pipe is the mechanism with
+no fallback beneath it.
+
+| | ask for the drain | response to exit `0` | restart command |
+|---|---|---|---|
+| Linux | `POST /api/daemon/drain` over the socket, or `SIGTERM` to the main process | `Restart=on-failure` does not restart | `systemctl --user start xplainer` |
+| macOS | the same route over the same socket | `KeepAlive{SuccessfulExit:false}` does not restart | `launchctl kickstart gui/$(id -u)/video.xplainer.daemon` |
+| Windows | the same route over the named pipe | the task ends | `schtasks /Run /TN "\xplainer\<user>-daemon"` |
+
+The measurement is `apps/cli/spikes/p2-s5-drain.mjs`, which exits `0` only when every expectation
+holds and prints the numbers quoted below. It ran on 2026-09-08 against **macOS 26.5** in
+`gui/501` (13/13) and against **systemd 252 (252.39-1~deb12u2)** on `linux/arm64` (11/11) inside
+`infra/e2e/Dockerfile.systemd` — the image spike P2-S4 already builds, reused rather than
+duplicated — booted `--privileged --cgroupns=host` on OrbStack 29.4.0, Node v24.20.0 throughout.
+Every figure below comes from one run of it; across three consecutive runs the millisecond figures
+moved by a few ms and the counts did not move at all.
+
+**The spike carries its own listener, and that is why it could run at all.** The route it asks for,
+`POST /api/daemon/drain`, is built by **T13, two batches later**. Measuring the supervisors through
+a route that does not exist yet would have meant either deferring the spike or measuring only Linux,
+which is the one platform with a signal fallback and therefore the one the question is least about.
+So the harness binds its own unix socket — a named pipe on Windows — with a fixture route that runs
+a **fake** drain: sleep, kill the child, exit `0`. Every question below is about the *supervisor*,
+and none of them needs the production route. The fixture is written into a scratch directory at run
+time and never ships. **T13 proves these same three adapters against the real route.**
+
+### Linux: `KillMode=mixed`, and what the default actually does
+
+The claim this record made without measuring it — that `KillMode=control-group` signals Chrome and
+ffmpeg at the same instant as the daemon — holds exactly. Two units differing in one key, each
+restarted with `systemctl --user restart` while the fixture held a child that records every signal
+it receives:
+
+```
+KillMode=mixed           daemon: bound → SIGTERM → drain → child killed → exit 0
+                         child:  started                      (no signal, ever)
+KillMode=control-group   daemon SIGTERM at 1788811452701
+                         child  SIGTERM at 1788811452701      (skew 0 ms)
+```
+
+So `mixed` is not a preference: under the default the drain is not a drain, because the processes it
+exists to shut down cleanly are already dying. The restart itself waited — 1213 ms against a 1200 ms
+drain — which is the other half of the claim, and the unit came back up behind the same command.
+
+Three more rows, each measured: **`Restart=on-failure` declines an exit `0`** — after the route
+drain the unit sat at `ActiveState=inactive Result=success MainPID=0 NRestarts=0` for a five-second
+window, well above `RestartSec=2` — while an exit `7` was restarted 2230 ms later with
+`NRestarts=1`, so the negative discriminates rather than describing a unit that never restarts
+anything. **`SIGTERM` to the main process reaches the same drain**, which is the Linux row's second
+half and exists on neither other platform. And **`TimeoutStopSec` supplies escalation, not a
+drain**: a 2 s budget against an 8 s drain returned in 2240 ms with `Result=timeout` and the drain
+unfinished, which is why the shipped `TimeoutStopSec=45s` has to exceed the 20 s cap rather than
+implement it.
+
+### macOS: `kickstart -k` is graceful, and `ExitTimeOut` is what bounds it
+
+This record wrote that `launchctl kickstart -k` "is documented only as kill-and-restart and its
+graceful behaviour is **unverified**". It is now verified, and the answer is the opposite of what the
+name suggests:
+
+```
+launchctl kickstart -k gui/501/<label>   returned after 1211 ms      (a 1200 ms drain)
+the old instance's record: bound → signal(SIGTERM) → drain_started → drain_completed → exit 0
+```
+
+It sends `SIGTERM`, the drain runs to completion, **and the command itself blocks until the process
+is gone** before starting the replacement. The grace is bounded by `ExitTimeOut`, measured by
+shortening it: with `ExitTimeOut=3` against an 8000 ms drain the command returned in 3012 ms and the
+old instance's record stops at `drain_started` — killed mid-drain. So the plist's **`ExitTimeOut=45`
+is the macOS counterpart of `TimeoutStopSec=45s`**, and it is what has to exceed this record's 20 s
+cap. `kickstart -k` is therefore a legitimate supervisor-initiated restart on macOS, the analogue of
+`systemctl --user restart`, and not merely a kill.
+
+`kickstart` **without** `-k` is a different command and both are needed: on a running job it
+returned `0` in 4 ms and did nothing at all — same pid, still serving — which is exactly what makes
+it the clean *start* half after a drain the daemon has already taken. `KeepAlive{SuccessfulExit:
+false}` does not restart an exit `0` (`state = not running, last exit code = 0`, observed for five
+seconds against a probe `ThrottleInterval` of 1), and does restart an exit `7` 1096 ms later.
+
+**Two smaller measurements that cost time to rediscover.** `launchctl bootout` returns **before** the
+job has exited: the spike's own case asserts it, and measured it returning in 5 ms with the label
+still in the domain, which left it 1205 ms later when the drain it had just triggered finished. A `bootstrap`
+issued in that gap fails with `Bootstrap failed: 5: Input/output error` — hit while building this
+spike, which reads like a malformed plist and is not one — so anything that replaces a loaded agent
+must wait for the label to leave the domain first; **T12's uninstall and reinstall paths are where
+that matters**. Separately, and also found the hard way rather than asserted: a unix socket path
+much over 100 bytes fails the bind with `EINVAL` on macOS, which is a constraint on where
+`--socket` (T7) may point and not merely on where this spike puts its own.
+
+### Windows: the design, and honestly not a measurement
+
+**No Windows host was reachable from the session that ran this spike, so the Task Scheduler row is
+not measured.** It is the `[runner]` half: the spike carries a Windows arm written from the
+`schtasks` documentation and this plan's adapter table, and `windows-latest` is where it becomes
+evidence. What it will assert is the same shape as the other two — the fixture route runs the drain
+over a **named pipe**, the task ends on exit `0` and nothing brings it back on its own, and
+`schtasks /Run /TN "\xplainer\<user>-daemon"` starts it again — plus the fact that gives Windows a
+drain at all: Node maps `SIGTERM` there to `TerminateProcess`, so the process dies with no handler
+run and no drain, and the route is the mechanism rather than a fallback. Until that job has run, the
+Windows row of the table above is a design and the other two are measurements, and this note says so
+rather than letting the table imply otherwise.
+
+### What this note does not decide
+
+The production drain route is **T13's**, and the six steps §Drain on planned restart lists are
+unchanged by anything here — this spike measured supervisors, not the drain's own behaviour, and its
+fixture is a sleep. `AllowHardTerminate`, the Job Object that closes `process-group.ts`'s
+grandchild gap, and the circuit breaker's measured boundary are their own stories (T14) and are not
+settled by this measurement.
