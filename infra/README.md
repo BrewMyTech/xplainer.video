@@ -4,17 +4,19 @@ Nothing in here runs a service for anyone. This directory used to describe the
 hosted plane — a VM, a firewall, a five-service Compose stack and the `mcp`
 hostname in front of it. All of that moved to the private repository
 **`BrewMyTech/xplainer-hosted`**, with its history, and none of it is coming
-back. What is left is two things that serve the *local* product, kept for
-reasons written out below so that neither is mistaken for a hosted leftover.
+back. What is left is three things that serve the *local* product, kept for
+reasons written out below so that none of them is mistaken for a hosted
+leftover.
 
 | Path | What it is | Who it serves |
 | --- | --- | --- |
 | `terraform/` | An R2 bucket for release artefacts and the cached custom domain that delivers them. | Auto-update, and the first-run downloads `xplainer setup` performs. |
 | `docker-compose.tts.yml` | The Kokoro TTS container on `127.0.0.1:8880`, alone. | A developer who has Docker and wants the pinned speech server in one command. |
+| `e2e/` | A Debian image that runs the end-to-end render on Linux, and its build-context filter. | Roadmap **P1-1**, whose second half is "on a headless Linux VM". |
 
-They are independent of each other. Neither is required to build, test or run
-the CLI: `pnpm turbo build lint typecheck test` touches neither, and the desktop
-app builds with `--publish never` today.
+They are independent of each other. None of them is required to build, test or
+run the CLI: `pnpm turbo build lint typecheck test` touches all three not at
+all, and the desktop app builds with `--publish never` today.
 
 ---
 
@@ -181,6 +183,40 @@ already the default in this file, in `services/tts-sidecar/Dockerfile` and in
 `services/tts-sidecar/src/xplainer_tts_sidecar/config.py`. Both interpolations
 here carry inline defaults, so `docker compose config` exits 0 with no `.env`
 present at all.
+
+---
+
+## The end-to-end proof image
+
+```sh
+pnpm e2e:render:linux
+```
+
+`e2e/Dockerfile` is `node:24-bookworm-slim` plus ffmpeg, the Chrome headless
+shell's Debian library set and a Liberation font, with this repository installed,
+built and its Remotion browser already downloaded. `scripts/e2e/linux.mjs` is what
+runs it: it builds the image, creates a user-defined bridge network, starts its
+own Kokoro container on it, waits for `/v1/audio/voices` to answer, runs
+`pnpm e2e:render` inside the image against that container, copies the transcript
+and the MP4 out of a bind-mounted `/artifacts`, and removes both containers and
+the network on the way out — on the failure path too.
+
+**It starts its own Kokoro and publishes no host port.** A developer machine very
+often already has a Kokoro answering on 8880, and this proof must neither disturb
+it nor depend on it, so the render reaches its own by container name over the
+private network.
+
+**It is not a Compose service, and it must not become one.** The sequence has a
+wait in the middle and a teardown that has to run after a failure, neither of
+which a Compose file expresses; `docker-compose.tts.yml` above stays the one
+Compose file here. The build context is the repository root filtered by
+`e2e/Dockerfile.dockerignore` — BuildKit prefers a `<dockerfile>.dockerignore`
+over the context root's, which is what keeps this proof's ignore rules out of
+the root of the repository.
+
+The same proof runs on a GitHub runner from `.github/workflows/e2e-linux.yml`,
+which is `workflow_dispatch` only: it renders a real video, so it is run when
+the proof is wanted rather than on every push.
 
 ---
 

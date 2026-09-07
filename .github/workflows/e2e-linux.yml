@@ -1,0 +1,156 @@
+# The Linux half of roadmap P1-1, on a GitHub runner.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. This job renders a real video: it
+# pulls the multi-gigabyte Kokoro CPU image, waits for its voice pack, lets
+# Remotion download a Chrome headless shell and then spends minutes in it. On
+# `push` it would double the wall-clock cost of every commit and would go red
+# for reasons that are not this repository's code — an upstream image that will
+# not pull, a runner without the disk for Chrome. `ci.yml` is the gate; this is
+# the proof, and a proof is run when you want the proof. It is the same argument
+# that keeps `pnpm e2e:render` out of `pnpm verify`.
+#
+# WHAT IT ADDS OVER THE LOCAL RUN. `pnpm e2e:render:linux` proves the render on
+# Debian in Docker on a developer's machine; this proves it on a machine nobody
+# owns, from a clean checkout, with the Node version `.node-version` pins and no
+# state whatsoever. Both run the same `scripts/e2e/render.mjs`. This job needs no
+# container of its own because a runner already is a headless Linux box, so it
+# installs ffmpeg and the Chrome libraries directly — the same set
+# `infra/e2e/Dockerfile` installs, in this distribution's spelling.
+#
+#   gh workflow run e2e-linux.yml --ref main
+#   gh run watch "$(gh run list --workflow e2e-linux.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+name: e2e-linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  render:
+    name: end-to-end render (linux)
+    runs-on: ubuntu-latest
+    # The render itself is fast — 30 seconds for 491 frames in the local Docker
+    # proof of 2026-09-07. The budget is for everything around it on a cold
+    # runner: the multi-gigabyte Kokoro pull, its voice pack, the dependency
+    # install and Remotion's Chrome download, each paid in full on every run.
+    timeout-minutes: 60
+
+    services:
+      # The same pinned CPU image infra/docker-compose.tts.yml and the local
+      # Docker proof use, so all three prove the same server. The health check
+      # is what makes the steps below start only once the voice pack is loaded;
+      # `curl` is in the image (verified: /usr/bin/curl), which is why the probe
+      # is not a Python one-liner against a virtualenv interpreter.
+      kokoro:
+        image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+        ports:
+          - 8880:8880
+        options: >-
+          --health-cmd "curl -fsS http://localhost:8880/v1/audio/voices"
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 40
+          --health-start-period 30s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      # ffmpeg is what the CLI muxes with and what the proof probes with;
+      # everything after it is the Chrome headless shell's shared-library set.
+      # Remotion downloads the shell, never the system libraries it links, and a
+      # missing one surfaces as a Chrome that dies before printing anything.
+      #
+      # Four of the names moved in Ubuntu's 64-bit time_t transition and the
+      # runner image is pinned by GitHub rather than by us, so each of those is
+      # tried in its new spelling and then in its old one instead of hard-coding
+      # a guess about which runner generation this is.
+      - name: Install ffmpeg and the Chrome headless shell libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          packages=(
+            ffmpeg
+            fonts-liberation
+            libcairo2
+            libdbus-1-3
+            libdrm2
+            libgbm1
+            libnss3
+            libpango-1.0-0
+            libxcomposite1
+            libxdamage1
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+          )
+          for base in libasound2 libatk1.0-0 libatk-bridge2.0-0 libcups2; do
+            if apt-cache show "${base}t64" >/dev/null 2>&1; then
+              packages+=("${base}t64")
+            else
+              packages+=("$base")
+            fi
+          done
+          sudo apt-get install -y -qq "${packages[@]}"
+          ffprobe -version | head -1
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The proof runs `pnpm turbo build` itself, so this step is not what makes
+      # the CLI current — it is what separates a build failure from a render
+      # failure in the job summary.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The service's own health check has already passed by the time any step
+      # runs, so this is evidence rather than a wait: it puts the voice count in
+      # the log next to the URL the render is about to use.
+      - name: Kokoro answers on localhost:8880
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 10 --retry-all-errors --retry-delay 6 \
+            http://localhost:8880/v1/audio/voices \
+            | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log("kokoro offers "+b.voices.length+" voices")'
+
+      - name: End-to-end render (P1-1)
+        env:
+          XPLAINER_TTS_URL: http://localhost:8880
+          COLLIE_ARTIFACTS_DIR: ${{ github.workspace }}/.session/artifacts
+        run: pnpm e2e:render
+
+      # `always()`, because the transcript of a failed run is the thing worth
+      # downloading. `if-no-files-found: error` then keeps a run that produced
+      # nothing at all from reporting a green upload over an empty artifact.
+      - name: Upload the transcript and the MP4
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-linux
+          path: |
+            .session/artifacts/e2e-render.log
+            .session/artifacts/e2e-sample.mp4
+            .session/artifacts/e2e-still.png
+            .session/artifacts/e2e-frame-captioned.png
+            .session/artifacts/e2e-frame-nocaptions.png
+          if-no-files-found: error
+          # Same argument as desktop.yml: the artefact is reproducible by
+          # re-running the workflow, so it needs to outlive a review and not a
+          # quarter. That workflow filled the repository's artifact quota at the
+          # 90-day default on 2026-09-07.
+          retention-days: 14

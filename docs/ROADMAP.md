@@ -250,8 +250,8 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
 - **P1-1** An agent, using only the installed skill, drives `create → put_source → narrate →
   still → render` to a finished 1920×1080 @ 30 fps MP4 with burned captions — on a headless
   Linux VM **and** on macOS.
-  - *Amended 2026-09-06 (US-010): the macOS half is proven; the Linux VM half is not.* `pnpm
-    e2e:macos` (`scripts/e2e/macos.mjs`, deliberately **not** part of `pnpm verify`) starts a real
+  - *Amended 2026-09-06 (US-010): the macOS half is proven; the Linux VM half was not yet.* `pnpm
+    e2e:render` (`scripts/e2e/render.mjs`, deliberately **not** part of `pnpm verify`) starts a real
     `xplainer serve` in a temporary state directory, attaches an MCP client over `xplainer mcp
     --attach` — the daemon's unix socket, no URL and no token — and drives all five calls against
     Kokoro in Docker, polling `explainer_job` to `done` each time. The run of 2026-09-06 produced
@@ -260,24 +260,46 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     total. The captions are burned in, not merely configured: frame 257 extracted from the MP4
     differs from the same frame of a captions-disabled render across 3.89% of the caption band
     and 0.001% of a band of equal size above it. The artefacts are `e2e-sample.mp4` and the
-    transcript `e2e-macos.log`, both under `$COLLIE_ARTIFACTS_DIR`. **What it does not prove** is
-    the sentence's first clause: the driver is a script calling the tools in order, not a language
-    model reading `packages/skill`'s `SKILL.md` and deciding to. The tool path is proven; the
-    instructions above it are judged by P1-4 and by using the thing.
-  - *Pending: the headless Linux VM.* Nothing in the script is macOS-specific — it resolves
-    `ffmpeg` and `ffprobe` from `PATH` — so the run that settles the other half is the same one,
-    on a VM with Docker, `ffmpeg` and the Node and pnpm versions this repository pins:
+    transcript, both under `$COLLIE_ARTIFACTS_DIR`. (That run wrote `e2e-macos.log`; the script
+    was `scripts/e2e/macos.mjs` until 2026-09-07 and now writes `e2e-render.log`.) **What it does
+    not prove** is the sentence's first clause: the driver is a script calling the tools in order,
+    not a language model reading `packages/skill`'s `SKILL.md` and deciding to. The tool path is
+    proven; the instructions above it are judged by P1-4 and by using the thing.
+  - *Closed 2026-09-07 (US-002): the headless Linux half is proven, and the "pending" note above
+    it is discharged.* Nothing in the script was macOS-specific — it resolves `ffmpeg` and
+    `ffprobe` from `PATH` — so the run that settles the other half is the same script, and it is
+    now named for that: `scripts/e2e/macos.mjs` is `scripts/e2e/render.mjs`, `e2e:macos` is
+    `e2e:render`, and the old script name is kept as an alias for one release only.
 
     ```bash
-    docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 \
-      ghcr.io/remsky/kokoro-fastapi-cpu:latest
-    corepack enable && pnpm install --frozen-lockfile
-    COLLIE_ARTIFACTS_DIR=/tmp/xplainer-e2e XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm e2e:macos
-    docker stop xplainer-e2e-kokoro
+    pnpm e2e:render:linux          # local Docker, this laptop
+    gh workflow run e2e-linux.yml --ref main   # the same proof on a GitHub runner
     ```
 
-    Remotion downloads a headless Chrome shell on that machine's first render, and the script's
-    name is the first thing that run should correct.
+    `pnpm e2e:render:linux` (`scripts/e2e/linux.mjs`) builds `infra/e2e/Dockerfile` —
+    `node:24-bookworm-slim` at the `.node-version` pin, plus `ffmpeg`, the Chrome headless shell's
+    Debian library set, `fonts-liberation`, this repository installed with
+    `pnpm install --frozen-lockfile`, `pnpm turbo build`, and Remotion's browser already
+    downloaded — starts its own `ghcr.io/remsky/kokoro-fastapi-cpu:latest` container on a private
+    Docker network, waits for `/v1/audio/voices`, runs `pnpm e2e:render` inside the image against
+    it, and removes both containers and the network afterwards, on the failure path too.
+
+    The run of **2026-09-07**, image `xplainer-e2e-linux:local` on Docker 29.4.0 `linux/arm64`
+    (Node v24.20.0, `linux arm64`, `/usr/bin/ffmpeg`), passed in 30 seconds: Kokoro answered with
+    68 voices, `explainer_narrate`, `explainer_still` and `explainer_render` each went
+    `queued → running → done`, and `ffprobe` reports the MP4 as `1920`×`1080`, `r_frame_rate=30/1`,
+    `codec_name=h264` with an `aac` stream at 48 kHz — 491 frames, 16.37 s, 13.67 ms from
+    `timings.json`'s total, with `narration.wav` 0.292 ms from it. The captions are burned in on
+    Linux too: frame 257 differs from the captions-disabled control across **3.893%** of the
+    caption band and **0.010%** of the equal-sized band above it. The artefacts land on the host
+    as `e2e-linux.log` and `e2e-linux.mp4` (1.45 MB) under `$COLLIE_ARTIFACTS_DIR`, beside
+    `e2e-linux-still.png`, `e2e-linux-frame-captioned.png` and `e2e-linux-frame-nocaptions.png`.
+
+    The repeatable form is `.github/workflows/e2e-linux.yml`, job **`end-to-end render (linux)`**,
+    on `ubuntu-latest` with Kokoro as a service container and the transcript and MP4 uploaded as
+    the `e2e-linux` artifact. It is `workflow_dispatch` **only** — it renders a real video, so it
+    is run when the proof is wanted, not on every push — which is the same argument that keeps
+    `pnpm e2e:render` out of `pnpm verify`.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged

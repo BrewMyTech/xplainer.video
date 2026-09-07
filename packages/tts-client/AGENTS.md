@@ -52,7 +52,7 @@ Then the root procedure: `pnpm verify`.
 - **`fetch` is injected**, through the `FetchLike` seam, for the same reason.
 - **The live suite is gated, never required.** `client.test.ts`'s last block talks to a real Kokoro
   server and runs only when `XPLAINER_TTS_URL` is set — the same variable the daemon's narration
-  worker reads, so one export drives both it and `pnpm e2e:macos`. It is what catches a server that
+  worker reads, so one export drives both it and `pnpm e2e:render`. It is what catches a server that
   renamed an endpoint or stopped returning `timestamps`, which every stubbed test above it would
   stay green through. Making it mandatory would make `pnpm verify` fail on any machine with no
   container, which is most of them, so it stays a skip.

@@ -1,8 +1,8 @@
 /**
  * The walking skeleton, walked: one real video, produced through the MCP tools, on this machine.
  *
- * This is roadmap **P1-1**'s macOS half and the only place in the repository where every phase-1
- * piece is exercised at once and against nothing fake:
+ * This is roadmap **P1-1**, and the only place in the repository where every phase-1 piece is
+ * exercised at once and against nothing fake:
  *
  * - a real `xplainer serve` in its own state directory, reached the way an agent reaches it —
  *   `xplainer mcp --attach` over the daemon's unix socket, carrying no URL and no token;
@@ -13,26 +13,38 @@
  * - `ffprobe` on the finished MP4, and an `ffmpeg` frame extract compared against the same frame of
  *   a captions-disabled render, which is what makes "with burned captions" a measurement.
  *
+ * **Nothing in it is platform-specific.** It resolves `ffmpeg` and `ffprobe` from `PATH` and takes
+ * every other coordinate from the environment, which is why it is `render.mjs` and no longer
+ * `macos.mjs`: P1-1 is judged on macOS **and** on headless Linux, and one script settles both. The
+ * Linux half runs this same file inside the container `infra/e2e/Dockerfile` builds — see
+ * `scripts/e2e/linux.mjs`, which is `pnpm e2e:render:linux`.
+ *
  * **It is not part of `pnpm verify`, and it must not become part of it.** It needs Docker, a
  * multi-gigabyte model container and several minutes of Chrome; a gate that cannot run on a
  * developer's machine or in CI is a gate that gets disabled. The suites under `apps/cli` cover the
  * same code paths against recorded speech and are what CI runs. This script is the periodic proof
  * that the recording still matches the world.
  *
- * Run it:
+ * Run it on the host:
  *
  * ```bash
  * docker run -d --rm --name xplainer-e2e-kokoro -p 127.0.0.1:8880:8880 \
  *   ghcr.io/remsky/kokoro-fastapi-cpu:latest
- * pnpm e2e:macos
+ * pnpm e2e:render
  * docker stop xplainer-e2e-kokoro
+ * ```
+ *
+ * Or on Linux in Docker, with the Kokoro container and the teardown handled for you:
+ *
+ * ```bash
+ * pnpm e2e:render:linux
  * ```
  *
  * Environment it reads: `XPLAINER_TTS_URL` (default `http://127.0.0.1:8880`),
  * `COLLIE_ARTIFACTS_DIR` (default `<repo>/.session/artifacts`), `XPLAINER_FFMPEG` and
  * `XPLAINER_FFPROBE` (default: whatever is on `PATH`).
  *
- * Everything it prints is also written to `<artifacts>/e2e-macos.log`, line by line as it happens,
+ * Everything it prints is also written to `<artifacts>/e2e-render.log`, line by line as it happens,
  * so a run that dies mid-render still leaves its transcript behind.
  */
 
@@ -229,7 +241,7 @@ const CAPTION_BAND_MIN_CHANGE = 0.01;
 const CONTROL_BAND_MAX_CHANGE = 0.005;
 
 /** Where the transcript is written, line by line. */
-const LOG_PATH = join(ARTIFACTS, "e2e-macos.log");
+const LOG_PATH = join(ARTIFACTS, "e2e-render.log");
 
 /** Every status this run saw, in order, for the summary at the end. */
 const observed = [];
@@ -584,7 +596,7 @@ async function main() {
   mkdirSync(ARTIFACTS, { recursive: true });
   writeFileSync(LOG_PATH, "");
 
-  say(`xplainer end-to-end on macOS — ${stamp()}`);
+  say(`xplainer end-to-end — ${stamp()}`);
   say(`  repository:  ${REPO}`);
   say(`  node:        ${process.version} (${process.platform} ${process.arch})`);
   say(`  ffmpeg:      ${ffmpeg}`);
@@ -641,7 +653,7 @@ async function main() {
     env,
     stderr: "pipe",
   });
-  const client = new Client({ name: "xplainer-e2e-macos", version: "1.0.0" });
+  const client = new Client({ name: "xplainer-e2e", version: "1.0.0" });
   await client.connect(transport);
   transport.stderr?.setEncoding("utf8");
   transport.stderr?.on("data", (chunk) => {

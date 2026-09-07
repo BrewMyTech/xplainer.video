@@ -1,0 +1,44 @@
+# Build-context filter for infra/e2e/Dockerfile.
+#
+# BuildKit looks for `<dockerfile-path>.dockerignore` before the context root's
+# `.dockerignore`, so this file governs `docker build -f infra/e2e/Dockerfile .`
+# and nothing else. That is deliberate: the repository root has no
+# `.dockerignore`, this is the only image built from the root as context, and a
+# root-level file would be a shared surface that another tool's Compose build
+# would silently inherit.
+#
+# Everything excluded here is either reproduced inside the image (node_modules,
+# dist) or has no business in it (history, scratch state, secrets). Without the
+# first two the context is about a gigabyte and the daemon spends longer
+# receiving it than the install takes.
+
+# Reproduced by `pnpm install --frozen-lockfile` inside the image, for Linux
+# rather than for this laptop: node_modules here holds the darwin-arm64 Remotion
+# compositor and the darwin esbuild, neither of which can run in the container.
+**/node_modules
+
+# Reproduced by `pnpm turbo build`. Copying a host build in would also copy the
+# turbo cache that says it is up to date.
+**/dist
+**/.turbo
+**/out
+**/release
+**/.next
+
+# Local toolchains and caches, none of them portable to the image.
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+infra/terraform/.terraform
+
+# History, scratch state and machine-local settings. `.session/` is where the
+# run's own artefacts land on the host; sending them into the build would make
+# every run's context depend on the previous run's output.
+.git
+.github
+.session
+.omc
+.env
+**/.DS_Store

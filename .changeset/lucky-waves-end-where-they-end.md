@@ -15,5 +15,5 @@ in the payload.
 A size that is merely too large still fails, unchanged, so a truncated download is not read as a
 short take — the two cases look alike in a header and are opposites in a track.
 
-Found by the end-to-end run against a live container (`pnpm e2e:macos`), which is the only place
+Found by the end-to-end run against a live container (`pnpm e2e:render`), which is the only place
 this package meets a WAV it did not write.
