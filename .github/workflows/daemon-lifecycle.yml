@@ -1,0 +1,282 @@
+# The `[runner]` half of T12: the four sentences ADR 0020 requires
+# `xplainer daemon status` to say, asserted on machines this project's authors
+# do not have.
+#
+# WHAT IT CLOSES. T12's criterion 8 — "the four-sentence assertion runs on
+# `ubuntu-latest` and `macos-latest`, and Windows is runner-only". Three
+# criteria are behind that one line:
+#
+#   * The **assertion itself** (`install/lifecycle.test.ts`) is a Vitest file
+#     with `run` as its one seam, and it runs on every one of the three
+#     operating systems here. What it establishes there and not on a developer's
+#     laptop is that a real `lsof`, `ss` or `netstat` on that OS names the pid
+#     holding a port — the number ADR 0020's first sentence carries — and that a
+#     real spawned daemon out of a real staged payload answers on it.
+#   * The **proof** (`install/testing/lifecycle-proof.ts`) hands the queries to
+#     a real service manager: `launchctl print-disabled` after a real
+#     `launchctl disable` on macOS, and `systemctl --user is-enabled`,
+#     `systemctl --user show -p ExecStart …` and a real `systemctl --user
+#     disable` on Linux. That is the half the seam cannot reach, because it is a
+#     property of somebody else's software.
+#   * **Windows is runner-only**, and it is the platform nothing in this
+#     repository can measure: `Get-ScheduledTask`'s `State` is read from the
+#     documentation and had never been executed anywhere. The Windows job runs
+#     the Vitest assertion and then asks a **real** Task Scheduler what a
+#     registered task's `State` is, before and after `Disable-ScheduledTask`, and
+#     prints both — a measurement, so it exits `0` either way and the record is
+#     updated from what it said.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, the runner half of T12 is unproven, and no record
+# in this repository may say otherwise.** `workflow_dispatch` registers from the
+# repository's **default branch**, so this file has to reach `main` before the
+# API will accept a dispatch of it at all — GitHub's own rule, not a repository
+# setting — and `--ref` then chooses whose code runs. It has never been
+# dispatched.
+#
+#   gh workflow run daemon-lifecycle.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-lifecycle.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The rule `e2e-runtime.yml`,
+# `e2e-linux.yml`, `phase2-proofs.yml` and `daemon-windows.yml` all follow. These
+# jobs install a supervised daemon, switch services off and on, and revoke
+# lingering — minutes of wall clock whose answer changes only when a supervisor
+# or an adapter changes. `ci.yml` is the gate that runs on every push; this is a
+# proof, and a proof is run when you want it.
+#
+# WHY NOTHING IS UPLOADED. Every job writes its whole transcript to stdout, so
+# the job log **is** the artefact. That also keeps this workflow clear of the
+# organisation-wide artifact-storage quota that has failed every upload step
+# since 2026-09-07.
+#
+# WHAT IS DELIBERATELY LEFT OUT. The macOS job does **not** disable the product's
+# own launchd label. `launchctl` has no verb that removes an entry from the
+# disable store — `enable` and `disable` set its value and there is no third one
+# — so the proof uses a throwaway label and puts it back in a `finally`, which is
+# the same rule `supervisor-proof.ts` follows for the same reason.
+
+name: daemon lifecycle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  assertion:
+    name: the four sentences (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The port holder in ADR 0020's first sentence is read off whichever of
+      # `lsof` or `ss` the machine has, and the assertion compares the pid with
+      # this process's own — so a runner image with neither would fail the case
+      # rather than skip it. Printed before the run so a failure is legible as
+      # the image's rather than the code's.
+      - name: What names a port holder on this runner
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "platform: $(uname -a)"
+          echo "lsof:     $(command -v lsof || echo '<absent>')"
+          echo "ss:       $(command -v ss || echo '<absent>')"
+          echo "netstat:  $(command -v netstat || echo '<absent>')"
+
+      # `turbo`'s `test` task depends on the **dependencies'** builds, and this
+      # step runs vitest directly, so the build is a step of its own: an unbuilt
+      # `@xplainer/protocol` is an import failure and it should read as one.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The one file, not the whole suite. What is being established here is the
+      # four sentences on this operating system; a red herring from an unrelated
+      # case on `windows-latest` would say nothing about that and would stop the
+      # job before the two proofs below ran.
+      - name: The four-sentence assertion (T12, criterion 2)
+        run: pnpm --filter @xplainer/cli exec vitest run src/install/lifecycle.test.ts
+
+  launchd:
+    name: the queries against a real launchd (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # A hosted macOS runner is a real login session with a real GUI domain,
+      # which is what a LaunchAgent needs and what a container cannot have. The
+      # domain is printed first, because "no GUI domain for this uid" is a
+      # documented degraded path and the proof's own refusal would otherwise
+      # look like a defect.
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: The launchd domain this runner has
+        run: |
+          echo "uid: $(id -u)"
+          launchctl print-disabled "gui/$(id -u)" | head -20 || true
+
+      - name: The lifecycle proof against a real launchd (T12, criterion 2)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/testing/lifecycle-proof.ts
+
+      # `launchctl` cannot remove a disable record, so the proof re-enables its
+      # throwaway label in a `finally`. This step is the independent check that
+      # the store was left as it was found, and it names the label rather than
+      # trusting the proof's own last line.
+      - name: The throwaway label was left enabled
+        if: always()
+        run: launchctl print-disabled "gui/$(id -u)" | grep -i 't12-proof' || echo 'no record for the throwaway label at all'
+
+  systemd:
+    name: the queries against a real systemd (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The same step `phase2-proofs.yml` uses, and for the same reason: a hosted
+      # runner has no login session, so `systemctl --user` reaches no manager
+      # until lingering starts one. Both probes are printed and neither is
+      # allowed to fail the job — the proof itself reports a machine with no user
+      # manager as the documented degraded path it is.
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: A per-user systemd manager, and what this runner had before
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+
+      # `--here` is the runner form: the proof installs as **this** account
+      # rather than re-entering as the container image's `xplainer` user through
+      # `runuser`, and uses `sudo loginctl` for the two linger changes.
+      - name: The lifecycle proof against a real systemd (T12, criterion 2)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/testing/lifecycle-proof.ts --here
+
+      - name: Leave no unit and no linger record behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          systemctl --user disable --now xplainer.service 2>&1 || true
+          rm -f "$HOME/.config/systemd/user/xplainer.service"
+          systemctl --user daemon-reload 2>&1 || true
+          sudo loginctl disable-linger "$(id -un)" || true
+          echo "left: $(ls "$HOME/.config/systemd/user" 2>&1 || echo '<no unit directory>')"
+
+  schtasks:
+    name: what Get-ScheduledTask actually reports (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # A measurement rather than an assertion, and the header says why: this
+      # job answers *whether* `readSwitch`'s reading of `State` is right, and a
+      # job that asserted it would fail on the answer "no", which is an answer
+      # worth having. `(Get-ScheduledTask …).State` is the exact expression
+      # `install/lifecycle.ts` builds; `Disabled` is the only member it maps to
+      # "switched off", and the enum's other members are Unknown, Queued, Ready
+      # and Running.
+      - name: (Get-ScheduledTask …).State, before and after Disable-ScheduledTask
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $task = '\xplainer\lifecycle-probe'
+          $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'
+          $trigger = New-ScheduledTaskTrigger -AtLogOn
+          Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Force | Out-Null
+
+          Write-Host '--- registered ---'
+          $before = (Get-ScheduledTask -TaskName $task).State
+          Write-Host "State: $before ($($before.GetType().FullName))"
+
+          Write-Host '--- after Disable-ScheduledTask ---'
+          Disable-ScheduledTask -TaskName $task | Out-Null
+          $after = (Get-ScheduledTask -TaskName $task).State
+          Write-Host "State: $after"
+
+          Write-Host '--- what a missing task answers ---'
+          $missing = (Get-ScheduledTask -TaskName '\xplainer\does-not-exist' -ErrorAction SilentlyContinue).State
+          Write-Host "State: $(if ($null -eq $missing) { '<null>' } else { $missing })"
+
+          Write-Host "ANSWER: readSwitch maps 'Disabled' to off; this run printed '$after' after Disable-ScheduledTask."
+          Write-Host 'This step is a measurement and exits 0 either way; the record is updated from it.'
+
+      - name: Remove the probe task
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
+            ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
+          Write-Host 'probe task removed'
