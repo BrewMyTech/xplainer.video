@@ -760,3 +760,53 @@ that hangs before readiness has its measurement here and needs no second spike.
 - **`401` is not readiness.** On a daemon already answering, the same `/healthz` returned `401`
   without the bearer token and `200` with it. A poller that accepted any response would be calling
   a bound port readiness.
+
+## Note, 2026-09-08, later the same day: the update as built, and the one class of update it refuses
+
+Added as a dated note rather than a rewrite. The note above settles the readiness half — spike P2-S4
+reported, `Type=exec` stands with no `NotifyAccess=` beside it, the readiness wait belongs to the
+caller as an authenticated `GET /healthz` with a bounded timeout, and `NotifyAccess=all` is recorded
+there as a setting that **follows from** the rejected mechanism rather than as a preference, because a
+child writer with `NotifyAccess=main` does not under-report, it fails to start at all. Nothing in that
+half changed afterwards. This note is about the other half: §Part one's six-step sequence has now been
+built, and two things about it are worth having on this record.
+
+**The six steps survived, and two of the three gaps closed differently than the text anticipated.**
+Stage-beside-then-switch, drain, switch, restart, wait for readiness, and roll back to the retained
+previous copy if readiness does not arrive — all of that is what the transaction does, under an
+operation lock and a durable progress journal, with the updater killed at every boundary between two
+durable transitions and asserted twice: immediately after the kill, and again after the named recovery
+command. What differs is the surrounding machinery. Step 1's "install the new version through the
+package manager" has **no package manager to use this phase**, because nothing is published; the new
+version is a runtime artefact assembled locally, and where it comes from is one resolver's answer
+recorded in `daemon.json`. Step 4's "switch the executable the supervisor launches" is a **rewrite of
+the supervisor artefact** — one `temp → rename` in the target's own directory, the same operation as
+the stable launcher and the mirrored task XML — rather than a pointer flip. And **recovery is
+commanded, not automatic**: if the updater dies between the drain and the restart, on Linux and macOS
+nothing is running until a named command is run, because the daemon exited `0` and that is the
+portable "do not restart" signal on all three supervisors. All three are decided in
+[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md), which builds on this
+record and does not amend it.
+
+**One class of update is refused rather than performed, and it is a scope decision.** This record's
+sequence assumes a single artefact to stage, switch and roll back. Phase 2 has two: the runtime, and a
+**render workspace** with a different lifetime that an update deliberately does not replace. An update
+whose Remotion template **pins** differ from the installed workspace's would therefore succeed by
+every assertion in step 6 — readiness arrives, `/healthz` is green — and leave a daemon that cannot
+render; and rolling it back lands on the *previous* runtime, which is exactly what that workspace no
+longer satisfies. So `daemon update` checks the pins **before** the drain and, on mismatch, exits with
+a documented precondition code having staged nothing, drained nothing and left the daemon serving,
+naming the reinstall path from the new runtime's own program. The precondition is three-way —
+identical installed and incoming pins, and a workspace satisfying both — because comparing only the
+incoming runtime against the workspace passes in the one case that matters.
+
+**The paired stage-and-switch of the second payload is deferred and named, not omitted.** It is the
+right long-term shape and it doubles the transaction's state: a second retained tree, a second switch,
+a second rollback and a second recovery boundary. ADR 0027 records it as the successor's work, with
+the invariant that makes this phase's narrower promise checkable — within the supported class the
+installed workspace satisfies both the old runtime and the new one, which is what makes "the
+rolled-back daemon must **render**" a satisfiable assertion rather than a wish.
+
+Nothing above is rewritten. The package manager still updates the daemon when there is one, the daemon
+still never self-updates, readiness is still announced exactly once after ownership, reconciliation and
+both binds, and the `mcp --attach` shim still exits `8` rather than speaking a skewed contract.

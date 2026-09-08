@@ -33,6 +33,7 @@ import { PACKAGED_PAYLOAD_DIRECTORY, PAYLOAD_CLI_ENTRY, payloadInterpreterEntry 
 import {
   checkPayloadHost,
   currentHost,
+  isWindowsBatchFile,
   type PayloadHost,
   type PayloadManifestFacts,
   PayloadRefusal,
@@ -40,6 +41,8 @@ import {
   probePayloadStatus,
   resolvePayloadCommand,
   runPayload,
+  spawnPlan,
+  startProgram,
 } from "./spawn";
 
 /** Every temporary tree these tests made, removed once. */
@@ -303,23 +306,120 @@ describe("resolvePayloadCommand", () => {
   });
 });
 
+/**
+ * The one program on any platform that cannot be executed without an interpreter.
+ *
+ * `daemon install` writes the stable launcher as `<state>\\bin\\xplainer.cmd`, and since the fix
+ * for CVE-2024-27980 Node refuses to `spawn` a `.cmd` without a shell. Measured on
+ * `windows-latest`, 2026-09-08: three one-click controls and one discovery answered
+ * `command-failed` — "`…\\bin\\xplainer.cmd` would not run: spawn EINVAL" — so the app worked
+ * with nothing installed and stopped the moment an install had happened. The branch is asserted
+ * from macOS the way every other Windows branch in this file is: by naming the platform.
+ */
+describe("spawnPlan", () => {
+  const LAUNCHER = "C:\\Users\\Ada Lovelace\\AppData\\Local\\xplainer\\state\\bin\\xplainer.cmd";
+
+  it("runs a Windows .cmd through cmd.exe, quoting every token itself", () => {
+    const plan = spawnPlan(LAUNCHER, ["connect", "claude"], "win32", { ComSpec: "C:\\W\\cmd.exe" });
+
+    expect(plan.executable).toBe("C:\\W\\cmd.exe");
+    // `/d` skips any AutoRun the registry carries; `/s` makes "strip the outer quotes, take the
+    // rest verbatim" the parsing rule, which is what lets the launcher's own path hold a space.
+    expect(plan.argv).toEqual(["/d", "/s", "/c", `""${LAUNCHER}" "connect" "claude""`]);
+    // Node's own escaping would quote these quotes, so the command line goes through untouched.
+    expect(plan.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("falls back to cmd.exe by name when the environment names no interpreter", () => {
+    expect(spawnPlan(LAUNCHER, [], "win32", {}).executable).toBe("cmd.exe");
+  });
+
+  it("is the identity for every program that is not a Windows batch file", () => {
+    for (const [executable, platform] of [
+      ["C:\\app\\xplainer-runtime\\bin\\node.exe", "win32"],
+      ["/Applications/Xplainer.app/Contents/Resources/xplainer-runtime/bin/node", "darwin"],
+      ["/home/ada/.local/state/xplainer/bin/xplainer", "linux"],
+      // A POSIX file that merely ends in `.cmd` is not a batch file, and nothing here pretends it.
+      ["/home/ada/xplainer.cmd", "linux"],
+    ] as const) {
+      const plan = spawnPlan(executable, ["status", "--json"], platform);
+
+      expect(plan).toEqual({
+        executable,
+        argv: ["status", "--json"],
+        windowsVerbatimArguments: false,
+      });
+      expect(isWindowsBatchFile(executable, platform)).toBe(false);
+    }
+    expect(isWindowsBatchFile(LAUNCHER, "win32")).toBe(true);
+    expect(isWindowsBatchFile("C:\\x\\install.BAT", "win32")).toBe(true);
+  });
+
+  /**
+   * `cmd.exe` expands `%NAME%` in a command line before the batch file sees it and there is no
+   * escape for that from outside a batch file, so the path is refused by name rather than run as a
+   * different path than the one this app resolved.
+   */
+  it("refuses a token cmd.exe would re-parse or expand", () => {
+    for (const argument of ["C:\\x\\50%off\\xplainer.cmd", 'C:\\x\\"q".cmd']) {
+      expect(() => spawnPlan(argument, [], "win32")).toThrow(RangeError);
+    }
+    expect(() => spawnPlan(LAUNCHER, ["%PATH%"], "win32")).toThrow(/percent sign/);
+  });
+
+  /**
+   * And `startProgram` — the app's only `spawn` — actually uses it. The child cannot start on this
+   * machine, which is the point: what is asserted is the image and the command line Node was given,
+   * which `spawnfile` and `spawnargs` carry whether or not the process ever existed.
+   */
+  it("is what startProgram spawns, rather than the batch file itself", async () => {
+    const child = startProgram(LAUNCHER, ["daemon", "install"], {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    });
+    const failure = await new Promise<NodeJS.ErrnoException>((resolve) => {
+      child.on("error", resolve);
+    });
+
+    expect(child.spawnfile).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(child.spawnargs.slice(1)).toEqual([
+      "/d",
+      "/s",
+      "/c",
+      `""${LAUNCHER}" "daemon" "install""`,
+    ]);
+    // On this machine there is no such interpreter, and that is the only reason it failed.
+    expect(failure.code).toBe("ENOENT");
+  });
+});
+
 describe("runPayload", () => {
   it("spawns the payload's interpreter with the entry as its first argument", async () => {
     const resources = makePayload({
       entrySource:
-        "process.stdout.write(JSON.stringify({ execPath: process.execPath, argv: process.argv.slice(1) }));\n",
+        "process.stdout.write(JSON.stringify({ argv0: process.argv0, execPath: process.execPath, argv: process.argv.slice(1) }));\n",
     });
     const command = resolvePayloadCommand(resources);
 
     const run = await runPayload(command, ["status", "--json"]);
 
     expect(run.code).toBe(0);
-    const observed: { execPath: string; argv: string[] } = JSON.parse(run.stdout);
+    const observed: { argv0: string; execPath: string; argv: string[] } = JSON.parse(run.stdout);
     expect(observed.argv).toEqual([command.entry, "status", "--json"]);
-    // Through `realpathSync`, because this fixture's `bin/node` is a link to the interpreter
-    // running the test and a child reports the file it actually executed. A shipped payload copies
-    // its interpreter, so there the two paths are the same string.
-    expect(observed.execPath).toBe(realpathSync(command.executable));
+    // **`argv0`, because that is what D10 is a claim about**: the path the parent named when it
+    // spawned. It is the payload's own `bin/node` on every platform, whether this fixture linked
+    // the interpreter there or copied it.
+    expect(observed.argv0).toBe(command.executable);
+    // And the file behind that path is the interpreter itself rather than something beside it.
+    // `realpathSync` on **both** sides, which is the correction of 2026-09-08: comparing the
+    // child's `execPath` with `realpathSync(command.executable)` was a POSIX-only identity. There a
+    // symlinked `bin/node` makes the child report the link's target; on Windows the fixture hard
+    // links instead, the child reports the path it was spawned as, and `GetFinalPathNameByHandle`
+    // answers `realpath` with the *other* name of the same file — so the two sides were two
+    // different true statements about one binary. Measured on `windows-latest`, 2026-09-08:
+    // `C:\Users\RUNNER~1\…\xplainer-runtime\bin\node.exe` against
+    // `C:\hostedtoolcache\windows\node\24.20.0\x64\node.exe`.
+    expect(realpathSync(observed.execPath)).toBe(realpathSync(command.executable));
   });
 
   it("returns a non-zero exit code and stderr as data rather than throwing", async () => {

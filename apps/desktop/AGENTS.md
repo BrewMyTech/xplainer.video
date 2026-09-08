@@ -110,6 +110,16 @@ copy — the local and human half of the proof. On Linux run it under `xvfb-run 
 - **The state directory arrives in the report, and the launcher is looked for beside it.** D10's
   second stage — `<state>/bin/xplainer[.cmd]` — is reached only through
   `DaemonReport.stateDir`; nothing here derives, defaults or guesses that path.
+- **On Windows that launcher is a `.cmd`, and Node will not spawn one without an interpreter.**
+  Since the fix for CVE-2024-27980, `spawn` of a `.cmd` or `.bat` with `shell: false` fails with
+  `EINVAL` before the file is read, so every control and every discovery that resolved the launcher
+  answered `command-failed` on `windows-latest` — the app worked with nothing installed and stopped
+  the moment an install had happened (measured 2026-09-08). `spawnPlan()` in `src/main/spawn.ts` is
+  the one place that is handled: `%ComSpec% /d /s /c "…"` with **every token quoted here**, because
+  `shell: true` joins the arguments with spaces and quotes none of them, and a token `cmd.exe` would
+  re-parse or expand — a quote, a percent sign, a line break — is refused by name rather than run as
+  a different path than the one this app resolved. It is the identity on every other platform, and
+  `shell: false` stays what `startProgram()` passes.
 - **Both one-click controls are shell-outs, and they take D10's two stages with everything else.**
   "Add to Claude Code / Codex" runs `connect claude|codex`; "Start xplainer at login" runs
   `daemon install`. Before an install they run through the packaged payload's own interpreter, and

@@ -489,12 +489,98 @@ that phase 0 only declared a dependency on.
 
 **Judged by:**
 
+**Where these criteria stand, 2026-09-08 (T30).** Every row below carries a dated line saying
+whether it is **met**, **pending on a runner**, or **pending on a human**, with the evidence named
+rather than implied. **Three of them are not passes and say so in their own words**: **P2-4** is
+pending on Windows, **P2-6** is not met as this roadmap words it and names a substitution in its
+place, and **P2-7** is pending for as long as the artifact upload fails. **P2-8** is human-evidenced
+and no transcript exists yet, so it is pending too.
+
+**One fact every "pending on a runner" line below shares, and it is not a code problem.** GitHub
+Actions is **billing-blocked for this organisation**. Every job dispatched on `d376533` on
+2026-09-08 at 12:08Z was refused before it started with *"The job was not started because recent
+account payments have failed or your spending limit needs to be increased"* — runs `34224329592`
+(`ci`), `34224329595` (`desktop`), `34224368464` (`daemon-windows`), `34224371557`, `34224375439`,
+`34224378914`, `34224381893`, `34224385387` and `34224388372`. Before that, and for the whole of
+this phase, **every `upload-artifact` step failed on the organisation's artifact-storage quota**
+while the steps that are the evidence passed. So the runner halves recorded below are the ones that
+ran on `d01d6db`, `f73e8cc` and `dbfe59d`; the Windows portability fixes in `d376533` and the
+Linux toolchain fix in the same commit have **no runner evidence at all**, and this roadmap says
+that rather than reporting the local run in their place. Restoring billing and re-dispatching is the
+owner's, and it is what turns those lines from pending into met or into defects.
+
 - **P2-1** The Electron app spawns a bundled daemon **and** attaches to a remote daemon URL,
   and `resolveDaemonUrl()` decides which without the user editing a config file.
+  - *Amended 2026-09-08 (T30): **met locally; the runner half is blocked, and the packaged window
+    stays `human`.*** Both branches are exercised against a real daemon rather than a stub:
+    `apps/desktop/src/main/discovery.test.ts` drives all seven discovery outcomes — `absent`,
+    `ready`, `degraded`, `incompatible`, `unauthorized`, `occupied` and `disabled` — with the
+    machine put into each state by `main/testing/live-daemon.ts` (a real `xplainer serve` behind a
+    payload laid out as the packaged application's is), and a configured remote URL is used as the
+    origin with no child spawned. **The pre-install path is part of this row**
+    ([ADR 0027](adr/0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) §D10): with no
+    launcher written, `resolveCliProgram` runs `<resources>/xplainer-runtime/bin/node` against the
+    payload's own entry, refuses **by name** when there is neither launcher nor payload, and the
+    app switches to `<state>/bin/xplainer` only after `install` has written it — `discovery.test.ts`
+    (`resolveCliProgram`, `handOffToInstall`), `spawn.test.ts` and `paths.test.ts`, with
+    `controls.test.ts` asserting that the install control stops the app's own spawned daemon first
+    and rediscovers afterwards. **Runner half:** `desktop`'s `package` job was green on
+    `macos-latest` and `ubuntu-latest` through **Check the packaged payload** (run `34217857540`,
+    `dbfe59d`) and red on `windows-latest` at the desktop main-process unit tests; those win32
+    fixes landed in `d376533` and their re-dispatch is billing-blocked. **Still `human`:** opening
+    the packaged application and seeing the window.
 - **P2-2** A packaged installer — not a dev run — launches the daemon successfully on all
   three operating systems, which is the `asarUnpack` proof.
+  - *Amended 2026-09-08 (T30): **PENDING — met on macOS and Linux against the packed artefact,
+    not re-run on Windows, and there is no Intel Mac artefact at all this phase. The mechanism this
+    row names is also no longer the one that makes it true.*** The proof is two steps of `desktop`'s
+    `package` job: **Pack unsigned installers**, then **Check the packaged payload**
+    (`apps/desktop/scripts/check-packaged-payload.mjs`), which asserts that `@xplainer/cli` was
+    packed as a real directory rather than a pnpm symlink, that the payload and its manifest sit at
+    each platform's own resources root (`Contents/Resources/` on macOS, `resources/` on Linux and
+    Windows), that the architectures match — compared by the runner's own already-running Node,
+    because an interpreter built for another architecture cannot perform that check on itself —
+    that `runtime verify` re-hashes the payload **as it was packed**, and that the production call
+    path runs: `<payload>/bin/node[.exe] <payload>/…/dist/bin.js --version`, with no
+    `ELECTRON_RUN_AS_NODE` anywhere. Both steps were green on `macos-latest` and `ubuntu-latest` in
+    run `34217857540` (`dbfe59d`); neither was reached on `windows-latest`, where the job had
+    already failed at the desktop main-process unit tests.
+  - *Amended 2026-09-08 (T30): **"which is the `asarUnpack` proof" no longer describes the
+    mechanism, and the criterion is met by a different one.*** `apps/desktop/electron-builder.yml`
+    carries **no `asarUnpack` list at all**, deliberately, and says so where the list would be: the
+    only executable the app starts is the payload's **own** interpreter, and `extraResources` places
+    the whole payload at `<resources>/xplainer-runtime` — outside the archive — because Electron
+    patches `fs` so a child can *read* `app.asar` and nothing can `execve` a path that exists only
+    inside it. The property the clause was protecting is unchanged and is now asserted directly, by
+    running that interpreter out of the packaged tree; the rule for the next person is written
+    beside the empty list rather than in a criterion: anything that must be **spawned** from
+    `node_modules` has to be unpacked, and the preference is to move it into the payload instead.
+  - *Amended 2026-09-08 (T30): **the macOS `x64` targets are dropped this phase, and what that
+    costs is stated rather than footnoted.*** `electron-builder.yml`'s `mac:` block lists `dmg` and
+    `zip` for `arm64` only, because `macos-latest` is arm64 and an x64 installer built there would
+    ship an arm64 interpreter inside an x64 application and fail to spawn on an Intel Mac. So
+    **every Intel Mac user has no supported desktop installer for the whole phase** — unavailable
+    platform support, not an occasional failure, and a prioritisation choice rather than a technical
+    limit: GitHub supplies Intel runners, and a native x64 build on one would copy its own
+    `process.execPath` exactly as the arm64 build does. Per-architecture payload builds are named
+    as phase-4 work. The runtime manifest records the **interpreter architecture** and the app
+    compares it from an already-compatible process before spawning, so the mismatch is a named
+    refusal rather than `Bad CPU type in executable`. The graphical launch stays `human`.
 - **P2-3** Library, player, job progress and settings all work against the daemon's REST/SSE
   API; no render or TTS code has crept into `apps/desktop` (the phase-0 grep still passes).
+  - *Amended 2026-09-08 (T30): **met locally; playback in the packaged window stays `human`.***
+    Each screen is exercised against the daemon's own `/api` routes with a real started daemon:
+    `apps/desktop/src/renderer/src/screens.test.tsx` names an assertion per screen — library,
+    player, progress, settings — and `main/bridge.test.ts` covers the authenticated main-process
+    bridge they talk through, with the token never reaching the renderer. The phase-0 grep is not
+    the whole of the evidence but it still passes, as **its own CI step**: *apps/desktop holds no
+    render or TTS code (AC-14f)*, green in run `34217857571` (`dbfe59d`). The observed run's
+    artefacts are recorded under `.session/artifacts/`: `desktop-library.png`, `desktop-player.png`,
+    `desktop-progress.png`, `desktop-progress-done.png`, `desktop-settings.png`,
+    `desktop-connect.png`, and `desktop-playback.json`, which records a 1920×1080 video played to
+    7.93 s of its 16.41 s. **One consequence of this row belongs beside it**: the render path is
+    reachable on a clean machine because payload 1 carries npm and `setup --workspace` resolves the
+    template's pins, so a **first run needs a network** — stated here rather than discovered.
 - **P2-4** `xplainer setup` downloads, verifies and installs both artefacts on a clean
   machine per OS, and a corrupted download fails loudly rather than half-installing.
   - *Amended 2026-09-08 (T19): three artefacts, not two, and the delivery position is stated rather
@@ -560,29 +646,158 @@ that phase 0 only declared a dependency on.
     `setup --skip-speech --workspace`. The `docker` question is asked with the **scrubbed** `PATH`
     the artefact is run under, because a probe from the gate's own `PATH` promises a route `setup`
     then cannot take. Transcript: `.session/artifacts/e2e-toolchain.log`.
+  - *Amended 2026-09-08 (T30): the status of this row, in one line, so it cannot be read as a
+    pass.* **PENDING — met on macOS and Linux; pending on Windows, closed by the phase-4
+    milestone: native speech bundles per platform, published with the manifest behind the connected
+    custom domain.** The evidence for the two platforms where it is met is the T19, T20 and T33
+    amendments above — `pnpm e2e:toolchain`, `.session/artifacts/e2e-toolchain.log` — and the
+    Windows half has no route this phase rather than a failing one: nothing is published for
+    `bundle` to fetch, the pinned Kokoro-FastAPI image is linux/amd64, and `--tts-url` records a
+    server somebody else already runs. The runner leg matches: in `e2e-toolchain` run `34206449083`
+    (`f73e8cc`), the `windows-latest` job's **setup refuses and names no working speech route** step
+    passed and only its upload step failed — which is the refusal being correct, not the criterion
+    being met.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
+  - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
+    binds a **non-loopback** address over TLS with a real certificate and drives the whole sequence:
+    `401` unauthenticated, `200` with the operator's token, `403` on a `Host` the allowlist does not
+    carry — including the address the daemon is itself bound to, because an authority nobody asked
+    for with `--allow-host` is an authority nobody decided about — `403` on a disallowed `Origin`,
+    the same request without TLS not answered at all, and a **refusal before bind** for each
+    missing precondition. Transcript `.session/artifacts/e2e-remote.log`, 2026-09-08, ending
+    `REMOTE GATE PASSED`. `daemon-remote.yml` carries the runner job and **has never been
+    dispatched**: `workflow_dispatch` registers from the default branch, so it must be mirrored to
+    `main` first, and Actions is billing-blocked.
 - **P2-6** Standalone binaries run `--version`, `serve` and `mcp` on each OS with no Node
   installed.
+  - *Amended 2026-09-08 (T30): **NOT met as this row words it, and what is proved instead is
+    named here as a substitution rather than counted as a pass.*** Standalone binaries are
+    **deferred to phase 4 on measurement**: the Node single-executable route and the five
+    measurements against it are recorded in `apps/cli/packaging/README.md`, and this phase ships a
+    **relocatable runtime artefact carrying its own interpreter** instead
+    ([ADR 0027](adr/0027-relocatable-runtime-artefact-and-the-supervisor-switch.md)). The
+    substitute proof, which is stronger than the row in what it exercises and weaker in what it
+    ships, is: **`pnpm e2e:runtime`** (`create → narrate`) and **`pnpm e2e:toolchain`**
+    (`still → render`, with provider-guarded live narration on macOS and Linux) run **from the
+    assembled artefact, outside the checkout, under `env -i`, with `node` asserted unresolvable**,
+    plus `--version`, `serve` and `mcp`. Local transcripts: `.session/artifacts/e2e-runtime.log`
+    (`RUNTIME GATE PASSED`) and `.session/artifacts/e2e-toolchain.log` (`TOOLCHAIN GATE PASSED`).
+    The render leg passes only because Remotion is spawned through the runtime's **own**
+    interpreter; under the earlier design it exited `127` with `env: node: No such file or
+    directory`. **Runner half:** `e2e-runtime`'s artefact gate step was green on `ubuntu-latest`,
+    `macos-latest` **and** `windows-latest` in run `34166471340` (`d01d6db`) — only *Upload the
+    transcript* failed, on the artifact quota — and `e2e-toolchain`'s **gate step** passed on
+    `macos-latest` and `windows-latest` in run `34206449083` (`f73e8cc`) while `ubuntu-latest`
+    failed there in the rollback rerun. Both of those runs are red at the run level **only because
+    their upload steps are**, which is why the step is named here rather than the job; the Linux
+    fix is in `d376533` and has no runner evidence yet.
 - **P2-7** Unsigned installers are still produced green on all three CI runners.
+  - *Amended 2026-09-08 (T30): **PENDING. A green build with a red upload has not produced an
+    installer, and this row is not met until a run uploads one.*** In run `34217857540`
+    (`dbfe59d`), `macos-latest` and `ubuntu-latest` were green through **Assemble the runtime
+    payload (payload 1)**, **Pack unsigned installers** and **Check the packaged payload**, and
+    both then failed at **Upload unsigned installers** on GitHub's artifact-storage quota, which is
+    organisation-wide and was hit again after 12.8 GB of superseded installers were deleted and
+    retention was cut to five days. `windows-latest` never reached the pack step. The upload step
+    keeps `if-no-files-found: error`, which is the point of it. **The build half is partial
+    evidence and is reported as that, never as the criterion**; re-dispatching `desktop` once
+    billing and the quota recalculation allow it is what closes this row.
 - **P2-8** `xplainer daemon install` completes with **no password prompt** on all three
   operating systems, and after a **reboot** the daemon answers `/healthz` — on Linux with
   nobody logged in, on macOS after the first login, on Windows after the first logon. The
   Linux case is proved by `ssh vm 'sudo reboot'`, waiting, then `curl -sf …/healthz` with no
   interactive login in between; that is the only test that actually proves lingering.
+  - *Amended 2026-09-08 (T30): **PENDING on a human, on all three operating systems. No
+    transcript exists.*** Nothing in this repository can produce one: the criterion is a reboot
+    with nobody logged in on Linux, a real login on macOS and a real logon on Windows, each
+    observed from outside the machine. What exists in its place, and is **not** a substitute for
+    it: `daemon install` completes with no password prompt against a **real** launchd on macOS and
+    a **real** systemd in `infra/e2e/Dockerfile.systemd`
+    (`apps/cli/src/install/testing/supervisor-proof.ts`), and the linger marker is **read** and
+    never enabled by the installer, which is why the lingering-denied path is a refusal rather than
+    a prompt (`install/preflight.test.ts`, `install/install.test.ts`). **The phase is not complete
+    without the Linux transcript**, and this line is the record of that rather than an excuse for
+    it.
 - **P2-9** `xplainer daemon uninstall` leaves no unit, plist or task, no state file, no
   `launchctl` disable record and no live token, and does **not** disable lingering it did not
   enable; a re-install afterwards succeeds first time.
+  - *Amended 2026-09-08 (T30): **met locally against a seam and against two real supervisors;
+    the runner ×3 half is blocked.*** `install/uninstall.test.ts` asserts each clause separately:
+    the token is **deleted rather than rotated**, even when it lives outside the state directory,
+    and no grace file from an earlier rotation survives; lingering is **never disabled**, not even
+    when this install enabled it, and is reported instead; a `launchctl` disable record for our own
+    label is cleared with `launchctl enable` while a record the install itself created is named and
+    left; every install artefact is removed while the setup marker and the workspace stay; and the
+    whole thing is idempotent on a state directory that was never installed into. The last clause
+    of the criterion is asserted where it belongs, in `install/install.test.ts`: *removes the
+    artefact, the state files, the launcher and the token — and **re-installs first time***, with
+    the setup marker deliberately outside the artefact set because a re-install needs it. The
+    write-nothing refusals are proved by **hashing** every location an install could touch —
+    including the Windows task store and the linger marker — in `install/install.test.ts`. Against
+    real service managers: `install/testing/supervisor-proof.ts` on macOS launchd and on systemd in
+    the container. **Runner half: pending, and not by a failure.** No workflow runs the uninstall
+    proof on a macOS or Linux runner — the local proof against those two real supervisors is all
+    there is — and on Windows the verb runs inside `daemon-windows.yml`'s install job, which calls
+    `daemon uninstall` after the S4U install and was **red** at `f73e8cc` (run `34206429621`) for
+    reasons fixed in `d376533` and not re-run since. So the `runner` ×3 half of this row is
+    **pending**; what is met is the local half.
 - **P2-10** Each degraded path in ADR 0020 exits with its documented code, **writes nothing**,
   and prints the exact remediation command: no user service manager (6), lingering denied (5),
   no batch-logon right (5), Task Scheduler registration blocked (6), `xplainer setup` not run
   (3), recorded port held by another process (7). In the two "no supervisor" cases the message
   leads with `xplainer connect claude --spawn`, which delivers the tools with no supervision at
   all.
+  - *Amended 2026-09-08 (T30): **met locally for the four paths a machine here can reach, and for
+    the read-only rule; the two Windows paths are pending on a runner.*** `install/preflight.test.ts`
+    covers, each with its exit code and its remediation: `xplainer setup` not run (`3`, in three
+    shapes — no marker, a marker whose files are gone, a marker that cannot be parsed); no user
+    service manager (`6`, one case per platform, including a booted machine whose user manager does
+    not answer, and a launchd with no GUI domain); the recorded port held by another process (`7`,
+    **naming the holding pid in words**); and Task Scheduler answering a query with access denied
+    (`6`) — that last one against the command seam, because the machine-level judgement of the two
+    Windows paths is the runner's and is recorded as pending below. Lingering denied (`5`) is proved with
+    nothing staged and nothing registered in `install/install.test.ts`, and again in a polkit-free
+    container (`.session/artifacts/rollback-linger-linux-container.log`). The preflight **writes
+    nothing anywhere it could write, even when every probe refuses**, which is what lets the
+    hash-based assertions above be exact, and the two no-supervisor cases lead with
+    `xplainer connect claude --spawn` — which exists, and bypasses its own daemon preflight —
+    except where lingering is the reason, where the message names lingering instead. **Runner
+    half:** the two Windows paths are judged on a `windows-latest` runner and are not judged here.
+    `daemon-windows.yml` carries what measures them — the S4U install under a freshly created
+    standard user, and the probe that records **which** call surfaces
+    `SCHED_S_BATCH_LOGON_PROBLEM` rather than asserting a guess about it — and that job was **red**
+    at `f73e8cc` (run `34206429621`) for reasons fixed in `d376533` and not re-run since. So `5`
+    (batch logon) and `6` (registration blocked) on Windows are **pending**, not met.
 - **P2-11** A daemon whose port is permanently held stops respawning after five failed starts
   within 30 seconds and records the reason, on all three platforms; `xplainer daemon status`
   names the holding pid in words; `xplainer daemon restart` clears the latched failure and the
   daemon comes back.
+  - *Amended 2026-09-08 (T30): the wording of this criterion, because the original describes
+    something the design does not promise.* It read "stops respawning after five failed starts
+    within 30 seconds", which measures **the supervisor's retry cadence** rather than each run's
+    own life — so a supervisor spacing its retries wider than the window could never trip the
+    breaker, and launchd's 30 s `ThrottleInterval` sits exactly on the boundary while Task
+    Scheduler's one-minute schema minimum is outside it. **Amended to:** *five consecutive starts,
+    each failing within 30 s of its own start, excluding the supervisor's retry delays; a start
+    with no recorded outcome counts as a failure only when the next start began within 30 s of its
+    own `started_at`, and resets the streak otherwise; an interval that is negative or non-finite
+    is timing-uncertain and resets*. This is the same amendment shape ADR 0020's own AC-14
+    amendment used: the criterion's property is unchanged — the daemon stops respawning, records
+    the reason, names the holding pid in words, and `xplainer daemon restart` clears the latch —
+    and what changed is the predicate that decides when it has happened. The design and the
+    residual it does not close (a backward clock adjustment leaving a finite sub-30-second interval
+    may over-count, and a spurious latch is cleared by `xplainer daemon restart`) are in
+    [ADR 0027](adr/0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) §D6.
+  - *Amended 2026-09-08 (T30): **met on macOS and Linux under their real supervisors; the Windows
+    leg is pending on a runner.*** The rules are asserted in `daemon/daemon-state.test.ts` — the
+    boundary at exactly 30,000 ms and 30,001 ms, an `unknown` start whose successor arrives inside
+    the window (**counts**) and outside it (**resets**), a start that reached readiness and was
+    killed much later (**resets**), and a backward clock step (**resets**) — and then each real
+    supervisor drives its own natural retries in `install/testing/breaker-proof.ts`. **Runner
+    half:** in run `34206438487` (`f73e8cc`), *the breaker's own rules* passed on `macos-latest` and
+    `ubuntu-latest`, *ThrottleInterval 30 s drives the latch* passed on macOS and *RestartSec=2
+    drives the latch* on ubuntu; both Windows jobs failed and have not been re-run since `d376533`.
 - **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
   dependency named and justified, or `Type=exec` retained with a readiness wait in the
   installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new
@@ -602,6 +817,10 @@ that phase 0 only declared a dependency on.
     foreground-process invariant; and macOS and Windows need the `/healthz` wait regardless. The
     residual — `Type=exec` reports `active` for a daemon that never becomes ready — and the
     measured route that would close it are recorded in the note.
+  - *Amended 2026-09-08 (T30): **met, local and runner.*** `node apps/cli/spikes/p2-s4-readiness.mjs`
+    exits `0` and [ADR 0025](adr/0025-daemon-updates-and-readiness.md) carries the note, which is
+    exactly what this row asks for. On a runner: the **P2-S4 systemd readiness (ubuntu-latest)** job
+    of `phase-2 proofs` succeeded in run `34166469014` (`d01d6db`).
 - **P2-S5 (spike)** The drain is reachable on all three platforms through one application-level
   operation: a kill strategy on Linux that signals the main process rather than the whole
   cgroup (the default `KillMode=control-group` signals Chrome and ffmpeg at the same instant,
@@ -624,6 +843,30 @@ that phase 0 only declared a dependency on.
     `TimeoutStopSec=45s`. The **Windows row is a design, not a measurement**: no Windows host was
     reachable, the spike's Task Scheduler arm is `[runner]` on `windows-latest`, and the note says
     so rather than letting the table imply otherwise.
+  - *Amended 2026-09-08 (T30): **met, and the Windows row is no longer a design.*** The note
+    above says the Windows arm was unmeasured because no Windows host was reachable. It has since
+    been measured: the **P2-S5 drain adapters (windows-latest)** job of `phase-2 proofs` succeeded
+    beside the ubuntu one in run `34166469014` (`d01d6db`), so the spike now exits `0` on all three
+    platforms — macOS and the systemd container locally, ubuntu and windows on runners. The
+    adapters themselves are proved against the **production** route by P2-12's evidence below,
+    which is what the note deferred to T13.
+- **P2-S6 (spike)** `node apps/cli/spikes/p2-s6-packaging.mjs` exits `0`. It **records** the
+  single-executable measurements — the CommonJS bundle, the six `import.meta.url` sites, the
+  `dist`-only payload — in `apps/cli/packaging/README.md` with their dates, and **asserts** only
+  what must keep holding, all of it against the **assembled artefact**: every path the built
+  payload resolves at run time exists inside it, nothing it resolves falls outside a package's
+  `files` allowlist, no `.ts` source is resolved out of a package's build output, nothing is
+  resolved from the checkout, and it answers `--version` with no `node` on `PATH` and again with no
+  environment at all. The six source sites are **recorded and not asserted**, so a refactor that
+  moves one cannot fail this gate by tidying.
+  - *Added 2026-09-08 (T30): this row was settled by T1 at the start of the phase and is recorded
+    here, where the other two spikes are, rather than only in the plan.* **Met, `local`.** Run on
+    2026-09-08 on macOS arm64: `ALL PACKAGING EXPECTATIONS HELD`, exit `0` — 0 files read from
+    outside the artefact, 0 missing, 0 outside a `files` allowlist, 0 `.ts` sources out of a build
+    output, 0 resolved from the checkout, and `--version` answering `0.0.0` both with a `PATH` that
+    resolves nothing and under `env -i`. The one shipped TypeScript file it reports as data rather
+    than failing on is `@xplainer/render-core/template/remotion.config.ts`, which is copied into a
+    user's workspace and compiled by that workspace's own toolchain.
 - **P2-12** A supervisor-initiated restart during a job drains: the job either completes or
   reports `error` with `error_code: "daemon_shutdown"`; queued jobs report the same; no Chrome
   or ffmpeg process survives; the process exits within 25 seconds; and the supervisor's grace
@@ -660,6 +903,32 @@ that phase 0 only declared a dependency on.
     files the manifest has never described and never should. **The gate asserts the precondition
     up front and fails there**, so this row stays *pending* until the check asks the manifest
     question instead.
+  - *Amended 2026-09-08 (T30): **met on macOS and Linux, including the sixth assertion the T33
+    note above left pending; the Windows leg is pending on a runner.*** The restart half is proved
+    against each real supervisor — `systemctl --user restart` on Linux and
+    `launchctl kickstart -k` on macOS, during a job, with the terminal `daemon_shutdown`, no
+    surviving Chrome or ffmpeg, and the exit inside the 25-second budget
+    (`install/testing/restart-proof.ts`; `.session/artifacts/t13-restart-proof-macos.log` and
+    `t13-restart-proof-linux-container.log`). The update-failure half — the updater killed between
+    every pair of durable transitions, a replacement that never becomes ready, and the two
+    pin-mismatch refusals that disturb nothing — is `pnpm e2e:update`,
+    `.session/artifacts/e2e-update.log`, 2026-09-08, `PASSED: every boundary reported and
+    recovered, both refusals disturbed nothing`. **The pending note above is discharged.** The
+    precondition defect it named — `openTransaction()` re-hashing the live workspace and refusing
+    every file its payload manifest does not describe — was fixed by giving tree verification an
+    explicit mode: payload 1 stays **exhaustive**, where an extra file is an integrity failure, and
+    payload 2 is **described**, where every manifest entry must match and an undescribed file is
+    allowed unless it shadows a described one. `pnpm e2e:toolchain` then reran **all six** rollback
+    cases against this run's browser and workspace, and each recovered daemon answered `/healthz` as
+    release A with `status: ok` **and rendered a 960×540 PNG of 21311 bytes**
+    (`.session/artifacts/e2e-toolchain.log`, 2026-09-08:
+    `ROLLBACK RERUN PASSED: 6 rollback cases, each ending in a PNG`). **Runner half:** *the drain
+    route and the restart verb* and *systemctl --user restart during a job* were green on ubuntu,
+    and *launchctl kickstart -k during a job* on macOS, in run `34206435651`; *the update
+    transaction against a real systemd* and *against a real launchd* in run `34206442565`. The
+    Windows jobs in both runs failed — *the drain route and the restart verb*, *the Task Scheduler
+    adapter, executed at all*, and *the failure injection against a real Task Scheduler* — and have
+    not been re-run since `d376533`.
 - **P2-13** A parent knows the daemon is ready without sleeping or guessing. **The method is
   conditional on P2-S4's outcome**, because the two candidate mechanisms give different
   guarantees and it would be wrong to assert the stronger one while permitting the weaker:
@@ -678,6 +947,26 @@ that phase 0 only declared a dependency on.
   directly — the desktop app, a `docs/daemon.md` recipe — reads that instead. The macOS and
   Windows equivalents are the P2-S5 adapters plus that same directly-spawned path, each with
   its own script.
+
+  - *Amended 2026-09-08 (T30): **met by the `Type=exec` branch — the only one that applies —
+    locally and on ubuntu; the Windows equivalent is pending on a runner.*** P2-S4 retained
+    `Type=exec`, so the branch this criterion is judged by is the second one: `systemctl --user
+    start xplainer` returns early **by design**, and the guarantee is the caller's. It is
+    `awaitHealthy()` in `apps/cli/src/install/health.ts` — an **authenticated** `GET /healthz`
+    polled with a bounded budget and a named failure — and `install` reports `installed` only after
+    it answers, which is the assertion that the hook does not return success before a `200` —
+    `install/install.test.ts` drives a real install against a real loopback `/healthz` and
+    `install/lifecycle.test.ts` counts the connections that poll made. The spike measured the difference it
+    rests on: `Type=exec` returns in 4.5 ms with 0/5 authenticated `200`s at that instant and the
+    first `200` at 130 ms. The directly-spawned path is proved separately on both platforms — the
+    daemon's one stdout ready line, read from the pipe by the desktop app
+    (`apps/desktop/src/main/spawn.test.ts`, `discovery.test.ts`) and by every `scripts/e2e/*.mjs`
+    gate. **Runner half:** ubuntu in run `34166469014` (the P2-S4 job) and in `34206432574` (*the
+    queries against a real systemd*); macOS in that same lifecycle run (*the queries against a real
+    launchd*), where *what Get-ScheduledTask actually reports* also passed on `windows-latest`. What
+    has **not** passed on Windows is the adapter that drives the restart around that wait — *the
+    Task Scheduler adapter, executed at all*, red in run `34206435651` (`f73e8cc`) — so the Windows
+    equivalent of this row is pending, and has not been re-run since `d376533`.
 
 ---
 
@@ -731,6 +1020,15 @@ capability, and it already has a decision record behind it.
 - **The version and checksum manifest** ADR 0005 books as infrastructure — the file both
   `electron-updater` and `xplainer setup` resolve against, so a desktop update and a first-run
   download are verified the same way rather than by two mechanisms that drift.
+  - *Amended 2026-09-08 (T30): this phase also owns the artefact that closes **P2-4** on Windows,
+    and it is named here so that criterion's "pending" has a milestone rather than a hope.* A
+    **native relocatable speech bundle per platform**, published with that same manifest to the R2
+    bucket **behind the connected custom domain and its Cache Rule** — the two steps Terraform does
+    not manage and no command in this repository performs. Phase 2 implements and proves the
+    `bundle` provider's download, resume, checksum and atomic install against a fixture server, and
+    ships a refusal that says all of this in the message a user meets; what it cannot do is publish.
+    Windows has no other route — the pinned Kokoro-FastAPI image is linux/amd64 and `--tts-url`
+    records a server somebody else already runs — so this bullet is the whole of the closure.
 - **Code signing and notarisation for macOS and Windows.** Phases 0 and 2 ship unsigned
   artefacts by design. This is also what makes the standalone binary a **recommended** way to
   install the always-on daemon: an npm-delivered CLI carries no `com.apple.quarantine`, so
@@ -738,6 +1036,12 @@ capability, and it already has a decision record behind it.
   macOS 15 has no Control-click escape. Until this phase, `npx`/`npm` is the supported
   daemon-install path and the binary is a convenience for people who fetch it with `curl`
   (ADR 0020).
+  - *Amended 2026-09-08 (T30): this bullet also owns the artefact that closes the Intel Mac gap in
+    **P2-2**.* `apps/desktop/electron-builder.yml` builds `dmg` and `zip` for `arm64` only in phase
+    2, so **per-architecture payload builds** — an x64 runner building its own payload, wired to
+    electron-builder's per-arch `extraResources` — belong here, with the phase that signs and
+    publishes installers, rather than with the one that first produced them. Until then an Intel
+    Mac has no supported desktop installation at all, which P2-2 records rather than implies.
 - **`electron-updater` wired to the feed**, replacing `publish: null`, with a staged rollout and
   a way for a user to decline.
 - **CLI self-update**, or an explicit decision not to have one. The daemon is supervised and

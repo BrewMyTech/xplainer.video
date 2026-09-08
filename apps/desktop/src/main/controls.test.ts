@@ -17,7 +17,7 @@
  * changes, no argv here may be a bare `xplainer` on `PATH`.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "vitest";
@@ -34,6 +34,19 @@ const CASE_TIMEOUT_MS = 30_000;
 afterAll(async () => {
   await cleanUpFixtures();
 }, CASE_TIMEOUT_MS);
+
+/**
+ * The program the recorder says ran, against the one this app resolved — as **files**.
+ *
+ * A launcher on Windows is a `.cmd`, and the only way a batch file can name itself is `%~f0`, whose
+ * fully-qualified answer need not be the same *spelling* the parent used: a temporary directory
+ * under `C:\\Users\\RUNNER~1\\…` is the same file as one under `C:\\Users\\runneradmin\\…`.
+ * Comparing the two through `realpathSync` keeps the claim — this exact file is what ran — without
+ * asserting a spelling neither side promises.
+ */
+function expectRan(recorded: string, expected: string): void {
+  expect(realpathSync(recorded)).toBe(realpathSync(expected));
+}
 
 /** A packaged application with nothing installed: a payload, and a state directory with no `bin/`. */
 function cleanMachine(): { resources: string; stateDir: string; record: string } {
@@ -89,7 +102,7 @@ describe("the one-click Add to Claude Code / Codex control", () => {
         // No entry is prepended: the launcher is the interpreter and the entry, which is what makes
         // it the one name that survives an update moving the runtime out from under it.
         const run = onlyRun(record);
-        expect(run.executable).toBe(launcher);
+        expectRan(run.executable, launcher);
         expect(run.argv).toEqual(["connect", vendor]);
         expect(outcome.argv).toEqual(run.argv);
       },
@@ -153,7 +166,7 @@ describe("the start-xplainer-at-login control", () => {
       expect(outcome.executable).toBe(launcher);
 
       const run = onlyRun(record);
-      expect(run.executable).toBe(launcher);
+      expectRan(run.executable, launcher);
       expect(run.argv).toEqual(["daemon", "install"]);
       expect(outcome.argv).toEqual(run.argv);
     },

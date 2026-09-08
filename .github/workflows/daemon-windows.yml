@@ -880,7 +880,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $name = $env:XPLAINER_T26_PIPE_NAME
-          $rights = [System.IO.Pipes.PipeAccessRights]'ReadPermissions'
+          # `ReadData` and not only `ReadPermissions`: this constructor derives the
+          # pipe's direction from the rights and throws ArgumentOutOfRangeException
+          # for a value carrying neither `ReadData` nor `WriteData`, so a
+          # permissions-only probe never opens the pipe it is asking about. The
+          # same rule is why `daemon/pipe-acl.ts`'s own opener asks for it.
+          $rights = [System.IO.Pipes.PipeAccessRights]'ReadData,ReadPermissions'
           $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, $rights,
             [System.IO.Pipes.PipeOptions]::None,
             [System.Security.Principal.TokenImpersonationLevel]::None,

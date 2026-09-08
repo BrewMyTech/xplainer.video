@@ -205,3 +205,31 @@ decision record, so no immutability convention protected it. The addendum's cita
 exactly as written; see [`README.md` § Provenance](README.md) for the repository, the path and
 the commit SHA at which it resolves. The addendum's *findings* are not affected: they are
 stated in full in the addendum itself, which is what a reader here needs.
+
+## Note, 2026-09-08: `xplainer mcp` is real, and the submission bar has moved to the publish
+
+Added as a dated note rather than a rewrite. The decision — one `SKILL.md`, two plugin bundles built
+from it, `copyVerbatim` for each `.mcp.json` — is unchanged. One of its conditions is now half
+discharged, and saying which half is the point of this note.
+
+The note of 2026-09-06 above bars submission in these words: "**Neither bundle may be submitted to a
+marketplace until `xplainer mcp` is real.** Publishing a dead URL and publishing a command that exits
+2 are the same failure wearing different clothes." **`xplainer mcp` is real.** It is a working stdio
+MCP server, it attaches to a running daemon, and `xplainer connect claude` and `xplainer connect
+codex` register it with both vendor CLIs and were verified against live installations.
+
+**The bar has not lifted, because the command in the bundles is `npx -y @xplainer/cli mcp` and the
+package is not published.** As of 2026-09-08 nothing of ours is on npm — the constraint is the
+owner's and it is dated, and [ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md)
+records it as dated context rather than as a decision. A marketplace fetch is not retractable, and an
+install whose `command` resolves to nothing is exactly the "publishes an install that silently does
+nothing" this record's own note refused. So submission is **additionally gated on the publish**: both
+conditions must hold, and only one of them does.
+
+Two smaller facts belong beside it, so that a future reader does not mistake this for a packaging
+defect. First, the shape in the bundles is right — a local stdio server is the transport ADR 0020 and
+ADR 0027 both land on, and the runtime the daemon actually installs is reached through a **stable
+launcher** at `<state>/bin/xplainer`, which is what `xplainer connect` writes into an agent's
+configuration on a machine where the package was never installed from a registry. Second, when the
+publish happens, nothing in this record changes: the `npx` form starts working, the second half of
+the bar clears, and the bundles are submittable exactly as they are built today.

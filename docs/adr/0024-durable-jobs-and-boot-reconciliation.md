@@ -889,3 +889,57 @@ unchanged by anything here — this spike measured supervisors, not the drain's 
 fixture is a sleep. `AllowHardTerminate`, the Job Object that closes `process-group.ts`'s
 grandchild gap, and the circuit breaker's measured boundary are their own stories (T14) and are not
 settled by this measurement.
+
+## Note, 2026-09-08, later the same day: the two things the P2-S5 note deferred
+
+The note above closes with a §What this note does not decide that names three things: the production
+drain route, "the Job Object that closes `process-group.ts`'s grandchild gap", and "the circuit
+breaker's measured boundary". The first is built and its three adapters are proved against the real
+route rather than the spike's fixture. The other two are settled here, because both belong beside
+the drain rather than in a record of their own, and because one of them corrects a number this record
+wrote as prose.
+
+**The Windows Job Object, and what it closes.** `process.kill(-pid)` is a POSIX idiom Node does not
+implement on `win32`: the pid alone is signalled and every grandchild is left, which on this project
+means an orphaned `chrome.exe` after each logoff. That was a documented gap while phase 1 did not
+target Windows. Windows' own answer to "these processes are one unit" is a **Job Object** with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: every process in the job dies when the last handle closes, and
+a process created by one already in the job joins it automatically. **Node cannot create one** — there
+is no Job Object API in the runtime and this project ships no native addon — so the handle is held by
+a keeper process, `powershell.exe -EncodedCommand`, which `Add-Type`s four `kernel32` entry points,
+creates the job, assigns the worker, sweeps `Win32_Process` for descendants that already existed
+(because `AssignProcessToJobObject` does not reach back to children made before the assignment, and
+the keeper takes a few hundred milliseconds to start), and then waits. Killing the keeper takes the
+tree; the keeper outliving a killed worker closes the job a moment later and takes the survivors.
+Two facts make it sound rather than lucky: jobs have been **nestable** since Windows 8 and Server
+2012, so a process a hosted runner or a Scheduled Task already put in a job can still be assigned to
+ours; and `-EncodedCommand` is used rather than `-Command` because the script is multi-line and
+quoted, and a command line assembled around that is a quoting bug waiting to be written. **This one
+is proven on a runner**: `process-group`'s own suite ran green on `windows-latest` in the proof round
+of 2026-09-08.
+
+**The breaker's boundary is 30,000 ms, inclusive, and it is measured against the run's own end.**
+This record's §Consequences moved crash history to the durable directory beside the job store, which
+is where `recentStarts[]` lives. What the note adds is the predicate over it. The boundary is
+**inclusive** — 30,000 ms is fast and 30,001 ms is not — which matters because launchd's
+`ThrottleInterval` is 30 s and therefore sits *exactly* on it, and because Task Scheduler's
+`<RestartOnFailure>` has a one-minute schema minimum and therefore sits outside it. Those two numbers
+are why the window must be measured against **each run's own recorded end** rather than against the
+next run's start: measuring the gap between starts measures the supervisor's retry cadence, and under
+two of the three supervisors that cadence is at or beyond the boundary, so the breaker could never
+latch at all. Five consecutive fast failures latch, and the daemon then exits `0` — the same portable
+"do not restart" signal the drain above ends with, which is why the two belong on one record.
+
+The rule for a start that recorded **no** end, the validation that makes a backward clock step reset
+the streak instead of counting it, and the residual that validation still leaves open are decided in
+[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) §D6, together with the
+identity tuple each start persists so that a later start can establish the death was real. Nothing in
+this record's own decision — durable job records, exclusive ownership, boot reconciliation, the
+`error_code` enum — is changed by any of it.
+
+**One honest correction to the note above.** Its §Windows section says the Task Scheduler row "is not
+measured" and is "a design". Part of it now is: the P2-S5 spike's Windows arm ran on `windows-latest`
+and exited `0`, so the drain over the named pipe and the task ending on exit `0` are measured. The
+Task Scheduler **restart adapter** proofs are a different job and were still red at the last dispatch,
+and GitHub Actions has since been billing-blocked for the organisation, so they stay honestly unmet.
+ADR 0027 §Runner evidence lists every leg either way.

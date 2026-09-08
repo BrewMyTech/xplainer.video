@@ -66,7 +66,7 @@ function readCommittedManifest(): ToolchainManifest {
  * and this is in none of them — which is exactly why `manifest.ts` mirrors it instead of importing
  * it, and why the mirror has to be compared with the original here.
  */
-function realSelector(): {
+type RealSelector = {
   getChromeDownloadUrl: (options: {
     platform: RemotionPlatform;
     version: string | null;
@@ -75,11 +75,54 @@ function realSelector(): {
   TESTED_VERSION: string;
   isAmazonLinux2023: () => boolean;
   canUseRemotionMediaBinaries: () => boolean;
-} {
+};
+
+function realSelector(): RealSelector {
   const fromHere = createRequire(import.meta.url);
   const fromCli = createRequire(fromHere.resolve("@remotion/cli/package.json"));
   const renderer = dirname(fromCli.resolve("@remotion/renderer/package.json"));
   return fromHere(join(renderer, "dist", "browser", "get-chrome-download-url.js"));
+}
+
+/**
+ * The two predicates as the shipped module defines them, captured before any case has run.
+ *
+ * `realSelector()` returns the **one** CommonJS instance of that module — `require` caches by
+ * resolved filename — so a case that replaces a predicate on it replaces it for every case after
+ * it, in this file and in any other. The matrix below has to replace them to drive branches this
+ * machine is not; keeping the originals here is what lets {@link driveUnpatched} put them back, and
+ * what lets the host case assert it is looking at the shipped module rather than at the last row of
+ * the matrix.
+ */
+const PRISTINE_PREDICATES = {
+  isAmazonLinux2023: realSelector().isAmazonLinux2023,
+  canUseRemotionMediaBinaries: realSelector().canUseRemotionMediaBinaries,
+};
+
+/**
+ * Drive the real branching code for a configuration this machine is not, and put it back.
+ *
+ * Replacing the two exported predicates — and nothing else — is the only way to compare the Amazon
+ * Linux and glibc branches from one host: the function under comparison is the shipped one,
+ * entirely. The `finally` is the correction of 2026-09-08. Without it the last row of the matrix
+ * left `canUseRemotionMediaBinaries` answering `false` for the rest of the file, and the case that
+ * asks this machine's own question compared our mirror with a **patched** selector. On macOS and
+ * Windows the answer is the same either way; on the ubuntu runner — linux-x64, glibc 2.39, where
+ * the real predicate is `true` — it failed, reporting a disagreement that was the suite's own.
+ */
+function driveUnpatched<T>(
+  real: RealSelector,
+  predicates: { amazonLinux2023: boolean; remotionMediaBinaries: boolean },
+  ask: () => T,
+): T {
+  real.isAmazonLinux2023 = () => predicates.amazonLinux2023;
+  real.canUseRemotionMediaBinaries = () => predicates.remotionMediaBinaries;
+  try {
+    return ask();
+  } finally {
+    real.isAmazonLinux2023 = PRISTINE_PREDICATES.isAmazonLinux2023;
+    real.canUseRemotionMediaBinaries = PRISTINE_PREDICATES.canUseRemotionMediaBinaries;
+  }
 }
 
 const PLATFORMS: RemotionPlatform[] = ["linux64", "linux-arm64", "mac-x64", "mac-arm64", "win64"];
@@ -206,17 +249,15 @@ describe("the mirror of the pinned Remotion line's Chrome selector", () => {
 
     for (const selection of matrix()) {
       // The real function reads `/etc/os-release` and `process.report` through two of its own
-      // exported predicates. Replacing those two — and nothing else — drives the real branching
-      // code for a configuration this machine is not, which is the only way to compare the Amazon
-      // Linux and glibc branches from one host. It is not a stub of the thing under test: the
-      // function being compared with is the shipped one, entirely.
-      real.isAmazonLinux2023 = () => selection.amazonLinux2023;
-      real.canUseRemotionMediaBinaries = () => selection.remotionMediaBinaries;
-      const expected = real.getChromeDownloadUrl({
-        platform: selection.platform,
-        version: selection.version,
-        chromeMode: selection.chromeMode,
-      });
+      // exported predicates, and `driveUnpatched` is what stands them in for the length of one
+      // question and puts the shipped ones back afterwards.
+      const expected = driveUnpatched(real, selection, () =>
+        real.getChromeDownloadUrl({
+          platform: selection.platform,
+          version: selection.version,
+          chromeMode: selection.chromeMode,
+        }),
+      );
       const found = chromeDownloadUrl(selection);
       if (found !== expected) {
         disagreements.push(`${JSON.stringify(selection)}\n  real: ${expected}\n  ours: ${found}`);
@@ -232,21 +273,35 @@ describe("the mirror of the pinned Remotion line's Chrome selector", () => {
 
     expect(REMOTION_TESTED_CHROME_VERSION).toBe(real.TESTED_VERSION);
     // The Playwright build number is not exported, so it is read out of the branch that uses it.
-    real.isAmazonLinux2023 = () => false;
-    real.canUseRemotionMediaBinaries = () => false;
-    expect(
-      real.getChromeDownloadUrl({
-        platform: "linux-arm64",
-        version: null,
-        chromeMode: "headless-shell",
-      }),
-    ).toContain(`/builds/chromium/${REMOTION_PLAYWRIGHT_BUILD}/`);
+    const fallback = driveUnpatched(
+      real,
+      { amazonLinux2023: false, remotionMediaBinaries: false },
+      () =>
+        real.getChromeDownloadUrl({
+          platform: "linux-arm64",
+          version: null,
+          chromeMode: "headless-shell",
+        }),
+    );
+    expect(fallback).toContain(`/builds/chromium/${REMOTION_PLAYWRIGHT_BUILD}/`);
   });
 
   it("resolves this machine's own configuration to what Remotion would download here", () => {
     const real = realSelector();
     const here = probeHost();
     const platform = remotionPlatform(here.platform, here.arch);
+
+    // The claim below is that the *shipped* module answers for this machine, so the first thing
+    // asserted is that nothing above has left a stand-in on it. A leaked predicate makes this case
+    // compare the mirror with a configuration the host is not, which is a disagreement about the
+    // suite rather than about the mirror — and on a glibc-2.35-or-newer linux-x64 host that is
+    // exactly what it reported.
+    expect(real.isAmazonLinux2023).toBe(PRISTINE_PREDICATES.isAmazonLinux2023);
+    expect(real.canUseRemotionMediaBinaries).toBe(PRISTINE_PREDICATES.canUseRemotionMediaBinaries);
+    // And they answer for this machine the way our own probe does, which is what makes the two
+    // sides of the comparison below the same question.
+    expect(real.isAmazonLinux2023()).toBe(isAmazonLinux2023(here));
+    expect(real.canUseRemotionMediaBinaries()).toBe(canUseRemotionMediaBinaries(here));
 
     expect(platform).not.toBeNull();
     expect(hostChromeSelection(here)).toEqual({

@@ -67,9 +67,11 @@
  * preconditions rather than a flag, and this command is where all five are asked: `daemon/binding.ts`
  * refuses `0.0.0.0` and `::` outright and refuses any other non-loopback address without
  * `--i-understand-remote-exposure`; `daemon/tls.ts` refuses one without `--tls-cert`, `--tls-key`
- * and at least one `--allow-host`, and refuses one whose bearer token is the value this daemon
- * minted for itself. The first four are decided **before ownership is taken**, and the fifth before
- * anything is bound, so every refusal leaves the machine exactly as it found it. What the guard
+ * and at least one `--allow-host`, and refuses one whose bearer token is absent or is the value this
+ * daemon minted for itself. The first four are decided **before ownership is taken**, and the fifth
+ * before anything is bound **and before anything is minted** — a check asked after the mint would
+ * have created the credential it then refuses — so every refusal leaves the machine exactly as it
+ * found it, with no token file and no `token_origin` this run wrote. What the guard
  * gets is `allowHosts` — the operator's names *added* to loopback, never replacing them — which is
  * the CVE-2026-65105 lesson: widening a bind must add authority and remove none.
  *
@@ -105,8 +107,8 @@ import { resolveStateDirSetting, STATE_DIR_ENV } from "../daemon/state-dir.js";
 import {
   ALLOW_HOST_FLAG,
   loadTlsMaterial,
-  mintedTokenRefusal,
   remoteExposureRefusal,
+  remoteTokenRefusal,
   TLS_CERT_FLAG,
   TLS_KEY_FLAG,
   type TlsMaterial,
@@ -114,10 +116,12 @@ import {
 import {
   createTokenRing,
   discardExpiredGrace,
+  inspectTokenPresence,
   loadOrMintToken,
   resolveTokenOrigin,
   resolveTokenPathSetting,
   TOKEN_FILE_ENV,
+  type TokenPresence,
   TokenUnreadableError,
   tokenProtection,
 } from "../daemon/token.js";
@@ -218,6 +222,20 @@ function internalFailure(error: unknown): {
     exitCode: DAEMON_INTERNAL_EXIT_CODE,
     message: `xplainer serve: could not start: ${detail}`,
   };
+}
+
+/**
+ * What a failure of the token step says and exits with — the same answer for both halves of it.
+ *
+ * The file is read twice on a non-loopback bind: once to decide whose token it is, before anything
+ * is minted, and once by the mint itself. A file that cannot be used is exit `12` either way, and
+ * anything else is `70`; writing that once is what keeps the two reads from disagreeing about a
+ * condition they share.
+ */
+function tokenStepFailure(error: unknown): { message: string; exitCode: number } {
+  return error instanceof TokenUnreadableError
+    ? { message: error.message, exitCode: error.exitCode }
+    : { message: internalFailure(error).message, exitCode: DAEMON_INTERNAL_EXIT_CODE };
 }
 
 export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
@@ -339,6 +357,37 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // is the `catch`, and every branch of that one exits. The token's *value* is deliberately not
       // kept: what the guard is given below is the ring over the file, so that a rotation in
       // another process is picked up rather than shadowed by a string read at start-up.
+      // R-SEC-9's fifth precondition, asked **before the mint** and not after it. A remote bind that
+      // reached `loadOrMintToken` would create the token file — `0600`, recorded, exactly as an
+      // ordinary start does — and then refuse itself over the credential it had just written, which
+      // is both a write on a path that must leave the machine as it found it and a sentence
+      // claiming this daemon minted a file the operator had never seen. The three answers are
+      // `absent`, `minted` and `operator`; only the last one binds. It is its own step rather than
+      // the first lines of the mint's `try`, because `io.exit` unwinds by *throwing* under the
+      // recording `CliIo` `program.test.ts` supplies, and a `catch` written for the mint would have
+      // reported this refusal as an internal failure.
+      if (!bind.loopback) {
+        let presence: TokenPresence;
+        try {
+          presence = inspectTokenPresence({
+            path: tokenPath,
+            recordedOrigin: recorded.token_origin,
+            recordedTokenFile: recorded.token_file,
+          });
+        } catch (error) {
+          await daemon.close();
+          const failure = tokenStepFailure(error);
+          io.writeErr(`${failure.message}\n`);
+          io.exit(failure.exitCode);
+        }
+        const refusal = remoteTokenRefusal({ presence, path: tokenPath });
+        if (refusal !== null) {
+          await daemon.close();
+          io.writeErr(`${refusal}\n`);
+          io.exit(USAGE_EXIT_CODE);
+        }
+      }
+
       let tokenOrigin: TokenOrigin;
       try {
         const minted = loadOrMintToken(tokenPath, stateDir);
@@ -359,12 +408,9 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         }
       } catch (error) {
         await daemon.close();
-        if (error instanceof TokenUnreadableError) {
-          io.writeErr(`${error.message}\n`);
-          io.exit(error.exitCode);
-        }
-        io.writeErr(`${internalFailure(error).message}\n`);
-        io.exit(DAEMON_INTERNAL_EXIT_CODE);
+        const failure = tokenStepFailure(error);
+        io.writeErr(`${failure.message}\n`);
+        io.exit(failure.exitCode);
       }
 
       // A grace window that closed while this daemon was down is a secret with nothing left to
@@ -387,18 +433,6 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // remote bind three restarts later still needs it (`daemon/token.ts` §resolveTokenOrigin).
       if (tokenOrigin !== recorded.token_origin) {
         updateDaemonState(stateDir, { token_origin: tokenOrigin });
-      }
-
-      // R-SEC-9's fifth precondition, and the last thing between an acknowledged remote bind and a
-      // listener. Still before anything is bound — the state directory is given back, which is the
-      // same thing an unreadable token file does one branch above.
-      if (!bind.loopback) {
-        const refusal = mintedTokenRefusal({ origin: tokenOrigin, path: tokenPath });
-        if (refusal !== null) {
-          await daemon.close();
-          io.writeErr(`${refusal}\n`);
-          io.exit(USAGE_EXIT_CODE);
-        }
       }
 
       // Configured → recorded → default, which is ADR 0020 §Port and discovery's precedence. The
@@ -516,10 +550,12 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
 
       // The IPC endpoint asks for no token, so *this* is its authentication — and on Windows the
       // pipe libuv just created is readable by every local account until this call replaces its
-      // descriptor. Done here, immediately after `listen()` and before this daemon announces
-      // anything, because there is nothing to narrow before the bind and nothing worth delaying
-      // it past: the window is as short as a create-then-narrow can make it, exactly as the token
-      // file's is on that platform.
+      // descriptor. It is the first statement after the bind for that reason, and the position is
+      // load-bearing rather than tidy: the IPC listener is the **last** thing `startServer()`
+      // binds, so nothing of this daemon's runs between `CreateNamedPipeW` and the narrowing, and
+      // the narrowing is synchronous, so nothing is served during it either. Everything that tells
+      // somebody the endpoint exists — `markReady()`, the shutdown handlers, the ready line —
+      // happens below. `daemon/pipe-acl.ts` states the window and what would close it entirely.
       const ipcProtection = secureIpcEndpoint(bound.running.socket ?? ipc.path);
 
       daemon.markReady({

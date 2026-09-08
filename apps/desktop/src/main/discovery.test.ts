@@ -34,6 +34,8 @@ import {
   payloadResources,
   programFor,
   recordToolchain,
+  SWITCHED_OFF_STATE,
+  scheduledTasksShim,
   startDaemon,
   switchedOffEnvironment,
   temporaryDirectory,
@@ -393,6 +395,34 @@ describe("discover", () => {
     },
     CASE_TIMEOUT_MS,
   );
+});
+
+/**
+ * The Windows half of the switched-off arrangement, read from a machine that cannot run it.
+ *
+ * The three surfaces the CLI's query touches are the two command names PowerShell has to
+ * auto-load by, the `-TaskName` the query names them with, and the word `readSwitch` reads back.
+ * Measured under PowerShell 7.4 (`mcr.microsoft.com/powershell:7.4-ubuntu-22.04`, 2026-09-08) with
+ * `PSModulePath` set to the shim's directory and nothing else:
+ * `(Get-ScheduledTask -TaskName 'video.xplainer.daemon').State` prints `Disabled`.
+ */
+describe("the switched-off ScheduledTasks shim", () => {
+  it("exports the two commands the CLI's queries call, and answers for a named task", () => {
+    const shim = scheduledTasksShim();
+
+    expect(shim.manifest).toContain("RootModule = 'ScheduledTasks.psm1'");
+    expect(shim.manifest).toContain(
+      "FunctionsToExport = @('Get-ScheduledTask', 'Get-ScheduledTaskInfo')",
+    );
+    for (const command of ["Get-ScheduledTask", "Get-ScheduledTaskInfo"]) {
+      expect(shim.module).toContain(`function ${command} {`);
+    }
+    // The real cmdlet's own named parameters, so the binder has somewhere to put the query's.
+    expect(shim.module).toContain("[string] $TaskName");
+    expect(shim.module).toContain("[string] $TaskPath");
+    expect(shim.module).toContain(`State = '${SWITCHED_OFF_STATE}'`);
+    expect(SWITCHED_OFF_STATE.toLowerCase()).toBe("disabled");
+  });
 });
 
 describe("spawnDaemon", () => {

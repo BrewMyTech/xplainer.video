@@ -10,6 +10,8 @@
  * answered anywhere else.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { WINDOWS_PIPE_PREFIX } from "./ipc.js";
 import {
@@ -46,21 +48,80 @@ describe("the pipe's own name", () => {
   });
 });
 
+/** The verbatim script beside this file, `#` provenance header stripped. */
+const NARROW_FIXTURE = fileURLToPath(
+  new URL("./__fixtures__/pipe-acl-narrow.ps1", import.meta.url),
+);
+
+/**
+ * The fixture's own bytes, with only the `#` header removed.
+ *
+ * Stripped by prefix rather than by line count, for the reason `preflight.test.ts` strips its
+ * `launchctl` capture the same way: a longer header must not silently become a truncated fixture.
+ * No line of the script itself begins with `#`.
+ */
+function narrowFixture(): string {
+  return readFileSync(NARROW_FIXTURE, "utf8")
+    .split("\n")
+    .filter((line) => !line.startsWith("#"))
+    .join("\n")
+    .trim();
+}
+
+/** The rights the **opener** asks for, as the script spells them, one per element. */
+function openerRights(script: string): string[] {
+  const declaration = /\$rights = \[System\.IO\.Pipes\.PipeAccessRights]'([^']+)'/.exec(script);
+  if (declaration === null) {
+    throw new Error(`the script declares no opener rights:\n${script}`);
+  }
+  return (declaration[1] ?? "").split(",").map((right) => right.trim());
+}
+
 describe("the script that replaces the descriptor", () => {
   /**
-   * Four things have to be in it, and each one is load-bearing: the client is opened for
-   * `ChangePermissions` and nothing that would let it read or write the daemon's traffic; the DACL
-   * is **protected**, which is what removes the default `Everyone` entry rather than adding beside
-   * it; the entry is `FullControl`, because creating the next pipe instance needs
-   * `FILE_CREATE_PIPE_INSTANCE` and libuv creates one per accepted connection; and the identity is
-   * the token's `User` SID rather than its owner, which under elevation is the administrators group.
+   * The whole emitted script, compared with a committed capture.
+   *
+   * A `toContain` per clause is what let the first release ship a script that could not run at all:
+   * every individual assertion passed while the one line they were about — the opener's rights —
+   * named a value .NET refuses. The script is thirteen lines and runs on a platform this suite
+   * cannot execute, so the reviewable unit is the whole of it, as a diff.
    */
-  it("opens for permissions only, protects the DACL, and grants this account full control", () => {
+  it("is exactly the capture beside this file", () => {
+    expect(restrictPipeToOwnerScript(PIPE)).toBe(narrowFixture());
+  });
+
+  /**
+   * The rule the capture has to satisfy, stated independently of it.
+   *
+   * `NamedPipeClientStream`'s `PipeAccessRights` constructor **derives the pipe direction from
+   * these rights** — "If the `desiredAccessRights` value is `ReadData`, the pipe direction will be
+   * `In`" — and `DirectionFromRights` throws `ArgumentOutOfRangeException` for a value carrying
+   * neither `ReadData` nor `WriteData`, because that is not a direction. A rights value of
+   * `ChangePermissions,ReadPermissions` therefore never opens the pipe, never reaches
+   * `SetAccessControl`, and leaves the default descriptor — every local account reading — behind a
+   * mechanism that reports `failed` and is read by nobody. That is what happened on 2026-09-08.
+   */
+  it("asks for a data right, because .NET derives the direction from it", () => {
+    const rights = openerRights(restrictPipeToOwnerScript(PIPE));
+
+    expect(rights.includes("ReadData") || rights.includes("WriteData")).toBe(true);
+    // The minimum that opens a pipe: read is a direction, write would be one this never uses.
+    expect(rights).not.toContain("WriteData");
+    // And the two that make it a *narrowing* rather than a connection: WRITE_DAC and READ_CONTROL.
+    expect(rights).toContain("ChangePermissions");
+    expect(rights).toContain("ReadPermissions");
+  });
+
+  /**
+   * Three more things are load-bearing: the DACL is **protected**, which is what removes the
+   * default `Everyone` entry rather than adding beside it; the entry granted is `FullControl`,
+   * because creating the next pipe instance needs `FILE_CREATE_PIPE_INSTANCE` and libuv creates one
+   * per accepted connection; and the identity is the token's `User` SID rather than its owner,
+   * which under elevation is the administrators group.
+   */
+  it("protects the DACL, and grants this account full control", () => {
     const script = restrictPipeToOwnerScript(PIPE);
 
-    expect(script).toContain(
-      "[System.IO.Pipes.PipeAccessRights]'ChangePermissions,ReadPermissions'",
-    );
     expect(script).toContain("$security.SetAccessRuleProtection($true, $false)");
     expect(script).toContain("[System.IO.Pipes.PipeAccessRights]::FullControl");
     expect(script).toContain("[System.Security.Principal.WindowsIdentity]::GetCurrent().User");

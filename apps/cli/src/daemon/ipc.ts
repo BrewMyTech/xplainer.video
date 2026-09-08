@@ -214,6 +214,15 @@ export function prepareIpcSocket(request: IpcSocketRequest): PreparedIpcSocket {
  * all — {@link prepareIpcSocket} already made the socket's directory `0700`, and that directory is
  * the authentication — so the answer is `not-applicable` and `serve` says which of the two
  * protections this platform actually got.
+ *
+ * **The window, stated.** It opens where libuv's `uv_pipe_bind` calls `CreateNamedPipeW` with a
+ * `NULL` security descriptor, inside the `listen()` `server.ts` performs **last** of the two binds,
+ * and it closes when the descriptor below is written. Between the two there is one promise
+ * resolution and one `powershell.exe` start, and nothing of this daemon's: the narrowing is
+ * `spawnSync`, and `markReady()`, the shutdown handlers and the ready line all come after it, so
+ * the window is over before anything has been told the endpoint exists. `daemon/pipe-acl.ts` §Why
+ * the descriptor is applied after the bind carries the rest, including the one arrangement that
+ * would close it and why this phase does not take it.
  */
 export function secureIpcEndpoint(
   path: string,

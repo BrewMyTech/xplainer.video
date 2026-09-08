@@ -180,27 +180,58 @@ export type TokenOriginRequest = {
  *
  * 1. **This start minted the file** → `minted`, unconditionally. A daemon that generated the secret
  *    a moment ago knows exactly what it is looking at.
- * 2. **`daemon.json` records an origin** → that origin. It was decided by the start that could see
- *    the file being created, and nothing since has been able to see more.
- * 3. **No origin recorded, but `daemon.json` records this same path** → `minted`. That is a state
- *    directory a release older than this field served, and every such release minted its own token
- *    into the path it recorded. Reading it as the operator's would let an upgrade turn the daemon's
- *    own default into a credential R-SEC-9 accepts, which is the one error here that matters.
- * 4. **Neither** → `operator`. A token file that exists, that this start did not make, and that no
- *    run of this state directory has ever recorded, is a file somebody else put there — which is
- *    exactly what an operator supplying a token with `--token-file` looks like.
+ * 2. **`daemon.json` records this same path** → the recorded origin, or `minted` where no origin
+ *    was recorded. The recorded answer was decided by the start that could see that file being
+ *    created, and nothing since has been able to see more; an unrecorded origin at a recorded path
+ *    is a state directory a release older than this field served, and every such release minted its
+ *    own token into the path it recorded. Reading either as the operator's would let an upgrade turn
+ *    the daemon's own default into a credential R-SEC-9 accepts, which is the error that matters.
+ * 3. **Any other path** → `operator`. This is the correction of 2026-09-08, and it is what makes the
+ *    recorded origin a fact about a **file** rather than about a directory: a record saying "the
+ *    token in `<state>/token` is mine" says nothing about the token in `/etc/xplainer/token` that
+ *    `--token-file` just named. Inheriting it there refused the operator's own token for ever — and
+ *    the refusal said the daemon had minted a file it never wrote, which is the worse half.
  *
- * The rule is written so that every uncertainty falls towards `minted`, because `minted` is the
- * answer that refuses the remote bind.
+ * The rule is written so that every uncertainty **about the recorded file** falls towards `minted`,
+ * because `minted` is the answer that refuses the remote bind. A file at a path this state directory
+ * has never recorded is not an uncertainty: nothing here ever wrote it.
  */
 export function resolveTokenOrigin(request: TokenOriginRequest): TokenOrigin {
   if (request.minted) {
     return "minted";
   }
-  if (request.recordedOrigin !== null) {
-    return request.recordedOrigin;
+  if (request.recordedTokenFile !== request.path) {
+    return "operator";
   }
-  return request.recordedTokenFile === request.path ? "minted" : "operator";
+  return request.recordedOrigin ?? "minted";
+}
+
+/**
+ * What a start knows about the token file **before** it has minted anything.
+ *
+ * `absent` is the third answer {@link resolveTokenOrigin} cannot give, because that function is
+ * asked once the file is known to exist. R-SEC-9 needs all three *before* the mint: a remote bind
+ * that reached `loadOrMintToken` would have created the very file it is about to refuse itself
+ * over, and the refusal would then be about a credential the daemon made for the purpose of
+ * refusing it.
+ */
+export type TokenPresence = "absent" | TokenOrigin;
+
+/** What {@link inspectTokenPresence} weighs: {@link TokenOriginRequest} without the mint. */
+export type TokenPresenceRequest = Omit<TokenOriginRequest, "minted">;
+
+/**
+ * Whose token is at this path, or `absent` — decided by reading, and writing nothing.
+ *
+ * @throws {TokenUnreadableError} — exit `12` — for a file that is there and cannot be used, which
+ * is the same answer the mint gives it a moment later and for the same reason: a daemon that cannot
+ * enforce authentication must not serve.
+ */
+export function inspectTokenPresence(request: TokenPresenceRequest): TokenPresence {
+  if (readToken(request.path) === null) {
+    return "absent";
+  }
+  return resolveTokenOrigin({ ...request, minted: false });
 }
 
 function describe(error: unknown): string {

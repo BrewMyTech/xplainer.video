@@ -21,8 +21,8 @@ import { writeSelfSignedCertificate } from "./testing/self-signed.js";
 import {
   ALLOW_HOST_FLAG,
   loadTlsMaterial,
-  mintedTokenRefusal,
   remoteExposureRefusal,
+  remoteTokenRefusal,
   TLS_CERT_FLAG,
   TLS_KEY_FLAG,
 } from "./tls.js";
@@ -123,9 +123,9 @@ describe("remoteExposureRefusal, on a loopback bind", () => {
   });
 });
 
-describe("mintedTokenRefusal", () => {
+describe("remoteTokenRefusal", () => {
   it("refuses the value this daemon minted for itself, and names token_origin", () => {
-    const refusal = mintedTokenRefusal({ origin: "minted", path: "/state/token" });
+    const refusal = remoteTokenRefusal({ presence: "minted", path: "/state/token" });
 
     expect(refusal).toContain("/state/token");
     expect(refusal).toContain("token_origin");
@@ -133,8 +133,22 @@ describe("mintedTokenRefusal", () => {
     expect(refusal).toContain("Nothing has been bound.");
   });
 
+  /**
+   * The third answer, and the reason this function is asked before the mint: a remote bind with no
+   * token file must be told there is none, rather than have one made for it and be told the daemon
+   * minted it. So the sentence says what it did **not** do, in those words.
+   */
+  it("refuses an absent token without claiming this daemon minted anything", () => {
+    const refusal = remoteTokenRefusal({ presence: "absent", path: "/state/token" });
+
+    expect(refusal).toContain("there is no bearer token at /state/token");
+    expect(refusal).toContain("Nothing has been minted here and nothing has been bound");
+    expect(refusal).toContain("--token-file");
+    expect(refusal).not.toMatch(/is the one this daemon minted/);
+  });
+
   it("permits a token the operator supplied", () => {
-    expect(mintedTokenRefusal({ origin: "operator", path: "/state/token" })).toBeNull();
+    expect(remoteTokenRefusal({ presence: "operator", path: "/state/token" })).toBeNull();
   });
 });
 

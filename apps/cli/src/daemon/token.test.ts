@@ -8,7 +8,15 @@
  * you can only produce with a real file.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -20,6 +28,7 @@ import {
   createTokenRing,
   DEFAULT_TOKEN_GRACE_MS,
   discardExpiredGrace,
+  inspectTokenPresence,
   loadOrMintToken,
   MAX_TOKEN_GRACE_MS,
   previousTokenPath,
@@ -297,6 +306,81 @@ describe("resolveTokenOrigin", () => {
       ).toBe("operator");
     },
   );
+
+  /**
+   * The correction of 2026-09-08. `token_origin` records whose the token in `token_file` is, and a
+   * record about `<state>/token` says nothing about the file `--token-file` has just named. Reading
+   * it as an answer about *this* path refused an operator's own token for ever — a state directory
+   * that had once minted could never be given one — and the refusal then said this daemon had
+   * minted a file it never wrote.
+   */
+  it.each(["minted", "operator"] as const)(
+    "does not carry a recorded %s origin over to a file it does not name",
+    (recorded) => {
+      expect(
+        resolveTokenOrigin({
+          minted: false,
+          path: "/etc/xplainer/operator-token",
+          recordedOrigin: recorded,
+          recordedTokenFile: path,
+        }),
+      ).toBe("operator");
+    },
+  );
+});
+
+/**
+ * The same rule, plus the answer R-SEC-9 has to have **before** the mint: there is no file at all.
+ *
+ * Every case here is a real file on disk rather than a fixture, because the question is what is at
+ * a path, and the whole point of asking it here is that nothing may be written by the asking.
+ */
+describe("inspectTokenPresence", () => {
+  it("says a path with nothing at it is absent, and writes nothing there", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+
+    expect(inspectTokenPresence({ path, recordedOrigin: null, recordedTokenFile: null })).toBe(
+      "absent",
+    );
+    expect(existsSync(path)).toBe(false);
+    expect(readdirSync(stateDir)).toEqual([]);
+  });
+
+  it("calls this state directory's own recorded mint minted", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+
+    expect(inspectTokenPresence({ path, recordedOrigin: "minted", recordedTokenFile: path })).toBe(
+      "minted",
+    );
+  });
+
+  it("calls a token at a path this daemon never recorded the operator's", () => {
+    const stateDir = stateDirectory();
+    const elsewhere = join(stateDirectory(), "operator-token");
+    writeFileSync(elsewhere, `${"o".repeat(43)}\n`, { mode: 0o600 });
+
+    expect(
+      inspectTokenPresence({
+        path: elsewhere,
+        recordedOrigin: "minted",
+        recordedTokenFile: join(stateDir, TOKEN_FILE),
+      }),
+    ).toBe("operator");
+  });
+
+  /** A file that cannot be used is exit `12` here too: the mint would have said the same thing. */
+  it("refuses a token file that holds nothing, rather than calling it absent", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    writeFileSync(path, "   \n", { mode: 0o600 });
+
+    expect(() =>
+      inspectTokenPresence({ path, recordedOrigin: null, recordedTokenFile: null }),
+    ).toThrow(TokenUnreadableError);
+  });
 });
 
 describe("rotateToken", () => {

@@ -658,10 +658,12 @@ describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () =>
 
   /**
    * The fifth precondition is the only one that needs the state directory, so this refusal happens
-   * *after* ownership — and gives it back. What makes it decidable is `daemon.json`'s
-   * `token_origin`, and the record left behind says `minted` because that is what this start did.
+   * *after* ownership — and gives it back. It is also asked **before the mint**, which is the
+   * correction of 2026-09-08: this start used to create the token file and then refuse itself over
+   * the credential it had just written, leaving a `0600` secret and a `token_origin` behind on a
+   * path R-SEC-9 says must be left as it was found.
    */
-  it("refuses the token it minted for itself, and binds nothing", async () => {
+  it("refuses a remote bind with no token, having minted nothing", async () => {
     const stateDir = stateDirectory();
     const certificate = writeSelfSignedCertificate(stateDir, { names: ["192.0.2.10"] });
 
@@ -685,14 +687,111 @@ describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () =>
     const exit = await child.waitForExit();
 
     expect(exit.code).toBe(1);
-    expect(child.stderr()).toContain("is the one this daemon minted for itself");
+    expect(child.stderr()).toContain("there is no bearer token at");
+    expect(child.stderr()).toContain("Nothing has been minted here and nothing has been bound");
+    // The sentence a refusal may never say about a file this daemon did not write.
+    expect(child.stderr()).not.toContain("is the one this daemon minted for itself");
     expect(child.stdout()).toBe("");
-    expect(readDaemonState(stateDir).token_origin).toBe("minted");
+    // No token file, and no answer recorded about whose token it is — because there is none.
+    expect(existsSync(join(stateDir, TOKEN_FILE))).toBe(false);
+    expect(readDaemonState(stateDir).token_origin).toBeNull();
     // Nothing was bound, and the state directory was given back: `runtime.json` is written by
     // `markReady()` and `owner.lock` by the acquisition this refusal released.
     expect(readRuntimeState(stateDir)).toBeNull();
     expect(existsSync(stateDirLayout(stateDir).lock)).toBe(false);
   }, 30_000);
+
+  /** The refusal that is true: a loopback start really did mint this file, and says so. */
+  it("refuses the token it minted for itself on an earlier start, and binds nothing", async () => {
+    const stateDir = stateDirectory();
+    const certificate = writeSelfSignedCertificate(stateDir, { names: ["192.0.2.10"] });
+    const first = await serveUntilReady(CHILD_SERVE, stateDir);
+    await beginPlannedShutdown(first.child, first.ready.socket ?? "");
+    await first.child.waitForExit();
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        "192.0.2.10",
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        certificate.certPath,
+        TLS_KEY_FLAG,
+        certificate.keyPath,
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const exit = await child.waitForExit();
+
+    expect(exit.code).toBe(1);
+    expect(child.stderr()).toContain("is the one this daemon minted for itself");
+    expect(child.stderr()).toContain(join(stateDir, TOKEN_FILE));
+    expect(readDaemonState(stateDir).token_origin).toBe("minted");
+    expect(readRuntimeState(stateDir)).toBeNull();
+    expect(existsSync(stateDirLayout(stateDir).lock)).toBe(false);
+  }, 40_000);
+
+  /**
+   * The other half of the same correction, and the case the record used to make unreachable.
+   *
+   * `token_origin` answers for the file `token_file` names and for no other. A state directory that
+   * has already minted its own token is exactly the machine an operator then points `--token-file`
+   * at a token of their own from — and inheriting the recorded `minted` there refused that token
+   * for ever, in a sentence claiming this daemon had written a file it had never seen.
+   */
+  it("takes an operator's token at another path after this directory minted its own", async () => {
+    const stateDir = stateDirectory();
+    const address = lanAddress();
+    const certificate = writeSelfSignedCertificate(stateDir, {
+      names: [address, "daemon.internal"],
+    });
+    const first = await serveUntilReady(CHILD_SERVE, stateDir);
+    await beginPlannedShutdown(first.child, first.ready.socket ?? "");
+    await first.child.waitForExit();
+    expect(readDaemonState(stateDir).token_origin).toBe("minted");
+
+    const operatorToken = join(stateDirectory(), "operator-token");
+    const token = randomBytes(32).toString("base64url");
+    writeFileSync(operatorToken, `${token}\n`, { mode: 0o600 });
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        address,
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        certificate.certPath,
+        TLS_KEY_FLAG,
+        certificate.keyPath,
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+        "--token-file",
+        operatorToken,
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
+
+    const answered = await getHealthzOverTls(
+      { host: address, port: ready.port, ca: certificate.cert, servername: "daemon.internal" },
+      { authorization: `Bearer ${token}`, host: `daemon.internal:${ready.port}` },
+    );
+    expect(answered.status).toBe(200);
+    const state = readDaemonState(stateDir);
+    expect(state.token_origin).toBe("operator");
+    // The record now answers for the file this start actually read.
+    expect(state.token_file).toBe(operatorToken);
+    await beginPlannedShutdown(child, ready.socket ?? "");
+    await child.waitForExit();
+  }, 40_000);
 
   it("serves TLS to an operator's allowlist, and still answers 403 to Host: evil.com", async () => {
     const stateDir = stateDirectory();

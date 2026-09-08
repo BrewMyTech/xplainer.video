@@ -171,3 +171,47 @@ supported configuration is unchanged and is reinforced there.
 Nothing else in this record is rewritten: the CLI still owns the runtime, the desktop app is
 still an optional client, and `createServer()` is still the one server core behind three
 surfaces.
+
+## Note, 2026-09-08: what the optional client spawns, and the third answer discovery can give
+
+Added as a dated note rather than a rewrite. This record decided that `apps/cli` owns the runtime and
+that `apps/desktop` is an optional client. Both still stand, and
+[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) fills in the two things
+this record left as sentences rather than mechanisms.
+
+**What the client spawns is the packaged runtime artefact, and `ELECTRON_RUN_AS_NODE` is not used.**
+This record says the app "either spawns `xplainer serve` as an `ELECTRON_RUN_AS_NODE` child or
+attaches to a daemon URL", and its Consequences record the `asar` trap — a spawned child cannot open a
+path inside `app.asar` — with `asarUnpack` named as the phase-2 fix. What shipped is neither. The
+packaged application carries **payload 1**, the relocatable runtime artefact, as `extraResources`, and
+that payload carries **its own interpreter**; so the app spawns
+`<resources>/xplainer-runtime/bin/node` with the payload's own `bin.js`, and the reason
+`ELECTRON_RUN_AS_NODE` existed — so the app would not need Node on the user's machine — is answered by
+the payload instead. The `asar` finding above was correct and is why the payload sits outside the
+archive rather than inside it.
+
+**Program resolution has two stages, and that is a correction of an order this record could not have
+seen.** Routing every shell-out through the stable launcher at `<state>/bin/xplainer` — the one name
+that survives a daemon update — makes the app depend on a file that `daemon install` creates. That is
+unreachable on a clean machine, and **permanently** unreachable for the user with no supported
+supervisor, who never installs and whose product is the spawned daemon. So the app asks through the
+packaged payload **before** an install and through the launcher **after** one, and it learns which of
+the two it is in from `status --json` rather than by guessing: the state directory arrives in the
+report, and the launcher is looked for in the `bin/` beside it.
+
+**There is a third answer, and `status --json` is what makes it sayable.** This record offers two:
+spawn, or attach. As built there are seven discovery outcomes and **three branches** — attach to what
+answered, spawn when nothing did, or **do neither and name the condition**. Two conditions land in the
+third branch and neither is repairable by a `serve` of this app's own: a **latched circuit breaker**,
+where a daemon started now exits `0` without binding, so spawning produces no daemon and no error a
+window could show; and a daemon that is **installed and stopped**, which is its supervisor's to start
+and where a duplicate over the same state directory is the exit `10` the design exists to avoid. Both
+are observable only through the CLI's own report — a user switching the service off in Login Items &
+Extensions changes supervisor state and touches no file of ours — which is why the app shells out to
+`xplainer daemon status --json` instead of reimplementing state-directory and port resolution. A
+second implementation of either would be a second implementation that can disagree with the daemon
+about which machine it is describing.
+
+Nothing else is rewritten. The CLI still owns the runtime, the desktop app is still an optional
+client that holds no token of its own, and `createServer()` is still the one server core behind three
+surfaces.

@@ -388,7 +388,10 @@ phase 2* is where the infrastructure half is recorded.
 whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
 — and ADR 0020's "Alpine is blocked on rendering, not on init" is what a key ignoring the C library
 buys you. `manifest.ts` therefore **mirrors** that function, `manifest.test.ts` drives the real one
-over all 80 branch combinations and compares, and `selectChromeArtefact()` looks the URL up. Two
+over all 80 branch combinations and compares — putting the two predicates it stands in for **back**
+after each row, because the last case in that file asks this machine's own question of the
+unpatched module and a leaked stand-in made it disagree with the mirror on every glibc-2.35-or-newer
+linux-x64 host — and `selectChromeArtefact()` looks the URL up. Two
 consequences worth keeping: the manifest **cannot redirect a download**, because the URL fetched is
 the selector's rather than the document's; and a configuration with no recorded entry is a refusal
 naming the URL, never a download of unreviewed bytes.
@@ -633,6 +636,14 @@ Then the root procedure: `pnpm verify`.
   `FILE_CREATE_PIPE_INSTANCE` it needs for the next accepted connection — for this token's own
   `User` SID. The descriptor belongs to the *pipe* rather than to one instance, which is what makes
   narrowing it once enough. Reported, never fatal, exactly as the token's entry is.
+  **The rights the narrower *opens* with are not the rights it grants**, and getting that wrong is
+  silent: `NamedPipeClientStream` derives the pipe direction from `desiredAccessRights` and throws
+  `ArgumentOutOfRangeException` for a value carrying neither `ReadData` nor `WriteData`, so the
+  first release's `ChangePermissions,ReadPermissions` opener could never open the pipe and every
+  Windows start reported `failed` on a mechanism nobody was reading. The opener asks `ReadData`
+  (the direction, never used), `ChangePermissions` (`WRITE_DAC`) and `ReadPermissions`
+  (`READ_CONTROL`); the whole emitted script is a committed fixture, because it runs on a platform
+  this suite cannot execute.
 - **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
   store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
   takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
@@ -797,10 +808,16 @@ Then the root procedure: `pnpm verify`.
   before the state directory is taken.** An explicit `--bind`, `--i-understand-remote-exposure`,
   `--tls-cert` **and** `--tls-key`, at least one `--allow-host`, and a bearer token this daemon did
   not mint — which `daemon.json`'s `token_origin` is what makes decidable, because 32 random bytes
-  an operator wrote and 32 the mint generated are the same value. `0.0.0.0`, `::`, `[::]` and `*`
-  are refused outright, acknowledgement or not. Everything argv decides is decided before ownership
-  and the token's provenance before the bind, so every refusal leaves the machine as it found it,
-  and the message names **every** missing precondition at once rather than one per run.
+  an operator wrote and 32 the mint generated are the same value. **That record answers for the
+  file `token_file` names and for no other**: a token at a path this state directory never wrote is
+  the operator's however often this daemon has minted one of its own, and a start that inherited the
+  recorded answer refused an operator's `--token-file` for ever in a sentence claiming this daemon
+  had minted a file it had never seen. `0.0.0.0`, `::`, `[::]` and `*`
+  are refused outright, acknowledgement or not. Everything argv decides is decided before ownership,
+  and the token's provenance **before the mint** — the three answers are `absent`, `minted` and
+  `operator`, and a check asked after `loadOrMintToken` created the credential it then refused — so
+  every refusal leaves the machine as it found it, with no token file and no `token_origin` it
+  wrote, and the message names **every** missing precondition at once rather than one per run.
   `daemon/tls.ts` never generates a certificate: the operator supplies the pair, and TLS on a
   *loopback* bind is refused because `status`, `daemon restart` and the desktop all reach a local
   daemon over `http`.

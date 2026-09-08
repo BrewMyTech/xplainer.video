@@ -30,9 +30,13 @@
  * Node for the same reason.
  *
  * Everything that can be decided without touching the filesystem is a pure function over data
- * ({@link parseRuntimeManifest}, {@link checkPayloadHost}); the two functions that do touch it
- * ({@link resolvePayloadCommand}, {@link runPayload}) take their host description and their paths as
- * arguments, so the Windows and wrong-architecture branches are assertable from macOS.
+ * ({@link parseRuntimeManifest}, {@link checkPayloadHost}, {@link spawnPlan}); the two functions
+ * that do touch it ({@link resolvePayloadCommand}, {@link runPayload}) take their host description
+ * and their paths as arguments, so the Windows and wrong-architecture branches are assertable from
+ * macOS.
+ *
+ * **The Windows launcher is a `.cmd`, and Node will not spawn one without an interpreter.**
+ * {@link spawnPlan} is where that is handled, once, for every command this app runs.
  */
 
 import { type ChildProcessByStdio, spawn } from "node:child_process";
@@ -266,7 +270,101 @@ export type RunPayloadOptions = {
   env?: NodeJS.ProcessEnv | undefined;
   /** The working directory. Defaults to the payload root, which always exists. */
   cwd?: string | undefined;
+  /**
+   * The platform whose spawn rules apply. Defaults to this process's.
+   *
+   * A parameter for the reason {@link checkPayloadHost} takes its host as one: the Windows branch
+   * — {@link spawnPlan}'s, which is the difference between a launcher that runs and `EINVAL` — is
+   * only checkable from another machine if a test can ask for it by name.
+   */
+  platform?: NodeJS.Platform | undefined;
 };
+
+/** The extensions Windows will only execute through a command interpreter. */
+const WINDOWS_BATCH_EXTENSIONS: readonly string[] = [".cmd", ".bat"];
+
+/** What `spawn` is actually given, once the Windows batch rule has been applied. */
+export type SpawnPlan = {
+  /** The image to execute: the program itself, or the command interpreter that can run it. */
+  executable: string;
+  /** Its arguments, already quoted where a command line rather than an argv is what arrives. */
+  argv: readonly string[];
+  /**
+   * Whether `argv` is a command line to pass through untouched.
+   *
+   * `true` only for the `cmd.exe` branch, where the quoting below is the whole contract and Node's
+   * own argument escaping would quote the quotes.
+   */
+  windowsVerbatimArguments: boolean;
+};
+
+/** Whether this platform needs a command interpreter to execute `executable` at all. */
+export function isWindowsBatchFile(executable: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") {
+    return false;
+  }
+  const lowered = executable.toLowerCase();
+  return WINDOWS_BATCH_EXTENSIONS.some((extension) => lowered.endsWith(extension));
+}
+
+/**
+ * One argument, quoted so `cmd /s /c` hands it to the batch file unchanged.
+ *
+ * @throws {RangeError} for a character no quoting on this platform survives. `%` is the one that
+ * matters: `cmd.exe` expands `%NAME%` in the command line *before* the batch file sees it, and
+ * there is no escape for that in a string arriving from outside a batch file. A refusal naming the
+ * path is the honest answer — the alternative is a launcher run with a different path than the one
+ * the app resolved.
+ */
+function quoteForCmd(argument: string): string {
+  if (/["%\r\n\0]/.test(argument)) {
+    throw new RangeError(
+      `${JSON.stringify(argument)} cannot be passed through cmd.exe: a quote, a percent sign, a ` +
+        "line break or a NUL in a command line is either re-parsed or expanded before the " +
+        "program sees it. The Windows launcher and the arguments this app sends it must contain " +
+        "none of them.",
+    );
+  }
+  return `"${argument}"`;
+}
+
+/**
+ * What to spawn for `executable`, and with what — the one place the Windows launcher is handled.
+ *
+ * **Why this exists.** `daemon install` writes the stable launcher as `<state>\\bin\\xplainer.cmd`,
+ * and since the fix for CVE-2024-27980 Node refuses to `spawn` a `.cmd` or `.bat` without a shell:
+ * the call fails with `EINVAL` before the file is ever read. Measured on `windows-latest`,
+ * 2026-09-08: every control and every discovery that resolved the launcher answered
+ * `command-failed` — "`…\\bin\\xplainer.cmd` would not run: spawn EINVAL" — so the app worked on a
+ * machine with **nothing** installed and stopped working the moment one was.
+ *
+ * **Why `cmd /d /s /c` with our own quoting rather than `shell: true`.** Node's shell option builds
+ * exactly this command line and joins the arguments with spaces **without quoting any of them**, so
+ * a state directory under `C:\\Users\\Ada Lovelace\\…` would reach the batch file as two arguments.
+ * `/d` skips any `AutoRun` command the registry carries, `/s` is what makes "strip the outer pair
+ * of quotes and take the rest verbatim" the parsing rule, and each token is quoted here.
+ *
+ * Everywhere else — every POSIX platform, and `node.exe` on Windows — this is the identity, and
+ * `shell: false` stays the property the caller's docblock claims.
+ */
+export function spawnPlan(
+  executable: string,
+  argv: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): SpawnPlan {
+  if (!isWindowsBatchFile(executable, platform)) {
+    return { executable, argv: [...argv], windowsVerbatimArguments: false };
+  }
+  const line = [executable, ...argv].map(quoteForCmd).join(" ");
+  return {
+    // `ComSpec` is what Windows itself names the interpreter in, and Node's own shell branch reads
+    // the same variable; the literal is the fallback for an environment that carries neither.
+    executable: env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
+    argv: ["/d", "/s", "/c", `"${line}"`],
+    windowsVerbatimArguments: true,
+  };
+}
 
 /** How long a one-shot payload command is given before it is killed. */
 export const DEFAULT_PAYLOAD_TIMEOUT_MS = 30_000;
@@ -294,21 +392,25 @@ export function runPayload(
  *
  * Everything that runs a CLI goes through here — {@link runPayload} for a one-shot command through
  * the payload, {@link runProgram} for one through the stable launcher, and `discovery.ts` for the
- * long-lived `serve` it supervises itself — so `stdio`, `windowsHide` and the absence of a shell
- * are settled once. `shell: false` is the default and is load-bearing: the executable is an
- * absolute path with no quoting applied to it, and nothing here goes through a shell that would
- * have to be trusted with a user's directory name.
+ * long-lived `serve` it supervises itself — so `stdio`, `windowsHide` and the interpreter question
+ * are settled once. `shell: false` is the default and stays it: the one program on any platform
+ * that cannot be executed without an interpreter is the Windows `.cmd` launcher, and
+ * {@link spawnPlan} names `cmd.exe` explicitly and quotes every token itself rather than handing a
+ * joined string to whatever `shell: true` would have picked.
  */
 export function startProgram(
   executable: string,
   argv: readonly string[],
   options: RunPayloadOptions = {},
 ): ChildProcessByStdio<null, Readable, Readable> {
-  return spawn(executable, [...argv], {
+  const environment = options.env ?? process.env;
+  const plan = spawnPlan(executable, argv, options.platform ?? process.platform, environment);
+  return spawn(plan.executable, [...plan.argv], {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    env: options.env ?? process.env,
+    env: environment,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    windowsVerbatimArguments: plan.windowsVerbatimArguments,
   });
 }
 

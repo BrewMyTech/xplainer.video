@@ -11,8 +11,9 @@
  * `daemon/binding.ts` owns the first two and the wildcards, because those are decidable from the
  * address alone. This file owns the other three, and it owns them as **refusals computed before
  * anything is bound**: `remoteExposureRefusal()` is what `serve` asks before it takes the state
- * directory, and `mintedTokenRefusal()` is what it asks in the one place the token's provenance is
- * known. A daemon that discovered a missing certificate after binding would already have been
+ * directory, and `remoteTokenRefusal()` is what it asks in the one place the token's provenance is
+ * known — before anything has been minted, so that a refused remote bind writes no credential of
+ * its own. A daemon that discovered a missing certificate after binding would already have been
  * reachable, unencrypted, on the address the operator was trying to protect.
  *
  * **The operator supplies the certificate; this product never generates one.** There is no
@@ -35,7 +36,7 @@
 
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { TokenOrigin } from "./daemon-state.js";
+import type { TokenPresence } from "./token.js";
 
 /** The operator's certificate chain, in PEM. */
 export const TLS_CERT_FLAG = "--tls-cert";
@@ -88,7 +89,7 @@ export type RemoteExposureRequest = {
  * that, and is then told about the allowlist has been made to run the command three times to learn
  * a list this function already had. The token is not here — its provenance is a fact about the
  * state directory, which is not readable until ownership is held — and it is
- * {@link mintedTokenRefusal}'s.
+ * {@link remoteTokenRefusal}'s.
  *
  * @returns the refusal, or `null` when this bind may proceed.
  */
@@ -128,7 +129,7 @@ export function remoteExposureRefusal(request: RemoteExposureRequest): string | 
 }
 
 /**
- * The fifth precondition, asked once the token has been read: R-SEC-9's "a non-default token".
+ * The fifth precondition, asked before anything is minted: R-SEC-9's "a non-default token".
  *
  * `minted` is the daemon's own default — the value it generated so that the guard would be
  * non-optional on a machine where nothing had arranged a token — and it is the one value a remote
@@ -136,18 +137,38 @@ export function remoteExposureRefusal(request: RemoteExposureRequest): string | 
  * `daemon/token.ts`'s `resolveTokenOrigin()` for how the two are told apart, and
  * `daemon/daemon-state.ts`'s `token_origin` for where the answer is kept.
  *
+ * **Three answers rather than two, and that is the correction of 2026-09-08.** The check used to be
+ * asked *after* `loadOrMintToken`, so a remote bind on a machine with no token file minted one —
+ * `0600`, recorded in `daemon.json`, exactly as an ordinary start does — and then refused itself
+ * over the file it had just written. Both halves were wrong: R-SEC-9 says every refusal leaves the
+ * machine as it found it, and the sentence told an operator that a token they had never seen was
+ * "the one this daemon minted", which was true only because the refusal had made it so. So `absent`
+ * is its own answer here, and this function runs before the mint.
+ *
  * @returns the refusal, or `null` when this token may guard a remote listener.
  */
-export function mintedTokenRefusal(request: { origin: TokenOrigin; path: string }): string | null {
-  if (request.origin === "operator") {
+export function remoteTokenRefusal(request: {
+  presence: TokenPresence;
+  path: string;
+}): string | null {
+  if (request.presence === "operator") {
     return null;
+  }
+  if (request.presence === "absent") {
+    return (
+      `xplainer serve: there is no bearer token at ${request.path}, and ADR 0020 §Security ` +
+      "R-SEC-9 requires a non-default token for a non-loopback bind — one this daemon did not " +
+      "mint. Nothing has been minted here and nothing has been bound: write a token of your own " +
+      "to a file and pass it with --token-file, or point XPLAINER_TOKEN_FILE at it. A loopback " +
+      "`xplainer serve` mints its own on first start, and that is the value this bind may not use."
+    );
   }
   return (
     `xplainer serve: the bearer token in ${request.path} is the one this daemon minted for ` +
     "itself, and ADR 0020 §Security R-SEC-9 requires a non-default token for a non-loopback " +
     "bind. Write a token of your own to a file and pass it with --token-file, or point " +
     "XPLAINER_TOKEN_FILE at it; daemon.json's token_origin is what records which of the two this " +
-    "is. Nothing has been bound."
+    "is — for the file it names, and for no other. Nothing has been bound."
   );
 }
 

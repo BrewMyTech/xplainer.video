@@ -19,14 +19,36 @@
  * — and it is still not the property the ADR claims, and ADR 0020's note of 2026-09-08 recorded the
  * gap as open rather than closed. This module closes it.
  *
- * **Why the descriptor is applied after the bind rather than at creation.** Node's
- * `net.Server.listen()` takes no security descriptor: `ListenOptions` offers `readableAll` and
- * `writableAll`, which *widen* a pipe through `uv_pipe_chmod`, and nothing that narrows one. A
- * native addon could call `CreateNamedPipeW` itself, and that is precisely what phase 2's
- * single-file packaging cannot carry — the same constraint that ruled out DPAPI in R-SEC-5. So the
- * pipe is created by libuv with the default descriptor and narrowed immediately afterwards, and the
- * window between the two is stated rather than hidden: it is as short as a create-then-narrow can
- * make it, exactly as the token file's is.
+ * **Why the descriptor is applied after the bind rather than at creation, and how wide that window
+ * is.** Node's `net.Server.listen()` takes no security descriptor: `ListenOptions` offers
+ * `readableAll` and `writableAll`, which *widen* a pipe through `uv_pipe_chmod`, and nothing that
+ * narrows one. A native addon could call `CreateNamedPipeW` itself, and that is precisely what phase
+ * 2's single-file packaging cannot carry — the same constraint that ruled out DPAPI in R-SEC-5. So
+ * the pipe is created by libuv with the default descriptor and narrowed at the first instant Node
+ * offers, and the window between the two is measured out rather than waved at:
+ *
+ * - It **opens** inside `server.listen(pipePath, …)`, where libuv's `uv_pipe_bind` calls
+ *   `CreateNamedPipeW` with `lpSecurityAttributes = NULL`. Nothing before that call exists to
+ *   narrow; a descriptor written earlier would be written to no object.
+ * - It **closes** when `SetAccessControl` returns in the PowerShell child below. What is inside it
+ *   is one promise resolution — the IPC listener is the **last** thing `startServer()` binds, so
+ *   `serve` reaches {@link restrictPipeToOwner} with nothing of its own in between — and one
+ *   `powershell.exe` start, which is the cost of having no native addon.
+ * - Nothing of this daemon's runs *during* it: the narrowing is `spawnSync`, so the event loop is
+ *   blocked and the HTTP server accepts nothing until the descriptor is in place. `markReady()`,
+ *   the shutdown handlers and the ready line all happen after it, so no consumer has been told the
+ *   socket exists while it is still wide.
+ * - What an attacker gets inside it is what the default descriptor grants: **read** access. A
+ *   read-only handle cannot send an HTTP request, so no tool can be invoked through one, and the
+ *   `0700` directory that protects the POSIX socket has no Windows counterpart to have been wider.
+ *
+ * The one thing that would close the window entirely is a narrower started *before* the bind and
+ * parked in `NamedPipeClientStream.Connect(timeout)`, which waits for the pipe to appear. It is not
+ * taken this phase, and the reason is recorded rather than left as an omission: it turns a
+ * synchronous call into a two-phase one whose failure modes — a bind that never happens, a client
+ * that attaches to somebody else's pipe of the same name — are only observable on a Windows runner,
+ * and this project's Windows runners are unavailable (§P2-7). A defect written on that platform is
+ * exactly how this file's `PipeAccessRights` bug reached a release.
  *
  * **Why narrowing one handle narrows the pipe.** The descriptor belongs to the *named pipe*, not to
  * the instance: "If a new named pipe is being created, the access control list (ACL) from the
@@ -39,12 +61,27 @@
  * not merely read and write: `FILE_CREATE_PIPE_INSTANCE` is part of it, and a daemon that narrowed
  * its own pipe out of the right to accept a second connection would have made itself unusable.
  *
- * **Why a client connection is what carries the change.** `SetSecurityInfo` needs a handle, and the
- * only handles to the server end belong to libuv. Opening the pipe by name asks for `WRITE_DAC` and
- * `READ_CONTROL` and **nothing else** — no read, no write — so the connection carries no data and
- * cannot; the daemon's own HTTP server sees a connection that opens and closes without a request,
- * which is a case every HTTP server already handles. It costs one pipe instance for the duration of
- * one `SetAccessControl` call.
+ * **Why a client connection is what carries the change, and why it asks for `ReadData`.**
+ * `SetSecurityInfo` needs a handle, and the only handles to the server end belong to libuv. So the
+ * pipe is opened by name, asking for `WRITE_DAC` and `READ_CONTROL` — `ChangePermissions` and
+ * `ReadPermissions` — **plus the one data right .NET will not open a pipe without**:
+ *
+ * > The pipe direction for this constructor is determined by the `desiredAccessRights` parameter.
+ * > If the `desiredAccessRights` value is `ReadData`, the pipe direction will be `In`. If the value
+ * > of `desiredAccessRights` is `WriteData`, the pipe direction will be `Out`.
+ * > — [NamedPipeClientStream(String, String, PipeAccessRights, PipeOptions, TokenImpersonationLevel, HandleInheritability)](https://learn.microsoft.com/en-us/dotnet/api/system.io.pipes.namedpipeclientstream.-ctor)
+ *
+ * A rights value carrying neither is not a direction the constructor can produce, and it does not
+ * guess: `DirectionFromRights` throws `ArgumentOutOfRangeException` — "Throw if neither ReadData nor
+ * WriteData are specified, as this will result in an invalid PipeDirection"
+ * ([dotnet/runtime, `NamedPipeClientStream.Windows.cs`](https://github.com/dotnet/runtime/blob/main/src/libraries/System.IO.Pipes/src/System/IO/Pipes/NamedPipeClientStream.Windows.cs)).
+ * The measured consequence, on the 2026-09-08 Windows runs of this file's first release, was that
+ * the script threw at `New-Object` and **every** Windows start reported `failed` — a pipe that was
+ * never narrowed, behind a mechanism that reported the reason and was never read. `ReadData` is the
+ * smaller of the two data rights and the connection never reads a byte: the daemon's own HTTP
+ * server sees a connection that opens and closes without a request, which is a case every HTTP
+ * server already handles. It costs one pipe instance for the duration of one `SetAccessControl`
+ * call.
  *
  * **A failure is reported, never thrown**, for the reason `windows-acl.ts` gives for the token: a
  * daemon that refused to serve because PowerShell was missing would trade a wider pipe for no
@@ -112,6 +149,13 @@ export function pipeNameOf(pipePath: string): string {
  * The identity is `WindowsIdentity::GetCurrent().User`, which is the account's own SID whether or
  * not the process is elevated: an elevated token's *owner* may be `BUILTIN\\Administrators`, and an
  * entry for the administrators group is not "the creating user only".
+ *
+ * **The opener's rights and the granted rights are different values, deliberately.** What is opened
+ * is the minimum that can open a pipe at all and change its DACL — `ReadData` for the direction
+ * .NET requires (see the top of this file), `ChangePermissions` for `WRITE_DAC` and
+ * `ReadPermissions` for `READ_CONTROL` — while what is *granted* is `FullControl`, because the
+ * entry replaces the whole DACL and libuv needs `FILE_CREATE_PIPE_INSTANCE` out of it to accept the
+ * next connection.
  */
 export function restrictPipeToOwnerScript(
   pipePath: string,
@@ -120,7 +164,7 @@ export function restrictPipeToOwnerScript(
   const name = pipeNameOf(pipePath);
   return [
     "$ErrorActionPreference = 'Stop'",
-    "$rights = [System.IO.Pipes.PipeAccessRights]'ChangePermissions,ReadPermissions'",
+    "$rights = [System.IO.Pipes.PipeAccessRights]'ReadData,ChangePermissions,ReadPermissions'",
     `$client = New-Object System.IO.Pipes.NamedPipeClientStream('.', '${name}', $rights, ` +
       "[System.IO.Pipes.PipeOptions]::None, " +
       "[System.Security.Principal.TokenImpersonationLevel]::None, " +

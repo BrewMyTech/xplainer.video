@@ -202,6 +202,67 @@ export function amendDaemonState(stateDir: string, change: Record<string, unknow
   writeFileSync(file, `${JSON.stringify({ ...state, ...change }, null, 2)}\n`);
 }
 
+/** The word the CLI's Windows switch query has to read back for this arrangement to mean anything. */
+export const SWITCHED_OFF_STATE = "Disabled";
+
+/** The `ScheduledTasks` module a Windows arrangement puts in front of the system one. */
+export type ScheduledTasksShim = {
+  /** `ScheduledTasks.psd1` — the manifest module auto-loading reads to find the command names. */
+  manifest: string;
+  /** `ScheduledTasks.psm1` — the two functions themselves. */
+  module: string;
+};
+
+/**
+ * The stand-in `ScheduledTasks` module, as text, so the Windows branch is readable from any machine.
+ *
+ * **Both functions declare `-TaskName`, and that is the correction of 2026-09-08.** They used to
+ * take nothing but `[Parameter(ValueFromRemainingArguments = $true)] $Rest`, which captures
+ * *positional* leftovers and **not** an unknown named parameter: PowerShell's binder answers
+ * `-TaskName 'x'` on such a function with a terminating "A parameter cannot be found that matches
+ * parameter name 'TaskName'". The CLI's query is
+ * `(Get-ScheduledTask -TaskName '<identity>').State`, so the shim threw, the query wrote nothing to
+ * stdout, exited non-zero, and `readSwitch` — which reads `unregistered` out of "cannot find", and
+ * `unknown` out of anything else — answered `unknown`. That is exactly what `windows-latest`
+ * reported on 2026-09-08: `expected 'unknown' to be 'off'`, blamed on the app, produced by the
+ * arrangement.
+ */
+export function scheduledTasksShim(state: string = SWITCHED_OFF_STATE): ScheduledTasksShim {
+  return {
+    manifest: [
+      "@{",
+      "  ModuleVersion = '99.0.0'",
+      "  GUID = '4a2f6f1a-9d4e-4f0e-9a3f-2f5c9f6c8d21'",
+      "  RootModule = 'ScheduledTasks.psm1'",
+      "  FunctionsToExport = @('Get-ScheduledTask', 'Get-ScheduledTaskInfo')",
+      "}",
+      "",
+    ].join("\r\n"),
+    module: [
+      "function Get-ScheduledTask {",
+      // The real cmdlet's own two named parameters, so the binder has somewhere to put them, plus
+      // the remaining-arguments catch-all for anything a future query adds positionally.
+      "  param(",
+      "    [string] $TaskName,",
+      "    [string] $TaskPath,",
+      "    [Parameter(ValueFromRemainingArguments = $true)] $Rest",
+      "  )",
+      `  [pscustomobject]@{ TaskName = $TaskName; State = '${state}' }`,
+      "}",
+      "function Get-ScheduledTaskInfo {",
+      "  param(",
+      "    [string] $TaskName,",
+      "    [string] $TaskPath,",
+      "    [Parameter(ValueFromRemainingArguments = $true)] $Rest",
+      "  )",
+      "  [pscustomobject]@{ TaskName = $TaskName; LastTaskResult = 0 }",
+      "}",
+      "Export-ModuleMember -Function Get-ScheduledTask, Get-ScheduledTaskInfo",
+      "",
+    ].join("\r\n"),
+  };
+}
+
 /**
  * A supervisor on this machine that answers "switched off" for one label.
  *
@@ -211,9 +272,22 @@ export function amendDaemonState(stateDir: string, change: Record<string, unknow
  * - **macOS** and **Linux** are asked by name — `launchctl`, `systemctl` — so a program of that
  *   name earlier on `PATH` is what answers. That is the same recording-program-on-a-temporary-path
  *   pattern the CLI's own `connect` tests use for vendor CLIs.
- * - **Windows** is asked through PowerShell, which resolves `Get-ScheduledTask` by auto-loading the
- *   first module named `ScheduledTasks` on `PSModulePath` — so a module of that name in front of
- *   the system one answers, and `powershell.exe` itself is the real one.
+ * - **Windows** is asked through PowerShell, which resolves `Get-ScheduledTask` by auto-loading a
+ *   module named `ScheduledTasks` off `PSModulePath` — so a module of that name is written and
+ *   `PSModulePath` is set to **that directory and nothing else**, which is the arrangement
+ *   `about_PSModulePath` documents as supported: "If `PSModulePath` contains `$PSHOME` modules
+ *   path: **AllUsers** modules path is inserted before `$PSHOME` modules path — else: Just use
+ *   `PSModulePath` as defined since the user deliberately removed the `$PSHOME` location". Removing
+ *   it is what makes the answer decidable rather than a question about search order: the real
+ *   `ScheduledTasks` module lives under `$PSHOME` and is not discoverable at all, so the only
+ *   `Get-ScheduledTask` in that session is this one. Windows PowerShell's own built-in commands are
+ *   loaded by the shell configuration rather than off this path, and the query uses none of them.
+ *   `powershell.exe` itself is the real one.
+ *
+ * **The Windows arrangement checks itself before it is handed out**, because two different failures
+ * of it — a shim the binder refuses, and an auto-load that reached the system module instead —
+ * both surface as the CLI answering `unknown`, which reads as a defect in the app. The check runs
+ * the query the CLI runs; a wrong answer throws here, naming the arrangement.
  *
  * Nothing on the machine is registered, enabled or disabled: `launchctl disable` writes a record
  * into a per-user store that has no removal verb, and a test may not leave that behind.
@@ -223,36 +297,12 @@ export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
   if (process.platform === "win32") {
     const module = join(root, "modules", "ScheduledTasks");
     mkdirSync(module, { recursive: true });
-    writeFileSync(
-      join(module, "ScheduledTasks.psd1"),
-      [
-        "@{",
-        "  ModuleVersion = '99.0.0'",
-        "  GUID = '4a2f6f1a-9d4e-4f0e-9a3f-2f5c9f6c8d21'",
-        "  RootModule = 'ScheduledTasks.psm1'",
-        "  FunctionsToExport = @('Get-ScheduledTask', 'Get-ScheduledTaskInfo')",
-        "}",
-        "",
-      ].join("\r\n"),
-    );
-    writeFileSync(
-      join(module, "ScheduledTasks.psm1"),
-      [
-        "function Get-ScheduledTask {",
-        "  param([Parameter(ValueFromRemainingArguments = $true)] $Rest)",
-        "  [pscustomobject]@{ State = 'Disabled' }",
-        "}",
-        "function Get-ScheduledTaskInfo {",
-        "  param([Parameter(ValueFromRemainingArguments = $true)] $Rest)",
-        "  [pscustomobject]@{ LastTaskResult = 0 }",
-        "}",
-        "Export-ModuleMember -Function Get-ScheduledTask, Get-ScheduledTaskInfo",
-        "",
-      ].join("\r\n"),
-    );
-    return {
-      PSModulePath: `${join(root, "modules")};${process.env.PSModulePath ?? ""}`,
-    };
+    const shim = scheduledTasksShim();
+    writeFileSync(join(module, "ScheduledTasks.psd1"), shim.manifest);
+    writeFileSync(join(module, "ScheduledTasks.psm1"), shim.module);
+    const environment = { PSModulePath: join(root, "modules") };
+    assertScheduledTasksShimAnswers(identity, environment);
+    return environment;
   }
 
   const bin = join(root, "bin");
@@ -284,6 +334,42 @@ export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
         ].join("\n");
   writeFileSync(join(bin, program), script, { mode: 0o755 });
   return { PATH: `${bin}:${process.env.PATH ?? ""}` };
+}
+
+/**
+ * Run the query the CLI will run, and refuse to hand out an arrangement that does not answer it.
+ *
+ * The command is `install/lifecycle.ts`'s `disabledQuery()` for `task-scheduler`, spelled out here
+ * rather than imported: `src/install/` is the CLI's internal machinery and this package consumes
+ * that CLI as a program, not as a module. If the two ever drift, this check fails on the platform
+ * that runs it — which is the platform the query exists for.
+ */
+function assertScheduledTasksShimAnswers(identity: string, environment: NodeJS.ProcessEnv): void {
+  const answer = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `(Get-ScheduledTask -TaskName '${identity.replaceAll("'", "''")}').State`,
+    ],
+    { encoding: "utf8", env: { ...process.env, ...environment }, windowsHide: true },
+  );
+  const said = (answer.stdout ?? "").trim();
+  if (said === SWITCHED_OFF_STATE) {
+    return;
+  }
+  throw new Error(
+    `the switched-off arrangement does not answer: \`(Get-ScheduledTask -TaskName '${identity}')` +
+      `.State\` said ${JSON.stringify(said)} rather than ${JSON.stringify(SWITCHED_OFF_STATE)}` +
+      `${answer.error === undefined ? "" : ` (${answer.error.message})`}` +
+      `${(answer.stderr ?? "").trim() === "" ? "" : `, and wrote: ${(answer.stderr ?? "").trim()}`}` +
+      ". Either PowerShell refused the shim module's parameters or it auto-loaded the system " +
+      "ScheduledTasks module instead of the one on PSModulePath; both would make the CLI answer " +
+      "`unknown`, which is a fact about this arrangement rather than about the app under test.",
+  );
 }
 
 /**

@@ -751,3 +751,94 @@ the restart, breaker and identity proofs — while the same runner registered an
 document whose only difference was a `UTF-16` declaration. It is also what `Export-ScheduledTask`
 emits. The bytes stay UTF-8 so the mirror is readable text, and the registration command names the
 encoding it decodes with.
+
+## Note, 2026-09-08, third of the day: phase 2 built the install, and seven details are worth recording
+
+Added as a dated note rather than a rewrite. Nothing this record decides is changed: the daemon is
+still one supervised process per user, started by the operating system's own user-scope supervisor,
+never by root; the degraded paths still probe before writing; and the exit-code table is still the
+table. What follows is what building it settled, and one field it turned out to need. The
+distribution half — what the supervisor starts, where it comes from, and what happens when it is
+replaced — is [ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md), which
+builds on this record and does not amend it.
+
+**1. The degraded paths, as built.** §Degraded paths states the rule — "probe before writing; on
+refusal, write nothing, exit with the documented code, and print the one command that fixes it" — and
+that rule survived contact with three real supervisors intact. The preflight is **read-only**: it
+probes the setup marker, the supervisor, the resolved program's executability, the port, lingering,
+any stale `launchctl disable` record and the token file without writing anything, which is what makes
+"nothing was written" checkable by hashing the state directory, the LaunchAgents directory, the task
+store, the linger marker and the logs on either side of a refusal. Every no-supervisor refusal leads
+with `xplainer connect claude --spawn`, and that command now **exists** — it did not when this record
+printed it as the leading remediation — and it deliberately **bypasses its own daemon preflight**,
+because it is offered exactly when there is no daemon.
+
+**2. Exit `5`, `6` and `7`, and one distinction that had to be written down twice.** `5` is *the
+privilege is missing and the supervisor is not*: lingering that `loginctl` would not grant (checked by
+the **marker**, `/var/lib/systemd/linger/$USER`, not by `loginctl`'s exit status, because `loginctl` is
+a client reporting what it was told and the file is what systemd reads at boot), and a Windows task
+that registers and then will not launch for want of the batch-logon right. `6` is *there is no
+supervisor here at all*, including the Windows case where Task Scheduler is present and refuses the
+session outright. `7` is *install-time conflict*: the port about to be recorded is held, or a unit,
+label or task of this name belongs to something else.
+
+**`7` and `10` are the same symptom at two lifecycles**, and an agent will get it wrong unless it is
+stated: **`7` is install-time** — a decision not yet made, `daemon.json` still records what it
+recorded before, nothing is registered, and the fix is another port or removing the other
+installation — while **`10` is `serve`-time**, a running conflict against an install that already
+exists, whose fix is to find the process. Recording a port at install and discovering at every start
+that it was never available is exactly the failure the preflight exists to make impossible.
+
+**3. `ProcessType=Interactive`, and the argument was backwards.** This record's plist omitted the
+key. `man 5 launchd.plist`: "If left unspecified, the system will apply **light resource limits** to
+the job, throttling its CPU usage and I/O bandwidth", while `Interactive` jobs "run with the same
+resource limitations as apps, that is to say, none". For a daemon whose entire job is driving Chrome
+and ffmpeg, *unspecified* is the throttled case — so the key is present and its value is the
+unthrottled one, and the golden test asserts it. Two neighbours settled the same way: `Umask` is
+emitted as `<integer>63</integer>`, because launchd's `Umask` is decimal and `0o077` is `63`; and
+launchd expands no `~`, so a path that still carries one is refused by the renderer rather than
+written into a plist that would create a directory called `~`.
+
+**4. Enable before bootstrap, and boot out before re-bootstrapping.** A stale `launchctl disable`
+record makes `bootstrap` a silent no-op, and `bootstrap` does not refresh an already-loaded
+definition. So `install` runs `launchctl enable gui/<uid>/<label>` **before** it bootstraps, and a
+replacement boots the old label out first — and waits for the label to leave the domain, because
+`launchctl bootout` returns before the job has exited and a `bootstrap` issued in that gap fails with
+`Bootstrap failed: 5: Input/output error`, which reads like a malformed plist and is not one. The
+preflight distinguishes three answers rather than two, because `launchctl enable` **creates** an
+entry: "there is no record", "there is a record and it says enabled", and "there is a record and it
+says disabled" are different facts, and only the third means an install's `enable` will change
+anything.
+
+**5. The Windows task name is per user, and it supersedes the one in the table above.** §Decision
+Outcome's table names the task `\xplainer-daemon`, with its definition mirrored at
+`%LOCALAPPDATA%\xplainer\service\xplainer-daemon.xml`. As built the task is
+**`\xplainer\<user>-daemon`**, taking its last segment from the qualified `DOMAIN\user` account the
+daemon runs as, and refusing an account whose user part is blank or carries any of `\ / : * ? " < >
+|`. A single fixed name would mean two users on one machine could not both register one, which
+contradicts this record's own per-user premise. The mirrored document keeps its path. The design
+decision is recorded in ADR 0027; this note is where the superseded name resolves.
+
+**6. `uninstall` deletes the token, and never touches lingering.** §Uninstall is honoured with one
+value made exact: the token file is **deleted**, not rotated, because a rotation leaves two working
+credentials and taking only one of them would leave behind exactly the live token the acceptance
+criterion says must not survive — and the grace file an `xplainer token rotate` may have left goes
+with it. Lingering is the opposite: `/var/lib/systemd/linger/$USER` is **per user, not per service**,
+so `uninstall` leaves it exactly where it is even when this install is what enabled it, and *reports*
+the marker with the one command that would remove it rather than removing it by reflex. A user who
+let an install enable lingering may have other services depending on it now.
+
+**7. `recentStarts[]` needed a field this record did not give it, and the design for it is ADR
+0027's.** §Restart on crash words the breaker as "if the last five runs all failed within 30 seconds
+of starting", which is a predicate over facts a run must have recorded. The first implementation had
+to *infer* both halves — no `ready_at` meant failure, and the **next** run's start time meant "fast"
+— and the second inference measured **the supervisor's retry cadence rather than the run's own
+life**, so a supervisor spacing its retries wider than the window could never trip the breaker at
+all: launchd's `ThrottleInterval` is 30 s, exactly on the boundary, and Task Scheduler's
+`<RestartOnFailure>` has a one-minute schema minimum, outside it. The fix is a per-run **outcome**
+and **end time** in the durable record, plus a stated rule for the run that recorded neither because
+it was killed. Both are decided in **ADR 0027**, which is where the unknown-outcome policy, the
+clock-validation rule and the residual it leaves open are argued. This note records that the field
+was needed and points at the record that designs it, rather than carrying a design of its own.
+
+This record stays `accepted` and no line above is rewritten.
