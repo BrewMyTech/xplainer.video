@@ -1,0 +1,536 @@
+# The `[runner]` half of T11: `xplainer daemon install` against a real Windows
+# Task Scheduler, and the two Windows facts nothing in this repository could
+# measure on the machines it was written on.
+#
+# WHAT IT CLOSES. Three criteria, none of which can be established on any machine
+# this project's authors have:
+#
+#   * **T11**, criterion 11 — the create → narrate gate from T3, run against the
+#     **installed** daemon under the standard-user S4U principal, ending in a
+#     terminal `done`. Registering and starting a task proves registration; it
+#     does not prove that a job runs under a principal with no network
+#     credentials and no access to encrypted files, and that is exactly what
+#     `<LogonType>S4U</LogonType>` in `supervisors/schtasks.ts` asks for.
+#   * **T11**, criterion 12 — whether `Register-ScheduledTask` is in fact the
+#     only call that surfaces `SCHED_S_BATCH_LOGON_PROBLEM` (`0x0004131C`,
+#     267036). The plan records that claim as **unverified**, and `install.ts`'s
+#     failure message therefore names the missing right as a *candidate* rather
+#     than a diagnosis. This job is where the guess ends, in one direction or the
+#     other.
+#   * **T8**, criterion 8 — that `fs.renameSync` **replaces an existing file** on
+#     Windows rather than refusing. `install/launcher.ts` rewrites the stable
+#     launcher by temp-then-rename and the update transaction depends on it. On
+#     POSIX that is `rename(2)`'s documented behaviour; on Windows it is
+#     `MoveFileEx`, and the answer is a property of the platform.
+#   * **T14**, criterion 9 — that a worker's **whole tree** dies with it on
+#     Windows. `process.kill(-pid)` is a POSIX process-group idiom Node does not
+#     implement there, and `process-group.ts` documented the consequence for a
+#     phase that did not target Windows: the pid alone is signalled and any
+#     grandchildren are left, which is an orphaned `chrome.exe` after every
+#     logoff. The worker is now put in a **Job Object with kill-on-close**, held
+#     open by a `powershell.exe` keeper for the life of the worker, because Node
+#     has no Job Object API and this project ships no native addon. Everything
+#     about that is asserted from a decoded command on macOS and Linux; the
+#     behaviour itself can only happen here.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, all three are unproven, and no record in this
+# repository may say otherwise.** `workflow_dispatch` registers from the
+# repository's default branch, so this file has to reach `main` before the API
+# will accept a dispatch of it at all — GitHub's own rule, not a repository
+# setting — and `--ref` then chooses whose code runs. It has never been
+# dispatched.
+#
+#   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-windows.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The same rule `e2e-runtime.yml`,
+# `e2e-linux.yml` and `phase2-proofs.yml` follow. This job creates a local
+# account, registers and unregisters a real scheduled task, starts a supervised
+# daemon and drives an MCP session through it — minutes of wall clock whose
+# answer changes only when the installer or a renderer changes. `ci.yml` is the
+# gate that runs on every push; this is a proof, and a proof is run when you want
+# it.
+#
+# WHY A LOCAL STANDARD ACCOUNT. A hosted `windows-latest` runner executes as
+# `runneradmin`, which is in the Administrators group, and registering an S4U
+# task from an elevated session for an administrator is a strictly easier case
+# than the one the product ships into. So both jobs create a **local standard
+# user** and register for that account: that is the principal ADR 0020's
+# degraded path is about, and the one whose missing "Log on as a batch job"
+# right produces `SCHED_S_BATCH_LOGON_PROBLEM`. The account, its profile and
+# every task registered for it are removed in an `always()` step.
+#
+# WHY ONE STEP IS A MEASUREMENT AND THE OTHER AN ASSERTION. Criterion 12 asks
+# *whether* a claim is true, so the job that answers it prints what each call
+# returned and exits `0` either way: a job that asserted the claim would fail on
+# the answer "no", which is an answer worth having. The rename half is different
+# — T8 already depends on it — so that one is asserted and fails the job.
+
+name: daemon-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      standard_user:
+        description: The local standard account the task is registered for.
+        required: false
+        default: xplainer-t11
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: rename, and which call warns (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # T8's criterion 8, asserted. `renameSync` is what `writeLauncher` uses to
+      # publish a rewritten launcher, and a `rename` that refused an existing
+      # file would leave the old launcher in place with a `.tmp` beside it and
+      # every consumer pointed at the previous runtime.
+      - name: fs.renameSync over an existing file (T8, criterion 8)
+        shell: bash
+        run: |
+          cat > rename-probe.mjs <<'PROBE'
+          import { mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+          import { tmpdir } from "node:os";
+          import { join } from "node:path";
+          import process from "node:process";
+
+          const dir = mkdtempSync(join(tmpdir(), "xplainer-rename-"));
+          const target = join(dir, "xplainer.cmd");
+          const temporary = join(dir, ".xplainer.tmp");
+          writeFileSync(target, "old\n");
+          const before = statSync(target);
+          writeFileSync(temporary, "new\n");
+
+          renameSync(temporary, target);
+
+          const after = statSync(target);
+          const contents = readFileSync(target, "utf8");
+          console.log(`platform         ${process.platform}`);
+          console.log(`contents after   ${JSON.stringify(contents)}`);
+          console.log(`ino before/after ${String(before.ino)} / ${String(after.ino)}`);
+          if (contents !== "new\n") {
+            console.log("FAIL: renameSync did not replace the existing file");
+            process.exitCode = 1;
+          } else {
+            console.log("check: renameSync replaced an existing file");
+          }
+          PROBE
+          node rename-probe.mjs
+
+      # Criterion 12, measured rather than asserted — see the header. Every call
+      # that could plausibly surface the warning is made in turn and what it
+      # said is printed: the registration, the start, and the task info read
+      # afterwards.
+      - name: Which calls surface SCHED_S_BATCH_LOGON_PROBLEM (T11, criterion 12)
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = $env:STANDARD_USER
+          $task = "\xplainer\$user-probe"
+          $secret = ConvertTo-SecureString -String ([System.Guid]::NewGuid().ToString() + 'aA1!') -AsPlainText -Force
+          New-LocalUser -Name $user -Password $secret -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "principal: $env:COMPUTERNAME\$user (standard user, no group membership added)"
+
+          # The document is the one `supervisors/schtasks.ts` renders, reduced to
+          # the parts the warning depends on: an S4U principal and an <Exec>.
+          $xml = @"
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo><Description>xplainer batch-logon probe</Description></RegistrationInfo>
+            <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$env:COMPUTERNAME\$user</UserId></LogonTrigger></Triggers>
+            <Principals><Principal id="Author"><UserId>$env:COMPUTERNAME\$user</UserId><LogonType>S4U</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+            <Settings>
+              <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+              <AllowStartOnDemand>true</AllowStartOnDemand>
+              <Enabled>true</Enabled>
+              <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+            </Settings>
+            <Actions Context="Author"><Exec><Command>cmd.exe</Command><Arguments>/c exit 0</Arguments></Exec></Actions>
+          </Task>
+          "@
+
+          Write-Host '--- Register-ScheduledTask ---'
+          Register-ScheduledTask -Xml $xml -TaskName $task -Force -WarningVariable registerWarning -ErrorVariable registerError | Out-Null
+          Write-Host "warnings: $($registerWarning -join ' | ')"
+          Write-Host "errors:   $($registerError -join ' | ')"
+
+          Write-Host '--- Start-ScheduledTask ---'
+          Start-ScheduledTask -TaskName $task -WarningVariable startWarning -ErrorVariable startError
+          Write-Host "warnings: $($startWarning -join ' | ')"
+          Write-Host "errors:   $($startError -join ' | ')"
+
+          Start-Sleep -Seconds 5
+          Write-Host '--- Get-ScheduledTaskInfo ---'
+          $info = Get-ScheduledTaskInfo -TaskName $task
+          $info | Format-List | Out-String | Write-Host
+          $result = $info.LastTaskResult
+          Write-Host ("LastTaskResult: {0} (0x{1:X8})" -f $result, $result)
+          if ($result -eq 267036) {
+            Write-Host 'ANSWER: LastTaskResult carries SCHED_S_BATCH_LOGON_PROBLEM'
+          } else {
+            Write-Host 'ANSWER: LastTaskResult does not carry SCHED_S_BATCH_LOGON_PROBLEM on this run'
+          }
+          Write-Host 'This step is a measurement and exits 0 either way; the record is updated from it.'
+
+      - name: Remove the throwaway account and every task it left
+        if: always()
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
+            ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
+          Remove-LocalUser -Name $env:STANDARD_USER -ErrorAction SilentlyContinue
+          Write-Host 'tasks and account removed'
+
+  containment:
+    name: a worker's whole tree dies with it (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # `turbo`'s `test` task depends on the **dependencies'** builds, and the
+      # step below runs vitest directly, so the build is a step of its own.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # What the keeper needs from this machine, printed before anything depends
+      # on it: `Add-Type` compiles C# with the in-box compiler, and a runner
+      # without one would fail the assertions below for a reason that has
+      # nothing to do with Job Objects.
+      - name: The PowerShell this runner has, and whether it can compile a P/Invoke
+        shell: pwsh
+        run: |
+          $PSVersionTable | Format-List | Out-String | Write-Host
+          Add-Type -TypeDefinition 'public static class XplainerProbe { public static int Answer() { return 42; } }'
+          Write-Host "Add-Type works: $([XplainerProbe]::Answer())"
+
+      # The same suite that runs on every push on macOS and Linux, on the one
+      # platform where two of its cases are about something else entirely: there
+      # is no process group here, so "kills a leader that ignores SIGTERM, and
+      # the grandchild it left behind" passes only if the Job Object caught the
+      # grandchild. Before T14 this job would have failed, and that is the point
+      # of running it.
+      - name: The worker's process group, and the Job Object that replaces it
+        run: pnpm --filter @xplainer/cli exec vitest run src/daemon/process-group.test.ts
+
+      # A keeper that outlived its worker would be a process leak on every job,
+      # so the last word is that none is left: each keeper waits for its own
+      # worker and exits, and the job it was holding closes with it. The wait is
+      # a loop rather than one look, because "still winding down" and "leaked"
+      # are the same picture for the first second or two and only one of them is
+      # worth failing a job over.
+      - name: No keeper survived the suite
+        if: always()
+        shell: pwsh
+        run: |
+          $keepers = @()
+          foreach ($attempt in 1..10) {
+            $keepers = @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+              Where-Object { $_.CommandLine -like '*-EncodedCommand*' })
+            if ($keepers.Count -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          $keepers | Select-Object ProcessId, CommandLine | Format-List | Out-String | Write-Host
+          if ($keepers.Count -gt 0) { throw "a Job Object keeper outlived its worker by 20 s" }
+          Write-Host 'no keeper left behind'
+
+  install:
+    name: install under the S4U principal, then create → narrate (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The install registers a payload assembled by `xplainer runtime build`,
+      # never the checkout, and that command is `apps/cli/dist/bin.js`. An
+      # unbuilt `dist/` is a refusal on its first page, so the build is a step of
+      # its own and a build failure is legible as one.
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: Create the standard account the task runs as
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $secret = ConvertTo-SecureString -String ([System.Guid]::NewGuid().ToString() + 'aA1!') -AsPlainText -Force
+          New-LocalUser -Name $env:STANDARD_USER -Password $secret -AccountNeverExpires -PasswordNeverExpires | Out-Null
+          Write-Host "created $env:COMPUTERNAME\$env:STANDARD_USER (Users only)"
+
+      # `xplainer runtime build` runs as the runner's own account, because
+      # assembling a payload is not what is being measured; the state directory
+      # it is staged into is one the standard user owns, so the daemon the task
+      # starts can write there.
+      - name: Assemble a payload and hand the state directory to the standard user
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'xplainer-t11'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          node apps/cli/dist/bin.js runtime build --out (Join-Path $root 'payload')
+          New-Item -ItemType Directory -Path (Join-Path $root 'state') -Force | Out-Null
+          icacls $root /grant "$($env:STANDARD_USER):(OI)(CI)F" /T | Out-Null
+          "XPLAINER_T11_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "state directory: $root\state"
+
+      # `daemon install` refuses without a setup marker, and `xplainer setup` is
+      # T19. The fixture marker this story ships is materialised through the
+      # same helper the unit tests use, so the marker an install reads here is
+      # the one they read.
+      - name: Write the synthetic toolchain marker
+        shell: bash
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts -e "
+            const { writeToolchainMarker } = await import('./apps/cli/src/install/testing/toolchain.ts');
+            writeToolchainMarker(process.env.XPLAINER_T11_ROOT + '/state');
+            console.log('marker written');
+          "
+
+      # The install, as the standard user. `Start-Process -Credential` is what
+      # runs a process as another local account from an elevated session; the
+      # exit code comes back through `-Wait -PassThru`, and both streams are
+      # redirected to files so the transcript survives the step.
+      #
+      # The account's password is set here rather than carried from the step
+      # that created it, because a workflow that put a credential in an output
+      # or an environment variable would be writing a secret into the run's own
+      # log surface. It is a throwaway local account on a throwaway VM either
+      # way, and the shorter its value's life the better.
+      - name: Install as the standard user
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:XPLAINER_T11_ROOT
+          $log = Join-Path $root 'install.out.txt'
+          $err = Join-Path $root 'install.err.txt'
+          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
+          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
+          Set-LocalUser -Name $env:STANDARD_USER -Password $secret
+          $credential = New-Object System.Management.Automation.PSCredential(
+            "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+
+          $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          $process = Start-Process -FilePath 'node' -Wait -PassThru `
+            -ArgumentList @(
+              'apps\cli\dist\bin.js', 'daemon', 'install',
+              '--runtime', (Join-Path $root 'payload'), '--port', '18787') `
+            -Credential $credential -WorkingDirectory $PWD `
+            -RedirectStandardOutput $log -RedirectStandardError $err
+          Get-Content $log -ErrorAction SilentlyContinue | Write-Host
+          Get-Content $err -ErrorAction SilentlyContinue | Write-Host
+          if ($process.ExitCode -ne 0) { throw "daemon install exited $($process.ExitCode)" }
+          Get-ScheduledTask -TaskPath '\xplainer\' | Format-List | Out-String | Write-Host
+          Get-ScheduledTaskInfo -TaskName "\xplainer\$env:STANDARD_USER-daemon" |
+            Format-List | Out-String | Write-Host
+
+      # Criterion 11: T3's create → put_source → narrate gate against the
+      # **installed** daemon. `mcp --attach` reads the socket out of the
+      # `daemon.json` the install wrote, so the tools run inside the supervised
+      # process — the one whose principal is the standard user's S4U — rather
+      # than in a second copy of the server. The client itself runs as the
+      # runner's own account, which is the point: what is being established is
+      # that the *job* runs under that principal, not who asked for it.
+      #
+      # bash rather than pwsh, and a heredoc rather than a committed script:
+      # this is a JSON-RPC pump and a WAV recorder, and both read as what they
+      # are in JavaScript. Git Bash is present on every `windows-latest` runner.
+      - name: Drive create → put_source → narrate through the installed daemon
+        shell: bash
+        run: |
+          cat > gate.mjs <<'GATE'
+          import { spawn } from "node:child_process";
+          import { mkdirSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import process from "node:process";
+
+          // The speech fixture, recorded on the spot: one sine WAV and its word
+          // spans per segment, which is what `XPLAINER_TTS_FIXTURE` names. The
+          // gate stops at narration, so nothing here needs a real synthesiser.
+          const SEGMENTS = [
+            { id: "one", text: "The installed daemon answered.", seconds: 1.5, frequency: 440 },
+            { id: "two", text: "And it ran the job.", seconds: 1.2, frequency: 660 },
+          ];
+          const sineWav = (seconds, frequency) => {
+            const rate = 24000;
+            const frames = Math.round(rate * seconds);
+            const data = Buffer.alloc(frames * 2);
+            for (let frame = 0; frame < frames; frame += 1) {
+              const value = Math.round(Math.sin((2 * Math.PI * frequency * frame) / rate) * 12000);
+              data.writeInt16LE(value, frame * 2);
+            }
+            const header = Buffer.alloc(44);
+            header.write("RIFF", 0);
+            header.writeUInt32LE(36 + data.length, 4);
+            header.write("WAVEfmt ", 8);
+            header.writeUInt32LE(16, 16);
+            header.writeUInt16LE(1, 20);
+            header.writeUInt16LE(1, 22);
+            header.writeUInt32LE(rate, 24);
+            header.writeUInt32LE(rate * 2, 28);
+            header.writeUInt16LE(2, 32);
+            header.writeUInt16LE(16, 34);
+            header.write("data", 36);
+            header.writeUInt32LE(data.length, 40);
+            return Buffer.concat([header, data]);
+          };
+          const fixtures = join(process.env.XPLAINER_T11_ROOT, "tts-fixtures");
+          mkdirSync(fixtures, { recursive: true });
+          const manifest = [];
+          for (const segment of SEGMENTS) {
+            writeFileSync(join(fixtures, `${segment.id}.wav`), sineWav(segment.seconds, segment.frequency));
+            const words = segment.text.split(/\s+/);
+            const step = segment.seconds / words.length;
+            writeFileSync(
+              join(fixtures, `${segment.id}-words.json`),
+              JSON.stringify(
+                words.map((word, index) => ({
+                  word,
+                  start_time: Number((index * step).toFixed(6)),
+                  end_time: Number(((index + 1) * step).toFixed(6)),
+                })),
+              ),
+            );
+            manifest.push({ text: segment.text, audio: `${segment.id}.wav`, words: `${segment.id}-words.json` });
+          }
+          writeFileSync(join(fixtures, "fixtures.json"), JSON.stringify(manifest));
+
+          const child = spawn(process.execPath, ["apps/cli/dist/bin.js", "mcp", "--attach"], {
+            stdio: ["pipe", "pipe", "inherit"],
+            env: { ...process.env, XPLAINER_TTS_FIXTURE: fixtures },
+          });
+          const replies = [];
+          let buffered = "";
+          child.stdout.setEncoding("utf8");
+          child.stdout.on("data", (chunk) => {
+            buffered += chunk;
+            const lines = buffered.split("\n");
+            buffered = lines.pop() ?? "";
+            for (const line of lines) {
+              if (line.trim() !== "") replies.push(JSON.parse(line));
+            }
+          });
+          const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
+          const waitFor = async (id, attempts = 600) => {
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+              const found = replies.find((reply) => reply.id === id);
+              if (found !== undefined) return found;
+              await new Promise((done) => setTimeout(done, 200));
+            }
+            throw new Error(`no reply to ${id}`);
+          };
+          const call = async (id, name, args) => {
+            send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+            const reply = await waitFor(id);
+            if (reply.result?.isError) throw new Error(`${name}: ${JSON.stringify(reply.result)}`);
+            return reply.result?.structuredContent;
+          };
+
+          send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+            protocolVersion: "2025-06-18", capabilities: {},
+            clientInfo: { name: "daemon-windows", version: "0" } } });
+          await waitFor(1);
+          send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+          console.log(JSON.stringify(await call(2, "explainer_create", { slug: "t11-windows" })));
+          await call(3, "explainer_put_source", {
+            slug: "t11-windows",
+            narration: { voice: "af_heart", speed: 1, fps: 30, segments: SEGMENTS.map(
+              (segment) => ({ id: segment.id, text: segment.text })) },
+          });
+          const enqueued = await call(4, "explainer_narrate", { slug: "t11-windows" });
+          console.log(JSON.stringify(enqueued));
+
+          let job = null;
+          for (let attempt = 0; attempt < 300; attempt += 1) {
+            job = await call(100 + attempt, "explainer_job", { job_id: enqueued.job_id });
+            if (job?.state === "done" || job?.state === "error") break;
+            await new Promise((done) => setTimeout(done, 1000));
+          }
+          console.log(JSON.stringify(job));
+          child.kill();
+          if (job?.state !== "done") {
+            console.log(`FAIL: the job ended ${String(job?.state)}`);
+            process.exitCode = 1;
+          } else {
+            console.log("check: the installed daemon, under the S4U principal, reached a terminal done");
+          }
+          GATE
+          XPLAINER_STATE_DIR="$XPLAINER_T11_ROOT/state" node gate.mjs
+
+      - name: Uninstall as the standard user
+        if: always()
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
+          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
+          Set-LocalUser -Name $env:STANDARD_USER -Password $secret
+          $credential = New-Object System.Management.Automation.PSCredential(
+            "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+          $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T11_ROOT 'state'
+          $removed = Start-Process -FilePath 'node' -Wait -PassThru `
+            -ArgumentList @('apps\cli\dist\bin.js', 'daemon', 'uninstall') `
+            -Credential $credential -WorkingDirectory $PWD
+          Write-Host "daemon uninstall exited $($removed.ExitCode)"
+
+      - name: Remove the throwaway account and every task it left
+        if: always()
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
+            ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
+          Remove-LocalUser -Name $env:STANDARD_USER -ErrorAction SilentlyContinue
+          Write-Host 'tasks and account removed'

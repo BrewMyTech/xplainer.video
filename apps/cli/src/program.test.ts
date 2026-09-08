@@ -241,16 +241,7 @@ describe("xplainer", () => {
   });
 
   it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
-    const deferred = [
-      ["setup"],
-      ["daemon", "install"],
-      ["daemon", "uninstall"],
-      ["daemon", "start"],
-      ["daemon", "stop"],
-      ["daemon", "restart"],
-      ["daemon", "status"],
-      ["daemon", "logs"],
-    ];
+    const deferred = [["setup"]];
 
     for (const argv of deferred) {
       const { stdout, stderr, exitCode } = await run(argv);

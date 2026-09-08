@@ -37,6 +37,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import type { Toolchain } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -54,6 +55,7 @@ import {
   type ProbeRunner,
   preflightInstall,
   preflightWriteLocations,
+  readDisableRecord,
   runProbe,
   SPAWN_REMEDIATION,
   TOOLCHAIN_FORMAT_VERSION,
@@ -62,6 +64,25 @@ import {
 import { resolveProgram } from "./program.js";
 import { stageRuntime } from "./stage.js";
 import { buildFixturePayload } from "./testing/payload.js";
+import { writeToolchainMarker } from "./testing/toolchain.js";
+
+/** The verbatim `launchctl print-disabled` capture beside this file, comment header stripped. */
+const PRINT_DISABLED_FIXTURE = fileURLToPath(
+  new URL("./__fixtures__/launchctl-print-disabled.txt", import.meta.url),
+);
+
+/**
+ * The capture's own bytes, with only the `#` provenance header removed.
+ *
+ * Stripped by prefix rather than by line count, so a longer header is not a silently truncated
+ * fixture: launchctl's own output has no line beginning with `#`.
+ */
+function printDisabledFixture(): string {
+  return readFileSync(PRINT_DISABLED_FIXTURE, "utf8")
+    .split("\n")
+    .filter((line) => !line.startsWith("#"))
+    .join("\n");
+}
 
 const scratch: string[] = [];
 const listeners: Server[] = [];
@@ -96,32 +117,7 @@ function stateDirectory(): string {
 
 /** A complete toolchain marker whose two recorded files really are on disk. */
 function writeMarker(stateDir: string, overrides: Partial<Toolchain> = {}): Toolchain {
-  const acquired = join(stateDir, "acquired");
-  mkdirSync(acquired, { recursive: true });
-  const chromePath = join(acquired, "chrome-headless-shell");
-  const speechPath = join(acquired, "kokoro.bin");
-  writeFileSync(chromePath, "not really chrome\n");
-  writeFileSync(speechPath, "not really kokoro\n");
-  const marker: Toolchain = {
-    format_version: TOOLCHAIN_FORMAT_VERSION,
-    created_at: "2026-09-08T09:00:00Z",
-    chrome: {
-      version: "141.0.7390.54",
-      path: chromePath,
-      sha256: "a".repeat(64),
-      provider: "remotion",
-    },
-    speech: {
-      version: "0.4.0",
-      path: speechPath,
-      sha256: "b".repeat(64),
-      provider: "bundle",
-    },
-    workspace: { platform: "darwin-arm64", version: "1.0.0" },
-    ...overrides,
-  };
-  writeFileSync(toolchainMarkerPath(stateDir), `${JSON.stringify(marker, null, 2)}\n`);
-  return marker;
+  return writeToolchainMarker(stateDir, overrides);
 }
 
 /** A runner that answers every command the same way, and records what it was asked. */
@@ -457,6 +453,13 @@ describe("the supervisor", () => {
     expect(preflight.disabled).toMatchObject({ applicable: true, probed: false });
   });
 
+  /**
+   * The canned answer is the **fixture**, so this case and the parser below cannot drift apart: the
+   * stale-record branch is driven by bytes a real `launchctl` printed, with one value swapped from
+   * `enabled` to `disabled` — the swap is named here rather than hidden, because this machine's own
+   * store holds no disabled record for our label and inventing the whole document would put the
+   * spelling back under this test's control, which is what let the defect through.
+   */
   it("names a stale launchctl disable record without refusing, and the command that undoes it", async () => {
     const stateDir = stateDirectory();
     writeMarker(stateDir);
@@ -467,17 +470,52 @@ describe("the supervisor", () => {
       port: 0,
       platform: "darwin",
       run: runnerAnswering({
-        stdout: `disabled services = {\n\t"video.xplainer.daemon" => true\n}\n`,
+        stdout: printDisabledFixture().replace(
+          `"video.xplainer.daemon" => enabled`,
+          `"video.xplainer.daemon" => disabled`,
+        ),
       }).run,
       environment: { home: scratchDirectory(), account: "tester" },
     });
 
-    expect(preflight.disabled).toMatchObject({ applicable: true, probed: true, disabled: true });
+    expect(preflight.disabled).toMatchObject({
+      applicable: true,
+      probed: true,
+      disabled: true,
+      record: "disabled",
+    });
     expect(preflight.disabled.detail).toContain(
       `launchctl enable gui/${uid}/video.xplainer.daemon`,
     );
     // A disable record is a fact and not a refusal: the install can proceed, and `status` says so.
     expect(preflight.refusals).toEqual([]);
+  });
+
+  /**
+   * The defect this parser was rewritten for, pinned to the bytes that exposed it.
+   *
+   * `preflight.ts` matched `/=>\s*true/`. The fixture is a verbatim capture of
+   * `launchctl print-disabled gui/$(id -u)` on macOS 2026-09-08 and contains no `true` at all, so
+   * the old predicate answered "not disabled" for every label on the platform — the one condition
+   * the probe exists to catch, silently unreachable. The first assertion is that regression, stated
+   * as a property of the capture rather than of the code.
+   */
+  it("reads `=> disabled`, `=> enabled` and an absent label out of a real print-disabled capture", () => {
+    const output = printDisabledFixture();
+
+    expect(/=>\s*true/.test(output)).toBe(false);
+    expect(readDisableRecord(output, "com.apple.Siri.agent")).toBe("disabled");
+    expect(readDisableRecord(output, "com.apple.ManagedClientAgent.enrollagent")).toBe("disabled");
+    expect(readDisableRecord(output, "video.xplainer.daemon")).toBe("enabled");
+    expect(readDisableRecord(output, "com.ollama.ollama")).toBe("enabled");
+    expect(readDisableRecord(output, "video.xplainer.never-installed")).toBe("absent");
+    // The spelling older releases printed is still read, because accepting it costs one word.
+    expect(
+      readDisableRecord(`\t\t"video.xplainer.daemon" => true\n`, "video.xplainer.daemon"),
+    ).toBe("disabled");
+    expect(
+      readDisableRecord(`\t\t"video.xplainer.daemon" => false\n`, "video.xplainer.daemon"),
+    ).toBe("enabled");
   });
 
   /** One platform's probe run for real, so the canned answers above are answers to a real command. */
@@ -716,8 +754,63 @@ describe("lingering, the token, and what the whole thing touched", () => {
     expect(preflightWriteLocations(preflight)).toEqual([
       stateDir,
       join(home, ".config", "systemd", "user", "xplainer.service"),
+      join(home, ".config", "systemd", "user"),
       join(lingerDir, "tester"),
     ]);
+  });
+
+  /**
+   * Measured inside `infra/e2e/Dockerfile.systemd` on 2026-09-08: with lingering off and no login
+   * session, `systemctl --user is-system-running` answers "Failed to connect to bus: No such file
+   * or directory", because there is no per-user manager at all. Round 1 of this file answered that
+   * with "an always-running daemon cannot be arranged on this machine" and `connect --spawn`, which
+   * is wrong twice: systemd *is* here, and one administrator command fixes it for good.
+   */
+  it("names lingering, not --spawn, when systemd is booted and the manager is absent with it", async () => {
+    const stateDir = stateDirectory();
+    writeMarker(stateDir);
+    const home = scratchDirectory();
+    const lingerDir = scratchDirectory();
+
+    const preflight = await preflightWithoutWriting({
+      stateDir,
+      port: 0,
+      platform: "linux",
+      run: runnerAnswering({ status: 1, stderr: "Failed to connect to bus: No such file\n" }).run,
+      environment: { home, account: "tester" },
+      paths: { systemdBooted: home, lingerDir },
+    });
+
+    expect(preflight.refusals[0]).toMatchObject({
+      code: "no-user-manager",
+      exitCode: NO_SUPERVISOR_EXIT_CODE,
+    });
+    expect(preflight.refusals[0]?.message).toContain("sudo loginctl enable-linger tester");
+    expect(preflight.refusals[0]?.message).toContain(join(lingerDir, "tester"));
+    // `--spawn` is still offered, and it is no longer the first thing said.
+    const message = preflight.refusals[0]?.message ?? "";
+    expect(message.indexOf("enable-linger")).toBeLessThan(message.indexOf(SPAWN_REMEDIATION));
+  });
+
+  /** And with the marker already there, the absent manager is what it has always been. */
+  it("keeps the --spawn remediation when the manager is absent and lingering is not the reason", async () => {
+    const stateDir = stateDirectory();
+    writeMarker(stateDir);
+    const home = scratchDirectory();
+    const lingerDir = scratchDirectory();
+    writeFileSync(join(lingerDir, "tester"), "");
+
+    const preflight = await preflightWithoutWriting({
+      stateDir,
+      port: 0,
+      platform: "linux",
+      run: runnerAnswering({ status: 1, stderr: "Failed to connect to bus: No such file\n" }).run,
+      environment: { home, account: "tester" },
+      paths: { systemdBooted: home, lingerDir },
+    });
+
+    expect(preflight.refusals[0]?.message).not.toContain("enable-linger");
+    expect(preflight.refusals[0]?.message).toContain(SPAWN_REMEDIATION);
   });
 
   it("runs no command at all on a platform with no supervisor to ask about", async () => {

@@ -41,6 +41,19 @@ type LiveDaemon = {
   ready: { runtime: string; marker: string; pid: number; port: number };
 };
 
+/**
+ * The budget for a case that runs the launcher as a real process.
+ *
+ * Vitest's default is five seconds and this suite's two spawning cases measured 0.4 s and 1.2 s on
+ * an idle machine — the second one higher because it is the first run out of the *second* payload,
+ * whose 146 MB of interpreter and modules are still cold. Under a full `vitest run` those two costs
+ * land beside every other suite's children, and the second case is the one that was seen to exceed
+ * five seconds. The budget is raised rather than the work reduced: what makes this suite worth
+ * anything is that it launches the real artefact, and a 60 s ceiling still fails a hang in a
+ * fraction of the job's own timeout.
+ */
+const SPAWN_TIMEOUT_MS = 60_000;
+
 let scratch = "";
 let stateDir = "";
 let firstRuntime = "";
@@ -91,20 +104,24 @@ afterAll(() => {
 });
 
 describe("the stable launcher", () => {
-  it("reaches the daemon the staged runtime's own launch spec started", () => {
-    // The spec started the daemon out of the staged directory, and said so over its own socket.
-    expect(daemon.ready.runtime).toBe(firstRuntime);
-    expect(spec.executable).toBe(join(firstRuntime, "bin", "node"));
+  it(
+    "reaches the daemon the staged runtime's own launch spec started",
+    () => {
+      // The spec started the daemon out of the staged directory, and said so over its own socket.
+      expect(daemon.ready.runtime).toBe(firstRuntime);
+      expect(spec.executable).toBe(join(firstRuntime, "bin", "node"));
 
-    const answer = runLauncher(["whoami", "an argument with spaces"]);
-    expect(answer.reached).toEqual({
-      runtime: firstRuntime,
-      marker: "alpha",
-      pid: daemon.pid,
-    });
-    expect(answer.launcher_runtime).toBe(firstRuntime);
-    expect(answer.forwarded).toEqual(["an argument with spaces"]);
-  });
+      const answer = runLauncher(["whoami", "an argument with spaces"]);
+      expect(answer.reached).toEqual({
+        runtime: firstRuntime,
+        marker: "alpha",
+        pid: daemon.pid,
+      });
+      expect(answer.launcher_runtime).toBe(firstRuntime);
+      expect(answer.forwarded).toEqual(["an argument with spaces"]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
   it("is two lines that exec the runtime's own node and its dist/bin.js", () => {
     const path = launcherPath(stateDir);
@@ -118,22 +135,26 @@ describe("the stable launcher", () => {
     expect(statSync(path).mode & 0o777).toBe(LAUNCHER_MODE);
   });
 
-  it("rewritten to a second staged runtime, the same path now runs out of that one", () => {
-    const before = launcherPath(stateDir);
-    const written = writeLauncher({
-      stateDir,
-      program: resolveProgram({ stateDir, runtimeDir: secondRuntime }),
-    });
-    expect(written.path).toBe(before);
-    expect(written.replaced).toBe(true);
+  it(
+    "rewritten to a second staged runtime, the same path now runs out of that one",
+    () => {
+      const before = launcherPath(stateDir);
+      const written = writeLauncher({
+        stateDir,
+        program: resolveProgram({ stateDir, runtimeDir: secondRuntime }),
+      });
+      expect(written.path).toBe(before);
+      expect(written.replaced).toBe(true);
 
-    const answer = runLauncher(["whoami"]);
-    expect(answer.launcher_runtime).toBe(secondRuntime);
-    expect(answer.launcher_marker).toBe("beta");
-    // The daemon did not move: rewriting the launcher changes which runtime the *path* runs, and
-    // the process a supervisor is holding stays exactly where it was until it is restarted.
-    expect(answer.reached.runtime).toBe(firstRuntime);
-  });
+      const answer = runLauncher(["whoami"]);
+      expect(answer.launcher_runtime).toBe(secondRuntime);
+      expect(answer.launcher_marker).toBe("beta");
+      // The daemon did not move: rewriting the launcher changes which runtime the *path* runs, and
+      // the process a supervisor is holding stays exactly where it was until it is restarted.
+      expect(answer.reached.runtime).toBe(firstRuntime);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
   it("replaces a launcher that is already there, by rename, at the same path", () => {
     const path = launcherPath(stateDir);

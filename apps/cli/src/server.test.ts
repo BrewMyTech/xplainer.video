@@ -42,7 +42,13 @@ import { createLoopbackGuard } from "./daemon/guard.js";
 import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
-import { type RunningServer, startServer } from "./server.js";
+import {
+  DRAIN_PATH,
+  type DrainSeam,
+  LISTENER_CLOSE_GRACE_MS,
+  type RunningServer,
+  startServer,
+} from "./server.js";
 import { CLI_VERSION } from "./version.js";
 
 let running: RunningServer | undefined;
@@ -296,6 +302,36 @@ function send(
   });
 }
 
+/** The same request, sent to a unix socket instead of a port. `fetch` cannot name a socket path. */
+function sendOverSocket(
+  socketPath: string,
+  path: string,
+  options: { headers?: Record<string, string>; method?: string; body?: string } = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const call = request(
+      {
+        socketPath,
+        path,
+        method: options.method ?? "GET",
+        headers: { host: "xplainer.ipc", ...options.headers },
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    call.on("error", reject);
+    call.end(options.body);
+  });
+}
+
 /** The same server the daemon binds, with the same guard in front of it. */
 async function serveGuarded(): Promise<RunningServer> {
   running = await startServer({
@@ -441,4 +477,216 @@ describe("the loopback guard on a bound listener", () => {
 
     expect((await send(running.port, "/healthz")).status).toBe(200);
   });
+});
+
+/**
+ * `POST /api/daemon/drain`: the one route that is not the same on both listeners.
+ *
+ * The seam is `CreateServerOptions.isOverIpc`, and everything here is about what it decides.
+ * `startServer()` passes a predicate over the `WeakSet<Request>` its socket adaptor fills in, so
+ * "this arrived over IPC" is a fact about the listener that accepted the connection — which is why
+ * the negative below is worth having: a request that is *identical* except for where it was sent
+ * gets a `404`, with a valid bearer token, from a daemon that answers the same request `202` on the
+ * socket. Nothing a client can put in a header, a path or a body moves it across that line.
+ *
+ * The drain itself is `daemon/shutdown.ts`'s and is asserted against a real spawned `serve` in
+ * `commands/serve.test.ts`; what these tests own is the route, the seam, and the ordering promise
+ * that the acknowledgement is written before the listeners go.
+ */
+describe("the drain route", () => {
+  /** A seam that records what the route asked for, and a promise for when it asked. */
+  function recordingDrain(begin?: (reason: string) => void): {
+    seam: DrainSeam;
+    reasons: string[];
+    began: Promise<string>;
+  } {
+    const reasons: string[] = [];
+    let announce: (reason: string) => void = () => {};
+    const began = new Promise<string>((resolve) => {
+      announce = resolve;
+    });
+    return {
+      reasons,
+      began,
+      seam: {
+        timeoutMs: 20_000,
+        pid: process.pid,
+        begin: (reason) => {
+          reasons.push(reason);
+          begin?.(reason);
+          announce(reason);
+        },
+      },
+    };
+  }
+
+  /** The two listeners a daemon binds, with the guard on the TCP one, as `serve` binds them. */
+  async function serveWithDrain(seam?: DrainSeam): Promise<RunningServer & { socketPath: string }> {
+    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    running = await startServer({
+      backend: localBackend(),
+      port: 0,
+      ipc: { path: socketPath },
+      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+      ...(seam === undefined ? {} : { drain: seam }),
+    });
+    return Object.assign(running, { socketPath });
+  }
+
+  it("runs the drain for a POST over the socket, and answers with the daemon's own numbers", async () => {
+    const drain = recordingDrain();
+    const server = await serveWithDrain(drain.seam);
+
+    const response = await sendOverSocket(server.socketPath, DRAIN_PATH, { method: "POST" });
+
+    expect(response.status).toBe(202);
+    expect(JSON.parse(response.body)).toEqual({
+      event: "draining",
+      timeout_ms: 20_000,
+      pid: process.pid,
+      already_draining: false,
+    });
+    expect(await drain.began).toBe(`POST ${DRAIN_PATH}`);
+    expect(drain.reasons).toEqual([`POST ${DRAIN_PATH}`]);
+  });
+
+  /**
+   * The negative R11 asks for. A token that lets a caller render must not also let it stop this
+   * machine's daemon, and the answer is the one a route that does not exist gives — there is
+   * nothing here to discover by asking.
+   */
+  it("answers 404 over TCP with a valid bearer token, exactly as it does for no such route", async () => {
+    const drain = recordingDrain();
+    const server = await serveWithDrain(drain.seam);
+
+    const refused = await send(server.port, DRAIN_PATH, {
+      method: "POST",
+      headers: authorized(server.port),
+    });
+    const noSuchRoute = await send(server.port, "/api/daemon/no-such-route", {
+      method: "POST",
+      headers: authorized(server.port),
+    });
+
+    expect(refused.status).toBe(404);
+    expect(refused.body).toBe(noSuchRoute.body);
+    expect(drain.reasons).toEqual([]);
+    // And the same daemon is still there to serve the request that is allowed.
+    expect((await send(server.port, "/healthz", { headers: authorized(server.port) })).status).toBe(
+      200,
+    );
+  });
+
+  /** The guard is still mounted in front of it, so an unauthenticated TCP caller never reaches the route. */
+  it("answers 401 over TCP without a token", async () => {
+    const drain = recordingDrain();
+    const server = await serveWithDrain(drain.seam);
+
+    const response = await send(server.port, DRAIN_PATH, {
+      method: "POST",
+      headers: { Host: `127.0.0.1:${server.port}` },
+    });
+
+    expect(response.status).toBe(401);
+    expect(drain.reasons).toEqual([]);
+  });
+
+  /** A server with no drain to run has no such route at all — not one that answers on one listener. */
+  it("is absent from a server that was given no drain", async () => {
+    const server = await serveWithDrain();
+
+    const response = await sendOverSocket(server.socketPath, DRAIN_PATH, { method: "POST" });
+
+    expect(response.status).toBe(404);
+  });
+
+  /** A second ask is answered rather than refused, and starts nothing: one drain per process. */
+  it("answers a second POST without beginning a second drain", async () => {
+    const drain = recordingDrain();
+    const server = await serveWithDrain(drain.seam);
+
+    const first = await sendOverSocket(server.socketPath, DRAIN_PATH, { method: "POST" });
+    const second = await sendOverSocket(server.socketPath, DRAIN_PATH, { method: "POST" });
+
+    expect(JSON.parse(first.body)).toMatchObject({ already_draining: false });
+    expect(JSON.parse(second.body)).toMatchObject({ already_draining: true, pid: process.pid });
+    await drain.began;
+    expect(drain.reasons).toEqual([`POST ${DRAIN_PATH}`]);
+  });
+
+  /**
+   * The ordering promise, with the case that makes it hard: a request that never ends.
+   *
+   * T21 mounts `/api/*` and its streams; until then the long-lived response is stubbed here with a
+   * tool call the backend never answers, which holds a TCP connection open in exactly the way an
+   * SSE subscriber or a media body would. Two things have to be true at once, and each one alone is
+   * cheap to satisfy by breaking the other: the drain's own acknowledgement is **complete** — a
+   * `202` with its whole body, not a reset connection — and closing the listeners afterwards
+   * **finishes**, because `server.close()` on its own waits for a connection that will never go
+   * idle and the daemon would hang holding its socket file and its state directory.
+   */
+  it("answers in full and still closes, with a request open that never ends", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<never>((_resolve, reject) => {
+      release = () => {
+        reject(new Error("the test released the held tool call"));
+      };
+    });
+    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    let closed: Promise<void> | null = null;
+    const drain = recordingDrain(() => {
+      closed = running?.close() ?? Promise.resolve();
+    });
+
+    running = await startServer({
+      backend: { ...localBackend(), explainer_list: () => held },
+      port: 0,
+      ipc: { path: socketPath },
+      drain: drain.seam,
+      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+    });
+
+    try {
+      // A request that will not answer, on the TCP listener, before anything is drained.
+      const hanging = send(running.port, "/mcp", {
+        ...MCP_POST,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "explainer_list", arguments: {} },
+        }),
+        headers: { ...MCP_POST.headers, ...authorized(running.port) },
+      }).catch((error: unknown) => ({ status: 0, headers: {}, body: String(error) }));
+      // It is in flight before the drain: the daemon answered a second request while it was open.
+      expect(
+        (await send(running.port, "/healthz", { headers: authorized(running.port) })).status,
+      ).toBe(200);
+
+      const startedAt = Date.now();
+      const acknowledgement = await sendOverSocket(socketPath, DRAIN_PATH, { method: "POST" });
+
+      expect(acknowledgement.status).toBe(202);
+      expect(JSON.parse(acknowledgement.body)).toMatchObject({ event: "draining" });
+      await drain.began;
+      await closed;
+      const elapsed = Date.now() - startedAt;
+
+      // Both listeners are gone, inside the grace rather than never.
+      expect(elapsed).toBeLessThan(LISTENER_CLOSE_GRACE_MS + 5_000);
+      await expect(
+        send(running.port, "/healthz", { headers: authorized(running.port) }),
+      ).rejects.toThrow();
+      await expect(sendOverSocket(socketPath, "/healthz")).rejects.toThrow();
+      // And the request that never ends was taken away rather than waited for: it ends as a
+      // destroyed connection, which is what `closeAllConnections()` does to it and what
+      // `server.close()` on its own would never have done.
+      const abandoned = await hanging;
+      expect(abandoned.status).toBe(0);
+      expect(drain.reasons).toEqual([`POST ${DRAIN_PATH}`]);
+      running = undefined;
+    } finally {
+      release();
+    }
+  }, 30_000);
 });

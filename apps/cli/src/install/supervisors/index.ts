@@ -45,6 +45,7 @@ export {
   renderScheduledTask,
   TASK_FOLDER,
   TASK_XML_MODE,
+  taskLogPath,
   taskName,
   taskSchedulerAdapter,
   taskXmlPath,

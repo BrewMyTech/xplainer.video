@@ -24,11 +24,19 @@ export {
 } from "./not-implemented.js";
 export type {
   CreateServerOptions,
+  DrainAcknowledgement,
+  DrainSeam,
   GuardFactory,
   RunningServer,
   StartServerOptions,
 } from "./server.js";
-export { createServer, DEFAULT_HOSTNAME, DEFAULT_PORT, startServer } from "./server.js";
+export {
+  createServer,
+  DEFAULT_HOSTNAME,
+  DEFAULT_PORT,
+  DRAIN_PATH,
+  startServer,
+} from "./server.js";
 export { CLI_VERSION } from "./version.js";
 export type { WorkspaceEnvironment } from "./workspace-root.js";
 export { resolveWorkspaceRoot, VIDEOS_DIR_ENV, WORKSPACE_DIR_NAME } from "./workspace-root.js";

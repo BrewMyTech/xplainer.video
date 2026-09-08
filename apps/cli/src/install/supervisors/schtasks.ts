@@ -99,6 +99,28 @@ export function taskXmlPath(environment: SupervisorEnvironment): string {
 }
 
 /**
+ * `%LOCALAPPDATA%\xplainer\logs\daemon.log`, the file the daemon's own output goes to.
+ *
+ * [ADR 0020](../../../../../docs/adr/0020-always-running-local-daemon.md)'s platform table names
+ * it, and the reason it is a path this project owns rather than a supervisor's capture file is that
+ * Task Scheduler has no capture file: `<Exec>` carries a command, arguments and a working directory,
+ * and a task's standard output goes nowhere at all. So Windows is the platform where "the daemon
+ * writes its own log" is not a preference but the only way there is a log.
+ *
+ * It is a path rather than a writer. The writer that keeps this file under a bound is owned by no
+ * story in this phase, and `daemon logs` reads whatever is here — which on a Windows machine today
+ * is nothing, and is reported as nothing rather than as an error.
+ */
+export function taskLogPath(environment: SupervisorEnvironment): string {
+  const localAppData = requireValue(
+    environment.localAppData ?? "",
+    "environment.localAppData",
+    TASK_SCHEDULER_KIND,
+  );
+  return win32.join(localAppData, "xplainer", "logs", "daemon.log");
+}
+
+/**
  * The task document, complete, with every value taken from the launch contract.
  *
  * There is no environment map to put anything in — `<Exec>` carries a command, arguments and a

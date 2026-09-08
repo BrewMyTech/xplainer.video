@@ -57,7 +57,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import process from "node:process";
 import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
 import type { SupervisorKind } from "../daemon/daemon-state.js";
@@ -71,8 +71,10 @@ import type { ResolvedProgram } from "./program.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import {
   LAUNCH_AGENT_LABEL,
+  launchAgentLogPath,
   supervisorAdapter,
   supervisorKindForPlatform,
+  TASK_FOLDER,
 } from "./supervisors/index.js";
 
 /** The marker `setup` writes, and the first file an install reads. */
@@ -123,6 +125,15 @@ export type PreflightRefusal = {
 export type ProbeCommand = {
   program: string;
   argv: readonly string[];
+  /**
+   * How long it may take, when {@link PROBE_TIMEOUT_MS} is not enough.
+   *
+   * Every probe in this file is a `stat`, a read or a one-line query and fits the default. The
+   * registration commands in `register.ts` go through the same runner and do not: `systemctl --user
+   * enable --now` starts the daemon and returns when it is up, and `launchctl bootstrap` loads a
+   * job. Five seconds there would report a working install as an unanswered command.
+   */
+  timeoutMs?: number | undefined;
 };
 
 /** What running one produced. A command that could not start is an answer, not an error. */
@@ -157,7 +168,7 @@ export function runProbe(command: ProbeCommand): ProbeResult {
   const result = spawnSync(command.program, [...command.argv], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: PROBE_TIMEOUT_MS,
+    timeout: command.timeoutMs ?? PROBE_TIMEOUT_MS,
   });
   return {
     started: result.error === undefined,
@@ -194,6 +205,19 @@ export type SupervisorProbe = {
   detail: string;
   /** The artefact path an install would write, so a caller can hash it and prove nothing moved. */
   artefact: string | null;
+  /** The directory that artefact lives in — `~/Library/LaunchAgents`, and its two counterparts. */
+  artefactDir: string | null;
+  /**
+   * The supervisor's **own** registry, where it has one this install can reach.
+   *
+   * `%SystemRoot%\System32\Tasks\xplainer` on Windows, where `Register-ScheduledTask` puts the
+   * task document it keeps; `null` on the other two, where the artefact *is* the registration and
+   * there is no second copy. It is here so a refusal check can hash the place a registration would
+   * appear rather than only the file this process would write.
+   */
+  store: string | null;
+  /** Where the job's output goes, when it is a directory rather than a journal. */
+  logDir: string | null;
   /** The name this supervisor's own tooling would address the daemon by. */
   identity: string | null;
   refusal: PreflightRefusal | null;
@@ -237,6 +261,16 @@ export type LingerProbe = {
   enabled: boolean;
 };
 
+/**
+ * What the launchd disable store holds for one label.
+ *
+ * Three values rather than a boolean, because `install` and `uninstall` need to tell "there is no
+ * record" from "there is a record and it says enabled": `launchctl enable` **creates** an entry
+ * where there was none, and only an install that knows which of the two it met can say afterwards
+ * what it changed.
+ */
+export type LaunchdDisableRecord = "disabled" | "enabled" | "absent";
+
 /** A `launchctl` disable record, which persists across reboots and is otherwise invisible. */
 export type DisabledProbe = {
   /** `false` on every platform but macOS. */
@@ -245,6 +279,8 @@ export type DisabledProbe = {
   probed: boolean;
   /** Whether **our** label is recorded as disabled. */
   disabled: boolean;
+  /** What the store holds for our label. `absent` when the probe did not answer. */
+  record: LaunchdDisableRecord;
   /** What was found, and the one command that undoes it. */
   detail: string;
 };
@@ -264,6 +300,8 @@ export type TokenProbe = {
 export type InstallPreflight = {
   platform: NodeJS.Platform;
   stateDir: string;
+  /** The account and directories every artefact path above was built from. */
+  environment: SupervisorEnvironment;
   toolchain: ToolchainProbe;
   supervisor: SupervisorProbe;
   program: ProgramProbe;
@@ -334,6 +372,7 @@ export function currentSupervisorEnvironment(
     account: accountName(env, platform),
     configHome: env.XDG_CONFIG_HOME,
     localAppData: env.LOCALAPPDATA,
+    systemRoot: env.SystemRoot ?? env.SYSTEMROOT,
   };
 }
 
@@ -362,10 +401,15 @@ export async function preflightInstall(request: PreflightRequest): Promise<Insta
   const domain = platform === "darwin" ? probeLaunchdDomain(run) : null;
 
   const toolchain = probeToolchain(request.stateDir);
-  const supervisor = probeSupervisor(platform, environment, run, domain, bootedDir);
+  // Lingering is read before the supervisor, not after it, because it is half of the *supervisor's*
+  // answer on Linux: a user with no session and no linger marker has no per-user manager at all,
+  // and the remediation for that is `loginctl enable-linger` rather than "this machine has none".
+  // Measured in `infra/e2e/Dockerfile.systemd` on 2026-09-08: with lingering off and no login,
+  // `systemctl --user is-system-running` answers "Failed to connect to bus".
+  const linger = probeLinger(platform, environment.account, lingerDir);
+  const supervisor = probeSupervisor(platform, environment, run, domain, bootedDir, linger);
   const program = probeProgram(request.program ?? null);
   const port = await probePort(request.port, request.host ?? "127.0.0.1", platform, run);
-  const linger = probeLinger(platform, environment.account, lingerDir);
   const disabled = probeDisabled(platform, domain);
   const token = probeToken(request.stateDir, env);
 
@@ -376,6 +420,7 @@ export async function preflightInstall(request: PreflightRequest): Promise<Insta
   return {
     platform,
     stateDir: request.stateDir,
+    environment,
     toolchain,
     supervisor,
     program,
@@ -389,22 +434,45 @@ export async function preflightInstall(request: PreflightRequest): Promise<Insta
 }
 
 /**
- * Every path this preflight would have written to, so a caller can hash them and prove it did not.
+ * Every path an install could write to, so a caller can hash them and prove a refusal did not.
  *
  * P2-10's obligation is that a refused install leaves the machine as it was, and "as it was" is
- * checkable only against a list of the places it could have changed: the state directory, the
- * supervisor's own artefact, and — on Linux — the linger marker whose creation is the one write the
- * old design smuggled into this phase.
+ * checkable only against a list of the places it could have changed. Six kinds of place, and the
+ * list is deliberately wider than the files this process writes:
+ *
+ * - the **state directory**, which holds the staged runtime, the launcher and every state file;
+ * - the supervisor's **artefact** — the unit, the plist or the task XML;
+ * - the **directory that artefact lives in**, so a file created beside it is caught too:
+ *   `~/Library/LaunchAgents` is the one T11's own criterion names;
+ * - the **task store**, `%SystemRoot%\System32\Tasks\xplainer`, which is where a Windows
+ *   *registration* actually appears and is written by Task Scheduler rather than by this process;
+ * - the **linger marker**, `/var/lib/systemd/linger/$USER`, the one write the round-1 design
+ *   smuggled into the read-only phase;
+ * - the **log directory**, `~/Library/Logs/xplainer`, which launchd creates for `StandardOutPath`
+ *   the moment a job is loaded — so a plist that was bootstrapped and then rolled back leaves a
+ *   trace there and nowhere else.
+ *
+ * Ordered from this project's own paths outwards, and de-duplicated, because a hash map keyed by
+ * path would otherwise report one directory twice on a machine where two of them coincide.
  */
 export function preflightWriteLocations(preflight: InstallPreflight): readonly string[] {
   const locations = [preflight.stateDir];
   if (preflight.supervisor.artefact !== null) {
     locations.push(preflight.supervisor.artefact);
   }
+  if (preflight.supervisor.artefactDir !== null) {
+    locations.push(preflight.supervisor.artefactDir);
+  }
+  if (preflight.supervisor.store !== null) {
+    locations.push(preflight.supervisor.store);
+  }
   if (preflight.linger.applicable) {
     locations.push(preflight.linger.marker);
   }
-  return locations;
+  if (preflight.supervisor.logDir !== null) {
+    locations.push(preflight.supervisor.logDir);
+  }
+  return [...new Set(locations)];
 }
 
 /** The setup marker: present, readable, complete, and still describing files that exist. */
@@ -512,6 +580,7 @@ function probeSupervisor(
   run: ProbeRunner,
   domain: LaunchdDomain | null,
   bootedDir: string,
+  linger: LingerProbe,
 ): SupervisorProbe {
   const kind = supervisorKindForPlatform(platform);
   if (kind === null) {
@@ -521,10 +590,14 @@ function probeSupervisor(
       usable: false,
       detail: `${platform} has none of the three supervisors this daemon can be installed into`,
       artefact: null,
+      artefactDir: null,
+      store: null,
+      logDir: null,
       identity: null,
       refusal: noSupervisorRefusal(
         `this is ${platform}, and an always-running daemon is arranged here through a systemd ` +
           "user unit, a LaunchAgent or a Windows Scheduled Task — none of which this platform has.",
+        null,
       ),
     };
   }
@@ -535,13 +608,16 @@ function probeSupervisor(
   // exception where it owes a sentence. Both are answers here, and `null` is one of them.
   const artefact = attemptPath(() => adapter.artefactPath(environment));
   const identity = attemptPath(() => adapter.identity(environment));
-  const state = supervisorState(platform, run, domain, bootedDir);
+  const state = supervisorState(platform, run, domain, bootedDir, linger);
   return {
     kind,
     present: state.present,
     usable: state.usable,
     detail: state.detail,
     artefact,
+    artefactDir: artefact === null ? null : dirname(artefact),
+    store: taskStorePath(kind, environment),
+    logDir: kind === "launchd" ? attemptPath(() => dirname(launchAgentLogPath(environment))) : null,
     identity,
     refusal: state.usable
       ? null
@@ -558,12 +634,30 @@ function probeSupervisor(
               "no supervisor at all, and delivers the tools; what it costs is the warm process, " +
               "the shared job queue and the desktop client.",
           }
-        : noSupervisorRefusal(state.detail),
+        : noSupervisorRefusal(state.detail, state.lingerFirst === true ? linger : null),
   };
 }
 
 /** The `6` both no-supervisor conditions end with, worded once. */
-function noSupervisorRefusal(detail: string): PreflightRefusal {
+function noSupervisorRefusal(detail: string, linger: LingerProbe | null): PreflightRefusal {
+  // The one case where `--spawn` is *not* the leading remediation: systemd is here, the manager is
+  // only absent because nothing has started one, and one command brings it back for good.
+  if (linger !== null) {
+    return {
+      code: "no-user-manager",
+      exitCode: NO_SUPERVISOR_EXIT_CODE,
+      message:
+        `no user service manager is running here: ${detail}. On this machine that is a ` +
+        `consequence rather than a limitation — ${linger.marker} does not exist, so this user's ` +
+        "manager is not started at boot and stops with their last session. Enabling lingering is " +
+        "what starts one and what makes the daemon survive a reboot with nobody logged in, and it " +
+        "is the one step of an install that needs an administrator. Nothing was written. Run:\n\n" +
+        `  sudo loginctl enable-linger ${linger.user}\n\n` +
+        "and install again. If lingering is not something this machine will allow, " +
+        `\`${SPAWN_REMEDIATION}\` writes a stdio entry that starts \`xplainer mcp\` inside each ` +
+        "agent session and needs no supervisor at all.",
+    };
+  }
   return {
     code: "no-user-manager",
     exitCode: NO_SUPERVISOR_EXIT_CODE,
@@ -583,6 +677,14 @@ function noSupervisorRefusal(detail: string): PreflightRefusal {
 type SupervisorState = {
   present: boolean;
   usable: boolean;
+  /**
+   * Whether the manager is absent *because* lingering is, which changes the remediation entirely.
+   *
+   * Linux only, and only when systemd booted the machine, the user manager did not answer, and
+   * `/var/lib/systemd/linger/$USER` is not there. Then "there is no supervisor here" is wrong:
+   * there is one, nothing has started it for this user, and `loginctl enable-linger` is the fix.
+   */
+  lingerFirst?: boolean;
   /** Windows only: the supervisor is here and refused, which is a different sentence. */
   blocked: boolean;
   detail: string;
@@ -602,6 +704,7 @@ function supervisorState(
   run: ProbeRunner,
   domain: LaunchdDomain | null,
   bootedDir: string,
+  linger: LingerProbe,
 ): SupervisorState {
   if (platform === "linux") {
     if (!existsSync(bootedDir)) {
@@ -632,6 +735,7 @@ function supervisorState(
         present: true,
         usable: false,
         blocked: false,
+        lingerFirst: !linger.enabled,
         detail:
           `systemd booted this machine, and \`systemctl --user is-system-running\` answered ` +
           `${JSON.stringify(state)} — so there is no per-user manager to register a unit with. ` +
@@ -946,6 +1050,7 @@ function probeDisabled(platform: NodeJS.Platform, domain: LaunchdDomain | null):
       applicable: false,
       probed: false,
       disabled: false,
+      record: "absent",
       detail: "launchctl disable records exist only on macOS",
     };
   }
@@ -954,20 +1059,26 @@ function probeDisabled(platform: NodeJS.Platform, domain: LaunchdDomain | null):
       applicable: true,
       probed: false,
       disabled: false,
+      record: "absent",
       detail: `\`launchctl print-disabled ${domain.name}\` did not answer, so no record could be read`,
     };
   }
-  const disabled = disabledInPrintOutput(domain.answer.stdout, LAUNCH_AGENT_LABEL);
+  const record = readDisableRecord(domain.answer.stdout, LAUNCH_AGENT_LABEL);
   return {
     applicable: true,
     probed: true,
-    disabled,
-    detail: disabled
-      ? `${LAUNCH_AGENT_LABEL} is recorded as disabled in ${domain.name} — this is what System ` +
-        "Settings › General › Login Items & Extensions switches off, and it persists across " +
-        "reboots. A job installed now would be registered and never loaded. Undo it with " +
-        `\`launchctl enable ${domain.name}/${LAUNCH_AGENT_LABEL}\``
-      : `no disable record for ${LAUNCH_AGENT_LABEL} in ${domain.name}`,
+    disabled: record === "disabled",
+    record,
+    detail:
+      record === "disabled"
+        ? `${LAUNCH_AGENT_LABEL} is recorded as disabled in ${domain.name} — this is what System ` +
+          "Settings › General › Login Items & Extensions switches off, and it persists across " +
+          "reboots. A job installed now would be registered and never loaded. Undo it with " +
+          `\`launchctl enable ${domain.name}/${LAUNCH_AGENT_LABEL}\``
+        : record === "enabled"
+          ? `${LAUNCH_AGENT_LABEL} already has a record in ${domain.name} and it says enabled, so ` +
+            "an install's `launchctl enable` will change nothing"
+          : `no record for ${LAUNCH_AGENT_LABEL} in ${domain.name} at all`,
   };
 }
 
@@ -986,6 +1097,26 @@ function probeLaunchdDomain(run: ProbeRunner): LaunchdDomain {
   return { uid, name, answer: run({ program: "launchctl", argv: ["print-disabled", name] }) };
 }
 
+/**
+ * `%SystemRoot%\System32\Tasks\xplainer`, the folder Task Scheduler keeps its own copy in.
+ *
+ * A registration writes two things: the XML this project renders under `%LOCALAPPDATA%`, and the
+ * task document Task Scheduler stores for itself. Only the second one *is* the registration, so a
+ * refusal check that hashed only the first would miss a task that got registered anyway. `null`
+ * everywhere but Windows, where the other two supervisors keep no second copy: a systemd user unit
+ * and a LaunchAgent plist are the registration.
+ */
+function taskStorePath(kind: SupervisorKind, environment: SupervisorEnvironment): string | null {
+  if (kind !== "task-scheduler") {
+    return null;
+  }
+  const root = environment.systemRoot;
+  if (root === undefined || root.trim() === "") {
+    return null;
+  }
+  return win32.join(root, "System32", "Tasks", TASK_FOLDER.replace(/^\\/, ""));
+}
+
 /** A renderer's path, or `null` when the environment it needs is not complete enough to build one. */
 function attemptPath(build: () => string): string | null {
   try {
@@ -996,20 +1127,47 @@ function attemptPath(build: () => string): string | null {
 }
 
 /**
- * Whether `print-disabled` lists this label as disabled.
+ * What `launchctl print-disabled` says about one label, read off its own line.
  *
- * `launchctl`'s own manual says of `print` that "This output is NOT API in any sense at all", and
- * that warning is honoured by reading one line for one label rather than by parsing the document:
- * a `"<label>" => true` entry is the record ADR 0020 asks `status` to name, and anything else in
- * the output is ignored.
+ * `launchctl`'s manual says of `print` that "This output is NOT API in any sense at all", and that
+ * warning is honoured by reading one line for one label rather than by parsing the document:
+ * everything outside the line whose quoted label matches is ignored.
+ *
+ * **The value is a word, not a boolean, and this is measured rather than assumed.** Round 1 of
+ * this file matched `/=>\s*true/`, which is what launchctl printed years ago. Captured verbatim
+ * from `launchctl print-disabled gui/$(id -u)` on macOS (Darwin 25.5.0, arm64) on 2026-09-08 —
+ * `__fixtures__/launchctl-print-disabled.txt` in this directory is that capture:
+ *
+ * ```
+ * 	disabled services = {
+ * 		"com.apple.Siri.agent" => disabled
+ * 		"video.xplainer.daemon" => enabled
+ * 	}
+ * ```
+ *
+ * There is no `true` anywhere in it, so the old predicate answered "not disabled" for **every**
+ * label on every modern macOS — including one a user had switched off in System Settings, which is
+ * the single condition this probe exists to catch. Both spellings are accepted here, because the
+ * older one costs one word and a machine that still prints it is not one this project can test on.
+ *
+ * `absent` is a third answer rather than a synonym for "enabled": `launchctl enable` creates a
+ * record where there was none, and `install` records which of the two it met so `uninstall` can
+ * say what it changed.
  */
-function disabledInPrintOutput(output: string, label: string): boolean {
+export function readDisableRecord(output: string, label: string): LaunchdDisableRecord {
   for (const line of output.split("\n")) {
-    if (line.includes(`"${label}"`) && /=>\s*true/.test(line)) {
-      return true;
+    if (!line.includes(`"${label}"`)) {
+      continue;
+    }
+    const value = /=>\s*([A-Za-z]+)/.exec(line)?.[1]?.toLowerCase();
+    if (value === "disabled" || value === "true") {
+      return "disabled";
+    }
+    if (value === "enabled" || value === "false") {
+      return "enabled";
     }
   }
-  return false;
+  return "absent";
 }
 
 /** The token file: where it is, and whether this user could read one that is already there. */

@@ -1,0 +1,5 @@
+This file stands in for the Chrome Headless Shell that `xplainer setup` acquires.
+
+It exists because the install preflight checks that every path `toolchain.json` records is still on
+the machine, and a marker naming files that are not there is refused (exit 3, `setup-paths-gone`).
+Nothing executes it: the preflight stats it, and `daemon install` never runs a render.

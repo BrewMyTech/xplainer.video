@@ -47,6 +47,33 @@
  * error and 405 rather than being left to the transport, which would open an SSE
  * stream nothing could ever write to. MCP clients treat 405 here as "this server
  * does not offer a standalone stream" and carry on.
+ *
+ * **The drain route, and the one seam that makes it IPC-only.** `POST
+ * /api/daemon/drain` ({@link DRAIN_PATH}) is how a planned restart asks this
+ * daemon for [ADR 0024](../../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md)
+ * §Drain on planned restart's six steps on a platform with no `SIGTERM` to send
+ * — which is Windows, where Node maps the signal to `TerminateProcess` and no
+ * handler ever runs. It is reachable over the socket **only**: over TCP it is
+ * `404`, the same answer a route that does not exist gives, and it is `404` with
+ * a valid bearer token too, because a remote caller must not be able to stop
+ * this machine's daemon by holding the token that lets it render.
+ *
+ * How that is decided is {@link CreateServerOptions.isOverIpc}, and it is the
+ * only shape this may take: the `WeakSet` stays inside `startServer()`, where
+ * the socket's own adaptor puts the `Request` object it built into it, and this
+ * function is handed a predicate over that set. **Never a header, a path, a body
+ * or `remoteAddress`** — `apps/cli/AGENTS.md` §Two listeners, one application
+ * states the rule and this is the seam that keeps it true while a route needs to
+ * know the answer: "the moment the exemption is inferred from a header or from
+ * `remoteAddress`, the loopback guard has a bypass in it."
+ *
+ * **The acknowledgement is written before the drain begins.** The route replies
+ * `202` and only then, once that response has left the socket, calls
+ * {@link DrainSeam.begin} — because step 6 removes the socket and exits the
+ * process, and a client that asked for a drain and got `ECONNRESET` cannot tell
+ * a daemon that is draining from one that crashed. `whenResponseIsSent()` is
+ * that ordering, and it is the node adaptor's own `outgoing` response object
+ * rather than a timer.
  */
 
 import { createAdaptorServer, type ServerType, serve } from "@hono/node-server";
@@ -61,6 +88,73 @@ export const DEFAULT_PORT = 8787;
 
 /** The interface `xplainer serve` binds. Loopback only: this is a local daemon. */
 export const DEFAULT_HOSTNAME = "127.0.0.1";
+
+/**
+ * Where a planned restart asks for ADR 0024's six steps.
+ *
+ * Under `/api/` because it is the daemon's own control surface rather than part of the tool
+ * contract, and a `POST` because it changes the state of the machine. T21 mounts the rest of the
+ * `/api` surface beside it.
+ *
+ * The prefix is spelled without a trailing glob deliberately: `api-report.mjs` finds a
+ * declaration's docblock by scanning back to the nearest comment opener, and a slash immediately
+ * followed by an asterisk inside one **is** an opener — writing the glob here truncated this entry
+ * in the published report, and the report is the surface a consumer reads.
+ */
+export const DRAIN_PATH = "/api/daemon/drain";
+
+/**
+ * How long {@link closer} waits for in-flight requests before it takes their connections away.
+ *
+ * `server.close()` stops accepting and then resolves when the last connection goes idle, which for
+ * a long-lived response — an SSE stream, a media body, the `explainer_job` poll an agent is making
+ * about the job being drained — is never. The drain has already given those requests its whole
+ * 20-second budget by the time this runs, so the remaining choice is between a bounded teardown and
+ * a daemon that hangs with its socket file still on disk. One second, and then the connections are
+ * closed: ADR 0024's step 6 is "remove `runtime.json` and the socket, exit `0`", and it has to
+ * happen inside P1-7's 25-second budget whatever a client is holding open.
+ */
+export const LISTENER_CLOSE_GRACE_MS = 1_000;
+
+/**
+ * What {@link DRAIN_PATH} answers with, and the two numbers a caller sizes its own wait from.
+ *
+ * `pid` is what a caller watches disappear — the drain ends in `process.exit`, and an outside
+ * observer has no other way to see that happen — and `timeout_ms` is the daemon's own cap rather
+ * than a constant the caller compiled in, so a client and a daemon of different releases do not
+ * disagree about how long "draining" may last.
+ */
+export type DrainAcknowledgement = {
+  event: "draining";
+  /** The cap on steps 1–5, from the daemon that is about to run them. */
+  timeout_ms: number;
+  /** The process that will exit. */
+  pid: number;
+  /** Whether a drain was already running when this request arrived. */
+  already_draining: boolean;
+};
+
+/**
+ * The six steps, as the HTTP layer sees them: two facts to report and one thing to begin.
+ *
+ * A seam rather than an import, because `daemon/shutdown.ts` owns the sequence and this file must
+ * stay the plain HTTP application `services/media-service` can bind with no daemon underneath it.
+ * Omit it and {@link DRAIN_PATH} is not registered at all, which is the honest answer for a server
+ * that has no drain to run.
+ */
+export type DrainSeam = {
+  /** ADR 0024's cap on steps 1–5, reported in the acknowledgement. */
+  timeoutMs: number;
+  /** This process's pid, reported in the acknowledgement. */
+  pid: number;
+  /**
+   * Begin the six steps. Called once, and only after the acknowledgement has left the socket.
+   *
+   * `reason` is what the daemon's own shutdown log calls this stop, so a journal shows a drain
+   * asked for over the socket differently from a `SIGTERM`.
+   */
+  begin: (reason: string) => void;
+};
 
 /** Identity the server reports on `/healthz` and in the MCP handshake. */
 export type CreateServerOptions = {
@@ -81,6 +175,24 @@ export type CreateServerOptions = {
    * construction rather than by remembering to list them (R-SEC-2).
    */
   guard?: MiddlewareHandler;
+  /**
+   * Whether this request arrived on the IPC listener, answered by the binding that accepted it.
+   *
+   * `startServer()` passes a predicate over its own `WeakSet<Request>` and nothing else may: the
+   * set is keyed on the `Request` object the socket's adaptor constructed, so membership is a fact
+   * about which listener took the connection rather than anything a client can claim. A route that
+   * asked a header, a path or `remoteAddress` instead would be a bypass of the loopback guard.
+   *
+   * Absent — as it is for `services/media-service`, which binds no socket — every request is
+   * treated as not-over-IPC, so {@link DRAIN_PATH} answers `404` to all of them.
+   */
+  isOverIpc?: (request: Request) => boolean;
+  /**
+   * The drain {@link DRAIN_PATH} runs, or nothing and no such route.
+   *
+   * Only `commands/serve.ts` passes one, because only a daemon has ADR 0024's six steps to run.
+   */
+  drain?: DrainSeam;
 };
 
 /** A bound server, and the handle that stops it. */
@@ -123,8 +235,14 @@ export class IpcBindError extends Error {
  */
 export type GuardFactory = (port: number) => MiddlewareHandler;
 
-/** What {@link startServer} needs to bind. */
-export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
+/**
+ * What {@link startServer} needs to bind.
+ *
+ * `guard` is replaced by a factory over the bound port, and `isOverIpc` is removed outright: the
+ * binder owns the `WeakSet` that answers it, so a caller passing its own would be claiming
+ * something about a listener it did not accept the connection on.
+ */
+export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"> & {
   /** The implementation the eight tools are served from. */
   backend: RenderBackend;
   /** Port to bind. `0` picks an ephemeral one. Defaults to {@link DEFAULT_PORT}. */
@@ -176,6 +294,11 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
     app.use("*", options.guard);
   }
 
+  // Fails closed: a server given no way to tell the two listeners apart treats every request as
+  // having arrived over TCP, so the drain route below is `404` for all of them rather than open to
+  // all of them.
+  const isOverIpc = options.isOverIpc ?? ((): boolean => false);
+
   // `contract_version` is the daemon's advertisement of the tool contract it
   // speaks, and it is deliberately on `/healthz` rather than only in the MCP
   // handshake: `xplainer mcp --attach` has to decide whether it may talk to this
@@ -209,7 +332,58 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
 
   app.on(["GET", "DELETE"], "/mcp", (c) => c.json(METHOD_NOT_ALLOWED, 405));
 
+  const drain = options.drain;
+  if (drain !== undefined) {
+    // One drain per process. A second POST is answered rather than refused — an impatient caller
+    // that asked twice wants to know the daemon is going, not to be told off — and it starts
+    // nothing, for the reason `daemon/shutdown.ts` ignores a second `SIGTERM`: step 3 is already
+    // killing what step 2 was waiting for.
+    let begun = false;
+    app.post(DRAIN_PATH, (c) => {
+      // `c.notFound()` rather than a refusal of our own, so a TCP client — token or no token —
+      // gets exactly what it would get for a route this server does not have. There is nothing to
+      // learn here by asking.
+      if (!isOverIpc(c.req.raw)) {
+        return c.notFound();
+      }
+      const acknowledgement: DrainAcknowledgement = {
+        event: "draining",
+        timeout_ms: drain.timeoutMs,
+        pid: drain.pid,
+        already_draining: begun,
+      };
+      if (!begun) {
+        begun = true;
+        whenResponseIsSent(c.env, () => {
+          drain.begin(`POST ${DRAIN_PATH}`);
+        });
+      }
+      return c.json(acknowledgement, 202);
+    });
+  }
+
   return app;
+}
+
+/**
+ * Run `after` once this request's response has gone out, not before.
+ *
+ * `@hono/node-server` binds `{ incoming, outgoing }` as the request's environment, and `outgoing`
+ * is the `ServerResponse` this reply is written to: its `close` event fires when the response is
+ * complete — or when the connection went away first, which is equally "there is nothing more to
+ * send". Waiting for it is what makes "the response is sent before the listeners close" a property
+ * of the code rather than of how quickly the drain happens to run.
+ *
+ * The fallback is for a caller with no node binding at all — `app.request()` in a test, or a future
+ * adaptor — where the response is already the returned value by the time anything else runs.
+ */
+function whenResponseIsSent(env: unknown, after: () => void): void {
+  const outgoing = (env as { outgoing?: { once?: unknown } } | undefined)?.outgoing;
+  if (outgoing === undefined || typeof outgoing.once !== "function") {
+    setImmediate(after);
+    return;
+  }
+  (outgoing as { once: (event: string, listener: () => void) => unknown }).once("close", after);
 }
 
 /**
@@ -264,6 +438,10 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     ...(options.name !== undefined && { name: options.name }),
     ...(options.version !== undefined && { version: options.version }),
     ...(guardFactory !== undefined && { guard: gate }),
+    ...(options.drain !== undefined && { drain: options.drain }),
+    // The seam T13 adds, and the whole of it: the set stays here, and what leaves this function is
+    // a question that can be asked about one `Request` object.
+    isOverIpc: (request) => overIpc.has(request),
   });
 
   // An IPv6 literal has to be bracketed inside a URL, or `http://::1:8787` parses as a host of
@@ -328,15 +506,31 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
 }
 
 /**
- * `close()` for one bound listener.
+ * `close()` for one bound listener: stop accepting, then stop waiting.
  *
  * `close` reports only `ERR_SERVER_NOT_RUNNING`, which is the state the caller asked for, so the
  * callback is treated as "done" either way.
+ *
+ * **Why the grace exists.** `server.close()` resolves when the last connection is gone, and a
+ * connection carrying a long-lived response — SSE, a media body, a poll that is still open — never
+ * goes on its own. Node ≥19 drops *idle* connections here and holds in-flight ones for ever, so
+ * without {@link LISTENER_CLOSE_GRACE_MS} a single open stream would leave the daemon running with
+ * its socket file on disk and its state directory owned, which is the one state ADR 0024's step 6
+ * exists to prevent. The drain that precedes this has already given every in-flight request its
+ * whole budget.
  */
 function closer(server: ServerType): () => Promise<void> {
+  // `closeAllConnections` is `http.Server`'s and not on every member of `ServerType`; this binding
+  // is always the one `serve()`/`createAdaptorServer()` built, and the optional call is what makes
+  // that a fact the type system does not have to be told.
+  const connections = server as unknown as { closeAllConnections?: () => void };
   return () =>
     new Promise<void>((closed) => {
+      const forced = setTimeout(() => {
+        connections.closeAllConnections?.();
+      }, LISTENER_CLOSE_GRACE_MS);
       server.close(() => {
+        clearTimeout(forced);
         closed();
       });
     });

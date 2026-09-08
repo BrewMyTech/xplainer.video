@@ -1,0 +1,275 @@
+# The `[runner]` half of T14: the circuit breaker, latched by a real service
+# manager's own natural retries, on the two machines this project's authors do
+# not have and the one they do.
+#
+# WHAT IT CLOSES. T14's criteria 10 and 11 — "hold the recorded port and let the
+# **real supervisor** drive its own natural retries — `RestartSec=2` on Linux,
+# `ThrottleInterval` on macOS, the three `PT1M` retries then the `PT5M`
+# repetition on Windows — and assert `stalled`, exit `0`, the pid named in
+# words, and `restart` clearing the latch". `daemon-state.test.ts` proves the
+# rule as arithmetic over records; `install/testing/breaker-proof.ts` is the
+# proof that a real supervisor produces those records at all, and this workflow
+# is where it runs on a hosted Linux VM, on a hosted Mac, and on Windows.
+#
+# WHAT IS ACTUALLY MEASURED, AND WHY IT TAKES SO LONG. Nothing here shortens a
+# retry interval or fakes a failure. The proof holds the port recorded in
+# `daemon.json` in its own process, so every supervised `serve` resolves that
+# port, fails `EADDRINUSE`, records its own end and exits `10`; the spacing
+# between attempts is then the supervisor's own. That is ~15 s of wall clock on
+# systemd, ~3 minutes under launchd's 30-second `ThrottleInterval`, and the
+# better part of a quarter of an hour under Task Scheduler, whose
+# `<RestartOnFailure>` has a one-minute schema minimum and whose `<Repetition>`
+# fires every five minutes after the restart count is spent. The Windows job's
+# generous `timeout-minutes` is that cadence and not a hung process.
+#
+# THE DEFECT ALL OF THIS IS ABOUT. The shipped breaker inferred a run's end from
+# the **next** run's start, so it measured the supervisor's retry cadence rather
+# than the daemon's own life — and under launchd (30 s, exactly on the boundary)
+# and Task Scheduler (60 s, outside it) it could never latch at all. The
+# transcript prints both numbers side by side for every start: how long the run
+# lived, and how long after the previous start it began. On Linux they are close
+# together; on macOS and Windows the second is far outside the 30-second window
+# and the first is well inside it, which is the whole story in two columns.
+#
+# WINDOWS IS THE PLATFORM NOTHING LOCAL CAN MEASURE, AND ONE CLAIM IN IT IS A
+# GUESS UNTIL THIS JOB RUNS. `<RestartOnFailure>` is documented as restarting a
+# task that "fails"; whether Task Scheduler counts an action exiting `10` as a
+# failure is a property of somebody else's scheduler, and this job is where that
+# is settled in one direction or the other. If it does not, the Windows arm
+# reports a history the supervisor never produced, and that answer is worth
+# having rather than worth hiding.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, the runner half of T14 is unproven, and no record
+# in this repository may say otherwise.** `workflow_dispatch` registers from the
+# repository's **default branch**, so this file has to reach `main` before the
+# API will accept a dispatch of it at all — GitHub's own rule, not a repository
+# setting — and `--ref` then chooses whose code runs. It has never been
+# dispatched.
+#
+#   gh workflow run daemon-breaker.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-breaker.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHAT RUNS LOCALLY INSTEAD, AND WHERE. The macOS half runs on a developer's own
+# Mac against a real launchd, under a throwaway label that is booted out and
+# re-enabled in a `finally`, and the Linux half runs in
+# `infra/e2e/Dockerfile.systemd` against a real per-user systemd — both with the
+# commands in `breaker-proof.ts`'s header. This workflow adds the two machines
+# that cannot be reached from there: a hosted Linux VM, and Windows at all.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The rule `daemon-restart.yml`,
+# `daemon-lifecycle.yml`, `daemon-windows.yml`, `e2e-runtime.yml`,
+# `e2e-linux.yml` and `phase2-proofs.yml` all follow: these jobs register real
+# services and wait out real retry intervals, which is minutes of wall clock
+# whose answer changes only when a supervisor or the breaker changes. `ci.yml`
+# is the gate that runs on every push; this is a proof, and a proof is run when
+# you want it.
+#
+# WHY NOTHING IS UPLOADED. Every job writes its whole transcript to stdout, so
+# the job log **is** the artefact — and that keeps this workflow clear of the
+# organisation-wide artifact-storage quota that has failed every upload step
+# since 2026-09-07.
+
+name: daemon breaker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the breaker's own rules (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # `turbo`'s `test` task depends on the **dependencies'** builds, and the
+      # step below runs vitest directly, so the build is a step of its own: an
+      # unbuilt `@xplainer/protocol` is an import failure and it should read as
+      # one.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The two files that are about the breaker, not the whole suite: the rule
+      # itself, and the `close()` that records the outcome the rule counts.
+      # `process-group.test.ts` is deliberately **not** here — the Job Object it
+      # is about is a Windows fact, and `daemon-windows.yml` is where the
+      # Windows facts live.
+      - name: The breaker's rules, and the outcome each run records for itself
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/daemon/daemon-state.test.ts
+          src/daemon/start.test.ts
+
+  systemd:
+    name: RestartSec=2 drives the latch (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The same step `daemon-restart.yml`, `daemon-lifecycle.yml` and
+      # `phase2-proofs.yml` use, and for the same reason: a hosted runner has no
+      # login session, so `systemctl --user` reaches no manager until lingering
+      # starts one.
+      - name: A per-user systemd manager, and what this runner had before
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+
+      # `--here` is the runner form: the proof runs as **this** account rather
+      # than re-entering as the container image's `xplainer` user through
+      # `runuser`.
+      - name: The breaker against a real systemd (T14, criteria 10 and 11)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/testing/breaker-proof.ts --here
+
+      - name: Leave no unit and no linger record behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          systemctl --user stop xplainer-t14-proof.service 2>&1 || true
+          rm -f "$HOME/.config/systemd/user/xplainer-t14-proof.service"
+          systemctl --user daemon-reload 2>&1 || true
+          sudo loginctl disable-linger "$(id -un)" || true
+          echo "left: $(ls "$HOME/.config/systemd/user" 2>&1 || echo '<no unit directory>')"
+
+  launchd:
+    name: ThrottleInterval 30 s drives the latch (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # A hosted macOS runner is a real login session with a real GUI domain,
+      # which is what a LaunchAgent needs and what a container cannot have. This
+      # half also runs on a developer's Mac; the runner is what makes it a
+      # measurement on a machine nobody has configured.
+      - name: The launchd domain this runner has
+        run: |
+          echo "uid: $(id -u)"
+          launchctl print-disabled "gui/$(id -u)" | head -20 || true
+
+      - name: The breaker against a real launchd (T14, criteria 10 and 11)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/testing/breaker-proof.ts
+
+      # `launchctl` cannot remove a disable record, so the proof re-enables its
+      # throwaway label in a `finally`. This step is the independent check that
+      # the store was left as it was found.
+      - name: The throwaway label was left enabled, and nothing is loaded
+        if: always()
+        run: |
+          launchctl print-disabled "gui/$(id -u)" | grep -i 't14-proof' || echo 'no record for the throwaway label at all'
+          launchctl bootout "gui/$(id -u)/video.xplainer.t14-proof" 2>&1 || echo 'nothing loaded'
+
+  schtasks:
+    name: three PT1M retries, then the PT5M repetition (windows-latest)
+    runs-on: windows-latest
+    # The cadence, not a hung process: 3 minutes of `<RestartOnFailure>`, then
+    # a `<Repetition>` that has to fire twice at five-minute spacing, and a
+    # `daemon restart` after it.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The platform whose retry cadence made the old inference unlatchable, and
+      # the one where the `PT5M` repetition keeps starting a task nothing else
+      # would: each of those runs has to read the latch and exit `0` again.
+      - name: The breaker against a real Task Scheduler (T14, criteria 10 and 11)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts `
+            apps/cli/src/install/testing/breaker-proof.ts
+
+      - name: Unregister anything the proof left behind
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
+            ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
+          Write-Host 'throwaway task removed'

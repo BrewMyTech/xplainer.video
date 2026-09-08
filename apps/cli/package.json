@@ -53,6 +53,8 @@
     "@remotion/tailwind-v4": "4.0.495",
     "@types/node": "catalog:",
     "@xplainer/config": "workspace:*",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "remotion": "4.0.495",

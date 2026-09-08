@@ -38,9 +38,9 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `lock.ts` | `owner.lock`: `O_EXCL` create, staleness by the tuple, takeover confirmed by read-back |
 | `job-store.ts` | One JSON file per job, the bounded log tail, corrupt quarantine, newer-format detection |
 | `reconciler.ts` | Boot reconciliation: terminal records, worker teardown, `workers_uncertain`, output quarantine |
-| `process-group.ts` | `SIGTERM` then `SIGKILL` to a worker's whole process group |
+| `process-group.ts` | `SIGTERM` then `SIGKILL` to a worker's whole process group, and the Windows Job Object that stands in for one |
 | `runner.ts` | `enqueue` / `get` / `tail` / `cancel` / `drain` over a serial queue of child-process workers |
-| `daemon-state.ts` | `daemon.json` and `runtime.json`, the breaker's `recentStarts[]`/`stalled`, and the installer's own fields |
+| `daemon-state.ts` | `daemon.json` and `runtime.json`, the breaker over each run's own recorded outcome, and the installer's own fields |
 | `start.ts` | The ordering: ownership → reconciliation → the runner, handed to `commands/serve.ts` to bind |
 | `workers.ts` | The registry `start.ts` registers: one `WorkerSpec` per job kind, and the last gate before Chrome |
 | `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600` |
@@ -66,7 +66,8 @@ toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versio
 daemon.json         DURABLE. serve writes port, contract_version, token_file, socket_path,
                     directory_flush, recentStarts[], stalled; install writes supervisor_kind,
                     supervisor_artefact, runtime_dir, launch_spec, program_source,
-                    linger_enabled_by_us, log_sink, installed_version
+                    linger_enabled_by_us, launchd_enable_record_created, log_sink,
+                    installed_version
 runtime.json        EPHEMERAL. this run's pid, run id, boot id, bound port, addresses, socket
 ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown.
                     `serve --socket` moves it, and the 0700 rule follows the path
@@ -303,7 +304,8 @@ Then the root procedure: `pnpm verify`.
   because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
-  second reports on the installed supervisor artefact and is still a phase-2 stub. `connect` and
+  second adds the installed supervisor — whether it is switched off, what it loaded, and whether
+  the daemon is boot-persistent — which is why it has a condition set of its own. `connect` and
   `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the seven
   lifecycle verbs — for the same reason and with the same implicit `help [command]` disabled.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
@@ -324,7 +326,13 @@ Then the root procedure: `pnpm verify`.
   acquisition and once per worker at reconciliation**, and memoised for this process.
 - **Every worker runs in its own process group** (`detached: true`), and teardown signals the group
   (`process.kill(-pgid, …)`), because a render's expensive half is the browser and the encoder it
-  started, not the pid the daemon holds.
+  started, not the pid the daemon holds. **Windows has no process group, so the worker goes in a
+  Job Object with kill-on-close** — Node has no API for one and this package ships no native addon,
+  so `process-group.ts` starts a `powershell.exe` keeper that creates the job, assigns the worker
+  and any descendant it already had, and holds the handle for the life of the worker. Killing the
+  keeper closes the job and takes the tree with it. `taskkill /T` is the fallback where no keeper
+  could start, and it is weaker on purpose rather than by oversight: it walks the parent chain at
+  kill time, so a grandchild whose parent has already gone is out of its reach.
 - **Nothing installs the workspace's `node_modules`.** `materialiseWorkspace()` copies four files
   and creates three directories; it never runs a package manager, because installing hundreds of
   megabytes is a visible step a user takes and never something a tool call does behind an agent's
@@ -449,8 +457,12 @@ Then the root procedure: `pnpm verify`.
   exists and cannot be read, **`12`** the token file exists and cannot be used, and **`70`**
   anything else. `EADDRINUSE` is deliberately `10` rather than `70`: a supervisor told `70`
   restarts a daemon whose port is held by something else, for ever.
-  **`5`, `6` and `7` are named and documented and nothing exits with them yet** — `daemon install`
-  is the first caller of all three. `7` and `10` are the pair to keep straight: **`7` is
+  **`5` and `6` are `daemon install`'s**, and `7` is still only named: `5` is a denied
+  `loginctl enable-linger` and a Windows principal without the "Log on as a batch job" right — both
+  established by *attempting* them, which is why they belong to the writing phase and not to the
+  read-only preflight — and `6` is no user service manager, which on Linux leads with
+  `sudo loginctl enable-linger` when lingering is the reason there is none. `7` and `10` are the
+  pair to keep straight: **`7` is
   install-time preflight** ("the port I am about to record is held", nothing registered, nothing
   recorded) and **`10` is `serve`-time ownership** ("the state directory or the recorded port is
   taken" by a process running now). Same symptom, two lifecycles, two remediations, and
@@ -486,9 +498,29 @@ Then the root procedure: `pnpm verify`.
   `serve` logs which of flag, variable and default decided each one. The `0700` rule follows
   `--socket`: the directory narrowed is the one the socket is actually in, so point the flag at a
   directory dedicated to the socket — `%t/xplainer`, not `$HOME`.
+- **`daemon status` may query a supervisor, and may never parse `launchctl print`.** The narrow
+  rule, and it is narrow deliberately: the blanket ban made one of ADR 0020's **own** required
+  sentences unobservable, because "you or a policy switched this off in Login Items & Extensions"
+  appears in no HTTP response and in no file this project owns. Three documented machine-readable
+  queries are allowed and no others — `launchctl print-disabled gui/$UID`,
+  `systemctl --user is-enabled xplainer.service` and `(Get-ScheduledTask …).State` for the
+  switched-off fact, and `systemctl --user show -p ExecStart -p Environment -p WorkingDirectory
+  --value` / `Get-ScheduledTask` for the loaded configuration, which **macOS does not have** (§1.3b
+  D7: the responding identity in `/healthz` is the detector there instead). `launchctl print` is
+  the one surface its own manual disowns — "This output is NOT API in any sense at all" — and
+  nothing in this package calls it. Everything else comes from `/healthz` and our own state files.
+- **The four sentences ADR 0020 requires `daemon status` to say are values, not prose.**
+  `install/lifecycle.ts` builds them and tags each with its state, and `lifecycle.test.ts` compares
+  them with the four quoted strings read **out of the ADR file itself**. Two of them name a
+  platform's own surface — Login Items & Extensions is macOS's word for a launchd disable record,
+  lingering is systemd's — so the ADR's exact sentence is what that platform produces and the other
+  two make the same claim about the surface their user actually has. Reword one and the suite fails.
 - **`status --json` answers with a condition code from a closed set**, never with prose: `ready`,
   `stalled`, `unauthorized`, `token_absent`, `unhealthy`, `unreachable`, `absent`
-  (`STATUS_CONDITIONS`). It is what `apps/desktop`'s discovery shells out to instead of
+  (`STATUS_CONDITIONS`). `daemon status --json` answers from a superset — the same members plus
+  `disabled` (a supervisor query saw the service switched off) and `degraded` (it answered `200`
+  and the recorded toolchain is not on this machine) — classified in the same order, so a consumer
+  that handles one handles the other by adding two cases. It is what `apps/desktop`'s discovery shells out to instead of
   reimplementing state-directory resolution, so a new member is added here and to that mapping
   together. Two things are deliberately **not** conditions: contract compatibility, which is a
   relation between a daemon and *the shim asking* and so is reported as the daemon's

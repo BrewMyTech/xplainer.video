@@ -32,7 +32,11 @@
  *   out of it. Its path is the ready line's `socket` field and `runtime.json`'s.
  * - **The `SIGTERM` handler** (`../daemon/shutdown.ts`), which is what makes this a process a
  *   supervisor can stop: drain for at most 20 s, close the listeners, remove `runtime.json` and the
- *   socket, exit `0`.
+ *   socket, exit `0`. The same sequence is reachable as `POST /api/daemon/drain` **over the IPC
+ *   socket only** (`../server.ts` §the drain route), which is how `xplainer daemon restart` asks
+ *   for it on Windows, where Node maps `SIGTERM` to `TerminateProcess` and no handler ever runs.
+ *   The route is given a seam over the handle installed below rather than a second implementation,
+ *   so there is exactly one drain and one exit code however it was asked for.
  * - **State on disk** — `daemon.json` and `runtime.json`, written by `markReady()` at the moment
  *   both facts are known.
  * - **The ready line** (`../daemon/ready.ts`): one JSON line on stdout, once, after ownership,
@@ -82,8 +86,8 @@ import { DAEMON_INTERNAL_EXIT_CODE, USAGE_EXIT_CODE } from "../daemon/exit-codes
 import { createLoopbackGuard } from "../daemon/guard.js";
 import { type PreparedIpcSocket, prepareIpcSocket } from "../daemon/ipc.js";
 import { formatReadyLine, readyAnnouncement } from "../daemon/ready.js";
-import type { WorkerRegistry } from "../daemon/runner.js";
-import { installShutdownHandlers } from "../daemon/shutdown.js";
+import { DEFAULT_DRAIN_TIMEOUT_MS, type WorkerRegistry } from "../daemon/runner.js";
+import { installShutdownHandlers, type ShutdownHandle } from "../daemon/shutdown.js";
 import { type StartedDaemon, startDaemon } from "../daemon/start.js";
 import { resolveStateDirSetting, STATE_DIR_ENV } from "../daemon/state-dir.js";
 import {
@@ -291,11 +295,27 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         io.exit(DAEMON_INTERNAL_EXIT_CODE);
       }
 
+      // The drain route's end of `daemon/shutdown.ts`, wired before the listener exists because
+      // that is the order the two have to be created in: the handlers need the bound listeners, and
+      // the route needs the handlers. A request that lands in the gap between the bind and the
+      // installation is remembered rather than dropped — the window is a handful of synchronous
+      // file writes wide, and a caller that got a `202` must not find nothing happened.
+      let shutdownHandle: ShutdownHandle | null = null;
+      let drainRequested: string | null = null;
+      const beginDrain = (reason: string): void => {
+        if (shutdownHandle === null) {
+          drainRequested = reason;
+          return;
+        }
+        void shutdownHandle.shutdown(reason);
+      };
+
       const bound = await startServer({
         backend,
         port: port.port,
         hostname: bind.hostname,
         ipc: { path: ipc.path },
+        drain: { timeoutMs: DEFAULT_DRAIN_TIMEOUT_MS, pid: process.pid, begin: beginDrain },
         guard: (boundPort) =>
           createLoopbackGuard({
             token,
@@ -341,7 +361,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         contractVersion: MCP_CONTRACT_VERSION,
       });
 
-      installShutdownHandlers({
+      shutdownHandle = installShutdownHandlers({
         stateDir,
         drain: (timeoutMs) => daemon.close(timeoutMs),
         listeners: [bound.running],
@@ -353,6 +373,9 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         },
         exit: (code) => io.exit(code),
       });
+      if (drainRequested !== null) {
+        beginDrain(drainRequested);
+      }
 
       if (!bind.loopback) {
         io.writeErr(

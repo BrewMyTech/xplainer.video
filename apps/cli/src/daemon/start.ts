@@ -27,6 +27,14 @@
  *   the file carries the crash history the circuit breaker counts.
  * - **`0`** — the circuit breaker is latched. Exit `0` is the portable "do not restart" signal on
  *   all three supervisors (ADR 0020 §Restart on crash), so a crash loop stops being a crash loop.
+ *
+ * **This module is also where a run says how it ended.** `newDaemonStart()` writes the run's
+ * identity tuple with its start record, and {@link StartedDaemon.close} writes the end — which is
+ * what lets `daemon-state.ts`'s breaker count a run's own life instead of the spacing between two
+ * supervisor retries. The one path that deliberately writes no end is the `catch` below: an
+ * unexpected throw between the start record and the runner is reported as `70` and leaves an entry
+ * with no outcome, which D6's unknown rule then bounds by the next start rather than by a claim
+ * this process is in no state to make.
  */
 
 import { resolveWorkspaceRoot } from "../workspace-root.js";
@@ -35,6 +43,7 @@ import {
   markDaemonReady,
   newDaemonStart,
   readDaemonState,
+  recordDaemonEnd,
   recordDaemonStart,
   recordStall,
   StateFileUnreadableError,
@@ -95,11 +104,12 @@ export type StartedDaemon = {
   /** Record where this run is listening and stamp it as a *successful* start. */
   markReady(binding: DaemonBinding): void;
   /**
-   * Stop the runner and give the state directory back.
+   * Stop the runner, record how this run ended, and give the state directory back.
    *
    * This is not the `SIGTERM` drain: that one gives an in-flight job 20 s, removes `runtime.json`
    * and the socket, and exits `0`, and it lands with roadmap P1-7 alongside the signal handler.
-   * This is the narrower thing a failed bind and a test teardown need.
+   * This is the narrower thing a failed bind and a test teardown need — and it is also the one
+   * path every orderly end goes through, which is why the breaker's outcome is written here.
    */
   close(drainTimeoutMs?: number): Promise<void>;
 };
@@ -281,14 +291,23 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
 
       async close(drainTimeoutMs = 0): Promise<void> {
         // `finally`, not a plain sequence: a drain that rejects — step 4 or 5 writing a record onto
-        // a full disk — must still give the state directory back, or the next `serve` meets a lock
-        // held by a pid that is no longer serving and has to wait for the staleness check to say
-        // so. The rejection still propagates: `shutdown.ts` is what decides the exit code, and it
-        // tears the rest down either way.
+        // a full disk — must still record this run's end and give the state directory back, or the
+        // next `serve` meets a lock held by a pid that is no longer serving and has to wait for the
+        // staleness check to say so. The rejection still propagates: `shutdown.ts` is what decides
+        // the exit code, and it tears the rest down either way.
         try {
           await runner.drain(drainTimeoutMs);
         } finally {
-          releaseOwnership(stateDir, ownership);
+          try {
+            // The breaker's evidence, written by the run it is about. `close()` is reached from
+            // every orderly end this process has — an unreadable token file, a socket that cannot
+            // be prepared, a bind that fails, and the drain itself — so a run that ends *without*
+            // one of these ended by `SIGKILL`, a panic or a power cut, and the absence of the
+            // record is what puts it under D6's unknown rule rather than a guess made in its name.
+            recordDaemonEnd(stateDir, ownership.boot_nonce, now().toISOString());
+          } finally {
+            releaseOwnership(stateDir, ownership);
+          }
         }
       },
     },

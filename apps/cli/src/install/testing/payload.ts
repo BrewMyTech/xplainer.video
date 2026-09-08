@@ -20,6 +20,19 @@
  * ask "which daemon is up" and answer it over a socket rather than by comparing paths. That is the
  * difference between asserting that two strings match and asserting that the launcher **reaches**
  * the daemon the launch spec started.
+ *
+ * **It is faithful about the four things an install verifies, and about nothing else.** T11's
+ * verify step polls an **authenticated** `GET /healthz` and finds the daemon through the files the
+ * real one writes, so this entry does the same four things the real `serve` does and in the same
+ * order: it mints the bearer token at `--token-file` if the file is absent (`0600`, `O_EXCL`), it
+ * binds `--port`, it writes `runtime.json` and merges the port, the token path and the socket into
+ * `daemon.json` — merges, so the installer's own fields survive — and only then prints its ready
+ * line. `/healthz` answers `401` without that token. What it deliberately does **not** have is the
+ * job store, the ownership lock, the reconciler, the MCP endpoint or the real guard's `Host` and
+ * `Origin` layers: those are `daemon/`'s and are proved in `daemon/`'s own suites against the real
+ * `serve`. The end-to-end case — the real `serve`, out of a real `runtime build` payload, under a
+ * real `launchctl` or `systemctl` — is `install.supervisor.test.ts`, which is why this fixture can
+ * stay small enough to build in a `beforeAll`.
  */
 
 import { constants, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -55,6 +68,18 @@ export type FixturePayloadOptions = {
    * stager and the resolver treat exactly as they treat a runnable one.
    */
   runnable?: boolean | undefined;
+  /**
+   * Extra names in `bin/` that are copies of the interpreter.
+   *
+   * `runtime/verify.ts` refuses a payload whose manifest names another platform — the interpreter
+   * is a native binary — so a macOS machine cannot stage a Windows payload at all, and the
+   * Windows registration path would be untestable anywhere but Windows. What *is* testable
+   * everywhere is the artefact, the argv and the command sequence, and those need only a file at
+   * the name the launch contract picks. So a caller that is going to build a `win32` launch spec
+   * asks for `node.exe` here: it is a real file, it is in the manifest with a real hash, and the
+   * preflight's `X_OK` probe answers about the same bytes it would on Windows.
+   */
+  extraInterpreters?: readonly string[] | undefined;
 };
 
 /** One built fixture payload. */
@@ -78,6 +103,14 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
     writeFileSync(interpreter, `not an interpreter: ${options.marker}\n`, { mode: 0o755 });
   } else {
     copyFileSync(process.execPath, interpreter, constants.COPYFILE_FICLONE);
+  }
+
+  for (const name of options.extraInterpreters ?? []) {
+    copyFileSync(
+      interpreter,
+      join(options.outDir, PAYLOAD_BIN_DIR, name),
+      constants.COPYFILE_FICLONE,
+    );
   }
 
   const packageDir = join(
@@ -147,17 +180,23 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
 /**
  * The miniature daemon the fixture payload ships as its CLI.
  *
- * `serve` is what a launch spec starts: it binds loopback, records where it is, and prints one line
- * of JSON — the same shape the real daemon's ready line has, for the same reason, so a test waits
- * for the daemon rather than sleeping. `whoami` is what a *launcher* runs: it reads that record and
- * fetches the daemon's identity over the socket, then prints both identities and the arguments it
- * was forwarded. Everything it reports about itself — the runtime it is running out of, and the
- * marker built into it — is derived from its own location, so no test has to trust a path it
- * composed itself.
+ * `serve` is what a launch spec starts: it mints the token, binds loopback, writes the two state
+ * files, and prints one line of JSON — the same shape the real daemon's ready line has, for the
+ * same reason, so a test waits for the daemon rather than sleeping. `whoami` is what a *launcher*
+ * runs: it reads that record and fetches the daemon's identity over the socket, then prints both
+ * identities and the arguments it was forwarded. Everything it reports about itself — the runtime
+ * it is running out of, and the marker built into it — is derived from its own location, so no test
+ * has to trust a path it composed itself.
+ *
+ * The order is the real one and it matters: the token exists before the listener does, because a
+ * poller that reached `/healthz` before the file was written would get a `401` it could not tell
+ * from a wrong token; and `runtime.json` is written after the bind, because its whole job is to
+ * record the port that was really taken.
  */
 function entrySource(marker: string): string {
   return `import { createServer } from "node:http";
-import { readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -180,18 +219,81 @@ if (stateDir === undefined) {
 const record = join(stateDir, "fake-daemon.json");
 const identity = { runtime: RUNTIME, marker: MARKER, pid: process.pid };
 
+/** Merge into a JSON file, keeping every key already in it. */
+const mergeJson = (path, changes) => {
+  let held = {};
+  if (existsSync(path)) {
+    held = JSON.parse(readFileSync(path, "utf8"));
+  }
+  writeFileSync(path, JSON.stringify({ ...held, ...changes }, null, 2) + "\\n");
+};
+
 if (verb === "serve") {
-  const server = createServer((_request, response) => {
+  // The token first, and only when it is absent: the real daemon owns this file, and a poller that
+  // reached the port before the file existed could not tell "not ready" from "wrong token".
+  const tokenFile = flag("--token-file") ?? join(stateDir, "token");
+  mkdirSync(dirname(tokenFile), { recursive: true });
+  if (!existsSync(tokenFile)) {
+    writeFileSync(tokenFile, randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" });
+  }
+  const token = readFileSync(tokenFile, "utf8").trim();
+  const socket = flag("--socket") ?? null;
+
+  const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
+    if ((request.url ?? "").startsWith("/healthz")) {
+      if (request.headers.authorization !== "Bearer " + token) {
+        response.statusCode = 401;
+        response.setHeader("www-authenticate", "Bearer");
+        response.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      response.end(
+        JSON.stringify({ status: "ok", version: MARKER, contract_version: "1" }),
+      );
+      return;
+    }
     response.end(JSON.stringify(identity));
   });
-  server.listen(0, "127.0.0.1", () => {
+  const requested = Number(flag("--port") ?? "0");
+  server.listen(requested, "127.0.0.1", () => {
     const address = server.address();
     const port = typeof address === "object" && address !== null ? address.port : 0;
+    // After the bind, because the point of this file is the port that was really taken.
+    writeFileSync(
+      join(stateDir, "runtime.json"),
+      JSON.stringify(
+        {
+          format_version: 1,
+          pid: process.pid,
+          run_id: MARKER + "-" + String(process.pid),
+          boot_id: null,
+          port,
+          addresses: ["http://127.0.0.1:" + String(port)],
+          socket,
+          started_at: new Date().toISOString(),
+        },
+        null,
+        2,
+      ) + "\\n",
+    );
+    // Merged, not replaced: an installer wrote this file a moment ago and its fields are what
+    // the uninstall reads.
+    mergeJson(join(stateDir, "daemon.json"), {
+      port,
+      token_file: tokenFile,
+      socket_path: socket,
+      contract_version: "1",
+    });
     writeFileSync(record, JSON.stringify({ ...identity, port, argv }));
     process.stdout.write(JSON.stringify({ event: "ready", ...identity, port }) + "\\n");
   });
+  server.on("error", (error) => {
+    process.stderr.write("listen failed: " + String(error) + "\\n");
+    process.exit(1);
+  });
   process.on("SIGTERM", () => {
+    rmSync(join(stateDir, "runtime.json"), { force: true });
     server.close();
     process.exit(0);
   });

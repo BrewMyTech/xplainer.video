@@ -41,6 +41,7 @@ import { REMOTE_EXPOSURE_FLAG } from "../daemon/binding.js";
 import { IPC_DIR, IPC_SOCKET_FILE } from "../daemon/ipc.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { parseReadyLine, type ReadyAnnouncement, waitForReadyLine } from "../daemon/ready.js";
+import { DEFAULT_DRAIN_TIMEOUT_MS } from "../daemon/runner.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDirLayout } from "../daemon/state-dir.js";
 import {
   CHILD_SERVE,
@@ -53,6 +54,7 @@ import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
 import type { CliIo } from "../io.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
+import { DRAIN_PATH } from "../server.js";
 import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
@@ -116,6 +118,34 @@ function getHealthz(
         method: "GET",
         headers,
       },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    call.once("error", reject);
+    call.end();
+  });
+}
+
+/**
+ * `POST /api/daemon/drain` over the socket, with no token and no headers but the authority.
+ *
+ * The same `node:http` route the `/healthz` helper takes, and for the same reason: `fetch` has no
+ * supported way to name a socket path. Written out here rather than reusing the daemon's own client
+ * (`daemon/control.ts`) so that what this test asserts is the wire — a `202` and a JSON body on a
+ * connection that was not reset — and not this package agreeing with itself.
+ */
+function postDrain(socketPath: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const call = request(
+      { socketPath, path: DRAIN_PATH, method: "POST", headers: { host: "xplainer.ipc" } },
       (response) => {
         let body = "";
         response.setEncoding("utf8");
@@ -545,4 +575,96 @@ describe("SIGTERM", () => {
     },
     SHUTDOWN_BUDGET_MS + 30_000,
   );
+});
+
+/**
+ * The drain route, against a real spawned `serve` with a real job under it.
+ *
+ * `server.test.ts` owns the seam — which listener may reach the route, and that the answer is
+ * written before the listeners close. What can only be asserted about a **process** is the rest of
+ * it: that a `202` over the socket produces the same six steps a `SIGTERM` produces, ending in exit
+ * `0`, with the worker's whole process group gone, the job marked `daemon_shutdown`, and
+ * `runtime.json` and the socket removed. This is the route `xplainer daemon restart` calls and the
+ * only graceful stop Windows has, where `SIGTERM` is `TerminateProcess` and no handler ever runs.
+ */
+describe("POST /api/daemon/drain over the socket", () => {
+  it(
+    "runs the same six steps a SIGTERM does, and exits 0",
+    async () => {
+      const stateDir = stateDirectory();
+      const { child, ready } = await serveUntilReady(CHILD_SERVE_JOB, stateDir, {
+        XPLAINER_TEST_WORKER: JSON.stringify({ lines: 3, lifeMs: 60_000, grandchild: true }),
+      });
+      const announced = await child.waitForLine('"event":"job"');
+      const { job_id: jobId, worker_pid: workerPid } = JSON.parse(announced) as {
+        job_id: number;
+        worker_pid: number;
+      };
+      strays.push(workerPid);
+      const socketPath = ready.socket ?? "";
+      expect(createJobStore(stateDir).read(jobId)?.status).toBe("running");
+
+      const sentAt = Date.now();
+      const acknowledgement = await postDrain(socketPath);
+
+      // The answer is complete — a body, on a connection that was not reset — and it names this
+      // daemon's own pid and its own cap rather than anything the caller assumed.
+      expect(acknowledgement.status).toBe(202);
+      expect(JSON.parse(acknowledgement.body)).toEqual({
+        event: "draining",
+        timeout_ms: DEFAULT_DRAIN_TIMEOUT_MS,
+        pid: ready.pid,
+        already_draining: false,
+      });
+
+      const exit = await child.waitForExit();
+      expect(exit.code).toBe(0);
+      expect(Date.now() - sentAt).toBeLessThan(SHUTDOWN_BUDGET_MS);
+      expect(child.stderr()).toContain(`POST ${DRAIN_PATH}`);
+
+      // Steps 3 to 6, exactly as the signal produces them.
+      expect(await untilGone(workerPid)).toBe(true);
+      expect(existsSync(socketPath)).toBe(false);
+      expect(readdirSync(stateDir)).not.toContain("runtime.json");
+      const drained = createJobStore(stateDir).read(jobId);
+      expect(drained?.status).toBe("error");
+      expect(drained?.error_code).toBe("daemon_shutdown");
+    },
+    SHUTDOWN_BUDGET_MS + 30_000,
+  );
+
+  /**
+   * The negative, against the daemon's own minted token rather than a made-up one: the bearer token
+   * is what lets an agent render on this machine, and it must not also be what stops the daemon.
+   * The daemon is still serving afterwards, which is what makes the `404` a refusal and not a
+   * different way of draining.
+   */
+  it("is 404 over TCP with the daemon's own bearer token, and the daemon keeps serving", async () => {
+    const stateDir = stateDirectory();
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir);
+
+    const refused = await getHealthz({ port: ready.port }, { authorization: `Bearer ${token}` });
+    const overTcp = await new Promise<number>((resolve, reject) => {
+      const call = request(
+        {
+          host: "127.0.0.1",
+          port: ready.port,
+          path: DRAIN_PATH,
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        },
+      );
+      call.once("error", reject);
+      call.end();
+    });
+
+    expect(refused.status).toBe(200);
+    expect(overTcp).toBe(404);
+    // Still there, and still answering on the listener that is allowed to ask.
+    expect((await getHealthz({ socketPath: ready.socket ?? "" })).status).toBe(200);
+  }, 30_000);
 });

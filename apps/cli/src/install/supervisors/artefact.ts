@@ -64,6 +64,14 @@ export type SupervisorEnvironment = {
   configHome?: string | undefined;
   /** `%LOCALAPPDATA%`, where the Windows task XML is mirrored. Unused on the other two. */
   localAppData?: string | undefined;
+  /**
+   * `%SystemRoot%`, under which Task Scheduler keeps its own copy of a registered task.
+   *
+   * No renderer reads it: the artefact this project writes is the one under `%LOCALAPPDATA%`. It is
+   * here because a refusal check has to hash the place a *registration* would appear, which on
+   * Windows is `%SystemRoot%\System32\Tasks\xplainer` and is not a path any renderer produces.
+   */
+  systemRoot?: string | undefined;
 };
 
 /** A launch spec or an environment a supervisor artefact cannot be rendered from. */

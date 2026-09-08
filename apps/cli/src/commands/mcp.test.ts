@@ -39,6 +39,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { MCP_CONTRACT_VERSION, TOOL_NAMES } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTRACT_SKEW_EXIT_CODE } from "../daemon/exit-codes.js";
+import { resolveIpcPath } from "../daemon/ipc.js";
 import { waitForReadyLine } from "../daemon/ready.js";
 import {
   CHILD_CLI,
@@ -109,8 +110,8 @@ function run(entry: string, args: readonly string[], env: Record<string, string>
 }
 
 /** A real `xplainer serve` on a temporary state directory, up to and including its ready line. */
-async function daemonOn(stateDir: string): Promise<SpawnedChild> {
-  const child = run(CHILD_SERVE, ["--port", "0"], { XPLAINER_STATE_DIR: stateDir });
+async function daemonOn(stateDir: string, args: readonly string[] = []): Promise<SpawnedChild> {
+  const child = run(CHILD_SERVE, ["--port", "0", ...args], { XPLAINER_STATE_DIR: stateDir });
   await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   return child;
 }
@@ -217,6 +218,42 @@ describe("xplainer mcp --attach", () => {
     expect(await client.callTool({ name: "explainer_list", arguments: {} })).toMatchObject({
       structuredContent: { videos: [{ slug: "through-the-socket" }] },
     });
+  }, 60_000);
+
+  /**
+   * The socket the daemon really bound, rather than the one this shim would derive.
+   *
+   * `serve --socket` is a shipped flag, the launch contract emits it on all three platforms, and an
+   * installed daemon runs with whatever the artefact was rendered with — so a shim that derives
+   * `<state>/ipc/xplainer.sock` and dials only that reports a daemon it could have reached as
+   * unreachable. The daemon here binds a socket in a directory the derived path is not even inside,
+   * and the assertion that it was reached is where it can only be true if it was: a video created
+   * through the shim appearing in the **daemon's** workspace, from a shim process that has no
+   * backend at all.
+   */
+  it("dials the socket daemon.json recorded, not the one derived from the state directory", async () => {
+    const stateDir = stateDirectory();
+    const elsewhere = stateDirectory();
+    const socket = join(elsewhere, "moved.sock");
+    await daemonOn(stateDir, ["--socket", socket]);
+
+    // The premise: the derived path holds nothing, so a shim that guessed it would find no daemon.
+    expect(existsSync(socket)).toBe(true);
+    expect(existsSync(resolveIpcPath(stateDir))).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(stateDir, "daemon.json"), "utf8")) as { socket_path: string },
+    ).toMatchObject({ socket_path: socket });
+
+    const client = await connectTo(["mcp", "--attach"], stateDir);
+    const created = await client.callTool({
+      name: "explainer_create",
+      arguments: { slug: "through-the-moved-socket" },
+    });
+
+    expect(created.isError).toBeFalsy();
+    expect(readdirSync(join(stateDir, "workspace", "videos"))).toEqual([
+      "through-the-moved-socket",
+    ]);
   }, 60_000);
 
   /**

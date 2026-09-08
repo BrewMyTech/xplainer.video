@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
+import { readDaemonState, STALL_AFTER_FAILED_STARTS } from "./daemon-state.js";
 import { OWNERSHIP_REFUSED_EXIT_CODE } from "./exit-codes.js";
 import { createJobStore } from "./job-store.js";
 import { describeReconciliation, type StartedDaemon, startDaemon } from "./start.js";
@@ -255,6 +256,91 @@ describe("a daemon killed while a job is running", () => {
       expect(job.output.lines.join(" ")).toContain("reconciled at boot");
       expect(runner.get({ job_id: jobId, output_lines: 2 }).output.lines).toHaveLength(2);
     }
+  });
+});
+
+/**
+ * The breaker's evidence, written by the runs it is about.
+ *
+ * `close()` is the one path every orderly end goes through — an unreadable token file, a socket
+ * that cannot be prepared, a bind that fails, and the drain itself — so it is where a run records
+ * that it ended and which way. What that buys is the whole of T14: five starts spaced **two
+ * minutes** apart, each dying two seconds in, latch the breaker. Under the inference this replaced
+ * they could not, because the spacing was what was measured, and no supervisor in this project
+ * retries faster than 30 s on two of the three platforms.
+ */
+describe("a run recording its own end", () => {
+  const base = Date.parse("2026-09-08T00:00:00.000Z");
+
+  /** A clock that starts at `at` and is two seconds later on every call after the first. */
+  function clockFrom(at: number): () => Date {
+    let calls = 0;
+    return () => new Date(at + (calls++ === 0 ? 0 : 2_000));
+  }
+
+  it("latches after five slow retries that each failed fast, and exits 0 on the sixth", async () => {
+    const stateDir = stateDirectory();
+
+    for (let index = 0; index < STALL_AFTER_FAILED_STARTS; index += 1) {
+      const outcome = await startDaemon({
+        stateDir,
+        workers: fakeWorkerRegistry(),
+        now: clockFrom(base + index * 120_000),
+      });
+      expect(outcome.started).toBe(true);
+      if (outcome.started) {
+        // No `markReady`: this is a run that never got as far as announcing itself, which is what a
+        // failed bind leaves behind.
+        await outcome.daemon.close();
+      }
+    }
+
+    const history = readDaemonState(stateDir).recentStarts;
+    expect(history).toHaveLength(STALL_AFTER_FAILED_STARTS);
+    expect(history.map((entry) => entry.outcome)).toEqual(
+      Array.from({ length: STALL_AFTER_FAILED_STARTS }, () => "failed"),
+    );
+    expect(history[0]?.ended_at).toBe(new Date(base + 2_000).toISOString());
+
+    const sixth = await startDaemon({
+      stateDir,
+      workers: fakeWorkerRegistry(),
+      now: clockFrom(base + STALL_AFTER_FAILED_STARTS * 120_000),
+    });
+
+    expect(sixth.started).toBe(false);
+    if (!sixth.started) {
+      // Exit `0` is the portable "do not restart" signal on all three supervisors.
+      expect(sixth.exitCode).toBe(0);
+      expect(sixth.message).toContain("its own start");
+    }
+    expect(readDaemonState(stateDir).stalled).not.toBeNull();
+  });
+
+  it("calls a run that announced itself stopped, not failed", async () => {
+    const stateDir = stateDirectory();
+    const outcome = await startDaemon({
+      stateDir,
+      workers: fakeWorkerRegistry(),
+      now: clockFrom(base),
+    });
+
+    expect(outcome.started).toBe(true);
+    if (outcome.started) {
+      outcome.daemon.markReady({
+        port: 8787,
+        addresses: ["http://127.0.0.1:8787"],
+        socket: null,
+        tokenFile: join(stateDir, "token"),
+        contractVersion: "1",
+      });
+      await outcome.daemon.close();
+    }
+
+    const [entry] = readDaemonState(stateDir).recentStarts;
+    expect(entry?.ready_at).not.toBeNull();
+    expect(entry?.outcome).toBe("stopped");
+    expect(entry?.ended_at).not.toBeNull();
   });
 });
 

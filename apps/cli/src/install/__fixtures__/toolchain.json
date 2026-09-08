@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "created_at": "2026-09-08T00:00:00Z",
+  "chrome": {
+    "version": "0.0.0-fixture",
+    "path": "./chrome-headless-shell",
+    "sha256": "b412dd1dbb1fe41fbf34709c5c72ca419bbb254d6114fee5c658106d3116d777",
+    "provider": "remotion"
+  },
+  "speech": {
+    "version": "0.0.0-fixture",
+    "path": "./kokoro-fastapi",
+    "sha256": "3c367c8ee32bf9e9ee32e310a925f3615b54708639053e6d8ed085b964483926",
+    "provider": "bundle"
+  },
+  "workspace": {
+    "platform": "darwin-arm64",
+    "version": "0.0.0-fixture"
+  }
+}

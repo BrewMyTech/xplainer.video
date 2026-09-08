@@ -114,6 +114,60 @@ export declare const DEFAULT_PORT = 8787;
 /** The interface `xplainer serve` binds. Loopback only: this is a local daemon. */
 export declare const DEFAULT_HOSTNAME = "127.0.0.1";
 
+/**
+ * Where a planned restart asks for ADR 0024's six steps.
+ *
+ * Under `/api/` because it is the daemon's own control surface rather than part of the tool
+ * contract, and a `POST` because it changes the state of the machine. T21 mounts the rest of the
+ * `/api` surface beside it.
+ *
+ * The prefix is spelled without a trailing glob deliberately: `api-report.mjs` finds a
+ * declaration's docblock by scanning back to the nearest comment opener, and a slash immediately
+ * followed by an asterisk inside one **is** an opener — writing the glob here truncated this entry
+ * in the published report, and the report is the surface a consumer reads.
+ */
+export declare const DRAIN_PATH = "/api/daemon/drain";
+
+/**
+ * What {@link DRAIN_PATH} answers with, and the two numbers a caller sizes its own wait from.
+ *
+ * `pid` is what a caller watches disappear — the drain ends in `process.exit`, and an outside
+ * observer has no other way to see that happen — and `timeout_ms` is the daemon's own cap rather
+ * than a constant the caller compiled in, so a client and a daemon of different releases do not
+ * disagree about how long "draining" may last.
+ */
+export type DrainAcknowledgement = {
+    event: "draining";
+    /** The cap on steps 1–5, from the daemon that is about to run them. */
+    timeout_ms: number;
+    /** The process that will exit. */
+    pid: number;
+    /** Whether a drain was already running when this request arrived. */
+    already_draining: boolean;
+};
+
+/**
+ * The six steps, as the HTTP layer sees them: two facts to report and one thing to begin.
+ *
+ * A seam rather than an import, because `daemon/shutdown.ts` owns the sequence and this file must
+ * stay the plain HTTP application `services/media-service` can bind with no daemon underneath it.
+ * Omit it and {@link DRAIN_PATH} is not registered at all, which is the honest answer for a server
+ * that has no drain to run.
+ */
+export type DrainSeam = {
+    /** ADR 0024's cap on steps 1–5, reported in the acknowledgement. */
+    timeoutMs: number;
+    /** This process's pid, reported in the acknowledgement. */
+    pid: number;
+    /**
+     * Begin the six steps. Called once, and only after the acknowledgement has left the socket.
+     *
+     * `reason` is what the daemon's own shutdown log calls this stop, so a journal shows a drain
+     * asked for over the socket differently from a `SIGTERM`.
+     */
+    begin: (reason: string) => void;
+};
+
 /** Identity the server reports on `/healthz` and in the MCP handshake. */
 export type CreateServerOptions = {
     /** MCP server name. Defaults to the protocol manifest's name. */
@@ -133,6 +187,24 @@ export type CreateServerOptions = {
      * construction rather than by remembering to list them (R-SEC-2).
      */
     guard?: MiddlewareHandler;
+    /**
+     * Whether this request arrived on the IPC listener, answered by the binding that accepted it.
+     *
+     * `startServer()` passes a predicate over its own `WeakSet<Request>` and nothing else may: the
+     * set is keyed on the `Request` object the socket's adaptor constructed, so membership is a fact
+     * about which listener took the connection rather than anything a client can claim. A route that
+     * asked a header, a path or `remoteAddress` instead would be a bypass of the loopback guard.
+     *
+     * Absent — as it is for `services/media-service`, which binds no socket — every request is
+     * treated as not-over-IPC, so {@link DRAIN_PATH} answers `404` to all of them.
+     */
+    isOverIpc?: (request: Request) => boolean;
+    /**
+     * The drain {@link DRAIN_PATH} runs, or nothing and no such route.
+     *
+     * Only `commands/serve.ts` passes one, because only a daemon has ADR 0024's six steps to run.
+     */
+    drain?: DrainSeam;
 };
 
 /** A bound server, and the handle that stops it. */
@@ -161,8 +233,14 @@ export type RunningServer = {
  */
 export type GuardFactory = (port: number) => MiddlewareHandler;
 
-/** What {@link startServer} needs to bind. */
-export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
+/**
+ * What {@link startServer} needs to bind.
+ *
+ * `guard` is replaced by a factory over the bound port, and `isOverIpc` is removed outright: the
+ * binder owns the `WeakSet` that answers it, so a caller passing its own would be claiming
+ * something about a listener it did not accept the connection on.
+ */
+export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"> & {
     /** The implementation the eight tools are served from. */
     backend: RenderBackend;
     /** Port to bind. `0` picks an ephemeral one. Defaults to {@link DEFAULT_PORT}. */

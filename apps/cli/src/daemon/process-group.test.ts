@@ -11,7 +11,14 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import process from "node:process";
 import { describe, expect, it } from "vitest";
-import { groupOf, signalGroup, terminateGroup } from "./process-group.js";
+import {
+  groupOf,
+  jobKeeperCommand,
+  KILL_ON_JOB_CLOSE,
+  signalGroup,
+  terminateGroup,
+  treeKillCommand,
+} from "./process-group.js";
 import { untilGone } from "./testing/spawn-child.js";
 import { isAlive } from "./worker-identity.js";
 
@@ -98,6 +105,88 @@ describe("groupOf and signalGroup", () => {
 
     expect(target?.pid).toBe(leader.pid);
     expect(target?.pgid).toBe(process.platform === "win32" ? null : leader.pid);
+    expect(signalGroup(target ?? { pid: 0, pgid: null }, "SIGKILL")).toBe(true);
+  });
+});
+
+/**
+ * Windows' answer to "these processes are one unit", asserted from a machine that cannot run it.
+ *
+ * The keeper is a `powershell.exe` holding a kill-on-close Job Object open for the life of one
+ * worker, and on macOS and Linux nothing starts one — {@link groupOf} has a real process group to
+ * use instead. What can be checked anywhere is the command: it is built here, it is base64 UTF-16LE
+ * because a multi-line script with quotes in it must not go through command-line quoting, and
+ * decoding it back is how this suite reads what the runner will execute.
+ *
+ * **The behaviour itself is `[runner]` evidence.** `daemon-windows.yml` runs this file on
+ * `windows-latest`, where the two `terminateGroup` cases above become the assertion that a
+ * grandchild dies with its leader. Until that workflow has reported, the Windows half is a design.
+ */
+describe("the Windows Job Object keeper", () => {
+  function script(pid: number): string {
+    const { argv } = jobKeeperCommand(pid);
+    const encoded = argv[argv.indexOf("-EncodedCommand") + 1] ?? "";
+    return Buffer.from(encoded, "base64").toString("utf16le");
+  }
+
+  it("asks for a job that kills everything in it when its last handle closes", () => {
+    const text = script(4242);
+
+    expect(text).toContain(`private const uint KillOnJobClose = ${KILL_ON_JOB_CLOSE};`);
+    expect(text).toContain("CreateJobObjectW");
+    expect(text).toContain("SetInformationJobObject");
+    expect(text).toContain("AssignProcessToJobObject");
+  });
+
+  it("assigns the worker, sweeps up the descendants it already had, and then only waits", () => {
+    const text = script(4242);
+
+    expect(text).toContain("$target = 4242");
+    expect(text).toContain("[XplainerJobObject]::Assign($target)");
+    // The window `AssignProcessToJobObject` cannot close by itself: children that existed before
+    // the keeper was ready are not reached by it, so they are assigned one by one.
+    expect(text).toContain("Get-XplainerDescendants $target");
+    expect(text).toContain("Get-CimInstance Win32_Process");
+    expect(text).toContain("$process.WaitForExit()");
+  });
+
+  it("is a powershell command with no shell and no quoting to get wrong", () => {
+    const command = jobKeeperCommand(4242);
+
+    expect(command.program).toBe("powershell.exe");
+    expect(command.argv.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    expect(command.argv).toHaveLength(4);
+    expect(command.argv[3]).toMatch(/^[A-Za-z0-9+/=]+$/);
+  });
+
+  it("refuses a pid that is not one, rather than interpolating it into a script", () => {
+    expect(() => jobKeeperCommand(0)).toThrow(RangeError);
+    expect(() => jobKeeperCommand(-1)).toThrow(RangeError);
+    expect(() => jobKeeperCommand(1.5)).toThrow(RangeError);
+  });
+
+  it("keeps taskkill as the weaker fallback, spelled the way it will be run", () => {
+    expect(treeKillCommand(4242)).toEqual({
+      program: "taskkill",
+      argv: ["/PID", "4242", "/T", "/F"],
+    });
+  });
+
+  it("starts no keeper on a platform that has process groups", () => {
+    const leader = spawn(process.execPath, ["-e", "setTimeout(function () {}, 200);"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    const target = groupOf(leader);
+
+    if (process.platform === "win32") {
+      // The one line of this file that only means something on the runner: a keeper was started,
+      // and its pid is what `terminateGroup` closes the job with.
+      expect(typeof target?.jobKeeper).toBe("number");
+    } else {
+      expect(target?.jobKeeper).toBeUndefined();
+    }
+    expect(target?.pgid === null).toBe(process.platform === "win32");
     expect(signalGroup(target ?? { pid: 0, pgid: null }, "SIGKILL")).toBe(true);
   });
 });

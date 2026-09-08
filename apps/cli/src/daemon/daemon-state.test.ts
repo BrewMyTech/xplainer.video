@@ -7,6 +7,7 @@
  * and requires the crash history to be in the one that survives a stop.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,16 +22,19 @@ import {
   RECENT_STARTS_KEPT,
   readDaemonState,
   readRuntimeState,
+  recordDaemonEnd,
   recordDaemonStart,
   recordStall,
   STALL_AFTER_FAILED_STARTS,
   StateFileUnreadableError,
+  startIsProvablyGone,
   updateDaemonState,
   writeRuntimeState,
 } from "./daemon-state.js";
 import { ensureStateDirectory } from "./durable-write.js";
 import { STATE_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { stateDirLayout } from "./state-dir.js";
+import { selfIdentity } from "./worker-identity.js";
 
 const scratch: string[] = [];
 
@@ -41,14 +45,65 @@ function stateDirectory(): string {
   return dir;
 }
 
-/** A run that started at `atMs` and never announced itself. */
-function failedStart(atMs: number, index: number): DaemonStart {
+/** A run that started at `atMs`, recorded its own failure `livedMs` later, and never reached ready. */
+function failedStart(atMs: number, index: number, livedMs = 1_000): DaemonStart {
+  return {
+    ...unknownStart(atMs, index),
+    outcome: "failed",
+    ended_at: new Date(atMs + livedMs).toISOString(),
+  };
+}
+
+/**
+ * A run that started at `atMs` and recorded nothing at all.
+ *
+ * `SIGKILL`, a panic or a power cut: no outcome, no end, and an identity tuple naming a pid that is
+ * not this machine's — which is what {@link startIsProvablyGone} has to establish before D6's rule
+ * may count it.
+ */
+function unknownStart(atMs: number, index: number): DaemonStart {
   return {
     started_at: new Date(atMs).toISOString(),
     pid: 100 + index,
     run_id: `run-${index}`,
     ready_at: null,
+    outcome: null,
+    ended_at: null,
+    start_time: `a token no live process on this machine has (${index})`,
+    boot_id: "a boot that is not this one",
   };
+}
+
+/** The instant every fixture in this file counts from. */
+const base = Date.parse("2026-09-06T00:00:00.000Z");
+
+/** The verdict D6's unknown rule asks for, stubbed, so a case can be about the arithmetic alone. */
+const wasGone = (): boolean => true;
+
+/**
+ * The same run, but recorded on **this** boot, so the pid is what the verdict turns on.
+ *
+ * {@link unknownStart} names a foreign boot, which `classifyWorker` answers without touching the
+ * process table at all. A case about a process that really is not running has to take the other
+ * path, and that means a boot id this machine agrees with.
+ */
+function onThisBoot(pid: number): DaemonStart {
+  return {
+    ...unknownStart(base + 4_000, 4),
+    pid,
+    start_time: null,
+    boot_id: selfIdentity().boot_id,
+  };
+}
+
+/** A pid that really is not running: a child spawned, waited for, and now reaped. */
+function deadPid(): number {
+  const child = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+  const pid = child.pid;
+  if (pid === undefined) {
+    throw new Error("spawnSync reported no pid for a child that has already exited");
+  }
+  return pid;
 }
 
 afterEach(() => {
@@ -71,6 +126,7 @@ describe("readDaemonState", () => {
       runtime_dir: null,
       launch_spec: null,
       program_source: null,
+      launchd_enable_record_created: null,
       linger_enabled_by_us: null,
       log_sink: null,
       installed_version: null,
@@ -238,6 +294,101 @@ describe("recentStarts and stalled", () => {
     expect(history[0]?.run_id).toBe("run-4");
   });
 
+  /**
+   * The record the breaker counts, written by the run it is about.
+   *
+   * Phase 1 kept a start time and a `ready_at` and inferred everything else; what is asserted here
+   * is that a run's **own** end and its outcome are on its own entry, durably, and that the outcome
+   * follows from whether the run ever announced itself rather than from anything read later.
+   */
+  it("records each run's own outcome and end time", () => {
+    const stateDir = stateDirectory();
+    recordDaemonStart(stateDir, newDaemonStart("run-a", "2026-09-06T00:00:00.000Z"));
+    recordDaemonEnd(stateDir, "run-a", "2026-09-06T00:00:01.500Z");
+    recordDaemonStart(stateDir, newDaemonStart("run-b", "2026-09-06T00:01:00.000Z"));
+    markDaemonReady(stateDir, "run-b", "2026-09-06T00:01:01.000Z");
+    recordDaemonEnd(stateDir, "run-b", "2026-09-08T09:00:00.000Z");
+
+    const [failed, stopped] = readDaemonState(stateDir).recentStarts;
+
+    expect(failed?.outcome).toBe("failed");
+    expect(failed?.ended_at).toBe("2026-09-06T00:00:01.500Z");
+    expect(failed?.started_at).toBe("2026-09-06T00:00:00.000Z");
+    // The run that announced itself two days before it stopped is a `stopped`, not a failed start,
+    // and the breaker resets on it whichever way the arithmetic would have gone.
+    expect(stopped?.outcome).toBe("stopped");
+    expect(stopped?.ended_at).toBe("2026-09-08T09:00:00.000Z");
+    expect(readDaemonState(stateDir).recentStarts).toEqual(
+      JSON.parse(readFileSync(stateDirLayout(stateDir).daemonState, "utf8")).recentStarts,
+    );
+  });
+
+  it("keeps the first end a run recorded, not the last", () => {
+    const stateDir = stateDirectory();
+    recordDaemonStart(stateDir, newDaemonStart("run-a", "2026-09-06T00:00:00.000Z"));
+
+    recordDaemonEnd(stateDir, "run-a", "2026-09-06T00:00:01.000Z");
+    recordDaemonEnd(stateDir, "run-a", "2026-09-06T00:00:09.000Z");
+
+    expect(readDaemonState(stateDir).recentStarts[0]?.ended_at).toBe("2026-09-06T00:00:01.000Z");
+  });
+
+  /**
+   * The identity tuple, on the start record, because the case that needs it writes no `runtime.json`.
+   *
+   * `writeRuntimeState` is reached only from `markReady`, so a run that dies before readiness never
+   * writes one — and a later start deciding whether that run is "provably gone" has nothing else to
+   * read. The two probed members are `null` on a platform that cannot answer, and `startIdentity`
+   * is what puts them back together with the pid.
+   */
+  it("persists this run's identity tuple with its start record", () => {
+    const stateDir = stateDirectory();
+    recordDaemonStart(stateDir, newDaemonStart("run-a", "2026-09-06T00:00:00.000Z"));
+
+    const [entry] = readDaemonState(stateDir).recentStarts;
+
+    expect(entry?.pid).toBe(process.pid);
+    expect(entry?.start_time).toBe(selfIdentity().start_time);
+    expect(entry?.boot_id).toBe(selfIdentity().boot_id);
+    if (process.platform === "darwin" || process.platform === "linux") {
+      expect(entry?.start_time).not.toBeNull();
+      expect(entry?.boot_id).not.toBeNull();
+    }
+    // Alive, and itself: the one verdict that is neither `gone` nor `stranger`.
+    expect(entry === undefined ? true : startIsProvablyGone(entry)).toBe(false);
+  });
+
+  /**
+   * A history written by a release that had none of these fields.
+   *
+   * They read back as `null` rather than as absent, which is what puts such an entry under D6's
+   * unknown rule instead of under an `undefined` the breaker would have to branch on.
+   */
+  it("reads a record written before outcomes and identities existed", () => {
+    const stateDir = stateDirectory();
+    writeFileSync(
+      stateDirLayout(stateDir).daemonState,
+      JSON.stringify({
+        recentStarts: [
+          { started_at: "2026-09-06T00:00:00.000Z", pid: 4242, run_id: "old", ready_at: null },
+        ],
+      }),
+    );
+
+    expect(readDaemonState(stateDir).recentStarts).toEqual([
+      {
+        started_at: "2026-09-06T00:00:00.000Z",
+        pid: 4242,
+        run_id: "old",
+        ready_at: null,
+        outcome: null,
+        ended_at: null,
+        start_time: null,
+        boot_id: null,
+      },
+    ]);
+  });
+
   it("stamps ready_at on the run that announced itself, and only that one", () => {
     const stateDir = stateDirectory();
     recordDaemonStart(stateDir, newDaemonStart("run-a", "2026-09-06T00:00:00.000Z"));
@@ -252,7 +403,6 @@ describe("recentStarts and stalled", () => {
 });
 
 describe("isStalled", () => {
-  const base = Date.parse("2026-09-06T00:00:00.000Z");
   const fiveFastFailures = Array.from({ length: STALL_AFTER_FAILED_STARTS }, (_, index) =>
     failedStart(base + index * 1_000, index),
   );
@@ -276,11 +426,136 @@ describe("isStalled", () => {
     expect(isStalled(withOneGoodStart, base + 6_000)).toBeNull();
   });
 
-  it("does not trip on failures spread out over hours, which is not a crash loop", () => {
-    const slow = Array.from({ length: STALL_AFTER_FAILED_STARTS }, (_, index) =>
-      failedStart(base + index * (FAILED_START_WINDOW_MS * 10), index),
+  /**
+   * The defect T14 removes, as an assertion.
+   *
+   * Phase 1 inferred a run's end from the **next** run's start, so a supervisor whose retry cadence
+   * is wider than the 30-second window could never trip the breaker: launchd throttles at 30 s and
+   * Task Scheduler's `<RestartOnFailure>` has a one-minute schema minimum. Each of these five runs
+   * recorded its own end two seconds in, and they are spaced two minutes apart.
+   */
+  it("trips on five fast failures however far apart the supervisor spaced them", () => {
+    const spacedOut = Array.from({ length: STALL_AFTER_FAILED_STARTS }, (_, index) =>
+      failedStart(base + index * 120_000, index, 2_000),
     );
 
-    expect(isStalled(slow, base + FAILED_START_WINDOW_MS * 100)).toBeNull();
+    expect(isStalled(spacedOut, base + 600_000)).not.toBeNull();
+  });
+
+  /**
+   * The same boundary as the unknown case below, on the path that records its own end: a run that
+   * died at exactly 30,000 ms counts and one that took a millisecond longer does not.
+   */
+  it("counts a recorded end at exactly 30,000 ms and not at 30,001", () => {
+    const lasting = (livedMs: number): DaemonStart[] =>
+      Array.from({ length: STALL_AFTER_FAILED_STARTS }, (_, index) =>
+        failedStart(base + index * 120_000, index, livedMs),
+      );
+
+    expect(isStalled(lasting(FAILED_START_WINDOW_MS), base + 600_000)).not.toBeNull();
+    expect(isStalled(lasting(FAILED_START_WINDOW_MS + 1), base + 600_000)).toBeNull();
+  });
+
+  /**
+   * D6's boundary, measured rather than assumed, on the one path where the spacing between two
+   * starts is still what bounds a death: a run that recorded nothing.
+   *
+   * 30,000 ms is exactly launchd's `ThrottleInterval`, so "the breaker never latches under launchd"
+   * would have overstated it — it latches at the boundary and not above it.
+   */
+  it("counts unknown starts at exactly 30,000 ms spacing and not at 30,001", () => {
+    const spacing = (gap: number): DaemonStart[] =>
+      Array.from({ length: STALL_AFTER_FAILED_STARTS }, (_, index) =>
+        unknownStart(base + index * gap, index),
+      );
+
+    const atTheBoundary = spacing(FAILED_START_WINDOW_MS);
+    const oneMillisecondOver = spacing(FAILED_START_WINDOW_MS + 1);
+
+    expect(
+      isStalled(atTheBoundary, base + STALL_AFTER_FAILED_STARTS * FAILED_START_WINDOW_MS, wasGone),
+    ).not.toBeNull();
+    expect(
+      isStalled(
+        oneMillisecondOver,
+        base + STALL_AFTER_FAILED_STARTS * (FAILED_START_WINDOW_MS + 1),
+        wasGone,
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * The `SIGKILL`ed run, with the verdict taken from a real dead process rather than a stub.
+   *
+   * Four runs that recorded their own failures and a fifth that recorded nothing at all, whose
+   * successor — the start being decided, at `nowMs` — began ten seconds later.
+   */
+  it("counts an unknown start whose successor began inside the window", () => {
+    const killed = onThisBoot(deadPid());
+    const history = [...fiveFastFailures.slice(0, 4), killed];
+
+    // Gone by the probe itself, and not by the shortcut a foreign boot id would have taken.
+    expect(killed.boot_id).toBe(selfIdentity().boot_id);
+    expect(startIsProvablyGone(killed)).toBe(true);
+    expect(isStalled(history, base + 14_000)).not.toBeNull();
+  });
+
+  it("resets the streak when that same start's successor arrives after the window", () => {
+    const history = [...fiveFastFailures.slice(0, 4), onThisBoot(deadPid())];
+
+    expect(isStalled(history, base + 4_000 + FAILED_START_WINDOW_MS + 1)).toBeNull();
+  });
+
+  /**
+   * The run that answered for a week and was killed at the end of it.
+   *
+   * `ready_at` is set, so it did not fail to *start*, and no bound on when it died is relevant.
+   */
+  it("resets when a start reached readiness and was killed much later", () => {
+    const ranForAWeek: DaemonStart = {
+      ...unknownStart(base + 4_000, 4),
+      ready_at: new Date(base + 5_000).toISOString(),
+    };
+    const history = [...fiveFastFailures.slice(0, 4), ranForAWeek];
+
+    expect(isStalled(history, base + 4_000 + 7 * 24 * 3_600_000)).toBeNull();
+  });
+
+  /**
+   * The clock stepping backwards between two starts, which is why the interval is validated.
+   *
+   * A negative difference is timing uncertain and resets; so is one that cannot be computed at all,
+   * which is what an unparseable timestamp produces. The residual §1.3b D6 states — a backward
+   * adjustment that leaves a *finite* interval under 30 s — is indistinguishable from a genuine
+   * fast failure and is not asserted here, because it is not detected.
+   */
+  it("resets on a negative interval, and on one that is not a number", () => {
+    const backwards = [
+      ...fiveFastFailures.slice(0, 4),
+      unknownStart(base + 4_000, 4),
+      unknownStart(base + 4_000 - 3_600_000, 5),
+    ].slice(-STALL_AFTER_FAILED_STARTS);
+    const unparseable = [
+      ...fiveFastFailures.slice(0, 4),
+      { ...unknownStart(base + 4_000, 4), started_at: "the seventh of never" },
+    ];
+
+    expect(isStalled(backwards, base + 4_000, wasGone)).toBeNull();
+    expect(isStalled(unparseable, base + 5_000, wasGone)).toBeNull();
+  });
+
+  /**
+   * "Provably gone" is a real probe, and this process is the case it has to refuse.
+   *
+   * `newDaemonStart()` records this process's own identity tuple, and this process is alive and is
+   * itself — `ours`, not `gone` and not `stranger` — so the streak resets rather than counting a
+   * run that has not ended.
+   */
+  it("resets when an unknown start's process cannot be shown to be gone", () => {
+    const stillHere = newDaemonStart("run-4", new Date(base + 4_000).toISOString());
+    const history = [...fiveFastFailures.slice(0, 4), stillHere];
+
+    expect(startIsProvablyGone(stillHere)).toBe(false);
+    expect(isStalled(history, base + 14_000)).toBeNull();
   });
 });
