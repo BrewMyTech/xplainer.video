@@ -21,14 +21,6 @@ export const JOB_STATES = ["queued", "running", "done", "error", "cancelled"] as
 /** One of {@link JOB_STATES}. */
 export type JobStatus = (typeof JOB_STATES)[number];
 
-/** The three states after which nothing more will happen to a job. */
-export const TERMINAL_STATES: readonly JobStatus[] = ["done", "error", "cancelled"];
-
-/** Whether a job is finished, whatever it finished as. */
-export function isTerminal(status: JobStatus): boolean {
-  return TERMINAL_STATES.includes(status);
-}
-
 /** One `job` event's document, read down to the fields a progress screen shows. */
 export type JobSnapshot = {
   jobId: number;
@@ -106,9 +98,9 @@ export function readJob(value: unknown): JobSnapshot | null {
     typeof output === "object" &&
     output !== null &&
     Array.isArray((output as { lines?: unknown }).lines)
-      ? ((output as { lines: unknown[] }).lines.filter(
+      ? (output as { lines: unknown[] }).lines.filter(
           (line): line is string => typeof line === "string",
-        ) as string[])
+        )
       : [];
   return {
     jobId: fields.job_id,

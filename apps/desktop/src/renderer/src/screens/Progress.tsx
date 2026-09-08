@@ -7,7 +7,7 @@
  * and the tail of what the job wrote are what the daemon actually knows.
  */
 
-import { describeWatch, isTerminal, type JobWatch } from "../progress";
+import { describeWatch, type JobWatch } from "../progress";
 import { CARD, CODE, COLORS, HEADING, MUTED, SCREEN } from "../theme";
 
 /** What the progress screen is given. `now` is a prop so a rendered row is a pure function. */
@@ -65,8 +65,6 @@ function colourFor(watch: JobWatch): string {
   if (status === "error" || status === "cancelled") {
     return COLORS.bad;
   }
-  if (status === "done") {
-    return COLORS.good;
-  }
-  return isTerminal(status) ? COLORS.border : COLORS.accent;
+  // `done` is the last of the three terminal states; what is left is `queued` or `running`.
+  return status === "done" ? COLORS.good : COLORS.accent;
 }

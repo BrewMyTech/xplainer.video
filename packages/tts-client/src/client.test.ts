@@ -308,45 +308,52 @@ const LIVE_TIMEOUT_MS = 120_000;
 /** The voice `narrate.py` defaults to, and the one the end-to-end script speaks with. */
 const LIVE_VOICE = "af_heart";
 
-describe.skipIf(LIVE_URL === "")("KokoroClient against a live Kokoro server", () => {
-  it(
-    "lists voices from the running server",
-    async () => {
-      const voices = await new KokoroClient({ baseUrl: LIVE_URL }).listVoices();
+// The condition is written out here rather than as `LIVE_URL === ""`: AGENTS.md allows
+// a `skipIf` only with an inline `process.env` test, so the variable that decides whether this
+// block runs at all is named where the skip is. `LIVE_URL` above is the same read, kept for
+// the requests inside.
+describe.skipIf((process.env.XPLAINER_TTS_URL ?? "").trim() === "")(
+  "KokoroClient against a live Kokoro server",
+  () => {
+    it(
+      "lists voices from the running server",
+      async () => {
+        const voices = await new KokoroClient({ baseUrl: LIVE_URL }).listVoices();
 
-      expect(voices.length).toBeGreaterThan(0);
-      expect(voices).toContain(LIVE_VOICE);
-    },
-    LIVE_TIMEOUT_MS,
-  );
+        expect(voices.length).toBeGreaterThan(0);
+        expect(voices).toContain(LIVE_VOICE);
+      },
+      LIVE_TIMEOUT_MS,
+    );
 
-  it(
-    "returns WAV audio and one word span per word from /dev/captioned_speech",
-    async () => {
-      const text = "The pinned contract holds against a live server.";
-      const client = new KokoroClient({ baseUrl: LIVE_URL });
+    it(
+      "returns WAV audio and one word span per word from /dev/captioned_speech",
+      async () => {
+        const text = "The pinned contract holds against a live server.";
+        const client = new KokoroClient({ baseUrl: LIVE_URL });
 
-      const result = await client.captionedSpeech({ text, voice: LIVE_VOICE });
+        const result = await client.captionedSpeech({ text, voice: LIVE_VOICE });
 
-      // A WAV, not an error page and not the raw stream a `stream: true` request would have
-      // returned: `RIFF….WAVE` is the header the narration port decodes.
-      const audio = Buffer.from(result.audio, "base64");
-      expect(audio.subarray(0, 4).toString("ascii")).toBe("RIFF");
-      expect(audio.subarray(8, 12).toString("ascii")).toBe("WAVE");
-      expect(audio.byteLength).toBeGreaterThan(1000);
+        // A WAV, not an error page and not the raw stream a `stream: true` request would have
+        // returned: `RIFF….WAVE` is the header the narration port decodes.
+        const audio = Buffer.from(result.audio, "base64");
+        expect(audio.subarray(0, 4).toString("ascii")).toBe("RIFF");
+        expect(audio.subarray(8, 12).toString("ascii")).toBe("WAVE");
+        expect(audio.byteLength).toBeGreaterThan(1000);
 
-      // The half that fails silently. `return_timestamps: true` is the flag that produces these,
-      // and without them every scene duration would have to be guessed.
-      expect(result.timestamps.length).toBeGreaterThan(0);
-      const spoken = result.timestamps.map((span) => span.word).join(" ");
-      expect(spoken.toLowerCase()).toContain("pinned");
-      expect(spoken.toLowerCase()).toContain("server");
-      for (const span of result.timestamps) {
-        expect(span.end_time).toBeGreaterThan(span.start_time);
-      }
-      const last = result.timestamps[result.timestamps.length - 1];
-      expect(last?.end_time ?? 0).toBeGreaterThan(0);
-    },
-    LIVE_TIMEOUT_MS,
-  );
-});
+        // The half that fails silently. `return_timestamps: true` is the flag that produces these,
+        // and without them every scene duration would have to be guessed.
+        expect(result.timestamps.length).toBeGreaterThan(0);
+        const spoken = result.timestamps.map((span) => span.word).join(" ");
+        expect(spoken.toLowerCase()).toContain("pinned");
+        expect(spoken.toLowerCase()).toContain("server");
+        for (const span of result.timestamps) {
+          expect(span.end_time).toBeGreaterThan(span.start_time);
+        }
+        const last = result.timestamps[result.timestamps.length - 1];
+        expect(last?.end_time ?? 0).toBeGreaterThan(0);
+      },
+      LIVE_TIMEOUT_MS,
+    );
+  },
+);

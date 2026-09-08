@@ -20,10 +20,6 @@
  * back to a recorded value, and would answer nothing at all for a future `--port 0`. The record is
  * also required to be **newer than the moment registration began**, so a `runtime.json` an earlier
  * daemon left behind cannot pass this check for a process that never started.
- *
- * **`agent: false`, deliberately.** A pooled keep-alive socket outlives the response and holds the
- * process open after `install` has printed its last line; the poll opens one connection per attempt
- * and lets it close.
  */
 
 import { readFileSync } from "node:fs";

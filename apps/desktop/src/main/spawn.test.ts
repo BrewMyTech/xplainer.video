@@ -29,7 +29,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "vitest";
-import { PACKAGED_PAYLOAD_DIRECTORY, PAYLOAD_CLI_ENTRY, payloadInterpreterEntry } from "./paths";
+import {
+  PACKAGED_PAYLOAD_DIRECTORY,
+  PAYLOAD_CLI_ENTRY,
+  payloadInterpreterEntry,
+  RUNTIME_MANIFEST_FILE,
+} from "./paths";
 import {
   checkPayloadHost,
   currentHost,
@@ -117,7 +122,7 @@ function makePayload(fixture: PayloadFixture = {}): string {
     mkdirSync(payload, { recursive: true });
     const host = currentHost();
     writeFileSync(
-      join(payload, "runtime.manifest.json"),
+      join(payload, RUNTIME_MANIFEST_FILE),
       JSON.stringify(
         {
           kind: "runtime",

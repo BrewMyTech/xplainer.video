@@ -175,11 +175,14 @@ const STILL_FRAME = 30;
 const STILL_SCALE = 0.5;
 
 /**
- * The two spoken segments, and the tones the fixture route stands in for them with.
+ * The two **spoken** segments, and the tones the fixture route stands in for them with.
  *
  * Real sentences, because the point is measured speech: a placeholder would produce word spans of a
  * shape Kokoro never returns. Two of them rather than one, because a boundary between segments is
- * what the picture is read for below.
+ * what the picture is read for below. {@link HOLD} goes between them, so the narration this gate
+ * drives has the same three-segment shape `workers/render.test.ts` renders and the same **two**
+ * boundaries — which is what lets the two assert the same number rather than one of them settling
+ * for "at least one".
  */
 const SEGMENTS = [
   {
@@ -195,6 +198,17 @@ const SEGMENTS = [
     frequency: 660,
   },
 ];
+
+/**
+ * The silent beat between the two spoken segments: `text: ""` plus `holdSeconds`.
+ *
+ * `packages/protocol/schemas/narration.json` says "empty text yields a silent segment of
+ * holdSeconds length", so this one reaches no speech route at all — neither Kokoro nor the fixture
+ * directory — and exists to make the scene change **twice**. It is `render.test.ts`'s `beat`, and
+ * without it this gate had two segments, one boundary, and no way to assert the number that suite
+ * pins.
+ */
+const HOLD = { id: "beat", holdSeconds: 0.5 };
 
 /** Kokoro's own output rate, which is the rate the recorded clips are written at. */
 const SAMPLE_RATE = 24_000;
@@ -569,7 +583,13 @@ function narrationRequest() {
     voice: "af_heart",
     speed: 1,
     fps: FPS,
-    segments: SEGMENTS.map((segment) => ({ id: segment.id, text: segment.text })),
+    // Spoken, held, spoken — the shape `workers/render.test.ts` renders, so the two agree on how
+    // many boundaries there are to read the picture at.
+    segments: [
+      { id: SEGMENTS[0].id, text: SEGMENTS[0].text },
+      { id: HOLD.id, text: "", holdSeconds: HOLD.holdSeconds },
+      { id: SEGMENTS[1].id, text: SEGMENTS[1].text },
+    ],
   };
 }
 
@@ -1087,17 +1107,7 @@ async function main() {
     full.stdout.includes("workspace: copy route"),
     "the workspace came from the staged payload, which is D3's offline route",
   );
-  check(
-    existsSync(
-      join(
-        paths.videos,
-        "node_modules",
-        ".bin",
-        process.platform === "win32" ? "remotion.cmd" : "remotion",
-      ),
-    ),
-    "the copied workspace's .bin/remotion resolves too",
-  );
+  check(existsSync(shim), "the copied workspace's .bin/remotion resolves too");
 
   const markerFile = join(paths.state, TOOLCHAIN_MARKER_FILE);
   check(existsSync(markerFile), `${markerFile} was written`);
@@ -1112,13 +1122,33 @@ async function main() {
     marker.chrome.provider === "remotion",
     "the browser was acquired through the pinned Remotion line",
   );
+  // The digest has to be **this host's** row, not any row. `chrome.expected`'s keys are
+  // `<platform>-<arch>` with an optional distribution or libc suffix — `darwin-arm64`,
+  // `linux-x64-glibc235`, `win32-x64` — so the rows this machine could legitimately have used are
+  // the ones under its own `<platform>-<arch>` prefix. Accepting any row, which is what stood here
+  // until 2026-09-08, would have passed a digest correct for `linux-x64` on a darwin-arm64 machine:
+  // the assertion would then be "the manifest has some digest in it" rather than "setup admitted
+  // the artefact this host's reviewed row names".
   const expected = JSON.parse(readFileSync(MANIFEST, "utf8"));
-  const recordedDigest = Object.values(expected.chrome.expected).some(
-    (row) => row.status === "recorded" && row.sha256 === marker.chrome.sha256,
+  const hostPrefix = `${process.platform}-${process.arch}`;
+  const hostRows = Object.entries(expected.chrome.expected).filter(
+    ([key]) => key === hostPrefix || key.startsWith(`${hostPrefix}-`),
   );
   check(
-    recordedDigest,
-    "the digest recorded is one the reviewed manifest carries, not one taken from the bytes",
+    hostRows.length > 0,
+    `the reviewed manifest carries at least one ${hostPrefix} row to check against ` +
+      `(${hostRows.map(([key]) => key).join(", ") || "none"})`,
+  );
+  const matchedRow = hostRows.find(
+    ([, row]) => row.status === "recorded" && row.sha256 === marker.chrome.sha256,
+  );
+  check(
+    matchedRow !== undefined,
+    matchedRow === undefined
+      ? `no ${hostPrefix} row in the reviewed manifest carries ${marker.chrome.sha256}, so the ` +
+          "digest recorded came from somewhere other than this host's own row"
+      : `the digest recorded is the one this host's own row carries (${matchedRow[0]}), not a ` +
+          "digest taken from the bytes and not another platform's",
   );
   check(
     marker.workspace.platform === `${process.platform}-${process.arch}`,
@@ -1279,9 +1309,14 @@ async function main() {
       // against the frame-to-frame noise this very clip produces rather than against a number
       // chosen here. `workers/render.test.ts`'s third assertion, on the same marker band.
       const boundaries = timings.segments.slice(1).map((segment) => segment.from);
+      // Two, exactly, and pinned rather than "at least one": the fixture is three segments — two
+      // spoken with a silent hold between them — and `workers/render.test.ts:314` pins the same
+      // number for the same clip. `> 0` passed on a narration that had lost a segment, which is the
+      // failure this whole phase exists to catch, so the count is the assertion.
       check(
-        boundaries.length > 0,
-        `timings.json names ${boundaries.length} boundary between segments to read the picture at`,
+        boundaries.length === 2,
+        `timings.json names ${boundaries.length} boundaries between segments to read the picture ` +
+          "at, which is the two render.test.ts pins for this fixture",
       );
       for (const from of boundaries) {
         const [twoBefore, before, on, after] = [from - 2, from - 1, from, from + 1].map((frame) =>

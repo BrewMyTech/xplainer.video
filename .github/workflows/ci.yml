@@ -161,6 +161,22 @@ jobs:
             echo "::error::placeholder markers found in committed source; see AC-2c for the forbidden set"
             exit 1
           fi
+          # The second half of AC-2c, and the reason it is a second grep rather
+          # than a wider pattern. `.skipIf(` is deliberate here — a live Kokoro
+          # server, a real render, a probe only macOS has — so banning it would
+          # ban the thing the repository actually does. What is banned is a
+          # *bare* one: the condition has to start with `process.env` or
+          # `process.platform` on the same line, because `describe.skipIf(FLAG)`
+          # reads as an unconditional skip and nothing here can tell the two
+          # apart. The first grep lists the offenders; the second drops the
+          # lines that carry an inline condition, so the pipeline succeeds —
+          # and the step fails — only when something is left.
+          if grep -rnE '\.skipIf\(' \
+            --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' \
+            apps packages services | grep -vE '\.skipIf\(\(?process\.(env|platform)\b'; then
+            echo "::error::a .skipIf( with no inline process.env/process.platform condition; see AC-2c"
+            exit 1
+          fi
 
       # Same placement argument as AC-2c above, and the same shape: a pattern
       # scan over repository sources that needs no toolchain, so it fails in

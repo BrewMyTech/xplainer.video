@@ -185,7 +185,7 @@ describe("the start-xplainer-at-login control", () => {
 });
 
 describe("every shell-out goes through D10's two-stage resolution", () => {
-  it("names an absolute program at both stages, and never a bare `xplainer`", async () => {
+  it("names an absolute program at both stages, and never a bare `xplainer`", () => {
     const { resources, stateDir } = cleanMachine();
 
     const clean = resolveCliProgram({ resourcesPath: resources, stateDir });

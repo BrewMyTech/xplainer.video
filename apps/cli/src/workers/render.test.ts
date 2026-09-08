@@ -53,9 +53,6 @@ import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import { TTS_FIXTURE_ENV } from "./speech.js";
 import { type NarrationFixture, writeNarrationFixture } from "./testing/narration-fixture.js";
 
-/** The only supported skip. CI does not set it. */
-const SKIPPED = process.env.XPLAINER_SKIP_RENDER_TEST === "1";
-
 /** A short script: two spoken segments around a silent beat, so there are two real boundaries. */
 const FIXTURES: readonly NarrationFixture[] = [
   {
@@ -217,7 +214,10 @@ function changedShare(a: Buffer, b: Buffer): number {
   return changed / MARKER_SIZE;
 }
 
-describe.skipIf(SKIPPED)("a real render", () => {
+// The only supported skip, and the condition is written here rather than behind a constant:
+// AGENTS.md allows a `skipIf` only with an inline `process.env`/`process.platform` test, so
+// that a reader — and AC-2c's grep — can see what is being waited for. CI does not set it.
+describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", () => {
   beforeAll(async () => {
     ffmpeg = resolveTool("ffmpeg", process.env.XPLAINER_FFMPEG);
     ffprobe = resolveTool("ffprobe", process.env.XPLAINER_FFPROBE);

@@ -296,14 +296,6 @@ function requireNarrationSpec(narration: unknown): Narration {
   return narration as Narration;
 }
 
-/** The acknowledgement all three queueing tools return; the envelope is identical by schema. */
-function queued(
-  jobId: number,
-  what: string,
-): { job_id: number; status: JobState; what: string; poll: string } {
-  return { job_id: jobId, status: "queued", what, poll: `explainer_job(job_id=${jobId})` };
-}
-
 /**
  * Build the local backend over one workspace root.
  *
@@ -378,7 +370,8 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
       output_dir: outputDir,
     });
     writeJobRequest(root, jobId, request);
-    return queued(jobId, what);
+    // The envelope all three queueing tools answer with; it is identical by schema.
+    return { job_id: jobId, status: "queued", what, poll: `explainer_job(job_id=${jobId})` };
   }
 
   return {

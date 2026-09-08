@@ -178,6 +178,28 @@ export function runProbe(command: ProbeCommand): ProbeResult {
   };
 }
 
+/** One command as a single line, which is how a transcript and a refusal both name it. */
+export function spell(command: ProbeCommand): string {
+  return `${command.program} ${command.argv.join(" ")}`;
+}
+
+/**
+ * The first line with anything in it, out of the streams a command answered on.
+ *
+ * Streams rather than one string, because the sentence worth quoting is on `stderr` for some tools
+ * and on `stdout` for others, and every caller wants the first of the two that said anything.
+ */
+export function firstNonEmptyLine(streams: readonly string[]): string {
+  for (const stream of streams) {
+    for (const line of stream.split("\n")) {
+      if (line.trim() !== "") {
+        return line.trim();
+      }
+    }
+  }
+  return "";
+}
+
 /** The setup marker, and whether what it recorded is still on this machine. */
 export type ToolchainProbe = {
   /** `<state>/toolchain.json`. */
@@ -796,7 +818,7 @@ function supervisorState(
       blocked: true,
       detail:
         `\`schtasks /Query\` exited ${String(answer.status)}: ` +
-        `${firstLine(answer.stderr) || firstLine(answer.stdout) || "no output"}`,
+        `${firstNonEmptyLine([answer.stderr, answer.stdout]) || "no output"}`,
     };
   }
   return {
@@ -1233,16 +1255,6 @@ function safeUsername(): string {
   } catch {
     return "";
   }
-}
-
-/** The first non-empty line of a stream, for a message that quotes a tool's own refusal. */
-function firstLine(text: string): string {
-  for (const line of text.split("\n")) {
-    if (line.trim() !== "") {
-      return line.trim();
-    }
-  }
-  return "";
 }
 
 /** `format_version` as a number, even when it is one this build does not know. */

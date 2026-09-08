@@ -66,7 +66,6 @@ export type StdioEntry = {
   command: string;
   /** Its arguments, ending in `mcp --attach`. */
   args: string[];
-  /** `"path"` when the binary was found, `"npx"` for the fallback. */
   source: EntrySource;
 };
 

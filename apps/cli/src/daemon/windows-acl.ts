@@ -17,8 +17,8 @@
  *
  * **It is applied at creation and nowhere else**, which is exactly what the ADR asks for and no
  * more. A directory that already exists keeps whatever ACL it has — the same rule `mkdir`'s mode
- * follows — and R-SEC-5's other half, "`xplainer daemon status` re-verifies it and warns if
- * inheritance has been restored", is a check this module does not perform and no caller here calls.
+ * follows. R-SEC-5's other half — "`xplainer daemon status` re-verifies it and warns if inheritance
+ * has been restored" — is the second half of this file, below.
  *
  * **A failure is reported, never thrown.** A daemon that refused to start because `icacls` was not
  * on `PATH` would trade a weaker file for no service at all, on a platform where the file was

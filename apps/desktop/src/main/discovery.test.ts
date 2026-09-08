@@ -13,7 +13,7 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "vitest";
@@ -612,7 +612,6 @@ function writeLauncher(resources: string, stateDir: string): string {
 
 /** Wait until something is listening on a port, so a probe is not racing a `listen`. */
 async function waitForListener(port: number): Promise<void> {
-  const { connect } = await import("node:net");
   const deadline = Date.now() + 10_000;
   for (;;) {
     const reached = await new Promise<boolean>((resolve) => {

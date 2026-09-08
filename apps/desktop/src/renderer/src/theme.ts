@@ -53,7 +53,7 @@ export const CARD: CSSProperties = {
 
 /** A button. Quiet by default, because the loud one is the render. */
 export const BUTTON: CSSProperties = {
-  font: `inherit`,
+  font: "inherit",
   fontSize: "0.85rem",
   color: COLORS.text,
   background: COLORS.raised,

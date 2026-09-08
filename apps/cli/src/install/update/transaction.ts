@@ -74,9 +74,10 @@ import {
 } from "../lifecycle.js";
 import {
   currentSupervisorEnvironment,
-  type ProbeCommand,
+  firstNonEmptyLine,
   type ProbeRunner,
   runProbe,
+  spell,
 } from "../preflight.js";
 import { type ResolvedProgram, resolveProgram } from "../program.js";
 import type { RegistrationTarget } from "../register.js";
@@ -1001,21 +1002,4 @@ function asRefusal(phase: UpdatePhase, error: unknown, steps: readonly string[])
     error instanceof Error ? error.message : String(error),
     steps,
   );
-}
-
-/** One command as a single line, which is how a transcript names it. */
-function spell(command: ProbeCommand): string {
-  return `${command.program} ${command.argv.join(" ")}`;
-}
-
-/** The first line with anything in it, out of the streams a command answered on. */
-function firstNonEmptyLine(streams: readonly string[]): string {
-  for (const stream of streams) {
-    for (const line of stream.split("\n")) {
-      if (line.trim() !== "") {
-        return line.trim();
-      }
-    }
-  }
-  return "";
 }

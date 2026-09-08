@@ -1,13 +1,12 @@
 /**
  * What the binary does, driven through the real commander program.
  *
- * The things asserted here — the version it prints, the commands it offers, the
- * verbs its one command group offers, and what a deferred command does — are
- * AC-14a, AC-14b and S2.4b's fifth test. All of them are observable only through
- * stdout, stderr and an exit code, so the program is built with a recording
- * `CliIo` (see `io.ts`) and everything else is real: the real command
- * registrations, the real help generation, the real exit codes commander and the
- * stubs choose.
+ * The things asserted here — the version it prints, the commands it offers, and
+ * the verbs each of its four groups offers — are AC-14a and AC-14b. All of them
+ * are observable only through stdout, stderr and an exit code, so the program is
+ * built with a recording `CliIo` (see `io.ts`) and everything else is real: the
+ * real command registrations, the real help generation, the real exit codes
+ * commander chooses.
  */
 
 import { readFileSync } from "node:fs";
@@ -217,8 +216,8 @@ describe("xplainer", () => {
   });
 
   /**
-   * `mcp` left the deferred list below when it gained an implementation, and this is what keeps
-   * that visible here: it is registered with the one flag that chooses between running the tools in
+   * `mcp` was a deferred stub until it gained an implementation, and this is what keeps that
+   * visible here: it is registered with the one flag that chooses between running the tools in
    * this process and proxying them to the daemon's socket
    * ([ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not
    * TCP). What the two paths then *do* is asserted against real spawned processes in
@@ -259,12 +258,14 @@ describe("xplainer", () => {
    * `setup` was the last deferred stub, and this is what replaced that assertion.
    *
    * The surface is asserted rather than the behaviour: what each flag *does* is
-   * `commands/setup.test.ts`'s subject, and what belongs here is that the four options the rest of
-   * the phase's proofs and documents name — `--workspace` under a scrubbed `PATH`, `--skip-speech`
-   * on a platform with no speech route, `--tts-url` for a server somebody else runs, and
-   * `--state-dir` as `SETTING_FLAGS` spells it — are still on the command a user reaches.
+   * `commands/setup.test.ts`'s subject, and what belongs here is that the options the rest of the
+   * phase's proofs and documents name — `--workspace` under a scrubbed `PATH`, `--skip-speech` on
+   * a platform with no speech route, `--tts-url` for a server somebody else runs, and
+   * `--state-dir` as `SETTING_FLAGS` spells it — are still on the command a user reaches. The
+   * listing is `toEqual` for the same reason every group's is: an option that appeared without
+   * anyone deciding about it would ship unnoticed.
    */
-  it("offers setup's four documented options, now that it is no longer a stub", () => {
+  it("offers setup's documented options exactly, now that it is no longer a stub", () => {
     const setup = createProgram().commands.find((command) => command.name() === "setup");
 
     expect(setup?.options.map((option) => option.long)).toEqual([

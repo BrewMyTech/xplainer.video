@@ -88,6 +88,7 @@ import { DEFAULT_PORT, DRAIN_PATH } from "../server.js";
 import { awaitHealthy, HealthTimeout, loopbackGet } from "./health.js";
 import {
   currentSupervisorEnvironment,
+  firstNonEmptyLine,
   type InstallPreflight,
   type ProbeCommand,
   type ProbeResult,
@@ -95,8 +96,15 @@ import {
   preflightInstall,
   readDisableRecord,
   runProbe,
+  spell,
 } from "./preflight.js";
-import { guiService, POWERSHELL, POWERSHELL_ARGV, type RegistrationTarget } from "./register.js";
+import {
+  guiService,
+  POWERSHELL,
+  POWERSHELL_ARGV,
+  powerShellLiteral,
+  type RegistrationTarget,
+} from "./register.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import {
   checkIdentity,
@@ -528,7 +536,10 @@ export function disabledQuery(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [...POWERSHELL_ARGV, `(Get-ScheduledTask -TaskName ${quote(target.identity)}).State`],
+        argv: [
+          ...POWERSHELL_ARGV,
+          `(Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).State`,
+        ],
       };
   }
 }
@@ -573,7 +584,7 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `$action = @((Get-ScheduledTask -TaskName ${quote(target.identity)}).Actions)[0]; ` +
+          `$action = @((Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).Actions)[0]; ` +
             '"Execute=" + $action.Execute; "Arguments=" + $action.Arguments; ' +
             '"WorkingDirectory=" + $action.WorkingDirectory',
         ],
@@ -880,7 +891,10 @@ export function startCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [...POWERSHELL_ARGV, `Start-ScheduledTask -TaskName ${quote(target.identity)}`],
+        argv: [
+          ...POWERSHELL_ARGV,
+          `Start-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+        ],
       };
   }
 }
@@ -907,7 +921,10 @@ export function stopCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [...POWERSHELL_ARGV, `Stop-ScheduledTask -TaskName ${quote(target.identity)}`],
+        argv: [
+          ...POWERSHELL_ARGV,
+          `Stop-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+        ],
       };
   }
 }
@@ -927,7 +944,7 @@ export function stopCommand(target: RegistrationTarget): ProbeCommand {
  * ever refusing the next `Start-ScheduledTask` because of it. A task that is *disabled* is a
  * different fact with a different remedy, and `daemon status` is where that one is reported.
  */
-export function resetFailedCommand(target: RegistrationTarget): ProbeCommand | null {
+function resetFailedCommand(target: RegistrationTarget): ProbeCommand | null {
   switch (target.kind) {
     case "systemd":
       return { program: "systemctl", argv: ["--user", "reset-failed", target.identity] };
@@ -1460,7 +1477,10 @@ function enableCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [...POWERSHELL_ARGV, `Enable-ScheduledTask -TaskName ${quote(target.identity)}`],
+        argv: [
+          ...POWERSHELL_ARGV,
+          `Enable-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+        ],
       };
   }
 }
@@ -1613,7 +1633,7 @@ function describeToolchain(preflight: InstallPreflight): string {
 }
 
 /** How many starts in a row failed before the daemon was ready, counting back from the newest. */
-export function countTrailingFailures(starts: readonly DaemonStart[]): number {
+function countTrailingFailures(starts: readonly DaemonStart[]): number {
   let count = 0;
   for (let index = starts.length - 1; index >= 0; index -= 1) {
     if (starts[index]?.ready_at !== null) {
@@ -1704,30 +1724,13 @@ function adapterIdentity(kind: SupervisorKind, environment: SupervisorEnvironmen
   }
 }
 
-/** One command, as one line. */
-function spell(command: ProbeCommand): string {
-  return `${command.program} ${command.argv.join(" ")}`;
-}
-
 /** The first non-empty line either stream produced. */
 function firstLine(answer: ProbeResult): string {
-  for (const stream of [answer.stderr, answer.stdout]) {
-    for (const line of stream.split("\n")) {
-      if (line.trim() !== "") {
-        return line.trim();
-      }
-    }
-  }
-  return "";
+  return firstNonEmptyLine([answer.stderr, answer.stdout]);
 }
 
 function reportedString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-/** A PowerShell single-quoted literal. The one character to handle is the quote, doubled. */
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function sleep(ms: number): Promise<void> {

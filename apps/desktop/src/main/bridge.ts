@@ -278,12 +278,9 @@ export class DaemonBridge {
     }
     await new Promise<void>((resolve, reject) => {
       let buffer = "";
-      const finish = (): void => {
+      const onAbort = (): void => {
         response.body.destroy();
         resolve();
-      };
-      const onAbort = (): void => {
-        finish();
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       response.body.setEncoding("utf8");

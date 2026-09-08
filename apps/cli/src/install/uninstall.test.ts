@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { updateDaemonState } from "../daemon/daemon-state.js";
+import { resolveIpcPath } from "../daemon/ipc.js";
 import { previousTokenPath, rotateToken } from "../daemon/token.js";
 import { launcherPath } from "./launcher.js";
 import type { ProbeResult, ProbeRunner } from "./preflight.js";
@@ -66,7 +67,7 @@ function installedState(options: {
   lingerEnabledByUs?: boolean | null;
   launchdRecordCreated?: boolean | null;
   tokenFile?: string;
-}): { stateDir: string; tokenFile: string } {
+}): { stateDir: string; tokenFile: string; socket: string } {
   const stateDir = join(scratchDirectory(), "state");
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   mkdirSync(join(stagedRuntimeRoot(stateDir), "1.2.3-abcdef"), { recursive: true });
@@ -82,11 +83,17 @@ function installedState(options: {
   writeFileSync(tokenFile, "a-real-looking-secret", { mode: 0o600 });
   mkdirSync(join(options.artefact, ".."), { recursive: true });
   writeFileSync(options.artefact, "the artefact\n");
+  // A running daemon's IPC endpoint, as a plain file: what matters to the uninstall is that the
+  // path it derives is the path it removes, and `rmSync` treats the two alike. A POSIX socket
+  // cannot be created without binding one, and binding one here would be a listener in a unit test.
+  const socket = resolveIpcPath(stateDir, options.platform);
+  mkdirSync(join(socket, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(socket, "");
 
   updateDaemonState(stateDir, {
     port: 8787,
     token_file: tokenFile,
-    socket_path: join(stateDir, "ipc", "xplainer.sock"),
+    socket_path: socket,
     supervisor_kind: options.platform === "linux" ? "systemd" : "launchd",
     supervisor_artefact: options.artefact,
     runtime_dir: join(stagedRuntimeRoot(stateDir), "1.2.3-abcdef"),
@@ -95,7 +102,7 @@ function installedState(options: {
     launchd_enable_record_created: options.launchdRecordCreated ?? null,
     installed_version: "0.0.0",
   });
-  return { stateDir, tokenFile };
+  return { stateDir, tokenFile, socket };
 }
 
 describe("the token", () => {
@@ -264,27 +271,41 @@ describe("what is removed and what is kept", () => {
     const home = scratchDirectory();
     const environment: SupervisorEnvironment = { home, account: "tester" };
     const artefact = join(home, "Library", "LaunchAgents", "video.xplainer.daemon.plist");
-    const { stateDir } = installedState({ platform: "darwin", environment, artefact });
+    const { stateDir, tokenFile, socket } = installedState({
+      platform: "darwin",
+      environment,
+      artefact,
+    });
     const { run } = recorder();
 
     const outcome = uninstallDaemon({ stateDir, platform: "darwin", environment, run, uid: 501 });
 
     expect(outcome.wasInstalled).toBe(true);
-    for (const path of [
+    // Every path the module's own list promises, per item. The IPC socket is named here rather
+    // than left to the directory sweep: it is the daemon's live control surface, P2-9 asks for
+    // nothing live afterwards, and until 2026-09-08 no test in this repository asked about it.
+    const promised = [
       artefact,
+      socket,
+      tokenFile,
       join(stateDir, "runtime.json"),
       join(stateDir, "daemon.json"),
       join(stateDir, "owner.lock"),
       stagedRuntimeRoot(stateDir),
       launcherPath(stateDir, "darwin"),
       join(stateDir, "bin"),
-    ]) {
+    ];
+    for (const path of promised) {
       expect(existsSync(path), `${path} should be gone`).toBe(false);
     }
     expect(readFileSync(join(stateDir, "toolchain.json"), "utf8")).toContain("format_version");
     expect(existsSync(join(stateDir, "workspace", "videos", "kept"))).toBe(true);
-    // Every path is reported, whether or not anything was there — the report is the receipt.
-    expect(outcome.removed.map((entry) => entry.path)).toContain(artefact);
+    // Every path is reported, whether or not anything was there — the report is the receipt. The
+    // `bin` directory is the one exception: it is removed as an empty parent and is not a promise.
+    const reported = outcome.removed.map((entry) => entry.path);
+    for (const path of promised.filter((entry) => entry !== join(stateDir, "bin"))) {
+      expect(reported, `${path} should be on the receipt`).toContain(path);
+    }
     expect(outcome.removed.every((entry) => entry.error === undefined)).toBe(true);
   });
 

@@ -158,9 +158,9 @@ export type StartedDaemon = {
    * Stop the runner, record how this run ended, and give the state directory back.
    *
    * This is not the `SIGTERM` drain: that one gives an in-flight job 20 s, removes `runtime.json`
-   * and the socket, and exits `0`, and it lands with roadmap P1-7 alongside the signal handler.
-   * This is the narrower thing a failed bind and a test teardown need — and it is also the one
-   * path every orderly end goes through, which is why the breaker's outcome is written here.
+   * and the socket, and exits `0`, and it is `daemon/shutdown.ts`'s (P1-7). This is the narrower
+   * thing a failed bind and a test teardown need — and it is also the one path every orderly end
+   * goes through, which is why the breaker's outcome is written here.
    */
   close(drainTimeoutMs?: number): Promise<void>;
 };

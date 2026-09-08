@@ -5,19 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
       The renderer loads only what electron-vite bundled next to this file. The
-      websocket and http allowances cover the Vite dev server's hot-reload
-      channel, which is reachable on loopback in `electron-vite dev` only.
+      one websocket allowance covers the Vite dev server's hot-reload channel,
+      which is reachable on loopback in `electron-vite dev` only; the page it
+      serves in that mode is itself `http://localhost:<port>`, so 'self' already
+      covers the module and HMR fetches beside it.
 
       `xplainer-media:` is on img-src and media-src because the player's <video>
       and the stills load over that scheme, and the main process is what puts an
       Authorization on the request behind it. Without it the frame is blocked by
-      this policy and playback fails with nothing in the window to say why. The
-      daemon's own origin is deliberately NOT here: a page that could reach it
-      would need the bearer token, and R-SEC-7 forbids the CORS that would take.
+      this policy and playback fails with nothing in the window to say why.
+
+      The daemon's own origin is NOT on connect-src, and that is the invariant
+      `csp.test.ts` greps for. It was false until 2026-09-08: the list ended
+      `http://localhost:*`, which is every loopback port the daemon can bind. The
+      renderer talks to the daemon through the preload bridge and holds no bearer
+      token — R-SEC-7 keeps CORS off the daemon, so a fetch from here would be
+      refused anyway — so the allowance bought nothing and contradicted the two
+      documents that describe this policy.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: xplainer-media:; media-src 'self' xplainer-media:; connect-src 'self' ws://localhost:* http://localhost:*"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: xplainer-media:; media-src 'self' xplainer-media:; connect-src 'self' ws://localhost:*"
     />
     <title>Xplainer</title>
   </head>

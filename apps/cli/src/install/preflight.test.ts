@@ -170,10 +170,11 @@ function hashLocations(locations: readonly string[]): Record<string, string> {
       hashes[location] = "absent";
       continue;
     }
-    Object.assign(hashes, statSync(location).isDirectory() ? hashTree(location) : {});
-    if (!statSync(location).isDirectory()) {
-      hashes[location] = createHash("sha256").update(readFileSync(location)).digest("hex");
+    if (statSync(location).isDirectory()) {
+      Object.assign(hashes, hashTree(location));
+      continue;
     }
+    hashes[location] = createHash("sha256").update(readFileSync(location)).digest("hex");
   }
   return hashes;
 }

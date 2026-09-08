@@ -1,13 +1,11 @@
 /**
  * `xplainer daemon` — install and manage the always-on local daemon.
  *
- * Deferred to roadmap phase 2, and registered now for the same reason `mcp`,
- * `setup` and `connect` are: the command surface is the part of this that other
- * things depend on. `xplainer connect` will point an agent client at a daemon
- * this group installed, and the README, the ADRs and the desktop client all name
- * these verbs — so the names, their order and their exit code are fixed here and
- * asserted in `program.test.ts`, and the later phase changes what they do rather
- * than what the CLI offers.
+ * The names, their order and their exit codes are fixed here and asserted in
+ * `program.test.ts`, because the command surface is the part of this that other
+ * things depend on: `xplainer connect` points an agent client at a daemon this
+ * group installed, and the README, the ADRs and the desktop client all name
+ * these verbs.
  *
  * **Why `daemon` and not `service`.** `daemon` is already this repository's word
  * for the thing (ADR 0016: "The daemon has no authentication and binds
@@ -42,8 +40,7 @@
  * pair and they arrived together for the same reason `install` and `uninstall`
  * did: an update that can leave a machine with nothing running is not something
  * to put on a stranger's machine unless one named command puts it back. The
- * group's listing in `program.test.ts` grew by exactly those two, and its
- * deferred list is `setup` alone.
+ * group's listing in `program.test.ts` grew by exactly those two.
  *
  * **Everything a person reads goes to stdout, and a refusal goes to stderr with
  * its documented exit code.** `install.ts` and `uninstall.ts` decide *what* is
@@ -117,7 +114,7 @@ type DaemonVerb = (typeof DAEMON_VERBS)[number][0];
 /**
  * How each verb is built, by name.
  *
- * A record rather than seven `addCommand` calls, because the group's listing order is the order
+ * A record rather than nine `addCommand` calls, because the group's listing order is the order
  * commands are added and `program.test.ts` asserts that listing with `toEqual`: building every verb
  * inside the one loop over {@link DAEMON_VERBS} is what keeps the documented order and the
  * registered order the same object rather than two things to remember. Keying it on
@@ -338,7 +335,7 @@ function createRecoverCommand(io: CliIo): Command {
 }
 
 /** Run the recovery and say what it did, or print the refusal and exit with its code. */
-async function runRecovery(io: CliIo, verb: string, stateDir: string): Promise<boolean> {
+async function runRecovery(io: CliIo, verb: string, stateDir: string): Promise<void> {
   let outcome: UpdateOutcome;
   try {
     outcome = await recoverUpdate({
@@ -355,7 +352,6 @@ async function runRecovery(io: CliIo, verb: string, stateDir: string): Promise<b
     throw error;
   }
   io.writeOut(describeUpdate(verb, outcome));
-  return true;
 }
 
 /** What an update or a recovery did, in the order it did it. */

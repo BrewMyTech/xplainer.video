@@ -48,13 +48,14 @@ import { flushDirectory } from "../../daemon/durable-write.js";
 import { STATE_DIR_MODE } from "../../daemon/state-dir.js";
 import type { LaunchSpec } from "../../runtime/launch-spec.js";
 import { type WrittenLauncher, writeLauncher } from "../launcher.js";
-import type { ProbeCommand, ProbeRunner } from "../preflight.js";
+import { firstNonEmptyLine, type ProbeRunner, spell } from "../preflight.js";
 import type { ResolvedProgram } from "../program.js";
 import {
   guiDomain,
   guiService,
   POWERSHELL,
   POWERSHELL_ARGV,
+  powerShellLiteral,
   REGISTRATION_TIMEOUT_MS,
   type RegistrationStep,
   type RegistrationTarget,
@@ -70,7 +71,7 @@ import { supervisorAdapter } from "../supervisors/index.js";
  * "switched" and "started" are two boundaries a recovery can tell apart. What is left is the reload
  * itself, which on Windows is a re-registration because there is nothing else to reload.
  */
-export function reloadCommands(target: RegistrationTarget): readonly RegistrationStep[] {
+function reloadCommands(target: RegistrationTarget): readonly RegistrationStep[] {
   switch (target.kind) {
     case "systemd":
       return [
@@ -104,8 +105,8 @@ export function reloadCommands(target: RegistrationTarget): readonly Registratio
               ...POWERSHELL_ARGV,
               // `-Encoding UTF8` for `register.ts`'s reason: the file is UTF-8 and the document
               // declares `UTF-16`, because the parser is handed the decoded string.
-              `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw ` +
-                `-Encoding UTF8) -TaskName ${quote(target.identity)} -Force`,
+              `Register-ScheduledTask -Xml (Get-Content -Path ${powerShellLiteral(target.artefact)} -Raw ` +
+                `-Encoding UTF8) -TaskName ${powerShellLiteral(target.identity)} -Force`,
             ],
           },
         },
@@ -122,7 +123,7 @@ export function reloadCommands(target: RegistrationTarget): readonly Registratio
  * rename that published an unreadable unit and fixed it on the next line would give the supervisor
  * a window in which the file exists and cannot be used.
  */
-export function writeArtefactAtomically(artefact: SupervisorArtefact): void {
+function writeArtefactAtomically(artefact: SupervisorArtefact): void {
   const directory = dirname(artefact.path);
   mkdirSync(directory, { recursive: true, mode: STATE_DIR_MODE });
   const temporary = join(directory, `.${basename(artefact.path)}.${String(process.pid)}.tmp`);
@@ -270,32 +271,4 @@ export function switchRuntime(request: SwitchRequest): SwitchOutcome {
   }
 
   return { artefact, launcher, target, commands, daemon };
-}
-
-/** One command as a single line, which is how a transcript names it. */
-function spell(command: ProbeCommand): string {
-  return `${command.program} ${command.argv.join(" ")}`;
-}
-
-/** The first line with anything in it, out of the streams a command answered on. */
-function firstNonEmptyLine(streams: readonly string[]): string {
-  for (const stream of streams) {
-    for (const line of stream.split("\n")) {
-      if (line.trim() !== "") {
-        return line.trim();
-      }
-    }
-  }
-  return "";
-}
-
-/**
- * A PowerShell single-quoted literal.
- *
- * The same escaping `register.ts` documents: a task name is `\xplainer\<user>-daemon`, PowerShell
- * expands nothing inside single quotes, and the one character to handle is the quote itself, which
- * it escapes by doubling.
- */
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
 }

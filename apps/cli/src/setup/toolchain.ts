@@ -199,12 +199,13 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     };
   }
 
-  const gone = [
+  const recorded: readonly (readonly [string, ToolchainComponent])[] = [
     ["chrome", marker.chrome],
     ["speech", marker.speech],
-  ]
-    .filter(([, component]) => !existsSync((component as ToolchainComponent).path))
-    .map(([name, component]) => `${name as string} (${(component as ToolchainComponent).path})`);
+  ];
+  const gone = recorded
+    .filter(([, component]) => !existsSync(component.path))
+    .map(([name, component]) => `${name} (${component.path})`);
   if (gone.length > 0) {
     return {
       ok: false,

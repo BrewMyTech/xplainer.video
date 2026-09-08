@@ -27,6 +27,7 @@ import { ownerOnly, protectionOf } from "./testing/platform.js";
 import {
   createTokenRing,
   DEFAULT_TOKEN_GRACE_MS,
+  defaultTokenPath,
   discardExpiredGrace,
   inspectTokenPresence,
   loadOrMintToken,
@@ -256,12 +257,17 @@ describe("loadOrMintToken", () => {
  */
 describe("resolveTokenOrigin", () => {
   const path = "/state/token";
+  /** What a mint of `/state` would have written, which is `path` itself. */
+  const defaultPath = path;
+  /** A file only an operator can have put there: no mint of `/state` writes outside it. */
+  const operatorPath = "/etc/xplainer/operator-token";
 
   it("calls the file this start created its own, whatever is recorded", () => {
     expect(
       resolveTokenOrigin({
         minted: true,
         path,
+        defaultPath,
         recordedOrigin: "operator",
         recordedTokenFile: path,
       }),
@@ -273,13 +279,14 @@ describe("resolveTokenOrigin", () => {
       resolveTokenOrigin({
         minted: false,
         path,
+        defaultPath,
         recordedOrigin: recorded,
         recordedTokenFile: path,
       }),
     ).toBe(recorded);
   });
 
-  it("treats a half-record — a minted origin with no recorded path — as this daemon's mint", () => {
+  it("treats a half-record at the path a mint would have written as this daemon's mint", () => {
     // The shape a release that wrote the origin at mint time and the path at readiness left
     // behind after a start that failed in between. Reading it as the operator's would pass
     // R-SEC-9's fifth precondition on stale bookkeeping.
@@ -287,10 +294,33 @@ describe("resolveTokenOrigin", () => {
       resolveTokenOrigin({
         minted: false,
         path,
+        defaultPath,
         recordedOrigin: "minted",
         recordedTokenFile: null,
       }),
     ).toBe("minted");
+  });
+
+  /**
+   * The other half of the 2026-09-08 correction, and the ordering it turns on.
+   *
+   * The half-record rule used to answer **before** any path was compared, so a stale
+   * `token_origin: "minted"` with no `token_file` made every token this state directory was ever
+   * pointed at "the one this daemon minted for itself" — including one the operator wrote and named
+   * with `--token-file`, at a path no mint of this state directory can produce. The refusal was
+   * false, it stood until a loopback start replaced the record, and the remediation it offered was
+   * exactly what the operator had just done.
+   */
+  it("does not extend a half-record to a file a mint of this state directory could not have written", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path: operatorPath,
+        defaultPath,
+        recordedOrigin: "minted",
+        recordedTokenFile: null,
+      }),
+    ).toBe("operator");
   });
 
   it("reads an unrecorded origin at a path a previous run recorded as this daemon's mint", () => {
@@ -298,6 +328,7 @@ describe("resolveTokenOrigin", () => {
       resolveTokenOrigin({
         minted: false,
         path,
+        defaultPath,
         recordedOrigin: null,
         recordedTokenFile: path,
       }),
@@ -314,6 +345,7 @@ describe("resolveTokenOrigin", () => {
         resolveTokenOrigin({
           minted: false,
           path,
+          defaultPath,
           recordedOrigin: null,
           recordedTokenFile: recorded,
         }),
@@ -334,7 +366,8 @@ describe("resolveTokenOrigin", () => {
       expect(
         resolveTokenOrigin({
           minted: false,
-          path: "/etc/xplainer/operator-token",
+          path: operatorPath,
+          defaultPath,
           recordedOrigin: recorded,
           recordedTokenFile: path,
         }),
@@ -352,23 +385,33 @@ describe("resolveTokenOrigin", () => {
 describe("inspectTokenPresence", () => {
   it("says a path with nothing at it is absent, and writes nothing there", () => {
     const stateDir = stateDirectory();
-    const path = join(stateDir, TOKEN_FILE);
+    const path = defaultTokenPath(stateDir);
 
-    expect(inspectTokenPresence({ path, recordedOrigin: null, recordedTokenFile: null })).toBe(
-      "absent",
-    );
+    expect(
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: null,
+        recordedTokenFile: null,
+      }),
+    ).toBe("absent");
     expect(existsSync(path)).toBe(false);
     expect(readdirSync(stateDir)).toEqual([]);
   });
 
   it("calls this state directory's own recorded mint minted", () => {
     const stateDir = stateDirectory();
-    const path = join(stateDir, TOKEN_FILE);
+    const path = defaultTokenPath(stateDir);
     loadOrMintToken(path, stateDir);
 
-    expect(inspectTokenPresence({ path, recordedOrigin: "minted", recordedTokenFile: path })).toBe(
-      "minted",
-    );
+    expect(
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: "minted",
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
   });
 
   it("calls a token at a path this daemon never recorded the operator's", () => {
@@ -379,20 +422,47 @@ describe("inspectTokenPresence", () => {
     expect(
       inspectTokenPresence({
         path: elsewhere,
+        defaultPath: defaultTokenPath(stateDir),
         recordedOrigin: "minted",
-        recordedTokenFile: join(stateDir, TOKEN_FILE),
+        recordedTokenFile: defaultTokenPath(stateDir),
       }),
     ).toBe("operator");
+  });
+
+  /**
+   * The half-record, asked of two real files: the one a mint would have written and one it could
+   * not have. Before the 2026-09-08 ordering fix both answered `minted`, and R-SEC-9 then refused
+   * the operator's own token with a sentence saying this daemon had written it.
+   */
+  it("reads a half-record as this daemon's mint at its own default path and nowhere else", () => {
+    const stateDir = stateDirectory();
+    const mine = defaultTokenPath(stateDir);
+    loadOrMintToken(mine, stateDir);
+    const theirs = join(stateDirectory(), "operator-token");
+    writeFileSync(theirs, `${"o".repeat(43)}\n`, { mode: 0o600 });
+    const halfRecord = {
+      defaultPath: mine,
+      recordedOrigin: "minted",
+      recordedTokenFile: null,
+    } as const;
+
+    expect(inspectTokenPresence({ ...halfRecord, path: mine })).toBe("minted");
+    expect(inspectTokenPresence({ ...halfRecord, path: theirs })).toBe("operator");
   });
 
   /** A file that cannot be used is exit `12` here too: the mint would have said the same thing. */
   it("refuses a token file that holds nothing, rather than calling it absent", () => {
     const stateDir = stateDirectory();
-    const path = join(stateDir, TOKEN_FILE);
+    const path = defaultTokenPath(stateDir);
     writeFileSync(path, "   \n", { mode: 0o600 });
 
     expect(() =>
-      inspectTokenPresence({ path, recordedOrigin: null, recordedTokenFile: null }),
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: null,
+        recordedTokenFile: null,
+      }),
     ).toThrow(TokenUnreadableError);
   });
 });

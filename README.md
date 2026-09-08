@@ -72,8 +72,9 @@ uv sync --all-packages            # Python members
 ```
 
 That is the whole bootstrap, on macOS, Linux and Windows. Nothing else is required, and CI
-proves it on all three operating systems on every push — as its own job, so a Windows-only
-install failure cannot hide behind a green Linux run.
+proves it on all three operating systems — as its own `workflow_dispatch` job, so a Windows-only
+install failure cannot hide behind a green Linux run, and so the three-runner cost is paid when
+the lockfiles or the version pins change rather than on every push.
 
 ### The one-command check
 

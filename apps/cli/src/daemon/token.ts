@@ -7,14 +7,12 @@
  * world-readable". Both rules are implemented here, and nowhere else: the guard is handed a string
  * and never a path, so there is exactly one reader of this file in the process.
  *
- * **Why `serve` mints it in phase 1, when R-SEC-5 says `setup` does.** That rule's reason is a
- * race — "a daemon that mints a token on first boot races `connect`" — and it is a race between
- * three commands, two of which exit `2` today: `xplainer setup` does not exist yet, and neither
- * does `xplainer connect`. So in this phase the only process that can mint the token is the only
- * process that needs it, and minting it here is what makes the guard non-optional rather than
- * something a user must remember to arrange. The mint is `O_EXCL`, so when `setup` arrives it takes
- * the file over by creating it first and `serve` simply reads it. ADR 0020's dated note of
- * 2026-09-06 §Phase 1 records the arrangement.
+ * **Why `serve` mints it, when R-SEC-5 says `setup` does.** That rule's reason is a race — "a
+ * daemon that mints a token on first boot races `connect`" — and `xplainer setup` writes no token,
+ * so the only process that can mint one is the only process that needs it. Minting it here is what
+ * makes the guard non-optional rather than something a user must remember to arrange. The mint is
+ * `O_EXCL`, so a `setup` that took the file over would create it first and `serve` would simply
+ * read it. ADR 0020's dated note of 2026-09-06 §Phase 1 records the arrangement.
  *
  * **What the token is not** is worth repeating from that record, because a token described as a
  * sandbox is worse than no token: same-uid code reads a `0600` file trivially. It buys the browser
@@ -151,7 +149,17 @@ export function resolveTokenPathSetting(
   if (override !== undefined) {
     return { path: override, source: "environment" };
   }
-  return { path: join(stateDir, TOKEN_FILE), source: "default" };
+  return { path: defaultTokenPath(stateDir), source: "default" };
+}
+
+/**
+ * The file a mint writes when nothing overrides it: {@link TOKEN_FILE} inside the state directory.
+ *
+ * Exported because {@link resolveTokenOrigin} has to compare against it and composing the join at
+ * each call site would make "the path a mint would have written" two definitions that can drift.
+ */
+export function defaultTokenPath(stateDir: string): string {
+  return join(stateDir, TOKEN_FILE);
 }
 
 /** Where the token lives for a caller with no flag: `XPLAINER_TOKEN_FILE`, or the default. */
@@ -165,6 +173,14 @@ export type TokenOriginRequest = {
   minted: boolean;
   /** The token file this start resolved. */
   path: string;
+  /**
+   * The path a mint would have written: {@link defaultTokenPath} for this start's state directory.
+   *
+   * It is what makes a half-record decidable about a *file*. `token_origin: "minted"` with no
+   * `token_file` beside it can only have been left by a start that minted into its own default and
+   * failed before recording where, so it answers for that path and for no other.
+   */
+  defaultPath: string;
   /** `daemon.json`'s `token_origin`, or `null` in a directory no recording release has served. */
   recordedOrigin: TokenOrigin | null;
   /** `daemon.json`'s `token_file`, which is what makes the unrecorded case decidable. */
@@ -186,29 +202,39 @@ export type TokenOriginRequest = {
  *    is a state directory a release older than this field served, and every such release minted its
  *    own token into the path it recorded. Reading either as the operator's would let an upgrade turn
  *    the daemon's own default into a credential R-SEC-9 accepts, which is the error that matters.
- * 3. **Any other path** → `operator`. This is the correction of 2026-09-08, and it is what makes the
+ * 3. **A half-record — `token_origin: "minted"` and no `token_file` — at the default path** →
+ *    `minted`. Only one thing ever wrote that shape: a release that recorded the origin at mint time
+ *    and the path at readiness, after a start that failed in between (held port, bad certificate,
+ *    refused socket path). Such a start minted into {@link defaultTokenPath} and nowhere else, so
+ *    the inheritance is bounded by that path.
+ * 4. **Any other path** → `operator`. This is the correction of 2026-09-08, and it is what makes the
  *    recorded origin a fact about a **file** rather than about a directory: a record saying "the
  *    token in `<state>/token` is mine" says nothing about the token in `/etc/xplainer/token` that
  *    `--token-file` just named. Inheriting it there refused the operator's own token for ever — and
- *    the refusal said the daemon had minted a file it never wrote, which is the worse half.
+ *    the refusal said the daemon had minted a file it never wrote, which is the worse half. **The
+ *    half-record was the same bug wearing a second face** until the ordering above was fixed on
+ *    2026-09-08: it answered before any path was compared, so a `--token-file /etc/xplainer/token`
+ *    the operator wrote themselves was called this daemon's own mint for as long as the stale record
+ *    stood, and the remediation the refusal offered was the thing the operator had just done.
  *
  * The rule is written so that every uncertainty **about the recorded file** falls towards `minted`,
  * because `minted` is the answer that refuses the remote bind. A file at a path this state directory
- * has never recorded is not an uncertainty: nothing here ever wrote it.
+ * has never recorded, and could never have minted into, is not an uncertainty: nothing here ever
+ * wrote it.
  */
 export function resolveTokenOrigin(request: TokenOriginRequest): TokenOrigin {
   if (request.minted) {
     return "minted";
   }
-  if (request.recordedTokenFile === null && request.recordedOrigin === "minted") {
-    // A half-record: `token_origin` without `token_file`. Only one thing ever wrote that shape —
-    // a release that recorded the origin at mint time and the path at readiness, after a start
-    // that failed in between (held port, bad certificate, refused socket path). The file at the
-    // resolved path is therefore the daemon's own mint, and reading it as the operator's would
-    // let that stale bookkeeping pass R-SEC-9's fifth precondition on the next remote bind. The
-    // two fields are now written together, so a healthy start replaces this record; until one
-    // does, the conservative answer is the one that refuses.
-    return "minted";
+  if (request.recordedTokenFile === null) {
+    // Nothing names a file, so the only claim the record can support is one about the path a mint
+    // of this state directory would have written. A half-record there is stale bookkeeping that
+    // must not pass R-SEC-9's fifth precondition on the next remote bind, and the two fields are
+    // now written together so a healthy start replaces it. Anywhere else the record says nothing
+    // at all, and a file this daemon can neither have written nor accounted for is the operator's.
+    return request.recordedOrigin === "minted" && request.path === request.defaultPath
+      ? "minted"
+      : "operator";
   }
   if (request.recordedTokenFile !== request.path) {
     return "operator";

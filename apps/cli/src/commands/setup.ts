@@ -57,7 +57,6 @@ import {
 } from "../setup/manifest.js";
 import { acquireChrome, ChromeRefusal } from "../setup/providers/chrome.js";
 import { acquireSpeech, SpeechRefusal } from "../setup/providers/speech.js";
-import { DockerPullFailed } from "../setup/providers/speech-docker.js";
 import {
   materialiseRenderWorkspace,
   templateVersion,
@@ -278,9 +277,6 @@ function exitCodeFor(error: unknown): number {
   }
   if (error instanceof WorkspaceRefusal) {
     return error.exitCode;
-  }
-  if (error instanceof DockerPullFailed) {
-    return DAEMON_INTERNAL_EXIT_CODE;
   }
   return DAEMON_INTERNAL_EXIT_CODE;
 }

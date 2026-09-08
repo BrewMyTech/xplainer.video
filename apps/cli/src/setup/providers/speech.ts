@@ -37,7 +37,6 @@ import {
 import { acquireSpeechBundle } from "./speech-bundle.js";
 import {
   acquireSpeechImage,
-  DockerPullFailed,
   DockerUnavailable,
   KOKORO_IMAGE,
   speechContainerCommand,
@@ -125,13 +124,10 @@ export async function acquireSpeech(options: AcquireSpeechOptions): Promise<Acqu
     log(`speech: start it with \`${speechContainerCommand(image.component.version)}\``);
     return { component: image.component, provider: image.component.provider };
   } catch (error) {
-    if (error instanceof DockerUnavailable) {
-      routes.docker = error.message;
-    } else if (error instanceof DockerPullFailed) {
-      throw error;
-    } else {
+    if (!(error instanceof DockerUnavailable)) {
       throw error;
     }
+    routes.docker = error.message;
   }
 
   try {

@@ -68,6 +68,7 @@ import {
   readSwitch,
   SWITCHED_OFF_SENTENCES,
   startDaemon,
+  statusSentences,
   stopDaemon,
 } from "../lifecycle.js";
 import { currentSupervisorEnvironment, runProbe } from "../preflight.js";
@@ -271,10 +272,26 @@ async function proveLaunchd(): Promise<void> {
       read.state === "off",
       `the store says ${JSON.stringify(read.raw)}`,
     );
+    // The sentence, taken off the report the real disable record produces rather than compared to
+    // the constant it is built from. `readSwitch` above is the only input that decides it: had the
+    // store read `on`, `switchedOff` would be false and `statusSentences` would emit nothing here,
+    // so this check has a failure path — which the constant-against-constant comparison it replaced
+    // on 2026-09-08 did not. The literal is ADR 0020's own wording, not the production string.
+    const whileOff = statusSentences({
+      kind: "launchd",
+      answering: true,
+      stalled: false,
+      failedStarts: 0,
+      hold: null,
+      switchedOff: read.state === "off",
+      toolchainComplete: true,
+      bootPersistent: null,
+    });
+    const switchedOff = whileOff.find((entry) => entry.state === "switched-off")?.text ?? null;
     check(
-      "and the sentence for that state is ADR 0020's",
-      SWITCHED_OFF_SENTENCES.launchd ===
-        "you or a policy switched this off in Login Items & Extensions",
+      "and the report built from that real record carries ADR 0020's sentence for it",
+      switchedOff === "you or a policy switched this off in Login Items & Extensions",
+      switchedOff ?? "<the report carried no switched-off sentence>",
     );
 
     // ── The report itself, from the real supervisor and the real daemon ───────────────────────
@@ -314,7 +331,18 @@ async function proveLaunchd(): Promise<void> {
       run: (command) => runProbe(rewriteLabel(command, artefact.identity, THROWAWAY_LABEL, uid)),
     });
     say(`  stopped after ${String(stopped.elapsedMs)} ms via ${stopped.commands.join(", ")}`);
-    check("the daemon stopped answering", true);
+    // Asked of the daemon rather than of the fact that `stopDaemon` returned. It throws when
+    // something is still answering, so `check(…, true)` — what stood here until 2026-09-08 — was a
+    // line whose failure path could not fire; this one re-probes and reports what it found.
+    const afterStop = await daemonStatus({ stateDir, environment, uid, run: runProbe });
+    check(
+      "the daemon stopped answering: an authenticated /healthz now gets nothing at all",
+      afterStop.probe.http_status === null &&
+        afterStop.condition !== "ready" &&
+        afterStop.condition !== "degraded",
+      `condition ${afterStop.condition}, http_status ${String(afterStop.probe.http_status)}, ` +
+        `${afterStop.probe.error ?? "no error reported"}`,
+    );
     check("the plist is still registered", existsSync(plistPath));
 
     const restarted = await startDaemon({

@@ -14,16 +14,21 @@
  *
  * **Two phases, and the first one is the one that matters.**
  *
- * 1. **Refused before anything is bound.** Five commands, each missing exactly one of R-SEC-9's
- *    requirements, and each spawned **while this script itself holds the port they were told to
- *    bind**. That is what turns "it printed a refusal" into evidence about *ordering*: a `serve`
- *    that reached `listen()` on a held port exits `10` naming the address as already in use, so an
- *    exit `1` carrying the refusal sentence proves the precondition was decided first. A **sixth**
- *    command with every precondition supplied is run onto the same held port and is required to
- *    exit `10`, because without it "exit 1 rather than 10" would be an assertion about a port
- *    nothing was ever holding. The state directory is then read back for each refusal: no
+ * 1. **Refused before anything is bound.** Six commands, each spawned **while this script itself
+ *    holds the port they were told to bind**: five missing exactly one of R-SEC-9's requirements,
+ *    and a sixth whose token is one this daemon **minted for itself** in a loopback start a moment
+ *    earlier. That sixth is the fifth precondition's other refusing answer and the one that needs a
+ *    history rather than an omission — dropping `--token-file` against an empty state directory is
+ *    `absent`, which since 2026-09-08 has its own sentence (`daemon/tls.ts`). Holding the port is
+ *    what turns "it printed a refusal" into evidence about *ordering*: a `serve` that reached
+ *    `listen()` on a held port exits `10` naming the address as already in use, so an exit `1`
+ *    carrying the refusal sentence proves the precondition was decided first. A **seventh** command
+ *    with every precondition supplied is run onto the same held port and is required to exit `10`,
+ *    because without it "exit 1 rather than 10" would be an assertion about a port nothing was ever
+ *    holding. The state directory is then read back for each of the five omissions: no
  *    `runtime.json`, which `markReady()` is the only writer of, and no recorded port in
- *    `daemon.json`.
+ *    `daemon.json`. The minted case is read back for `runtime.json` alone, because the loopback
+ *    start that wrote its token recorded a port of its own before it was stopped.
  * 2. **The four outcomes over TLS.** One daemon on the chosen address with a self-signed
  *    certificate and an operator token, then: an unauthenticated request is `401` with the
  *    `WWW-Authenticate` challenge; the operator's token is `200`; a valid token carrying
@@ -121,6 +126,31 @@ const SHUTDOWN_TIMEOUT_MS = 40_000;
 
 /** The scratch directory, removed when the run succeeds and kept when it does not. */
 let scratch = null;
+
+/**
+ * Everything this process holds open, so a failed assertion can let the event loop empty.
+ *
+ * `process.exitCode = 1` is a *request* to exit when nothing is left running, and this script keeps
+ * two kinds of thing that are: the `net` server holding the trap port, and any `serve` child it has
+ * started. Setting the code without releasing them is a gate that prints its failure and then never
+ * exits — measured on 2026-09-08, killed at 420 s with no exit code, which on a runner burns the
+ * job's whole timeout instead of failing in seconds. So the failure path releases both, in a
+ * `finally` that runs whether the assertions held or not.
+ */
+const openHandles = { held: null, children: new Set() };
+
+/** Release the trap port and kill anything still running, whatever the outcome was. */
+async function releaseEverything() {
+  if (openHandles.held !== null) {
+    const held = openHandles.held;
+    openHandles.held = null;
+    await held.release();
+  }
+  for (const child of openHandles.children) {
+    child.kill("SIGKILL");
+  }
+  openHandles.children.clear();
+}
 
 function stamp() {
   return new Date().toISOString();
@@ -281,6 +311,7 @@ function startDaemon(args, paths) {
     env: daemonEnvironment(paths),
     stdio: ["ignore", "pipe", "pipe"],
   });
+  openHandles.children.add(child);
   let stdout = "";
   const stderr = [];
   return new Promise((resolve, reject) => {
@@ -429,6 +460,7 @@ function stopDaemon(child) {
     }, SHUTDOWN_TIMEOUT_MS);
     child.on("exit", (code, signal) => {
       clearTimeout(timer);
+      openHandles.children.delete(child);
       resolve({ code, signal });
     });
     child.kill("SIGTERM");
@@ -453,6 +485,7 @@ async function main() {
 
   section("the address, the certificate and the operator's token");
   const seized = await seizeAddress();
+  openHandles.held = seized;
   say(
     `  ..  binding ${seized.address} (${seized.where}), which is none of daemon/binding.ts's four ` +
       `loopback literals; port ${seized.port} is held by this script for the refusals below`,
@@ -486,6 +519,31 @@ async function main() {
     tokenPath,
   ];
   /**
+   * `remote`, with the named flags dropped and the named values substituted.
+   *
+   * Dropping a flag means dropping the value after it, and
+   * `--i-understand-remote-exposure` is the one flag that carries none — which is the only
+   * thing either caller below has to know, so the walk is written once here rather than at
+   * each of them.
+   */
+  const remoteFlags = ({ drop = [], replace = {} }) => {
+    const args = [];
+    for (let at = 0; at < remote.length; at += 1) {
+      const flag = remote[at];
+      const takesValue = flag !== "--i-understand-remote-exposure";
+      if (drop.includes(flag)) {
+        at += takesValue ? 1 : 0;
+        continue;
+      }
+      args.push(flag);
+      if (takesValue) {
+        at += 1;
+        args.push(replace[flag] ?? remote[at]);
+      }
+    }
+    return args;
+  };
+  /**
    * One refusal case: the flags to drop, and every fragment the refusal has to carry.
    *
    * The three `daemon/tls.ts` owns end in "Nothing has been bound.", because they are refusals of a
@@ -511,9 +569,16 @@ async function main() {
       ],
     },
     {
-      name: "the token this daemon minted for itself",
+      // Dropping `--token-file` against a fresh state directory is the `absent` answer, not the
+      // `minted` one: there is no file at that path for the daemon to have minted. The two have
+      // had separate wordings since the correction of 2026-09-08 (`daemon/tls.ts`), and the
+      // `minted` branch is proven below, on a state directory a loopback start really did mint in.
+      name: "no token at all",
       drop: ["--token-file"],
-      says: ["is the one this daemon minted for itself", "Nothing has been bound."],
+      says: [
+        "there is no bearer token at",
+        "Nothing has been minted here and nothing has been bound",
+      ],
     },
     {
       name: "no --i-understand-remote-exposure",
@@ -535,21 +600,13 @@ async function main() {
 
   for (const [index, refusal] of refusals.entries()) {
     const stateDir = join(scratch, `refused-${index}`);
-    const args = ["--port", String(seized.port), "--state-dir", stateDir];
-    for (let at = 0; at < remote.length; at += 1) {
-      const flag = remote[at];
-      const takesValue = flag !== "--i-understand-remote-exposure";
-      if ((refusal.drop ?? []).includes(flag)) {
-        at += takesValue ? 1 : 0;
-        continue;
-      }
-      const replacement = refusal.replace?.[flag];
-      args.push(flag);
-      if (takesValue) {
-        at += 1;
-        args.push(replacement ?? remote[at]);
-      }
-    }
+    const args = [
+      "--port",
+      String(seized.port),
+      "--state-dir",
+      stateDir,
+      ...remoteFlags({ drop: refusal.drop, replace: refusal.replace }),
+    ];
     const result = serveRefused(`serve, ${refusal.name}`, args, paths);
     check(
       result.status === 1,
@@ -574,7 +631,72 @@ async function main() {
     );
   }
 
-  // The control that makes the five above mean what they say. Everything R-SEC-9 asks for is
+  // ── The fifth precondition's other answer: a token this daemon really did mint ────────────────
+  //
+  // The case above drops `--token-file` against an empty directory, which is `absent`. `minted` is
+  // the answer that needs a *history*: a loopback `xplainer serve` that created `<state>/token`
+  // itself and recorded `token_origin: "minted"` beside `token_file` in `daemon.json`. So one is
+  // run here, on a port of the kernel's choosing, and stopped — and the remote bind is then pointed
+  // at that same state directory with no `--token-file`, so it resolves the very file the mint
+  // wrote. Without this, R-SEC-9's fifth precondition would be end-to-end covered on one of its
+  // two refusing answers only.
+  say("");
+  say(`${stamp()} minting a default token with a loopback start, so the next case has a history`);
+  const mintedStateDir = join(scratch, "minted");
+  const minting = await startDaemon(["--port", "0", "--state-dir", mintedStateDir], paths);
+  try {
+    check(
+      minting.ready.event === "ready",
+      `a loopback serve came up on port ${String(minting.ready.port)} and minted its own token`,
+    );
+  } finally {
+    const mintStopped = await stopDaemon(minting.child);
+    say(`  ..  SIGTERM → exit ${mintStopped.code ?? mintStopped.signal}`);
+  }
+  const mintedTokenPath = join(mintedStateDir, "token");
+  const mintedRecord = recordedState(mintedStateDir);
+  check(
+    existsSync(mintedTokenPath) &&
+      mintedRecord?.token_origin === "minted" &&
+      mintedRecord?.token_file === mintedTokenPath,
+    `daemon.json records token_origin ${String(mintedRecord?.token_origin)} for ` +
+      `${String(mintedRecord?.token_file)}, which is the file that start created`,
+  );
+  const mintedArgs = [
+    "--port",
+    String(seized.port),
+    "--state-dir",
+    mintedStateDir,
+    // Everything except `--token-file`: the default path inside the state directory is what the
+    // mint wrote, and resolving it is the whole point.
+    ...remoteFlags({ drop: ["--token-file"] }),
+  ];
+  const mintedRefusal = serveRefused(
+    "serve, the token this daemon minted for itself",
+    mintedArgs,
+    paths,
+  );
+  check(
+    mintedRefusal.status === 1,
+    `the token this daemon minted for itself: exit 1 while this script holds ${seized.address}:` +
+      `${String(seized.port)}, so this refusal too is decided before the bind`,
+  );
+  for (const fragment of [
+    `the bearer token in ${mintedTokenPath} is the one this daemon minted for itself`,
+    "Nothing has been bound.",
+  ]) {
+    check(
+      (mintedRefusal.stderr ?? "").includes(fragment),
+      `the token this daemon minted for itself: the refusal says "${fragment}"`,
+    );
+  }
+  check(
+    !existsSync(join(mintedStateDir, "runtime.json")),
+    "the token this daemon minted for itself: no runtime.json — the loopback start removed its " +
+      "own on shutdown and the refused remote start wrote none",
+  );
+
+  // The control that makes the six above mean what they say. Everything R-SEC-9 asks for is
   // supplied, so this one has no precondition left to fail on and gets as far as `listen()` — where
   // the held port is waiting. Its exit `10` is what proves the trap was armed: without it, "exit 1
   // rather than 10" would be an assertion about a port nothing was ever holding.
@@ -586,7 +708,7 @@ async function main() {
   check(
     control.status === 10,
     "with all five preconditions met the same command reaches listen() and exits 10, so the held " +
-      "port really was a trap and the five refusals really did stop short of it",
+      "port really was a trap and the six refusals really did stop short of it",
   );
   check(
     (control.stderr ?? "").includes(`${seized.address}:${seized.port} is already in use`),
@@ -594,6 +716,7 @@ async function main() {
       "in this phase that could only have been printed after a bind was attempted",
   );
 
+  openHandles.held = null;
   await seized.release();
   say(`  ..  ${seized.address}:${seized.port} released; the daemon below picks its own port`);
 
@@ -711,7 +834,7 @@ async function main() {
 
     check(
       existsSync(join(stateDir, "runtime.json")),
-      "and this one did bind: runtime.json is there, which none of phase 1's five was",
+      "and this one did bind: runtime.json is there, which none of phase 1's six was",
     );
   } finally {
     const stopped = await stopDaemon(started.child);
@@ -723,12 +846,14 @@ async function main() {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-main().catch((error) => {
-  say("");
-  say(`REMOTE GATE FAILED: ${error.message}`);
-  if (scratch !== null) {
-    say(`the scratch directory is kept at ${scratch}`);
-  }
-  say(`the transcript is at ${LOG_PATH}`);
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    say("");
+    say(`REMOTE GATE FAILED: ${error.message}`);
+    if (scratch !== null) {
+      say(`the scratch directory is kept at ${scratch}`);
+    }
+    say(`the transcript is at ${LOG_PATH}`);
+    process.exitCode = 1;
+  })
+  .finally(releaseEverything);

@@ -99,6 +99,7 @@ import {
 } from "./health.js";
 import { LAUNCHER_DIR, launcherPath, type WrittenLauncher, writeLauncher } from "./launcher.js";
 import {
+  firstNonEmptyLine,
   type InstallPreflight,
   type LaunchdDisableRecord,
   type ProbeResult,
@@ -123,7 +124,7 @@ import { launchAgentLogPath, supervisorAdapter, taskLogPath } from "./supervisor
 export const DEFAULT_INSTALL_PORT = 8787;
 
 /** `journald`, the value `log_sink` takes where the supervisor keeps a journal rather than a file. */
-export const JOURNALD_SINK = "journald";
+const JOURNALD_SINK = "journald";
 
 /**
  * Where this platform's daemon output goes, as the one value `log_sink` records.
@@ -134,10 +135,7 @@ export const JOURNALD_SINK = "journald";
  * at read time, because a daemon installed under a different home has a log that is not where this
  * process's home would put it.
  */
-export function supervisorLogSink(
-  kind: SupervisorKind,
-  environment: SupervisorEnvironment,
-): string {
+function supervisorLogSink(kind: SupervisorKind, environment: SupervisorEnvironment): string {
   switch (kind) {
     case "systemd":
       return JOURNALD_SINK;
@@ -738,18 +736,6 @@ function exitCodeOf(error: unknown, fallback: number): number {
   }
   const code = (error as { exitCode: unknown }).exitCode;
   return typeof code === "number" ? code : fallback;
-}
-
-/** The first line with anything in it, out of the streams a command answered on. */
-function firstNonEmptyLine(streams: readonly string[]): string {
-  for (const stream of streams) {
-    for (const line of stream.split("\n")) {
-      if (line.trim() !== "") {
-        return line.trim();
-      }
-    }
-  }
-  return "";
 }
 
 /** Somebody else's output, indented so it reads as a quotation rather than as our own sentence. */

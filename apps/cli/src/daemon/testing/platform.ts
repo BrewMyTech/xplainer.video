@@ -1,7 +1,7 @@
 /**
  * The facts a suite has to read off the machine it is running on, read once.
  *
- * Both of them are places where the property under test is real on every platform and the *evidence
+ * Two of them are places where the property under test is real on every platform and the *evidence
  * for it* is not:
  *
  * - **What keeps another local account out of a file.** On POSIX it is the mode, and `stat` is the
@@ -37,7 +37,7 @@ import process from "node:process";
 import { isNamedPipe, WINDOWS_PIPE_PREFIX } from "../ipc.js";
 
 /** One access-control entry, as `icacls` prints it. */
-export type AccessEntry = {
+type AccessEntry = {
   /** `runneradmin`, `MACHINE\\alice`, `NT AUTHORITY\\SYSTEM`. */
   principal: string;
   /** `(I)(F)`, `(R,W)`, `(OI)(CI)(F)` — inherited entries carry `(I)`. */
@@ -45,7 +45,7 @@ export type AccessEntry = {
 };
 
 /** A path's whole DACL, and the text it was read out of. */
-export type AccessControl = {
+type AccessControl = {
   entries: AccessEntry[];
   /** The entries Windows marked `(I)`: inherited from the parent, which `/inheritance:r` removes. */
   inherited: AccessEntry[];
@@ -59,7 +59,7 @@ export type AccessControl = {
  * Windows only — there is no such thing to read on the other two, and a caller that reaches here
  * off `win32` has branched wrongly rather than found an empty list.
  */
-export function accessControl(path: string): AccessControl {
+function accessControl(path: string): AccessControl {
   if (process.platform !== "win32") {
     throw new Error(`accessControl is a Windows reading, and this is ${process.platform}`);
   }

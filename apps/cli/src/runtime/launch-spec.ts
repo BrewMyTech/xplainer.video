@@ -56,10 +56,8 @@
  * workers.
  *
  * **What this module deliberately does not do.** It does not check that `serve` accepts the flags
- * it emits. `serve` carries `--port`, `--bind` and `--i-understand-remote-exposure` today and gains
- * `--state-dir`, `--token-file` and `--socket` with the state-directory work; until then a spec
- * built here describes a launch the current `serve` would reject, which is why nothing installs one
- * yet. The spellings are pinned by {@link SETTING_FLAGS} so that both halves are one edit apart.
+ * it emits. The spellings are pinned by {@link SETTING_FLAGS} so that both halves are one edit
+ * apart.
  */
 
 import { existsSync, readFileSync } from "node:fs";

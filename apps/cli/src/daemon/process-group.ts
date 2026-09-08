@@ -55,6 +55,7 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { isAlive } from "./worker-identity.js";
 
 /** How long a worker gets to exit on `SIGTERM` before the group is killed outright. */
@@ -320,12 +321,6 @@ export function signalGroup(target: GroupTarget, signal: NodeJS.Signals): boolea
 
 /** How often the wait below asks whether the leader has gone. */
 const POLL_INTERVAL_MS = 25;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((done) => {
-    setTimeout(done, ms);
-  });
-}
 
 /** What a teardown actually did, so a caller can log it rather than guess. */
 export type Teardown = {

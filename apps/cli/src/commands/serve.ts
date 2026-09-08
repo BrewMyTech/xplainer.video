@@ -118,6 +118,7 @@ import {
 } from "../daemon/tls.js";
 import {
   createTokenRing,
+  defaultTokenPath,
   discardExpiredGrace,
   inspectTokenPresence,
   loadOrMintToken,
@@ -356,10 +357,6 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // it and a second read between the two would be reading a file this process has since
       // written. Reading it at all is safe only here: ownership is held.
       const recorded = readDaemonState(stateDir);
-      // Declared without a value because the only path that leaves this block without assigning it
-      // is the `catch`, and every branch of that one exits. The token's *value* is deliberately not
-      // kept: what the guard is given below is the ring over the file, so that a rotation in
-      // another process is picked up rather than shadowed by a string read at start-up.
       // R-SEC-9's fifth precondition, asked **before the mint** and not after it. A remote bind that
       // reached `loadOrMintToken` would create the token file — `0600`, recorded, exactly as an
       // ordinary start does — and then refuse itself over the credential it had just written, which
@@ -374,6 +371,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         try {
           presence = inspectTokenPresence({
             path: tokenPath,
+            defaultPath: defaultTokenPath(stateDir),
             recordedOrigin: recorded.token_origin,
             recordedTokenFile: recorded.token_file,
           });
@@ -391,12 +389,18 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         }
       }
 
+      // Declared without a value because the only path that leaves the block below without
+      // assigning it is the `catch`, and every branch of that one exits. The token's *value* is
+      // deliberately not kept: what the guard is given further down is the ring over the file, so
+      // that a rotation in another process is picked up rather than shadowed by a string read at
+      // start-up.
       let tokenOrigin: TokenOrigin;
       try {
         const minted = loadOrMintToken(tokenPath, stateDir);
         tokenOrigin = resolveTokenOrigin({
           minted: minted.minted,
           path: tokenPath,
+          defaultPath: defaultTokenPath(stateDir),
           recordedOrigin: recorded.token_origin,
           recordedTokenFile: recorded.token_file,
         });

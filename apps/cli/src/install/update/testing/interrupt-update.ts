@@ -54,7 +54,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { updateDaemonState } from "../../../daemon/daemon-state.js";
 import { installDaemon } from "../../install.js";
-import type { ProbeRunner } from "../../preflight.js";
+import { type ProbeRunner, spell } from "../../preflight.js";
 import { writeToolchainMarker } from "../../testing/toolchain.js";
 import { readUpdateJournal, type UpdateTransition } from "../journal.js";
 import { updateDaemon } from "../transaction.js";
@@ -62,7 +62,6 @@ import {
   fixtureEnvironment,
   fixtureLingerMarker,
   PARKED_LINE,
-  spell,
   updateHarness,
   windowsFixtureEnvironment,
 } from "./harness.js";

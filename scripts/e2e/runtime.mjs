@@ -11,8 +11,8 @@
  * directory, and every payload site the round-3 review found is on that path:
  *
  * - `explainer_create` reads **both** of `render-core`'s template directories — `template/` for the
- *   four workspace files and `dist/scaffold/templates/*.txt` for the six scaffold files — through
- *   two `import.meta.url` sites no bundler could have rewritten. This script compares the bytes it
+ *   workspace files and `dist/scaffold/templates/*.txt` for the six scaffold files — through two
+ *   `import.meta.url` sites no bundler could have rewritten. This script compares the bytes it
  *   got against the artefact's own copies, so "it ran" and "it read them from the payload" are two
  *   different assertions rather than one hopeful one.
  * - `explainer_narrate` spawns `dist/workers/narrate.js` with the artefact's own interpreter
@@ -786,8 +786,8 @@ async function main() {
   );
 
   // Both `import.meta.url` payload sites, compared byte for byte against the artefact's copies:
-  // `dist/scaffold/templates/*.txt` for the six scaffold files, `template/` for the four workspace
-  // files. This is what makes "it read them from inside the payload" an assertion.
+  // `dist/scaffold/templates/*.txt` for the six scaffold files, `template/` for the workspace
+  // files named below. This is what makes "it read them from inside the payload" an assertion.
   const scaffoldTemplates = join(
     runtimeDir,
     "lib/node_modules/@xplainer/render-core/dist/scaffold/templates",
@@ -801,7 +801,16 @@ async function main() {
       `${name} is byte-identical to the artefact's dist/scaffold/templates/${name}.txt`,
     );
   }
-  for (const name of ["package.json", "remotion.config.ts", "tailwind.css", "tsconfig.json"]) {
+  // All five of render-core's WORKSPACE_FILES, `package-lock.json` included: the lockfile joined
+  // that list after this loop was first written, and a payload that shipped the manifest without
+  // it would still pass a four-name comparison while `npm ci` in the workspace failed later.
+  for (const name of [
+    "package.json",
+    "package-lock.json",
+    "remotion.config.ts",
+    "tailwind.css",
+    "tsconfig.json",
+  ]) {
     const wrote = readFileSync(join(paths.videos, name));
     const template = readFileSync(join(workspaceTemplates, name));
     check(
@@ -850,12 +859,10 @@ async function main() {
         `${segment.from + segment.durationInFrames - 1} (${segment.startMs.toFixed(0)}–${segment.endMs.toFixed(0)} ms)`,
     );
   }
-  say(`  wav:         ${audio} (${statSync(audio).size} bytes)`);
+  const audioBytes = statSync(audio).size;
+  say(`  wav:         ${audio} (${audioBytes} bytes)`);
 
-  check(
-    statSync(audio).size > 44,
-    "narration.wav is a file with samples in it, not an empty header",
-  );
+  check(audioBytes > 44, "narration.wav is a file with samples in it, not an empty header");
   const measured = wavDurationMs(audio);
   const drift = Math.abs(measured - timings.totalMs);
   say(

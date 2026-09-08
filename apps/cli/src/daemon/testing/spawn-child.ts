@@ -27,6 +27,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isAlive } from "../worker-identity.js";
 
@@ -70,9 +71,7 @@ export async function untilGone(pid: number, timeoutMs = 10_000): Promise<boolea
     if (!isAlive(pid)) {
       return true;
     }
-    await new Promise<void>((done) => {
-      setTimeout(done, 20);
-    });
+    await sleep(20);
   }
   return false;
 }
@@ -210,9 +209,7 @@ export function spawnEntry(
             `the child exited before printing "${match}"\nstdout:${out}\nstderr:${err}`,
           );
         }
-        await new Promise<void>((done) => {
-          setTimeout(done, 20);
-        });
+        await sleep(20);
       }
       throw new Error(`timed out waiting for "${match}"\nstdout:${out}\nstderr:${err}`);
     },

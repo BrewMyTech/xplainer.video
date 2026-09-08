@@ -118,8 +118,8 @@ src/
 │   ├── spawn.ts         reads the payload manifest, refuses by name, spawns the payload
 │   ├── discovery.ts     the seven outcomes, D10's two stages, the spawned daemon
 │   ├── bridge.ts        the token, the REST/SSE/media proxy, the 401 retry
-│   └── testing/         real payloads and real daemons for the two suites
 │   ├── controls.ts      the two one-click shell-outs, at both of D10's stages
+│   └── testing/         real payloads and real daemons for the two suites
 ├── preload/index.ts     context-isolated bridge; verbs only, never a token
 ├── renderer/src/        the window: four screens and the decisions behind them
 │   ├── library.ts       reads /api/videos into rows; no URL is built here

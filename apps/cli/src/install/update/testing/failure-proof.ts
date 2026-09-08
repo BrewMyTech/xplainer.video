@@ -31,8 +31,10 @@
  * 3. **The workspace already matches B and A's pins differ.** The case D9's second clause exists
  *    for: a check written as "does the workspace satisfy the incoming runtime" passes here, and the
  *    rollback target is exactly the runtime it no longer satisfies. It must still refuse.
- * 4. And after each refusal, that the machine is **untouched**: the same run answering, the same
- *    staged runtimes, no journal and no operation lock.
+ * 4. And after each refusal, that the machine is **untouched**: the same staged runtimes, the same
+ *    run recorded, no journal, no operation lock — and the daemon **asked**, over an authenticated
+ *    `/healthz` that names the release it is serving, rather than inferred from a file it may have
+ *    left behind when it died.
  *
  * ## What is real, and the two things that are not
  *
@@ -72,10 +74,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
-import {
-  DAEMON_UNHEALTHY_EXIT_CODE,
-  PRECONDITION_UNMET_EXIT_CODE,
-} from "../../../daemon/exit-codes.js";
 import { readLock } from "../../../daemon/lock.js";
 import { stateDirLayout } from "../../../daemon/state-dir.js";
 import { isAlive } from "../../../daemon/worker-identity.js";
@@ -113,6 +111,18 @@ const DOOMED_READY_MS = 30_000;
 
 /** The pin B is given in case 2, so its template disagrees with A's by exactly one package. */
 const CHANGED_PIN = "remotion";
+
+/**
+ * ADR 0020 §6's codes, written out here rather than imported from `daemon/exit-codes.ts`.
+ *
+ * The correction of 2026-09-08. Reading the production constant on both sides of `===` is a
+ * tautology: renumber the constant and every one of these assertions follows it, silently, while
+ * the documented contract a caller scripts against has changed. A proof's expectation has to come
+ * from the document, so these are the numbers §6 states — `3` for "a precondition of this operation
+ * is not met" and `4` for "the daemon is not answering" — and the assertion is that the shipped
+ * refusal still carries them.
+ */
+const DOCUMENTED_EXIT_CODES = { preconditionUnmet: 3, daemonUnhealthy: 4 } as const;
 
 const say = (line: string): void => {
   process.stdout.write(`${line}\n`);
@@ -268,7 +278,7 @@ try {
     }),
   );
   require(rolledBack.exitCode ===
-    DAEMON_UNHEALTHY_EXIT_CODE, `the refusal carries the documented code ${String(DAEMON_UNHEALTHY_EXIT_CODE)}`);
+    DOCUMENTED_EXIT_CODES.daemonUnhealthy, `the refusal carries ADR 0020 §6's code ${String(DOCUMENTED_EXIT_CODES.daemonUnhealthy)} for a daemon that is not answering`);
   require(rolledBack.message.includes(
     "is installed and answering",
   ), "the refusal says which runtime is installed and answering now");
@@ -358,7 +368,7 @@ try {
     updateDaemon({ stateDir, from: beta.outDir, environment, run: probe, workspaceRoot }),
   );
   require(refused.exitCode ===
-    PRECONDITION_UNMET_EXIT_CODE, `the refusal carries the documented code ${String(PRECONDITION_UNMET_EXIT_CODE)}`);
+    DOCUMENTED_EXIT_CODES.preconditionUnmet, `the refusal carries ADR 0020 §6's code ${String(DOCUMENTED_EXIT_CODES.preconditionUnmet)} for a precondition that is not met`);
   require(refused.phase === "precondition", "it refused in the precondition, before anything else");
   require(refused.message.includes(
     `${CHANGED_PIN}: installed ${wasPinned}, incoming 4.0.0-t16-proof`,
@@ -379,7 +389,7 @@ try {
   require(!refused.message.includes(
     join(stateDir, "bin", "xplainer"),
   ), "and never from the installed launcher, which execs the old runtime");
-  requireUntouched(slotsBefore, runBeforeRefusal);
+  await requireUntouched(slotsBefore, runBeforeRefusal, alphaVersion);
 
   say("");
   say("case 3 — the workspace already matches B, and A's pins differ: still exit 3");
@@ -393,8 +403,8 @@ try {
     updateDaemon({ stateDir, from: beta.outDir, environment, run: probe, workspaceRoot }),
   );
   require(stillRefused.exitCode ===
-    PRECONDITION_UNMET_EXIT_CODE, "it refuses with exit 3 even though the incoming runtime and the workspace agree");
-  requireUntouched(slotsBefore, runBeforeRefusal);
+    DOCUMENTED_EXIT_CODES.preconditionUnmet, "it refuses with §6's exit 3 even though the incoming runtime and the workspace agree");
+  await requireUntouched(slotsBefore, runBeforeRefusal, alphaVersion);
 
   say("");
   say("PROOF PASSED");
@@ -418,11 +428,39 @@ function readDirectorySorted(path: string): string[] {
   return existsSync(path) ? readdirSync(path).sort() : [];
 }
 
-/** The four facts a refusal must leave exactly as it found them. */
-function requireUntouched(slots: readonly string[], run: string | null): void {
+/**
+ * The five facts a refusal must leave exactly as it found them, the last one asked of the daemon.
+ *
+ * The `/healthz` probe is the correction of 2026-09-08. T16 criterion 6 says "the daemon still
+ * serving", and until then this function established it by comparing `runtime.json`'s `run_id` —
+ * which is a file, not a listener. A daemon that had died without cleaning that file up passed, and
+ * so would one killed by the very refusal under test. `awaitHealthy` reads the recorded port and
+ * the token the daemon minted and asks it, which is what "still serving" means; the version it
+ * answers with says it is still the runtime that was installed before the refusal.
+ */
+async function requireUntouched(
+  slots: readonly string[],
+  run: string | null,
+  version: string,
+): Promise<void> {
   require(readDirectorySorted(stagedRuntimeRoot(stateDir)).join(",") ===
     slots.join(","), `nothing was staged: still ${slots.join(", ")}`);
   require(runIdOf(stateDir) === run, "nothing was drained: the same run is still recorded");
   require(!existsSync(updateJournalPath(stateDir)), "no journal was opened");
   require(!existsSync(operationLockPath(stateDir)), "the operation lock was released");
+  const serving = await awaitHealthy({
+    stateDir,
+    since: 0,
+    timeoutMs: 15_000,
+    env: process.env,
+  }).catch((error: unknown) => {
+    throw new Error(
+      `FAILED: the daemon is not serving after the refusal: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+  require(serving.version ===
+    version, `the daemon is still serving: ${serving.url} answered an authenticated /healthz as ` +
+    `release ${serving.version}`);
 }

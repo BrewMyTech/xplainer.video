@@ -63,10 +63,15 @@ pnpm --filter @xplainer/desktop check:packaged   # dependency shape, payload, ar
 pnpm --filter @xplainer/desktop check:launch     # launches the packaged app; opens a window
 ```
 
-`check:packaged` needs no display and is what `.github/workflows/desktop.yml` runs on all three
-runners after packing. `check:launch` copies the packaged application **out of the checkout**,
-empties `PATH`, launches it and asserts the `payload_probe` line names an interpreter inside the
-copy — the local and human half of the proof. On Linux run it under `xvfb-run -a`.
+`check:packaged` needs no display and is what `.github/workflows/desktop.yml` runs after packing, on
+every runner that workflow packed on. Which runners those are is the matrix's decision and not this
+step's: a push to `main` packs on `ubuntu-latest` alone, a `v*` tag and a `workflow_dispatch` start
+from all three, and a dispatch's per-OS inputs then trim the set. So "all three runners" is a
+statement about a tag or a dispatch with every box ticked, and about nothing else.
+
+`check:launch` copies the packaged application **out of the checkout**, empties `PATH`, launches it
+and asserts the `payload_probe` line names an interpreter inside the copy — the local and human half
+of the proof. On Linux run it under `xvfb-run -a`.
 
 ## Invariants
 
@@ -135,7 +140,11 @@ copy — the local and human half of the proof. On Linux run it under `xvfb-run 
   Content-Security-Policy is `default-src 'self'`, so without those two the `<video>` element and
   the stills are blocked with nothing in the window to say why. The daemon's own origin is
   deliberately not there: a page that could reach it would need the bearer token, and R-SEC-7
-  forbids the CORS that would take.
+  forbids the CORS that would take. *Enforcement: `src/renderer/csp.test.ts`, which reads the
+  `<meta>` out of `index.html` and pins each directive's source list. It exists because this
+  sentence and `index.html`'s own comment were both false until 2026-09-08 — `connect-src` ended
+  `http://localhost:*`, which is every loopback port the daemon can bind — and two documents
+  describing a third file is the arrangement that drifts.*
 - **`a11y/useMediaCaption` is off for `src/renderer/src/screens/Player.tsx` alone**, by a scoped
   `biome.json` override. The captions are composited into the frames by the render, so there is no
   sidecar track to point at, and `captions.json` is word-level `Caption[]` rather than a cue list —

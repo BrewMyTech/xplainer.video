@@ -133,13 +133,15 @@ export function registerCommands(target: RegistrationTarget): readonly Registrat
           // turns every non-ASCII character of a profile path into two — and the document's own
           // declaration is `UTF-16` because what Task Scheduler parses is the decoded string.
           command: powershellCommand(
-            `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw ` +
-              `-Encoding UTF8) -TaskName ${quote(target.identity)} -Force`,
+            `Register-ScheduledTask -Xml (Get-Content -Path ${powerShellLiteral(target.artefact)} -Raw ` +
+              `-Encoding UTF8) -TaskName ${powerShellLiteral(target.identity)} -Force`,
           ),
         },
         {
           title: "start the task",
-          command: powershellCommand(`Start-ScheduledTask -TaskName ${quote(target.identity)}`),
+          command: powershellCommand(
+            `Start-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+          ),
         },
       ];
   }
@@ -173,7 +175,7 @@ export function deregisterCommands(target: RegistrationTarget): readonly Registr
         {
           title: "unregister the scheduled task",
           command: powershellCommand(
-            `Unregister-ScheduledTask -TaskName ${quote(target.identity)} -Confirm:$false`,
+            `Unregister-ScheduledTask -TaskName ${powerShellLiteral(target.identity)} -Confirm:$false`,
           ),
           tolerated: true,
         },
@@ -192,7 +194,7 @@ export function deregisterCommands(target: RegistrationTarget): readonly Registr
  */
 export function taskInfoCommand(target: RegistrationTarget): ProbeCommand {
   return powershellCommand(
-    `(Get-ScheduledTaskInfo -TaskName ${quote(target.identity)}) | ` +
+    `(Get-ScheduledTaskInfo -TaskName ${powerShellLiteral(target.identity)}) | ` +
       "Select-Object -Property LastTaskResult,LastRunTime,NumberOfMissedRuns | Format-List",
   );
 }
@@ -209,7 +211,11 @@ function powershellCommand(script: string): ProbeCommand {
  * expands nothing inside a single-quoted string — no backtick escapes, no `$` substitution, and a
  * backslash that stays a backslash. The one character that has to be handled is the quote itself,
  * which PowerShell escapes by doubling.
+ *
+ * Exported because every other module that composes a PowerShell one-liner about this task —
+ * `lifecycle.ts`'s verbs and the update's `switch.ts` — has to escape it the same way, and a second
+ * copy of an escaping rule is a second thing to get wrong.
  */
-function quote(value: string): string {
+export function powerShellLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }

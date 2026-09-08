@@ -43,7 +43,7 @@ const RENDERERS = /chrom|ffmpeg/i;
  * this filter would miss. Windows has no `ps`, so the same question is asked of `Win32_Process`,
  * which is the CIM class Task Scheduler's own tooling reads.
  */
-export function processesNaming(path: string): string[] {
+function processesNaming(path: string): string[] {
   const listing =
     process.platform === "win32"
       ? spawnSync(

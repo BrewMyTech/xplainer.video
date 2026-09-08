@@ -507,10 +507,8 @@ export function npmInstallation(execPath: string): NpmInstallation {
 /**
  * Copy npm — the whole tree and its shim — into payload 1, and describe what travelled.
  *
- * npm lives beside the interpreter, and where depends on the platform: `<root>/lib/node_modules/npm`
- * with a `<root>/bin/npm` shim on POSIX, `<root>/node_modules/npm` with `npm.cmd` beside the
- * executable on Windows. Both layouts are looked for, and a host with neither is refused rather
- * than producing a payload that silently cannot install anything.
+ * Where npm is found — the two platform layouts, and the refusal for a host with neither — is
+ * {@link npmInstallation}'s.
  *
  * **npm's own `node_modules` travels with it**, unlike every other tree this assembler copies. The
  * closure walk resolves an external package's dependencies itself and hoists them, which is right

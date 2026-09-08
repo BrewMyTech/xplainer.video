@@ -19,8 +19,10 @@ Entry point: `dist/index.d.ts`
  * Which class of failure a client is looking at.
  *
  * The backend's own refusal codes pass through unchanged — a client that already understands
- * `NO_SUCH_VIDEO` from a tool error reads the same word here — and the five below them are the ones
- * only an HTTP route can produce.
+ * `NO_SUCH_VIDEO` from a tool error reads the same word here — and the **seven** below them are the
+ * ones only an HTTP route can produce. `BACKEND_FAILED` is the last of the seven and the only one
+ * that is not a statement about the request: it is what a backend rejection that named no code of
+ * its own becomes, so that every refusal on this surface still carries one.
  */
 export type ApiErrorCode = LocalBackendCode
 /** The `:id` in the path is not a job number. */

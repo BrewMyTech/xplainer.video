@@ -32,7 +32,12 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { type CliProgram, resolveCliProgram, type SpawnedDaemon, spawnDaemon } from "../discovery";
-import { PACKAGED_PAYLOAD_DIRECTORY, PAYLOAD_CLI_ENTRY, payloadInterpreterEntry } from "../paths";
+import {
+  PACKAGED_PAYLOAD_DIRECTORY,
+  PAYLOAD_CLI_ENTRY,
+  payloadInterpreterEntry,
+  RUNTIME_MANIFEST_FILE,
+} from "../paths";
 import { currentHost } from "../spawn";
 
 /** `apps/cli`, from this file rather than from a working directory a runner may not share. */
@@ -103,7 +108,7 @@ export function payloadResources(options: PayloadResourcesOptions = {}): string 
   );
 
   writeFileSync(
-    join(payload, "runtime.manifest.json"),
+    join(payload, RUNTIME_MANIFEST_FILE),
     JSON.stringify({
       kind: "runtime",
       manifest_version: 1,

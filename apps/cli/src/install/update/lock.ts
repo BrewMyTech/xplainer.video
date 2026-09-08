@@ -126,7 +126,7 @@ function sleep(ms: number): Promise<void> {
  *
  * @throws {OperationLockRefused} when a live holder has it, or when a takeover lost its race.
  */
-export async function acquireOperationLock(
+async function acquireOperationLock(
   stateDir: string,
   operation: LockedOperation,
 ): Promise<OperationLock> {
@@ -218,7 +218,7 @@ export async function acquireOperationLock(
  * The nonce check stops a late release from deleting a **successor's** lock: an operation that was
  * declared stale and taken over must not unlink the new holder's file on its way out.
  */
-export function releaseOperationLock(stateDir: string, lock: OperationLock): boolean {
+function releaseOperationLock(stateDir: string, lock: OperationLock): boolean {
   const held = readLock(lock.path);
   const record = held.record as Partial<OperationLockRecord> | null;
   if (record === null || record.boot_nonce !== lock.record.boot_nonce) {

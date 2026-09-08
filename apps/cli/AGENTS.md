@@ -146,8 +146,9 @@ narration" from "this daemon is too old to say". It does **not** carry `Explaine
 one of five kinds — `video`, `still`, `narration`, `captions`, `timings` — with the `url` that
 serves it. Every refusal is `{ error: { code, message } }`, `code` being the backend's own refusal
 code (`NO_SUCH_VIDEO`, `NARRATION_MISSING`, `WORKSPACE_NOT_INSTALLED`, …) or one of this surface's
-five (`INVALID_JOB_ID`, `NO_SUCH_JOB`, `NO_SUCH_ARTEFACT`, `INVALID_BODY`, `SHUTTING_DOWN`,
-`RANGE_NOT_SATISFIABLE`).
+**seven** (`INVALID_JOB_ID`, `NO_SUCH_JOB`, `NO_SUCH_ARTEFACT`, `INVALID_BODY`, `SHUTTING_DOWN`,
+`RANGE_NOT_SATISFIABLE`, `BACKEND_FAILED`). `BACKEND_FAILED` is the last of them and the one a
+client cannot branch on usefully: it is what a backend rejection that named nothing becomes.
 
 | Module | What it owns |
 |---|---|

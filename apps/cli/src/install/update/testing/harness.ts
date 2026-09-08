@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
 import { isAlive } from "../../../daemon/worker-identity.js";
-import type { ProbeCommand, ProbeResult, ProbeRunner } from "../../preflight.js";
+import { type ProbeResult, type ProbeRunner, spell } from "../../preflight.js";
 import type { SupervisorEnvironment } from "../../supervisors/artefact.js";
 import { readUpdateJournal, type UpdateTransition } from "../journal.js";
 
@@ -128,11 +128,6 @@ export function windowsFixtureEnvironment(root: string): SupervisorEnvironment {
     lingerDir: join(root, "linger"),
     systemdBooted: join(root, "run-systemd-system"),
   };
-}
-
-/** One command as a single line, which is how the assertions name a sequence. */
-export function spell(command: ProbeCommand): string {
-  return `${command.program} ${command.argv.join(" ")}`;
 }
 
 /**

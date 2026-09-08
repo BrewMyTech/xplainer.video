@@ -61,10 +61,10 @@
  * view would silently uninstall the daemon it is part of, and an `install` that rewrote it would
  * throw away the crash history the breaker counts.
  *
- * The installer's fields are typed and parsed here even though nothing in this batch writes them,
- * because the alternative is `Record<string, unknown>` at every reader: `status --json` reports
- * them, the consistency check compares them, and `uninstall` acts on `linger_enabled_by_us`. A
- * field that is only preserved is a field nobody can read without casting.
+ * The installer's fields are typed and parsed here rather than merely preserved, because the
+ * alternative is `Record<string, unknown>` at every reader: `status --json` reports them, the
+ * consistency check compares them, and `uninstall` acts on `linger_enabled_by_us`. A field that is
+ * only preserved is a field nobody can read without casting.
  */
 
 import { readFileSync, unlinkSync } from "node:fs";
@@ -308,7 +308,7 @@ export type DaemonState = {
   stalled: StallRecord | null;
 };
 
-/** The fields of `runtime.json` this story writes. */
+/** The fields of `runtime.json` this daemon writes. */
 export type RuntimeState = {
   format_version: number;
   pid: number;

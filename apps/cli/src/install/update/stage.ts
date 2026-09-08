@@ -101,7 +101,7 @@ export class UpdatePrecondition extends Error {
 }
 
 /** Where a runtime's `template/package.json` is inside a payload, or `null` when it carries none. */
-export function templateManifestPath(
+function templateManifestPath(
   runtimeDir: string,
   manifest: RuntimeManifest | null = null,
 ): string | null {
@@ -189,7 +189,7 @@ export type PinDifference = {
 };
 
 /** Every package the two pin maps disagree about, in name order. */
-export function pinDifferences(
+function pinDifferences(
   installed: Record<string, string>,
   incoming: Record<string, string>,
 ): PinDifference[] {
