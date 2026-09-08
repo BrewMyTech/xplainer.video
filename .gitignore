@@ -21,6 +21,14 @@ __pycache__/
 # --- OS ----------------------------------------------------------------------
 .DS_Store
 
+# --- Build-time artefacts ----------------------------------------------------
+# `xplainer runtime build --out .artefacts/xplainer-runtime` assembles payload 1
+# here — an interpreter, npm and the workspace packages, ~147 MB — and
+# apps/desktop/electron-builder.yml copies that directory into the packaged app
+# as extraResources. It is produced by a command and never edited, so it is
+# ignored like every other build output above.
+.artefacts/
+
 # --- Agent tooling scratch ---------------------------------------------------
 .session/
 

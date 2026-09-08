@@ -26,10 +26,11 @@
  * actually mounted on a bound listener, in front of every route.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import process from "node:process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -37,10 +38,13 @@ import type { RenderBackend } from "@xplainer/mcp-server";
 import { ENGINE_OWNED_FILES, MCP_CONTRACT_VERSION, TOOL_NAMES } from "@xplainer/protocol";
 import { readScaffoldTemplate, videoPaths } from "@xplainer/render-core";
 import { afterEach, describe, expect, it } from "vitest";
+import { openBody, openSse } from "./api/testing/harness.js";
+import { createWorkspaceLibrary } from "./api/videos.js";
 import { createLocalBackend } from "./backend.js";
 import { createLoopbackGuard } from "./daemon/guard.js";
 import { createJobStore } from "./daemon/job-store.js";
-import { createJobRunner } from "./daemon/runner.js";
+import { createJobRunner, type JobRunner, type WorkerRegistry } from "./daemon/runner.js";
+import { fakeWorkerRegistry } from "./daemon/testing/fake-worker.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import {
   DRAIN_PATH,
@@ -53,12 +57,16 @@ import { CLI_VERSION } from "./version.js";
 
 let running: RunningServer | undefined;
 const temporaryDirectories: string[] = [];
+const runners: JobRunner[] = [];
 /** The workspace the backend under test writes into, so a test can read what a tool did. */
 let workspaceRoot = "";
 
 afterEach(async () => {
   await running?.close();
   running = undefined;
+  for (const runner of runners.splice(0)) {
+    await runner.drain(0);
+  }
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -79,13 +87,18 @@ function temporaryDirectory(prefix: string): string {
  * invention. No worker registry is passed: nothing here enqueues, and a job kind with no worker
  * fails as a job rather than as a tool call, which is the runner's own documented behaviour.
  */
-function localBackend(): RenderBackend {
+function localBackend(workers?: WorkerRegistry): RenderBackend {
   workspaceRoot = temporaryDirectory("xplainer-serve-workspace-");
   const store = createJobStore(temporaryDirectory("xplainer-serve-state-"));
   const runner = createJobRunner({
     store,
     owner: { ...selfIdentity(), run_id: "server-test" },
+    ...(workers === undefined ? {} : { workers }),
   });
+  // Kept so `afterEach` can drain it: the one test that passes a registry starts a real child, and
+  // a worker still running when the temporary directories go would write into a directory that no
+  // longer exists.
+  runners.push(runner);
   return createLocalBackend({ runner, root: workspaceRoot });
 }
 
@@ -701,9 +714,11 @@ describe("the drain route", () => {
   /**
    * The ordering promise, with the case that makes it hard: a request that never ends.
    *
-   * T21 mounts `/api/*` and its streams; until then the long-lived response is stubbed here with a
-   * tool call the backend never answers, which holds a TCP connection open in exactly the way an
-   * SSE subscriber or a media body would. Two things have to be true at once, and each one alone is
+   * The long-lived response here is a tool call the backend never answers, which holds a TCP
+   * connection open with no `/api/*` surface involved at all — the property belongs to the drain
+   * and to `closer()`, not to any one route. The test below it is the same promise against the two
+   * real long-lived responses T21 added, an open SSE stream and a media body mid-transfer. Two
+   * things have to be true at once, and each one alone is
    * cheap to satisfy by breaking the other: the drain's own acknowledgement is **complete** — a
    * `202` with its whole body, not a reset connection — and closing the listeners afterwards
    * **finishes**, because `server.close()` on its own waits for a connection that will never go
@@ -772,5 +787,103 @@ describe("the drain route", () => {
     } finally {
       release();
     }
+  }, 30_000);
+
+  /**
+   * The same promise against the two long-lived responses the daemon actually serves.
+   *
+   * T13 specified this case and could not exercise it: `/api/*` did not exist, so the only
+   * long-lived response available was a tool call left unanswered. Now there are two real ones —
+   * an **SSE subscriber** watching a running job, and a **media body mid-transfer** — and they fail
+   * differently from a stalled tool call. The stream is a response the daemon is *still writing to*
+   * on a timer; the media body is a file read the daemon is blocked on because the client stopped
+   * reading, which is exactly what a player scrubbing an MP4 leaves behind. Both are in flight when
+   * the drain is asked for, and the two things that must be true are the two ADR 0024 step 6
+   * depends on: the acknowledgement is **complete** — a `202` with its whole body, over the socket,
+   * before anything is torn down — and closing the listeners afterwards **finishes**, because
+   * `server.close()` waits for connections that would never go idle on their own.
+   *
+   * The film is deliberately larger than any socket buffer can swallow, and the client reads 64 KB
+   * of it and then stops: a body that has delivered bytes and is now blocked is a transfer the
+   * daemon has begun, rather than one that has merely never been consumed.
+   */
+  it("answers in full and still closes, with an SSE stream and a media body in flight", async () => {
+    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    let closed: Promise<void> | null = null;
+    const drain = recordingDrain(() => {
+      closed = running?.close() ?? Promise.resolve();
+    });
+    // A worker that keeps running, so the job the stream is watching does not finish first.
+    const backend = localBackend(fakeWorkerRegistry({ lines: 1, lifeMs: 30_000 }));
+
+    running = await startServer({
+      backend,
+      port: 0,
+      ipc: { path: socketPath },
+      drain: drain.seam,
+      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+      api: { library: createWorkspaceLibrary({ root: workspaceRoot }), pollIntervalMs: 20 },
+    });
+    const port = running.port;
+
+    await backend.explainer_create({ slug: "drained" });
+    const film = videoPaths(workspaceRoot, "drained").mp4;
+    mkdirSync(dirname(film), { recursive: true });
+    const bytes = 64 * 1024 * 1024;
+    writeFileSync(film, Buffer.alloc(bytes, 7));
+    const queued = await backend.explainer_narrate({
+      slug: "drained",
+      narration: { segments: [{ id: "one", text: "Something worth watching." }] },
+    });
+
+    // One SSE subscriber, with a frame already delivered.
+    const stream = await openSse({ port }, `/api/jobs/${queued.job_id}/events`, {
+      headers: authorized(port),
+    });
+    const first = await stream.waitFor("job");
+    // One media body, 64 KB in and blocked on a client that stopped reading.
+    const body = await openBody({ port }, "/api/videos/drained/artefacts/explainer.mp4", {
+      headers: authorized(port),
+      pauseAfter: 64 * 1024,
+    });
+    await body.waitForBytes(64 * 1024);
+
+    expect(stream.status).toBe(200);
+    expect(JSON.parse(first.data)).toMatchObject({ job_id: queued.job_id });
+    expect(body.status).toBe(200);
+    expect(body.headers["content-length"]).toBe(String(bytes));
+    expect(body.received()).toBeGreaterThanOrEqual(64 * 1024);
+    expect(body.isComplete()).toBe(false);
+    // Both are open, and the daemon is still answering everything else.
+    expect((await send(port, "/healthz", { headers: authorized(port) })).status).toBe(200);
+
+    const startedAt = Date.now();
+    const acknowledgement = await sendOverSocket(socketPath, DRAIN_PATH, { method: "POST" });
+
+    // The drain answered its own request, in full, before the listeners went.
+    expect(acknowledgement.status).toBe(202);
+    expect(JSON.parse(acknowledgement.body)).toEqual({
+      event: "draining",
+      timeout_ms: 20_000,
+      pid: process.pid,
+      already_draining: false,
+    });
+    await drain.began;
+    await closed;
+    const elapsed = Date.now() - startedAt;
+
+    // Inside the grace rather than never, with both listeners gone.
+    expect(elapsed).toBeLessThan(LISTENER_CLOSE_GRACE_MS + 5_000);
+    await expect(send(port, "/healthz", { headers: authorized(port) })).rejects.toThrow();
+    await expect(sendOverSocket(socketPath, "/healthz")).rejects.toThrow();
+    // And both long-lived responses were taken away rather than waited for: the stream ended
+    // without its `end` event, and the film never finished sending.
+    await stream.ended;
+    await body.finish();
+    expect(stream.frames.some((frame) => frame.event === "end")).toBe(false);
+    expect(body.isComplete()).toBe(false);
+    expect(body.received()).toBeLessThan(bytes);
+    expect(drain.reasons).toEqual([`POST ${DRAIN_PATH}`]);
+    running = undefined;
   }, 30_000);
 });

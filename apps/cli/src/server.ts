@@ -81,6 +81,8 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer, type RenderBackend } from "@xplainer/mcp-server";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { Hono, type MiddlewareHandler } from "hono";
+import { API_PREFIX } from "./api/paths.js";
+import { type ApiSeam, createApiRoutes } from "./api/routes.js";
 import { CLI_VERSION } from "./version.js";
 
 /** The port `xplainer serve` binds when none is given (AC-14c). */
@@ -226,6 +228,20 @@ export type CreateServerOptions = {
    * "this daemon is healthy".
    */
   toolchain?: () => { ok: boolean; reason: string | null };
+  /**
+   * The `/api` client surface, or nothing and no such routes.
+   *
+   * ADR 0016's REST and SSE under `/api` for GUI clients — the library, the artefact bytes, the
+   * three enqueueing calls, one job and its event stream — mounted from `src/api/`. It is a
+   * parameter rather than a fixture for the same reason the guard and the toolchain are: it needs a
+   * workspace root, and `services/media-service` binds this application in a container that has
+   * none. Absent, the surface does not exist at all; the routes are never registered, so a request
+   * for one gets the `404` a route this server does not have gives.
+   *
+   * `commands/serve.ts` passes `createWorkspaceLibrary({ root: daemon.workspaceRoot })` — the same
+   * root the job runner's workers write into, resolved once, after ownership.
+   */
+  api?: ApiSeam;
 };
 
 /** A bound server, and the handle that stops it. */
@@ -390,6 +406,14 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
 
   app.on(["GET", "DELETE"], "/mcp", (c) => c.json(METHOD_NOT_ALLOWED, 405));
 
+  // Mounted after the guard: `app.route()` merges these routes into *this* application, so the `*`
+  // middleware registered at the top of this function is in front of every one of them rather than
+  // being something each route has to remember. The drain below registers its own path under the
+  // same prefix, and the two cannot collide — `/api/daemon/drain` is not a route this router has.
+  if (options.api !== undefined) {
+    app.route(API_PREFIX, createApiRoutes(backend, options.api));
+  }
+
   const drain = options.drain;
   if (drain !== undefined) {
     // One drain per process. A second POST is answered rather than refused — an impatient caller
@@ -499,6 +523,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     ...(options.drain !== undefined && { drain: options.drain }),
     ...(options.identity !== undefined && { identity: options.identity }),
     ...(options.toolchain !== undefined && { toolchain: options.toolchain }),
+    ...(options.api !== undefined && { api: options.api }),
     // The seam T13 adds, and the whole of it: the set stays here, and what leaves this function is
     // a question that can be asked about one `Request` object.
     isOverIpc: (request) => overIpc.has(request),

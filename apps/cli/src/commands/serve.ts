@@ -74,6 +74,7 @@
 import process from "node:process";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { Command, InvalidArgumentError } from "commander";
+import { createWorkspaceLibrary } from "../api/videos.js";
 import { createLocalBackend } from "../backend.js";
 import {
   describeBindFailure,
@@ -326,6 +327,12 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         // Row 3 of the consistency check, taken before this bind and unchanged by anything after
         // it. `/healthz` advertises it; nothing infers it from a file.
         identity: daemon.identity,
+        // ADR 0016's `/api/*` surface for GUI clients, over the same workspace root the runner's
+        // workers write into. It is passed here rather than resolved inside the server because the
+        // root is a function of this command's settings — `--state-dir`, `XPLAINER_VIDEOS_DIR`, the
+        // recorded state — and a server that resolved it again could answer for a different
+        // directory than the one this daemon is rendering into.
+        api: { library: createWorkspaceLibrary({ root: daemon.workspaceRoot }) },
         // Asked per request rather than once: `xplainer setup` runs in another process, and a
         // workspace can be removed while this daemon is up, so a snapshot would answer for a
         // machine that no longer exists.

@@ -100,6 +100,7 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 | `apps/cli` | `@xplainer/render-core` | dependencies |
 | `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
+| `apps/desktop` | `@xplainer/protocol` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/tts-client` | dependencies |
@@ -133,12 +134,14 @@ An equality check that reads as a permission list is how a forbidden edge gets d
 legitimacy, so the two are stated apart on purpose.
 
 **Direction of travel.** `packages/protocol` is the sink — it depends on nothing in the workspace,
-and four members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
+and five members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
 `tts-client`: the tool registration, the contract, the workspace and scaffold, and the speech client
 its narration worker drives. `apps/desktop`
-depends only on `apps/cli`, and takes it as an **injected** production dependency
+depends on `apps/cli` and on `protocol`, and takes the first as an **injected** production dependency
 (`injectWorkspacePackages: true`, `dedupeInjectedDeps: false`) so that electron-builder packs a real
-directory rather than a symlink.
+directory rather than a symlink. The second is there for one reason: the desktop's discovery has to
+decide whether a daemon's advertised `contract_version` is one it can speak, and both halves of that
+comparison must come from the package that owns the contract rather than from a copy in a client.
 
 ## 5. The contract layer
 
@@ -185,6 +188,14 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 returning `{status, version, contract_version, run_id, runtime_digest}`, `POST /mcp` speaking
 Streamable HTTP, and
 `GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
+Beside them is the client surface ADR 0016 promises for GUI clients, mounted from `apps/cli/src/api/`
+when the server is given a library seam: `GET /api/videos` and `/api/videos/:slug` for the library
+and its artefacts, `GET`/`HEAD /api/videos/:slug/artefacts/:name` for the bytes with `Range`
+support, `POST /api/videos/:slug/{narrate,still,render}` answering `202` with a `job_id`,
+`GET /api/jobs/:id` answering exactly what `explainer_job` answers, and `GET /api/jobs/:id/events`
+streaming that same document as `text/event-stream`. Every one of them is behind the same guard on
+TCP and unguarded over the IPC socket, and **no CORS middleware is mounted, for any value**
+(R-SEC-7). `POST /api/daemon/drain` remains the socket-only control route.
 The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
 scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
 runner, which `explainer_job` then reports on

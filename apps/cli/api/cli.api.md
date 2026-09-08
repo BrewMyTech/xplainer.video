@@ -12,6 +12,244 @@ that changes this file is a change to the public surface.
 
 Entry point: `dist/index.d.ts`
 
+## `dist/api/errors.d.ts`
+
+```ts
+/**
+ * Which class of failure a client is looking at.
+ *
+ * The backend's own refusal codes pass through unchanged — a client that already understands
+ * `NO_SUCH_VIDEO` from a tool error reads the same word here — and the five below them are the ones
+ * only an HTTP route can produce.
+ */
+export type ApiErrorCode = LocalBackendCode
+/** The `:id` in the path is not a job number. */
+ | "INVALID_JOB_ID"
+/** No job with that id: this daemon has no record of it. */
+ | "NO_SUCH_JOB"
+/** No such artefact for that video, or the file has since been removed. */
+ | "NO_SUCH_ARTEFACT"
+/** The request body is not the JSON object the route takes. */
+ | "INVALID_BODY"
+/** The daemon is draining and takes no more work (ADR 0024 §Drain on planned restart, step 1). */
+ | "SHUTTING_DOWN"
+/** The `Range` asked for bytes this artefact does not have. */
+ | "RANGE_NOT_SATISFIABLE"
+/** The backend failed for a reason it did not name. */
+ | "BACKEND_FAILED";
+
+/** What every refused request on this surface answers with. */
+export type ApiErrorBody = {
+    error: {
+        /** Branch on this. */
+        code: ApiErrorCode;
+        /** Show this. */
+        message: string;
+    };
+};
+
+/** A refusal, ready to be written: the status line and the body that explains it. */
+export type ApiRefusal = {
+    status: ContentfulStatusCode;
+    body: ApiErrorBody;
+};
+```
+
+## `dist/api/events.d.ts`
+
+```ts
+/** How often an open stream re-reads its job when nothing has told it to. */
+export declare const DEFAULT_JOB_POLL_INTERVAL_MS = 250;
+
+/** How long a stream may say nothing before it writes a comment line to prove it is still there. */
+export declare const DEFAULT_HEARTBEAT_MS = 15000;
+
+/** How long a client should wait before reconnecting, sent once as the stream's `retry` field. */
+export declare const RECONNECT_DELAY_MS = 1000;
+
+/** The event name every snapshot carries. */
+export declare const JOB_EVENT = "job";
+
+/** The event name the last frame carries, immediately before the stream closes. */
+export declare const END_EVENT = "end";
+
+/** What the last frame says: which job ended, and how. */
+export type JobStreamEnd = {
+    job_id: number;
+    status: JobState;
+};
+```
+
+## `dist/api/jobs.d.ts`
+
+```ts
+/**
+ * The acknowledgement the three enqueueing routes answer with.
+ *
+ * The first four fields are the tool's own output — `explainer_narrate`, `explainer_still` and
+ * `explainer_render` share it — and the last two are what an HTTP client needs and an agent does
+ * not: `poll` names the *tool call* that reports progress, which is the right answer for something
+ * holding an MCP session and useless to something holding a socket.
+ */
+export type ApiJobQueued = {
+    job_id: number;
+    status: JobState;
+    /** One line describing the queued work. */
+    what: string;
+    /** The exact tool call that reports progress, for a client that also speaks MCP. */
+    poll: string;
+    /** `GET` this for one snapshot. */
+    job: string;
+    /** `GET` this for the stream of them. */
+    events: string;
+};
+```
+
+## `dist/api/paths.d.ts`
+
+```ts
+/**
+ * Every path the `/api` surface answers on, written once.
+ *
+ * The desktop is a second program that has to build these URLs, and `apps/desktop` already depends
+ * on `@xplainer/cli` — so the routes are registered from these builders **and** exported through
+ * `src/index.ts`, rather than being spelled out here and spelled again in a renderer. A path that
+ * only one of the two sides changes is then a type error in the desktop's build instead of a `404`
+ * a user finds.
+ *
+ * The builders escape their arguments. A slug is `schemas/slug.json`'s pattern and could not need
+ * it, but an artefact name comes off this machine's disk, and a file called `frame 1.png` must
+ * produce a URL a player can actually fetch.
+ */
+/** Where the whole client surface is mounted, with no trailing slash. */
+export declare const API_PREFIX = "/api";
+
+/** `GET` — every video this machine holds, with its artefacts. */
+export declare function videosPath(): string;
+
+/** `GET` — one video, or `404` with `NO_SUCH_VIDEO`. */
+export declare function videoPath(slug: string): string;
+
+/** `GET` — one artefact's bytes, with `Range` support. */
+export declare function artefactPath(slug: string, name: string): string;
+
+/** `POST` — queue narration, a still, or a render for one video. */
+export declare function enqueuePath(slug: string, verb: "narrate" | "still" | "render"): string;
+
+/** `GET` — one job, in the same shape `explainer_job` answers with. */
+export declare function jobPath(jobId: number): string;
+
+/** `GET` — that job's progress as a `text/event-stream`. */
+export declare function jobEventsPath(jobId: number): string;
+```
+
+## `dist/api/routes.d.ts`
+
+```ts
+/**
+ * What the client surface needs that the tool contract does not carry.
+ *
+ * A seam rather than a workspace root, for the reason the guard is a parameter: `createServer()` is
+ * bound by a daemon that resolved a state directory from flags, environment and a recorded value,
+ * and by a container that has none of those. The daemon passes
+ * `createWorkspaceLibrary({ root: daemon.workspaceRoot })` — the root the runner's workers already
+ * write into — and a test passes one over a temporary directory.
+ */
+export type ApiSeam = {
+    /** Where this machine's artefacts are, and how to open one. */
+    library: VideoLibrary;
+    /** How often an open SSE stream re-reads its job. Defaults to the daemon's own interval. */
+    pollIntervalMs?: number | undefined;
+    /** How long an open SSE stream may be silent before it writes a keep-alive comment. */
+    heartbeatMs?: number | undefined;
+};
+```
+
+## `dist/api/videos.d.ts`
+
+```ts
+/**
+ * Which of a video's files this is.
+ *
+ * A closed set, ordered the way the desktop reads them: the finished film first, then the layout
+ * checks, then what narration produced. A file the workspace holds that is not one of these — a
+ * bundle cache, a half-written frame — is not an artefact and is not served.
+ */
+export type ArtefactKind = 
+/** `out/<slug>/explainer.mp4` — the finished render. */
+"video"
+/** `out/<slug>/frame-<n>.png` — one still, from a layout check. */
+ | "still"
+/** `public/<slug>/narration.wav` — the measured voiceover. */
+ | "narration"
+/** `public/<slug>/captions.json`. */
+ | "captions"
+/** `public/<slug>/timings.json` — where every scene length comes from. */
+ | "timings";
+
+/** One file a video has produced, and where to fetch it. */
+export type ApiArtefact = {
+    kind: ArtefactKind;
+    /** The file's own name, which is also the last segment of {@link url}. */
+    name: string;
+    /** The route that serves the bytes, `Range` included. */
+    url: string;
+    /** What the route sends as `Content-Type`. */
+    content_type: string;
+    /** Size in bytes, as of this listing. */
+    bytes: number;
+    /** Last modification, as an ISO-8601 timestamp with a timezone offset. */
+    modified_at: string;
+};
+
+/**
+ * One video, as a client sees it.
+ *
+ * The nullable fields are `null` rather than absent — `ExplainerListOutput` omits them, and an
+ * omitted field makes a reader tell "this video has no narration" apart from "this daemon is too
+ * old to say", which is a distinction no client wants to make. Same reasoning as `/healthz`'s
+ * identity fields.
+ */
+export type ApiVideo = {
+    slug: string;
+    has_narration: boolean;
+    rendered: boolean;
+    /** Narration length in seconds, or `null` when it has never been narrated. */
+    seconds: number | null;
+    /** MP4 size in megabytes, or `null` when nothing has been rendered. */
+    size_mb: number | null;
+    /** Every file this video has produced, newest listing at request time. */
+    artefacts: ApiArtefact[];
+};
+
+/** One artefact as a file, which is what the media route needs to answer a `Range`. */
+export type ArtefactFile = {
+    /** Absolute path on this machine. Never sent to a client. */
+    path: string;
+    /** Size in bytes, read in the same breath as the path was resolved. */
+    bytes: number;
+    contentType: string;
+    /** Last modification, for `Last-Modified`. */
+    modifiedAt: Date;
+};
+
+/** Where a video's files are, and how to open one. The routes know nothing else about a workspace. */
+export type VideoLibrary = {
+    /** Everything {@link videoArtefacts} would find for this slug, in a stable order. */
+    artefacts(slug: string): ApiArtefact[];
+    /** One artefact by exact name, or `null` when this video has no such file. */
+    open(slug: string, name: string): ArtefactFile | null;
+};
+
+/** What `createWorkspaceLibrary` needs: the root `resolveWorkspaceRoot()` produced. */
+export type WorkspaceLibraryOptions = {
+    root: string;
+};
+
+/** The local library: one workspace root, read at the moment it is asked. */
+export declare function createWorkspaceLibrary(options: WorkspaceLibraryOptions): VideoLibrary;
+```
+
 ## `dist/backend.d.ts`
 
 ```ts
@@ -253,6 +491,20 @@ export type CreateServerOptions = {
         ok: boolean;
         reason: string | null;
     };
+    /**
+     * The `/api` client surface, or nothing and no such routes.
+     *
+     * ADR 0016's REST and SSE under `/api` for GUI clients — the library, the artefact bytes, the
+     * three enqueueing calls, one job and its event stream — mounted from `src/api/`. It is a
+     * parameter rather than a fixture for the same reason the guard and the toolchain are: it needs a
+     * workspace root, and `services/media-service` binds this application in a container that has
+     * none. Absent, the surface does not exist at all; the routes are never registered, so a request
+     * for one gets the `404` a route this server does not have gives.
+     *
+     * `commands/serve.ts` passes `createWorkspaceLibrary({ root: daemon.workspaceRoot })` — the same
+     * root the job runner's workers write into, resolved once, after ownership.
+     */
+    api?: ApiSeam;
 };
 
 /** A bound server, and the handle that stops it. */

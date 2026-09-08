@@ -1,8 +1,19 @@
 # Unsigned desktop installers for the optional Electron client (AC-4, AC-6b).
 #
 # One matrix job on ubuntu-latest, macos-latest and windows-latest. Each runner
-# builds the electron-vite bundles, packs them with electron-builder and uploads
-# whatever lands in apps/desktop/release/.
+# builds the electron-vite bundles, assembles the runtime payload, packs both
+# with electron-builder, proves the packed application can run its own payload,
+# and uploads the installers.
+#
+# WHAT THE PAYLOAD STEPS ARE FOR. The packaged application reaches the CLI
+# through a runtime payload it ships as `extraResources`, never through the copy
+# of `@xplainer/cli` inside `app.asar` — nothing can execute a file that has no
+# path on the filesystem (ADR 0004, ADR 0005), and decision D10 makes the app's
+# pre-install and post-install paths the same interpreter running the same
+# entry. `extraResources` copies from a directory that must already exist, and
+# electron-builder only warns when it does not, so the build step and the check
+# step below are a pair: one produces the payload, the other refuses to let a
+# payload-less installer pass as a green square.
 #
 # Two things this workflow deliberately does NOT do:
 #
@@ -69,19 +80,71 @@ jobs:
       - name: Build the desktop app and its workspace dependencies
         run: pnpm --filter @xplainer/desktop... build
 
+      # The pure path derivation, on the three platforms it derives paths for.
+      # `src/main/paths.ts` composes a Windows layout with backslashes and a
+      # POSIX one with slashes from an explicit platform argument, so every
+      # assertion runs everywhere — but the fixtures in `spawn.test.ts` spawn a
+      # real interpreter out of a real payload layout, and that half is only
+      # honest on the platform it is running on.
+      #
+      # `discovery.test.ts` and `bridge.test.ts` go further: each starts a real
+      # `xplainer serve` out of such a payload and drives it into the state it
+      # asserts — a stale token, a held port, a supervisor answering "switched
+      # off". Those arrangements are per-platform (a `launchctl`/`systemctl` on
+      # `PATH`; a `ScheduledTasks` module in front of the system one on
+      # `PSModulePath`), which is why this step runs on all three runners and
+      # not only on the one the author had.
+      - name: Unit tests for the desktop main process
+        run: pnpm --filter @xplainer/desktop test
+
+      # The payload electron-builder is about to copy. It MUST come before the
+      # pack: `extraResources` copies from a path that has to exist already, and
+      # electron-builder does not fail when it does not — it logs `file source
+      # doesn't exist` and packs an application with no payload, exit 0
+      # (measured, electron-builder 26.15.3). The check after the pack is what
+      # turns that warning into a red square.
+      #
+      # `--out ../../.artefacts/xplainer-runtime` is the same directory
+      # `electron-builder.yml` names in its `extraResources.from`, which is
+      # resolved against `apps/desktop` too.
+      - name: Assemble the runtime payload (payload 1)
+        working-directory: apps/desktop
+        run: node ../cli/dist/bin.js runtime build --out ../../.artefacts/xplainer-runtime
+
       - name: Pack unsigned installers
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm --filter @xplainer/desktop exec electron-builder --publish never
 
+      # The dependency shape, the payload's presence, the architecture
+      # comparison and the production call path — each on this runner in its own
+      # packaged layout, and none of them needing a display. See the script's
+      # header for what each assertion exists to catch. The architecture
+      # comparison is made HERE, by this runner's own Node, before the payload's
+      # interpreter is spawned: an interpreter built for another architecture
+      # cannot perform that check on itself, because it cannot start (§1.3d B).
+      - name: Check the packaged payload
+        run: node apps/desktop/scripts/check-packaged-payload.mjs
+
       # `if-no-files-found: error` is the point of this step: a packaging run
       # that silently produced nothing would otherwise upload an empty artifact
       # and report success.
+      #
+      # The installers ONLY. `release/*` also matches the `mac-arm64`,
+      # `linux-unpacked` and `win-unpacked` staging directories, which hold a
+      # second uncompressed copy of everything the installers already carry —
+      # and each of those now carries the 147 MB runtime payload as well. What a
+      # reviewer downloads is an installer, so that is what is kept.
       - name: Upload unsigned installers
         uses: actions/upload-artifact@v7
         with:
           name: xplainer-desktop-${{ matrix.os }}
-          path: apps/desktop/release/*
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
           if-no-files-found: error
           # Each run uploads ~1.9 GB across the three OSes. On 2026-09-07 seven
           # runs at the default 90-day retention filled the repository's

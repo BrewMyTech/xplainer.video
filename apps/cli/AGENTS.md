@@ -4,8 +4,9 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 ## What this package is
 
-**The local runtime.** The `xplainer` binary, the Hono application it serves — `GET /healthz` and
-the Streamable HTTP MCP endpoint at `/mcp` — the **eight tools** behind that endpoint
+**The local runtime.** The `xplainer` binary, the Hono application it serves — `GET /healthz`, the
+Streamable HTTP MCP endpoint at `/mcp`, and the `/api/*` REST and SSE surface a GUI client reads
+(`src/api/`) — the **eight tools** behind that endpoint
 (`src/backend.ts`, over a shared Remotion workspace on this machine), and the **durable job daemon**
 under `src/daemon/`:
 exclusive ownership of the state directory, one JSON file per job, boot reconciliation, and a runner
@@ -107,6 +108,61 @@ runner because they take tens of seconds
 | `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker, and the pinned Remotion CLI with render-core's argv |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
 | `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else `XPLAINER_TTS_URL`, else the tts-client's own resolution |
+
+### `src/api/` — the client surface a GUI talks to, and what it may never become
+
+[ADR 0016](../../docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md) promises
+"REST + SSE at `/api/*` for GUI clients" beside `/mcp`, and this directory is it. Every route is a
+**relay to the same `RenderBackend`** `/mcp` dispatches through — there is no second implementation
+of a tool here — plus one filesystem seam for the artefacts the tool contract deliberately does not
+describe. `apps/desktop` depends on this package and imports the shapes and the path builders from
+`src/index.ts`, so the daemon and the window cannot disagree about a URL.
+
+| Method | Path | Answers |
+|---|---|---|
+| `GET` | `/api/videos` | `{ videos: ApiVideo[] }` — the library, each entry with its artefacts |
+| `GET` | `/api/videos/:slug` | one `ApiVideo`; `404 NO_SUCH_VIDEO`, `400 INVALID_SLUG` |
+| `GET`/`HEAD` | `/api/videos/:slug/artefacts/:name` | the bytes, `Accept-Ranges: bytes`, `206` for a `Range`, `416` outside it, `Cache-Control: no-store` |
+| `POST` | `/api/videos/:slug/narrate` | `202` + `ApiJobQueued` — body is the tool's input minus the slug |
+| `POST` | `/api/videos/:slug/still` | `202` + `ApiJobQueued` — `{ frame, scale }` optional |
+| `POST` | `/api/videos/:slug/render` | `202` + `ApiJobQueued` — no arguments |
+| `GET` | `/api/jobs/:id` | `ExplainerJobOutput`, **unchanged** — what `explainer_job` answers |
+| `GET` | `/api/jobs/:id/events` | `text/event-stream`: `job` frames carrying that same document, one `end` frame, then closed |
+| `POST` | `/api/daemon/drain` | T13's control route, in `server.ts`, over the socket **only** |
+
+`ApiVideo` carries `slug`, `has_narration`, `rendered`, `seconds`, `size_mb` and `artefacts`; the
+two numbers are `null` rather than absent, so a client never has to tell "this video has no
+narration" from "this daemon is too old to say". It does **not** carry `ExplainerListOutput`'s
+`mp4`: that is a path on the machine that answered, and a player needs a URL. An `ApiArtefact` is
+one of five kinds — `video`, `still`, `narration`, `captions`, `timings` — with the `url` that
+serves it. Every refusal is `{ error: { code, message } }`, `code` being the backend's own refusal
+code (`NO_SUCH_VIDEO`, `NARRATION_MISSING`, `WORKSPACE_NOT_INSTALLED`, …) or one of this surface's
+five (`INVALID_JOB_ID`, `NO_SUCH_JOB`, `NO_SUCH_ARTEFACT`, `INVALID_BODY`, `SHUTTING_DOWN`,
+`RANGE_NOT_SATISFIABLE`).
+
+| Module | What it owns |
+|---|---|
+| `api/routes.ts` | The assembly and `ApiSeam`; the surface exists only when `createServer()` is given one |
+| `api/paths.ts` | Every path, built once and exported, so the desktop and the router agree |
+| `api/videos.ts` | `VideoLibrary` and the workspace implementation of it, the slug check, the two library routes |
+| `api/media.ts` | `Range` (RFC 9110 §14) and the artefact bytes |
+| `api/jobs.ts` | One job read, and the three enqueueing `POST`s |
+| `api/events.ts` | The SSE stream: poll, write on change, keep-alive comment, `end`, close |
+| `api/errors.ts` | Rejection → status, and the three error names it matches by |
+
+**Three rules, and they are the reason to read the directory before changing it.**
+
+- **The guard is never per route.** These routes are registered *after* the `*` middleware
+  `createServer()` mounts, so the bearer token, the `Host` allowlist and the `Origin` check cover
+  them by construction on TCP, and the IPC listener passes none. A route that authenticated itself
+  would be a route that can forget to (ADR 0020 §R-SEC-2), and `api/routes.test.ts` asserts a `401`
+  for **every** path in the table above.
+- **No CORS middleware, ever, for any value** (R-SEC-7). See the invariant below.
+- **`src/daemon/` is not imported from here.** `errors.ts` matches `JobNotFoundError` and
+  `NotAcceptingJobsError` by `name` rather than by `instanceof`, because `server.ts` is the
+  application `services/media-service` binds and a value import would put the job store, the
+  process-group keeper and the identity probe into its module graph. `api/errors.test.ts`
+  constructs the real classes and pins the names.
 
 ### `src/mcp/` — the two things `xplainer mcp` can be
 
@@ -360,8 +416,14 @@ and it refuses an entry that climbs out of the destination before anything is wr
 
 From `src/index.ts`: `createServer`, `startServer`, `DEFAULT_PORT`, `DEFAULT_HOSTNAME` and their
 option types — including `GuardFactory`, the middleware-over-the-bound-port seam a second binding
-uses, and `RunningServer.socket`, the IPC endpoint a `startServer({ ipc })` bound;
-`createLocalBackend`, `LocalBackendError` and `LocalBackendCode`; `resolveWorkspaceRoot`,
+uses, and `RunningServer.socket`, the IPC endpoint a `startServer({ ipc })` bound; the `/api/*`
+surface `apps/desktop` consumes — `ApiSeam`, `createWorkspaceLibrary` and `VideoLibrary`,
+`ApiVideo`, `ApiArtefact`, `ArtefactKind`, `ArtefactFile`, `ApiJobQueued`, `ApiErrorBody`,
+`ApiErrorCode`, `ApiRefusal`, `JobStreamEnd`, the event names `JOB_EVENT` and `END_EVENT`, the
+timings `DEFAULT_JOB_POLL_INTERVAL_MS`, `DEFAULT_HEARTBEAT_MS` and `RECONNECT_DELAY_MS`, and the
+path builders `API_PREFIX`, `videosPath`, `videoPath`, `artefactPath`, `enqueuePath`, `jobPath`
+and `jobEventsPath`; `createLocalBackend`, `LocalBackendError` and `LocalBackendCode`;
+`resolveWorkspaceRoot`,
 `VIDEOS_DIR_ENV` and `WORKSPACE_DIR_NAME`; `CLI_VERSION`; `NOT_IMPLEMENTED_EXIT_CODE` and the
 not-implemented helpers. `bin/` ships `dist/bin.js` as `xplainer`. Published, emits declarations,
 carries `api/cli.api.md`.
@@ -466,6 +528,13 @@ Then the root procedure: `pnpm verify`.
   rejects self-daemonisation outright: the supervisor owns the process lifetime, and a foreground
   command that forks is invisible to it. The rule belongs in `src/commands/serve.ts`'s docblock and
   stays there.
+- **Never add CORS middleware, for any value** (R-SEC-7). Not `*`, not an allowlist, not "only for
+  the dev server", and least of all on the artefact route, which is the one that serves bytes a
+  page would want to read cross-origin. The desktop's renderer never talks to this daemon directly
+  — the main process holds the bearer token and proxies — so no browser origin needs allowing, and
+  one that was allowed would let any page a user visits read and drive this machine's daemon with
+  the browser's own credentials attached. `api/routes.test.ts` asserts that no answer, allowed or
+  refused, on either listener, carries an `access-control-*` header.
 - **The command surface is asserted with `toEqual`, never widened to `toContain`** (`AC-14b`). The
   listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, and it only holds
   because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
