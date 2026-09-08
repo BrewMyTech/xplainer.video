@@ -311,7 +311,12 @@ describe("the supervisor", () => {
       port: 0,
       platform: "linux",
       run,
-      paths: { systemdBooted: join(scratchDirectory(), "no-such-run-systemd-system") },
+      environment: {
+        home: scratchDirectory(),
+        account: "tester",
+        lingerDir: scratchDirectory(),
+        systemdBooted: join(scratchDirectory(), "no-such-run-systemd-system"),
+      },
     });
 
     expect(preflight.supervisor).toMatchObject({ kind: "systemd", present: false, usable: false });
@@ -345,7 +350,12 @@ describe("the supervisor", () => {
       port: 0,
       platform: "linux",
       run,
-      paths: { systemdBooted: booted },
+      environment: {
+        home: scratchDirectory(),
+        account: "tester",
+        lingerDir: scratchDirectory(),
+        systemdBooted: booted,
+      },
     });
 
     expect(preflight.supervisor).toMatchObject({ present: true, usable: false });
@@ -370,8 +380,12 @@ describe("the supervisor", () => {
       port: 0,
       platform: "linux",
       run: runnerAnswering({ stdout: "degraded\n", status: 1 }).run,
-      environment: { home, account: "tester" },
-      paths: { systemdBooted: booted },
+      environment: {
+        home,
+        account: "tester",
+        lingerDir: join(home, "linger"),
+        systemdBooted: booted,
+      },
     });
 
     expect(preflight.supervisor).toMatchObject({ present: true, usable: true, refusal: null });
@@ -657,8 +671,12 @@ describe("lingering, the token, and what the whole thing touched", () => {
       port: 0,
       platform: "linux",
       run,
-      environment: { home: scratchDirectory(), account: "tester" },
-      paths: { systemdBooted: booted, lingerDir },
+      environment: {
+        home: scratchDirectory(),
+        account: "tester",
+        lingerDir,
+        systemdBooted: booted,
+      },
     });
     expect(absent.linger).toMatchObject({
       applicable: true,
@@ -672,8 +690,12 @@ describe("lingering, the token, and what the whole thing touched", () => {
       port: 0,
       platform: "linux",
       run,
-      environment: { home: scratchDirectory(), account: "tester" },
-      paths: { systemdBooted: booted, lingerDir },
+      environment: {
+        home: scratchDirectory(),
+        account: "tester",
+        lingerDir,
+        systemdBooted: booted,
+      },
     });
     expect(enabled.linger.enabled).toBe(true);
     // Still there afterwards, and still the only thing lingering-related that ran.
@@ -733,8 +755,12 @@ describe("lingering, the token, and what the whole thing touched", () => {
       program,
       platform: "linux",
       run: runProbe,
-      environment: { home, account: "tester" },
-      paths: { systemdBooted: join(scratchDirectory(), "absent"), lingerDir },
+      environment: {
+        home,
+        account: "tester",
+        lingerDir,
+        systemdBooted: join(scratchDirectory(), "absent"),
+      },
     };
 
     const locations = [stateDir, join(home, ".config"), lingerDir, launcherPath(stateDir, "linux")];
@@ -777,8 +803,7 @@ describe("lingering, the token, and what the whole thing touched", () => {
       port: 0,
       platform: "linux",
       run: runnerAnswering({ status: 1, stderr: "Failed to connect to bus: No such file\n" }).run,
-      environment: { home, account: "tester" },
-      paths: { systemdBooted: home, lingerDir },
+      environment: { home, account: "tester", lingerDir, systemdBooted: home },
     });
 
     expect(preflight.refusals[0]).toMatchObject({
@@ -805,8 +830,7 @@ describe("lingering, the token, and what the whole thing touched", () => {
       port: 0,
       platform: "linux",
       run: runnerAnswering({ status: 1, stderr: "Failed to connect to bus: No such file\n" }).run,
-      environment: { home, account: "tester" },
-      paths: { systemdBooted: home, lingerDir },
+      environment: { home, account: "tester", lingerDir, systemdBooted: home },
     });
 
     expect(preflight.refusals[0]?.message).not.toContain("enable-linger");

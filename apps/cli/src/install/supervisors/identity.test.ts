@@ -577,20 +577,30 @@ describe("the three rows, compared", () => {
     platform: NodeJS.Platform;
     environment: SupervisorEnvironment;
     uid: number;
-    paths?: { lingerDir: string; systemdBooted: string };
   } {
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });
+    // Every environment carries both Linux system directories, the launchd one included:
+    // `probeLinger()` composes `<lingerDir>/<account>` and `probeSupervisor()` stats the booted
+    // directory before either looks at the platform, so an environment without them reads the
+    // host's real `/var/lib/systemd/linger/$USER` and `/run/systemd/system` whenever this file
+    // runs on Linux. The booted one has to exist for the systemd branch to be reachable.
+    const lingerDir = join(root, "linger");
+    const systemdBooted = join(root, "run-systemd-system");
+    mkdirSync(systemdBooted, { recursive: true });
     if (kind === "systemd") {
       return {
         platform: "linux",
-        environment: { home, account: "tester" },
+        environment: { home, account: "tester", lingerDir, systemdBooted },
         uid: 1000,
-        paths: { lingerDir: join(root, "linger"), systemdBooted: join(root, "linger") },
       };
     }
     if (kind === "launchd") {
-      return { platform: "darwin", environment: { home, account: "tester" }, uid: 501 };
+      return {
+        platform: "darwin",
+        environment: { home, account: "tester", lingerDir, systemdBooted },
+        uid: 501,
+      };
     }
     return {
       platform: "win32",
@@ -599,6 +609,8 @@ describe("the three rows, compared", () => {
         account: "CORP\\tester",
         localAppData: join(home, "AppData", "Local"),
         systemRoot: join(root, "Windows"),
+        lingerDir,
+        systemdBooted,
       },
       uid: 0,
     };
@@ -630,7 +642,6 @@ describe("the three rows, compared", () => {
       platform: args.platform,
       environment: args.environment,
       uid: args.uid,
-      ...(args.paths === undefined ? {} : { paths: args.paths }),
       run: loadedRunner(heldBy(kind, held)),
       probe: respondingProbe("run-a", digest),
     });
@@ -702,7 +713,6 @@ describe("the three rows, compared", () => {
       platform: args.platform,
       environment: args.environment,
       uid: args.uid,
-      ...(args.paths === undefined ? {} : { paths: args.paths }),
       // The manager still holds A, because nothing reloaded it. Measured: `systemctl show` keeps
       // answering with the cached unit until `daemon-reload` (see the module doc).
       run: loadedRunner(heldBy(kind, state.specA)),
@@ -780,7 +790,12 @@ describe("the three rows, compared", () => {
     const report = await daemonStatus({
       stateDir,
       platform: "darwin",
-      environment: { home: join(root, "home"), account: "tester" },
+      environment: {
+        home: join(root, "home"),
+        account: "tester",
+        lingerDir: join(root, "linger"),
+        systemdBooted: join(root, "run-systemd-system"),
+      },
       uid: 501,
       run: loadedRunner(""),
       probe: () => Promise.resolve({ kind: "unreachable", reason: "ECONNREFUSED" }),

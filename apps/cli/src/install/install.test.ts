@@ -254,6 +254,27 @@ function supervisorHarness(options: {
   };
 }
 
+/**
+ * A POSIX account and directories, built inside a scratch tree so nothing real is touched.
+ *
+ * `lingerDir` is filled on every platform, not only where the case says `platform: "linux"`. The
+ * marker is the one input this suite reads off the **machine** rather than off the fixture, and a
+ * Linux host resolves `/var/lib/systemd/linger/$USER` for it under any recording supervisor — so a
+ * case that ever ran unqualified would read the runner's own account and exit `5`.
+ */
+function fixtureEnvironment(root: string): SupervisorEnvironment {
+  // Both Linux system directories are filled on every platform, not only where the case says
+  // `platform: "linux"`. They are the two inputs this suite would otherwise read off the **host**
+  // rather than off the fixture, and a Linux runner answers both: `/var/lib/systemd/linger/$USER`
+  // for a marker no recording supervisor ever created, and `/run/systemd/system` for whether
+  // systemd is init at all. The linger directory is created by the harness when the install asks
+  // for lingering; the booted one has to exist before the probe, so it is made here.
+  const lingerDir = join(root, "linger");
+  const systemdBooted = join(root, "run-systemd-system");
+  mkdirSync(systemdBooted, { recursive: true });
+  return { home: join(root, "home"), account: "tester", lingerDir, systemdBooted };
+}
+
 /** A Windows account and directories, built inside a scratch tree so nothing real is touched. */
 function windowsEnvironment(root: string): SupervisorEnvironment {
   return {
@@ -261,6 +282,8 @@ function windowsEnvironment(root: string): SupervisorEnvironment {
     account: "CORP\\tester",
     localAppData: join(root, "Users", "tester", "AppData", "Local"),
     systemRoot: join(root, "Windows"),
+    lingerDir: join(root, "linger"),
+    systemdBooted: join(root, "run-systemd-system"),
   };
 }
 
@@ -306,7 +329,6 @@ async function writeLocations(request: {
   platform: NodeJS.Platform;
   environment: SupervisorEnvironment;
   run: ProbeRunner;
-  lingerDir?: string;
 }): Promise<{ preflight: InstallPreflight; locations: readonly string[] }> {
   const preflight = await preflightInstall({
     stateDir: request.stateDir,
@@ -314,7 +336,6 @@ async function writeLocations(request: {
     platform: request.platform,
     environment: request.environment,
     run: request.run,
-    ...(request.lingerDir === undefined ? {} : { paths: { lingerDir: request.lingerDir } }),
   });
   return { preflight, locations: preflightWriteLocations(preflight) };
 }
@@ -330,7 +351,7 @@ describe("daemon install — the refusal writes nothing", () => {
     const root = scratchDirectory();
     const stateDir = join(root, "state");
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-    const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
+    const environment: SupervisorEnvironment = fixtureEnvironment(root);
     mkdirSync(join(environment.home, "Library", "LaunchAgents"), { recursive: true });
     mkdirSync(join(environment.home, "Library", "Logs", "xplainer"), { recursive: true });
     const harness = supervisorHarness({ stateDir });
@@ -403,8 +424,8 @@ describe("daemon install — Linux", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
-      const lingerDir = join(root, "linger");
+      const environment = fixtureEnvironment(root);
+      const lingerDir = String(environment.lingerDir);
       mkdirSync(lingerDir, { recursive: true });
       const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
 
@@ -415,7 +436,6 @@ describe("daemon install — Linux", () => {
         platform: "linux",
         environment,
         run: harness.run,
-        paths: { lingerDir, systemdBooted: lingerDir },
         healthTimeoutMs: HEALTH_MS,
       });
 
@@ -452,8 +472,8 @@ describe("daemon install — Linux", () => {
   it("exits 5 when lingering is denied, with nothing staged and nothing registered", async () => {
     const root = scratchDirectory();
     const stateDir = installableState();
-    const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
-    const lingerDir = join(root, "linger");
+    const environment = fixtureEnvironment(root);
+    const lingerDir = String(environment.lingerDir);
     mkdirSync(lingerDir, { recursive: true });
     const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
     harness.refuseLinger();
@@ -465,7 +485,6 @@ describe("daemon install — Linux", () => {
       platform: "linux",
       environment,
       run: harness.run,
-      paths: { lingerDir, systemdBooted: lingerDir },
       healthTimeoutMs: DOOMED_HEALTH_MS,
     }).catch((error: unknown) => error);
 
@@ -491,8 +510,8 @@ describe("daemon install — Linux", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
-      const lingerDir = join(root, "linger");
+      const environment = fixtureEnvironment(root);
+      const lingerDir = String(environment.lingerDir);
       mkdirSync(lingerDir, { recursive: true });
       const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
       harness.refuseStart();
@@ -501,7 +520,6 @@ describe("daemon install — Linux", () => {
         platform: "linux",
         environment,
         run: harness.run,
-        lingerDir,
       });
       const before = hashLocations(locations);
 
@@ -512,7 +530,6 @@ describe("daemon install — Linux", () => {
         platform: "linux",
         environment,
         run: harness.run,
-        paths: { lingerDir, systemdBooted: lingerDir },
         healthTimeoutMs: DOOMED_HEALTH_MS,
       }).catch((error: unknown) => error)) as InstallRefusal;
 
@@ -548,7 +565,7 @@ describe("daemon install — macOS", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
+      const environment: SupervisorEnvironment = fixtureEnvironment(root);
       const harness = supervisorHarness({ stateDir });
 
       const outcome = await installDaemon({
@@ -594,7 +611,7 @@ describe("daemon install — macOS", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
+      const environment: SupervisorEnvironment = fixtureEnvironment(root);
       const harness = supervisorHarness({ stateDir });
       const options = {
         stateDir,
@@ -697,7 +714,7 @@ describe("install → uninstall → install", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
+      const environment: SupervisorEnvironment = fixtureEnvironment(root);
       const harness = supervisorHarness({
         stateDir,
         printDisabled: '\tdisabled services = {\n\t\t"video.xplainer.daemon" => enabled\n\t}\n',

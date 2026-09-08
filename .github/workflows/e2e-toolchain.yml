@@ -1,0 +1,284 @@
+# The `[runner]` half of T33 and T20 criterion 3: `scripts/e2e/toolchain.mjs`
+# on all three runner operating systems, and one Windows `setup` whose refusal
+# is read back word for word.
+#
+# WHAT IT CLOSES. B6 proved T19, T20 and T33 on a developer's macOS machine and
+# nowhere else, because nothing in `.github/workflows/` ran the toolchain gate
+# at all. This is the machine-nobody-owns half: a clean checkout, the Node
+# `.node-version` pins, no state, and — on `ubuntu-latest` — a real Docker
+# engine, which is the only runner of the three that has one.
+#
+# THE THREE SPEECH ROUTES, ONE PER RUNNER, WHICH IS THE POINT OF THE MATRIX.
+# `speechPlan()` in the gate decides in a fixed precedence, and each runner
+# lands on a different branch of it without this file having to say so:
+#
+#   * ubuntu-latest  — `XPLAINER_TTS_URL` is deliberately NOT set, so the gate
+#     falls through to the **docker** route: `setup` pulls the pinned
+#     Kokoro-FastAPI image by digest with the runner's own `/usr/bin/docker`,
+#     the gate then starts a container from that digest on a port the OS chose
+#     and stops it in a `finally`. That is T19's docker provider exercised end
+#     to end, and `/usr/bin/docker` resolves under the gate's scrubbed `PATH`
+#     without the client-directory fallback macOS needs, so the D8 claim is
+#     untouched.
+#   * macos-latest   — no speech route, and the narration leg is skipped with
+#     its reason. GitHub's `services:` blocks — the way `e2e-linux.yml` supplies
+#     Kokoro — **only run on Linux runners**, and `macos-latest` is an Apple
+#     silicon host with no container engine, so neither route 1 nor route 2 is
+#     available to it. The gate says so in the transcript and renders from T3's
+#     fixture audio instead; what macOS proves here is the browser acquisition,
+#     the workspace, the degraded `/healthz`, the render and the rollback rerun.
+#   * windows-latest — no speech route either, and by design rather than by
+#     accident: §2.5 and P2-4 record that Windows has none this phase. The gate
+#     prints that as a skip and never as a pass.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. One run of this gate copies ~147 MB of
+# payload out of the checkout, installs the ~234 MB render workspace from the
+# registry, downloads a ~100 MB Chrome headless shell, renders a video, and then
+# stages two more payloads six times over for the rollback rerun. On `push` that
+# is three runners' worth of it on every commit. `ci.yml` is the gate that runs
+# on every push; this is the proof, and a proof is run when you want the proof.
+# It is the same argument that keeps `pnpm e2e:render`, `e2e-linux.yml` and
+# `e2e-runtime.yml` out of `pnpm verify`.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
+# branch**: until this file is on `main` the API answers a dispatch of it with
+# 422 whatever `--ref` says, which is GitHub's own rule and not a repository
+# setting. Once it is there, `--ref` chooses which branch's code the run
+# executes.
+#
+#   gh workflow run e2e-toolchain.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow e2e-toolchain.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+name: e2e-toolchain
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: toolchain gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Three answers, not one verdict: a Windows failure must not cancel the
+      # macOS and Linux legs that are the evidence for the other two thirds.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    # The gate itself is minutes of work. The budget is for everything around it
+    # on a cold runner, each paid in full on every run: the install, a full
+    # `turbo build` with no cache, the workspace's `npm ci`, Chrome's download,
+    # the Kokoro image pull on ubuntu, the render, and then the rollback rerun,
+    # which stages and switches payloads six more times.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      # `resolveTool()` in the gate takes `ffmpeg` and `ffprobe` off `PATH` (or
+      # from `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`), and it needs them on every
+      # runner: the still's width and height and the MP4's streams are read with
+      # `ffprobe`, and the frame comparison pipes through `ffmpeg`. None of the
+      # three images ships them, and each package manager is the one that image
+      # already has — no third-party action is introduced for two binaries.
+      - name: Install ffmpeg and ffprobe
+        run: |
+          set -euo pipefail
+          if command -v ffprobe >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+            echo "already present: $(command -v ffmpeg), $(command -v ffprobe)"
+            exit 0
+          fi
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg ;;
+            macOS) brew install ffmpeg ;;
+            Windows)
+              choco install ffmpeg --yes --no-progress
+              # A step's environment is captured before it runs, so a machine
+              # `PATH` chocolatey edits mid-job reaches the next step only
+              # through `$GITHUB_PATH`.
+              printf '%s\n' 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+              ;;
+            *) echo "unknown runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+
+      # The Chrome headless shell `setup` downloads is a binary, not a bundle:
+      # it links against the system's own X, GTK and audio libraries, and a
+      # runner image carries only some of them. Four of the names moved in
+      # Ubuntu's 64-bit time_t transition and the runner image is pinned by
+      # GitHub rather than by us, so each of those is tried in its new spelling
+      # and then in its old one instead of hard-coding a guess. macOS and
+      # Windows need none of this: their Chrome builds link against the OS.
+      - name: Install the Chrome headless shell libraries (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          packages=(
+            fonts-liberation
+            libcairo2
+            libdbus-1-3
+            libdrm2
+            libgbm1
+            libnss3
+            libpango-1.0-0
+            libxcomposite1
+            libxdamage1
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+          )
+          for base in libasound2 libatk1.0-0 libatk-bridge2.0-0 libcups2; do
+            if apt-cache show "${base}t64" >/dev/null 2>&1; then
+              packages+=("${base}t64")
+            else
+              packages+=("$base")
+            fi
+          done
+          sudo apt-get install -y -qq "${packages[@]}"
+
+      # The docker route is what ubuntu is here for, and a client that answers
+      # nothing turns the run into a skipped narration leg that still exits 0 —
+      # a green run over the thing it was dispatched to prove. So the engine is
+      # asked once, out loud, before anything long starts.
+      - name: Show the Docker engine the gate will use (Linux only)
+        if: runner.os == 'Linux'
+        run: docker version --format '{{.Server.Version}}'
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The gate runs `pnpm turbo build` itself, so this step is not what makes
+      # the CLI current — it is what separates a build failure from a gate
+      # failure in the job summary.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # `XPLAINER_TTS_URL` is unset on every leg, deliberately: it is what makes
+      # ubuntu take the docker route rather than waiting on a server somebody
+      # else started, and the other two have no route to name. See the matrix
+      # note at the top of this file.
+      #
+      # `COLLIE_ARTIFACTS_DIR` is left unset too: the script's own default is
+      # `<repo>/.session/artifacts`, the repository is the workspace, and the
+      # upload below names that path.
+      - name: Toolchain gate — setup, then still and render out of it (T33)
+        run: pnpm e2e:toolchain
+
+      # `always()`, because the transcript of a failed run is the thing worth
+      # downloading — the gate names its failed assertion on the last line of
+      # it. `if-no-files-found: error` then keeps a run that produced nothing at
+      # all from reporting a green upload over an empty artifact. The name
+      # carries the OS because upload-artifact refuses a name two jobs share.
+      - name: Upload the transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-toolchain-${{ matrix.os }}
+          path: .session/artifacts/e2e-toolchain.log
+          if-no-files-found: error
+          # A log, reproducible by re-running the workflow, times three runners
+          # per dispatch. `desktop.yml` filled this repository's artifact quota
+          # at the 90-day default on 2026-09-07 and every upload in every
+          # workflow failed until it was cleared; five days outlives reading the
+          # run that produced it and nothing more.
+          retention-days: 5
+
+  windows-delivery-position:
+    name: setup names no speech route (windows, T20 criterion 3)
+    runs-on: windows-latest
+    # A `setup` that refuses in its first phase, and a build to reach it.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # T20's third criterion, on the platform it is about. Nothing is published
+      # to the manifest host this phase, so a plain `setup` fails at the browser
+      # phase and `deliveryPosition()` is what it prints. On macOS and Linux
+      # that message names the two speech routes that DO work; on Windows all
+      # three are unavailable, and the criterion is that the message says so
+      # rather than offering a route the user would then watch fail.
+      #
+      # The assertions are on both directions, because "names neither as
+      # available" is a claim about what is absent: the Windows paragraph and
+      # the phase-4 milestone must be there, and the two sentences that OFFER
+      # `--tts-url` and the docker pull — the ones the macOS and Linux message
+      # carries verbatim — must not be.
+      #
+      # `shell: bash` for this one step: the whole step is string matching over
+      # captured output, and Git Bash is on every windows runner. The command
+      # under test is `node` either way.
+      - name: setup refuses and names no working speech route
+        run: |
+          set -uo pipefail
+          state="${RUNNER_TEMP}/xplainer-t20-state"
+          mkdir -p "$state"
+          set +e
+          node apps/cli/dist/bin.js setup --state-dir "$state" >setup.out 2>&1
+          code=$?
+          set -e
+          echo "exit: $code"
+          cat setup.out
+          if [ "$code" -eq 0 ]; then
+            echo "FAIL: setup exited 0, and nothing is published for it to have succeeded from" >&2
+            exit 1
+          fi
+          require_absent() {
+            if grep -qF "$1" setup.out; then
+              echo "FAIL: the message offers a route Windows does not have: $1" >&2
+              exit 1
+            fi
+            echo "ok  absent: $1"
+          }
+          require_present() {
+            if ! grep -qF "$1" setup.out; then
+              echo "FAIL: the message does not say: $1" >&2
+              exit 1
+            fi
+            echo "ok  present: $1"
+          }
+          require_present "Windows has no working speech route at all this phase"
+          require_present "None of the three is available here"
+          require_present "The milestone that closes it is phase 4"
+          require_absent "Speech still has two routes that work"
+          require_absent "records a Kokoro-FastAPI server you already run"
+          require_absent "the docker route pulls the pinned Kokoro-FastAPI image by digest"
+
+      - name: Upload the refusal
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-toolchain-windows-delivery-position
+          path: setup.out
+          if-no-files-found: error
+          retention-days: 5

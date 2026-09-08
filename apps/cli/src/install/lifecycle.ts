@@ -84,11 +84,10 @@ import {
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import { DEFAULT_PORT, DRAIN_PATH } from "../server.js";
-import { awaitHealthy, HealthTimeout } from "./health.js";
+import { awaitHealthy, HealthTimeout, loopbackGet } from "./health.js";
 import {
   currentSupervisorEnvironment,
   type InstallPreflight,
-  type PreflightPaths,
   type ProbeCommand,
   type ProbeResult,
   type ProbeRunner,
@@ -420,8 +419,6 @@ export type DaemonStatusRequest = {
   run?: ProbeRunner | undefined;
   /** The uid whose `gui/<uid>` domain a LaunchAgent lives in. Defaults to this process's. */
   uid?: number | undefined;
-  /** The two absolute Linux paths the preflight reads, for a caller that is not on Linux. */
-  paths?: PreflightPaths | undefined;
   /** How `/healthz` is asked. Defaults to a real authenticated request over loopback. */
   probe?: ((url: string, token: string | null) => Promise<StatusProbe>) | undefined;
 };
@@ -664,7 +661,6 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
     env,
     environment,
     run,
-    ...(request.paths === undefined ? {} : { paths: request.paths }),
   });
 
   const kind = daemon.supervisor_kind ?? preflight.supervisor.kind;
@@ -1578,20 +1574,29 @@ export function countTrailingFailures(starts: readonly DaemonStart[]): number {
   return count;
 }
 
-/** One authenticated `GET /healthz`, in the four shapes that need different sentences. */
+/**
+ * One authenticated `GET /healthz`, in the four shapes that need different sentences.
+ *
+ * Over `node:http` and not the platform's `fetch`, for the reason {@link loopbackGet} records: a
+ * status report is asked for repeatedly against one origin, `fetch` answers the second and later
+ * asks on a pooled socket, and resuming a pooled socket the daemon has torn down raises
+ * `setTypeOfService EINVAL` as an **uncaught exception** rather than a rejected promise — past the
+ * `catch` below, and fatal to the whole process that was only asking how the daemon is.
+ */
 async function loopbackProbe(url: string, token: string | null): Promise<StatusProbe> {
   try {
-    const response = await fetch(`${url}/healthz`, {
-      headers: token === null ? {} : { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(STATUS_PROBE_TIMEOUT_MS),
+    const response = await loopbackGet({
+      url: `${url}/healthz`,
+      token,
+      timeoutMs: STATUS_PROBE_TIMEOUT_MS,
     });
     if (response.status === 401) {
       return { kind: "unauthenticated" };
     }
-    if (!response.ok) {
+    if (response.status < 200 || response.status > 299) {
       return { kind: "http", status: response.status };
     }
-    return { kind: "ok", body: (await response.json()) as HealthBody };
+    return { kind: "ok", body: JSON.parse(response.body) as HealthBody };
   } catch (error) {
     return { kind: "unreachable", reason: error instanceof Error ? error.message : String(error) };
   }

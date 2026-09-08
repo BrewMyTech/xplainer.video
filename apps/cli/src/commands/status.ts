@@ -200,6 +200,16 @@ function probeHttpStatus(result: Probe): number | null {
   return result.kind === "http" ? result.status : null;
 }
 
+/**
+ * One `GET /healthz`, over the platform's own `fetch` and not `install/health.ts`'s `node:http`
+ * client, which the two *polling* callers use.
+ *
+ * The difference is `--url`: this command is the one that may be pointed at somebody else's daemon,
+ * and `resolveDaemonEndpoint()` accepts `https:` — which `node:http` cannot dial. The hazard that
+ * moved the pollers (undici raising `setTypeOfService EINVAL` as an uncaught exception while it
+ * resumes a **pooled** socket) needs a second request on a connection the first one left open, and
+ * this command makes exactly one before the process exits.
+ */
 async function probe(url: string, token: string | null): Promise<Probe> {
   try {
     const response = await fetch(`${url}/healthz`, {

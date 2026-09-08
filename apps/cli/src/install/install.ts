@@ -101,7 +101,6 @@ import { LAUNCHER_DIR, launcherPath, type WrittenLauncher, writeLauncher } from 
 import {
   type InstallPreflight,
   type LaunchdDisableRecord,
-  type PreflightPaths,
   type ProbeResult,
   type ProbeRunner,
   preflightInstall,
@@ -243,8 +242,6 @@ export type InstallRequest = {
   environment?: SupervisorEnvironment | undefined;
   /** How supervisor commands are run. A parameter, so one machine can exercise all three. */
   run?: ProbeRunner | undefined;
-  /** The two absolute Linux paths the preflight reads, for a caller that is not on Linux. */
-  paths?: PreflightPaths | undefined;
   /** The uid whose `gui/<uid>` domain a LaunchAgent is bootstrapped into. Defaults to this one. */
   uid?: number | undefined;
   /** How long the verify step waits for a `200`. Defaults to {@link HEALTH_TIMEOUT_MS}. */
@@ -280,7 +277,6 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
     env,
     run,
     ...(request.environment === undefined ? {} : { environment: request.environment }),
-    ...(request.paths === undefined ? {} : { paths: request.paths }),
   };
 
   // Phase 1, read-only. Everything below this line writes, and everything below this line is undone

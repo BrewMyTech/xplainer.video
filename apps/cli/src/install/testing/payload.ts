@@ -246,10 +246,29 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
 function entrySource(marker: string): string {
   return `import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+/**
+ * Write a state file the way the real daemon writes one: a temp file, then a rename.
+ *
+ * \`writeFileSync\` opens with \`O_TRUNC\`, so between the truncate and the write there is a
+ * window in which the file exists and is **empty** — and every reader of these files parses them
+ * strictly, because \`daemon-state.ts\` gives "exists and cannot be read as JSON" its own exit
+ * code rather than silently overwriting it. The installer's readiness poll reads \`runtime.json\`
+ * every 100 ms while this daemon is starting, so the two collide: measured on 2026-09-08, three
+ * runs in five of \`pnpm --filter @xplainer/cli test\` failed with "runtime.json exists but cannot
+ * be read as JSON (SyntaxError: Unexpected end of JSON input)", moving between whichever suite had
+ * started a fixture daemon. The product cannot produce that file — \`writeJsonDurably()\` renames
+ * — so a fixture that can is manufacturing a failure the thing it stands for does not have.
+ */
+const writeJsonAtomically = (path, value) => {
+  const temporary = path + "." + String(process.pid) + ".tmp";
+  writeFileSync(temporary, JSON.stringify(value, null, 2) + "\\n");
+  renameSync(temporary, path);
+};
 
 // <payload>/lib/node_modules/@xplainer/cli/dist/bin.js -> <payload>
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
@@ -275,7 +294,7 @@ const mergeJson = (path, changes) => {
   if (existsSync(path)) {
     held = JSON.parse(readFileSync(path, "utf8"));
   }
-  writeFileSync(path, JSON.stringify({ ...held, ...changes }, null, 2) + "\\n");
+  writeJsonAtomically(path, { ...held, ...changes });
 };
 
 if (verb === "serve") {
@@ -361,23 +380,16 @@ if (verb === "serve") {
     const address = server.address();
     const port = typeof address === "object" && address !== null ? address.port : 0;
     // After the bind, because the point of this file is the port that was really taken.
-    writeFileSync(
-      join(stateDir, "runtime.json"),
-      JSON.stringify(
-        {
-          format_version: 1,
-          pid: process.pid,
-          run_id: MARKER + "-" + String(process.pid),
-          boot_id: null,
-          port,
-          addresses: ["http://127.0.0.1:" + String(port)],
-          socket,
-          started_at: new Date().toISOString(),
-        },
-        null,
-        2,
-      ) + "\\n",
-    );
+    writeJsonAtomically(join(stateDir, "runtime.json"), {
+      format_version: 1,
+      pid: process.pid,
+      run_id: MARKER + "-" + String(process.pid),
+      boot_id: null,
+      port,
+      addresses: ["http://127.0.0.1:" + String(port)],
+      socket,
+      started_at: new Date().toISOString(),
+    });
     // Merged, not replaced: an installer wrote this file a moment ago and its fields are what
     // the uninstall reads.
     mergeJson(join(stateDir, "daemon.json"), {
@@ -386,7 +398,7 @@ if (verb === "serve") {
       socket_path: socket,
       contract_version: "1",
     });
-    writeFileSync(record, JSON.stringify({ ...identity, port, argv }));
+    writeJsonAtomically(record, { ...identity, port, argv });
     process.stdout.write(JSON.stringify({ event: "ready", ...identity, port }) + "\\n");
   });
   server.on("error", (error) => {

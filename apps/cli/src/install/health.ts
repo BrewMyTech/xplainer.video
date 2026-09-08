@@ -113,7 +113,7 @@ export type AwaitHealthyRequest = {
  */
 export async function awaitHealthy(request: AwaitHealthyRequest): Promise<HealthAnswer> {
   const now = request.now ?? Date.now;
-  const transport = request.transport ?? loopbackHealth;
+  const transport = request.transport ?? loopbackGet;
   const intervalMs = request.intervalMs ?? HEALTH_POLL_INTERVAL_MS;
   const budget = request.timeoutMs ?? HEALTH_TIMEOUT_MS;
   const started = now();
@@ -278,10 +278,26 @@ function readToken(path: string): string | null {
   }
 }
 
-/** One loopback `GET`, with no connection pool behind it. */
-async function loopbackHealth(request: {
+/**
+ * One loopback `GET`, over `node:http`, with no connection pool behind it.
+ *
+ * Exported because every poll of a local daemon in this package goes through it, and the two
+ * reasons are the same reasons: a pooled socket outlives the answer and holds a finished command's
+ * process open, and — measured on 2026-09-08 — the platform's own `fetch` **throws where no caller
+ * can catch it** when it resumes a pooled socket the daemon has already torn down. Node's bundled
+ * undici calls `socket.setTypeOfService()` on every request it writes, `node:net` reports a failed
+ * `setsockopt` by throwing synchronously, and undici writes from inside the socket's own event
+ * handler — so `EINVAL` there is an *uncaught exception*, not a rejected promise, and a
+ * `try`/`catch` around `await fetch(...)` never sees it. That is what ended a whole Vitest worker
+ * with "1 error" while every test in it passed, in three runs out of five, moving between whichever
+ * file happened to be polling a daemon at the time. `node:http` sets no such option.
+ *
+ * The token is optional because one caller — `daemon status` — deliberately asks without one, to
+ * tell "nothing is listening" apart from "something is listening and it is not ours".
+ */
+export async function loopbackGet(request: {
   url: string;
-  token: string;
+  token: string | null;
   timeoutMs: number;
 }): Promise<HealthResponse> {
   return await new Promise<HealthResponse>((resolve, reject) => {
@@ -289,8 +305,9 @@ async function loopbackHealth(request: {
       request.url,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${request.token}` },
-        // A pooled socket outlives the answer and holds the process open after `install` is done.
+        headers: request.token === null ? {} : { Authorization: `Bearer ${request.token}` },
+        // A pooled socket outlives the answer and holds the process open after `install` is done,
+        // and it is the socket the platform `fetch` throws on when it resumes one (see above).
         agent: false,
         timeout: request.timeoutMs,
       },

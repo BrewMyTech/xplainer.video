@@ -339,26 +339,8 @@ export type PreflightRequest = {
   environment?: SupervisorEnvironment | undefined;
   /** How probe commands are run. A parameter so one machine can exercise all three platforms. */
   run?: ProbeRunner | undefined;
-  /**
-   * The two absolute Linux paths this file reads, for a caller that is not on Linux.
-   *
-   * `daemon/state-dir.ts` takes `env`, `platform` and `home` as parameters for the same reason and
-   * says it plainly: "it is the only way this repository can check the Linux and Windows branches
-   * at all". Both defaults are the real paths, and no shipped caller passes either — what they buy
-   * is that "systemd booted this machine but this user has no manager" and "lingering is already
-   * enabled" are assertions on a developer's macOS laptop rather than only inside a container.
-   */
-  paths?: PreflightPaths | undefined;
   /** The address the port is probed on. Loopback, which is where the daemon binds. */
   host?: string | undefined;
-};
-
-/** The absolute Linux paths the preflight reads, so a machine that has neither can still ask. */
-export type PreflightPaths = {
-  /** Defaults to {@link SYSTEMD_BOOTED_DIR}. */
-  systemdBooted?: string | undefined;
-  /** Defaults to {@link LINGER_MARKER_DIR}. */
-  lingerDir?: string | undefined;
 };
 
 /** The account and directories this process would install for. */
@@ -392,8 +374,8 @@ export async function preflightInstall(request: PreflightRequest): Promise<Insta
   const env = request.env ?? process.env;
   const run = request.run ?? runProbe;
   const environment = request.environment ?? currentSupervisorEnvironment(env, homedir(), platform);
-  const bootedDir = request.paths?.systemdBooted ?? SYSTEMD_BOOTED_DIR;
-  const lingerDir = request.paths?.lingerDir ?? LINGER_MARKER_DIR;
+  const bootedDir = environment.systemdBooted ?? SYSTEMD_BOOTED_DIR;
+  const lingerDir = environment.lingerDir ?? LINGER_MARKER_DIR;
 
   // One `launchctl print-disabled` for both macOS questions. Whether a GUI domain exists at all
   // and whether it holds a disable record for our label are two readings of one answer, and asking

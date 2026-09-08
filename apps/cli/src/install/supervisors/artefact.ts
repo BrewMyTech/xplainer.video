@@ -43,11 +43,18 @@ export type SupervisorArtefact = {
 };
 
 /**
- * The account and directories a renderer needs, and nothing about the daemon itself.
+ * The account, and the directories that account is identified within, that a renderer needs — and
+ * nothing about the daemon itself.
  *
  * Every field is a parameter rather than a read of `process` or `os` for the reason
  * `daemon/state-dir.ts` gives for the same choice: it is the only way one machine can render — and
  * assert — all three platforms' artefacts, which is what makes this story `local`.
+ *
+ * It is the **single** object that says which machine an install is addressing. The two Linux
+ * system directories `preflight.ts` reads live here beside `localAppData` and `systemRoot` rather
+ * than in a second parameter, because a caller that has built a throwaway environment to stay off
+ * the real machine must not have to remember a second object to finish the job — and the calls
+ * that most needed them (`openTransaction`, `daemonStatus`) only ever took this one.
  */
 export type SupervisorEnvironment = {
   /** The user's home directory, already expanded: launchd expands no `~` of its own. */
@@ -72,6 +79,31 @@ export type SupervisorEnvironment = {
    * Windows is `%SystemRoot%\System32\Tasks\xplainer` and is not a path any renderer produces.
    */
   systemRoot?: string | undefined;
+  /**
+   * The directory holding systemd's linger markers, defaulting to `/var/lib/systemd/linger`.
+   *
+   * Here rather than resolved inside the preflight for the reason `localAppData` and `systemRoot`
+   * are here: the marker is a **machine-owned path this account is identified within**, and every
+   * such path in this type is injected so a test can name a throwaway one. Without it a Linux host
+   * resolves `/var/lib/systemd/linger/$USER` even under a recording supervisor, and `install.ts`'s
+   * `existsSync` on the marker — the check that decides between a successful install and exit `5` —
+   * reads the machine instead of the fixture. That is what made `transaction.test.ts` fail on every
+   * real Linux runner while passing on macOS, where the marker is never consulted at all.
+   *
+   * The marker itself is `<lingerDir>/<account>`, composed in exactly one place
+   * (`preflight.ts`'s `probeLinger`), so an injected directory moves the marker with it.
+   */
+  lingerDir?: string | undefined;
+  /**
+   * The directory whose existence means systemd is this machine's init, defaulting to
+   * `/run/systemd/system` — what `sd_booted(3)` checks.
+   *
+   * Injected for the same reason as `lingerDir`, and it is the other half of the same failure: a
+   * fixture that drives the Linux branch from a container gets "systemd is not this machine's init"
+   * from the host, and one that drives the **darwin** branch from a Linux host would still be
+   * reading the host if it ever ran unqualified. No shipped caller passes it.
+   */
+  systemdBooted?: string | undefined;
 };
 
 /** A launch spec or an environment a supervisor artefact cannot be rendered from. */

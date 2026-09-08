@@ -109,6 +109,21 @@ describe("verifyRuntimePayload", () => {
     expect(report.failure?.name).toBe("lib/smuggled.js");
   });
 
+  // The other half of the mode parameter: payload 1 keeps the exhaustive rule, and it keeps it for
+  // the exact shape payload 2 now tolerates. Nothing but `runtime build` and `install stage` writes
+  // inside a runtime payload, so a file that appeared in one is an integrity failure whatever it is
+  // called — and a workspace's tolerance must not be reachable from here.
+  it("keeps refusing an added file that a workspace would tolerate, because the mode is per payload", () => {
+    writeRuntimePayload();
+    mkdirSync(join(root, "node_modules", "zod"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "zod", "index.js"), "zz");
+
+    const report = verifyRuntimePayload(root);
+
+    expect(report.failure?.reason).toBe("unexpected");
+    expect(report.failure?.name).toBe("node_modules/zod/index.js");
+  });
+
   it("names a symlink that was repointed, by its target rather than by what it points at", () => {
     writeRuntimePayload();
     unlinkSync(join(root, "bin", "npm"));
@@ -250,6 +265,85 @@ describe("verifyWorkspacePayload", () => {
 
     expect(verifyWorkspacePayload(root, { react: "19.2.3" }).failure?.reason).toBe("changed");
   });
+
+  // The five directories below are every kind of file a real workspace holds and its manifest has
+  // never described: the three template files `materialiseWorkspace()` copies in, the user's own
+  // `videos/`, `out/` and `public/`, and the caches Remotion writes on the first render. Before the
+  // mode parameter, `daemon update` re-hashed this tree in payload 1's exhaustive mode and exited 3
+  // on every machine `xplainer setup` had ever run on — `transaction.ts` calls this exact function
+  // through `requireCompatibleUpdate()`, so the refusal was unconditional.
+  it("accepts the files a live workspace legitimately holds outside its manifest", () => {
+    writeWorkspacePayload({ react: "19.2.3" });
+    writeFileSync(join(root, "remotion.config.ts"), "export {};\n");
+    writeFileSync(join(root, "tailwind.css"), "@tailwind base;\n");
+    writeFileSync(join(root, "tsconfig.json"), "{}\n");
+    mkdirSync(join(root, "videos", "demo"), { recursive: true });
+    writeFileSync(join(root, "videos", "demo", "timings.json"), "{}\n");
+    mkdirSync(join(root, "out"), { recursive: true });
+    writeFileSync(join(root, "out", "demo.mp4"), "mp4");
+    mkdirSync(join(root, "public"), { recursive: true });
+    writeFileSync(join(root, "public", "logo.png"), "png");
+    mkdirSync(join(root, ".remotion"), { recursive: true });
+    writeFileSync(join(root, ".remotion", "bundle.json"), "{}\n");
+    mkdirSync(join(root, "node_modules", ".cache", "webpack"), { recursive: true });
+    writeFileSync(join(root, "node_modules", ".cache", "webpack", "0.pack"), "cache");
+
+    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
+
+    expect(report.failure).toBeNull();
+    expect(report.ok).toBe(true);
+  });
+
+  it("still refuses a described file that was deleted, because that is what proves the pins", () => {
+    writeWorkspacePayload({ react: "19.2.3" });
+    unlinkSync(join(root, "node_modules", "zod", "index.js"));
+
+    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
+
+    expect(report.failure?.reason).toBe("missing");
+    expect(report.failure?.name).toBe("node_modules/zod/index.js");
+  });
+
+  it("refuses an undescribed file that shadows a described package, by the name it shadows", () => {
+    writeWorkspacePayload({ react: "19.2.3" });
+    mkdirSync(join(root, "node_modules", "@remotion", "cli", "node_modules", "zod"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "node_modules", "@remotion", "cli", "node_modules", "zod", "index.js"),
+      "4.5.4",
+    );
+
+    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
+
+    expect(report.failure?.reason).toBe("shadowed");
+    expect(report.failure?.name).toBe("node_modules/@remotion/cli/node_modules/zod/index.js");
+    expect(report.failure?.detail).toContain("zod");
+    expect(report.failure?.detail).toContain("nearest node_modules");
+  });
+
+  it("reads a nested scoped package by its two-segment name, not by its scope", () => {
+    writeWorkspacePayload({ react: "19.2.3" });
+    mkdirSync(join(root, "node_modules", "zod", "node_modules", "@remotion", "cli"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "node_modules", "zod", "node_modules", "@remotion", "cli", "index.js"),
+      "other",
+    );
+
+    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).failure?.detail).toContain(
+      "@remotion/cli",
+    );
+  });
+
+  it("allows a nested package the top level does not carry, which shadows nothing", () => {
+    writeWorkspacePayload({ react: "19.2.3" });
+    mkdirSync(join(root, "node_modules", "zod", "node_modules", "tslib"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "zod", "node_modules", "tslib", "index.js"), "ts");
+
+    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).ok).toBe(true);
+  });
 });
 
 describe("readTemplatePins", () => {
@@ -303,7 +397,11 @@ function writeWorkspacePayload(
   overrides: Partial<WorkspaceManifest> = {},
 ): void {
   mkdirSync(join(root, "lib"), { recursive: true });
+  mkdirSync(join(root, "node_modules", "zod"), { recursive: true });
+  mkdirSync(join(root, "node_modules", "@remotion", "cli"), { recursive: true });
   writeFileSync(join(root, "lib", "a.js"), "aa");
+  writeFileSync(join(root, "node_modules", "zod", "index.js"), "zz");
+  writeFileSync(join(root, "node_modules", "@remotion", "cli", "index.js"), "rr");
   writeFileSync(join(root, "package.json"), "{}\n");
 
   const scan = scanTree(root, { exclude: [WORKSPACE_MANIFEST_FILE] });

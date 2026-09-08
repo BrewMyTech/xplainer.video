@@ -57,6 +57,7 @@ import { LAUNCHER_DIR, launcherPath } from "./launcher.js";
 import {
   currentSupervisorEnvironment,
   type LaunchdDisableRecord,
+  LINGER_MARKER_DIR,
   type ProbeRunner,
   readDisableRecord,
   runProbe,
@@ -216,7 +217,10 @@ export function uninstallDaemon(request: UninstallRequest): UninstallOutcome {
 
   // ── Lingering: reported, never removed ───────────────────────────────────────────────────────
   const lingerUser = environment.account;
-  const lingerMarker = `/var/lib/systemd/linger/${lingerUser}`;
+  // The same two parts `preflight.ts`'s `probeLinger()` joins, and from the same field, so an
+  // injected directory moves the marker for the whole install/uninstall pair rather than for half
+  // of it. A literal here would report a path this process never looked at.
+  const lingerMarker = `${environment.lingerDir ?? LINGER_MARKER_DIR}/${lingerUser}`;
   const lingerApplicable = platform === "linux";
   const lingerEnabledByUs = state.linger_enabled_by_us === true;
   const linger = {

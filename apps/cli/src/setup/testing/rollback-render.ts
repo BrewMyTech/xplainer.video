@@ -404,15 +404,15 @@ try {
       (updatable.ok
         ? ""
         : ` — it does not: ${updatable.failure.reason} at ${updatable.failure.name}. ` +
-          "`verifyWorkspacePayload()` re-hashes the whole workspace root and refuses every file " +
-          "its payload manifest does not describe, and that manifest describes only " +
-          "node_modules/, package.json and package-lock.json — so the three template files " +
-          "`materialiseWorkspace()` copies in (remotion.config.ts, tailwind.css, tsconfig.json) " +
-          "already fail it before any tool call, and Remotion's own node_modules/.cache/webpack " +
-          "fails it after the first render. `setup/toolchain.ts` states the rule this call " +
-          "breaks: a live workspace is checked from its own manifest and never re-hashed. Until " +
-          "the precondition asks that question instead, `xplainer daemon update` exits 3 on every " +
-          "machine setup has run on, and no rollback case can be reached from here."),
+          `${updatable.failure.detail} A workspace is verified in \`described\` mode ` +
+          "(`runtime/verify.ts`, step 5): every file the manifest names must be present with its " +
+          "recorded digest — that is what proves the pins — while the files a live workspace " +
+          "legitimately holds beside them are allowed, because the manifest describes only " +
+          "node_modules/, package.json and package-lock.json and `materialiseWorkspace()` also " +
+          "copies in remotion.config.ts, tailwind.css and tsconfig.json, with videos/, out/, " +
+          "public/ and Remotion's node_modules/.cache/ arriving after that. So a refusal here is " +
+          "a real one: something the manifest describes has changed, gone, or been shadowed by a " +
+          "nested copy — and `xplainer daemon update` would refuse this machine too."),
   );
 
   say("");

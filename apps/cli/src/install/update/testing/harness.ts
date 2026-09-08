@@ -79,13 +79,36 @@ export type UpdateHarnessOptions = {
  * platforms' renderers.
  */
 export function fixtureEnvironment(home: string): SupervisorEnvironment {
+  // The two Linux system directories are part of the fixture on every platform. They are what a
+  // Linux host would otherwise answer from itself: `/var/lib/systemd/linger/$USER`, a marker no
+  // recording supervisor ever creates, and `/run/systemd/system`, which is absent in a plain
+  // container and makes the preflight refuse before any of this suite's subject matter is reached.
+  // The booted directory has to exist for the systemd branch to be reachable, so it is made here;
+  // the linger marker is created by this module's own `enable-linger`, which is the ordering
+  // `install.ts` asserts.
+  const systemdBooted = join(home, "run-systemd-system");
+  mkdirSync(systemdBooted, { recursive: true });
   return {
     home,
     account: "tester",
     configHome: join(home, ".config"),
     localAppData: join(home, "AppData", "Local"),
     systemRoot: join(home, "Windows"),
+    lingerDir: join(home, "linger"),
+    systemdBooted,
   };
+}
+
+/**
+ * The marker `loginctl enable-linger` would create for an environment, spelled once.
+ *
+ * The suite needs the same string the preflight will compose — `<lingerDir>/<account>` — because
+ * the harness has to *create* it when the install asks for lingering and `install.ts` then checks
+ * that the file is there. Two spellings of one path would let the harness satisfy a check nobody
+ * was making.
+ */
+export function fixtureLingerMarker(environment: SupervisorEnvironment): string {
+  return `${environment.lingerDir ?? ""}/${environment.account}`;
 }
 
 /**
@@ -102,6 +125,8 @@ export function windowsFixtureEnvironment(root: string): SupervisorEnvironment {
     configHome: join(root, "Users", "tester", ".config"),
     localAppData: join(root, "Users", "tester", "AppData", "Local"),
     systemRoot: join(root, "Windows"),
+    lingerDir: join(root, "linger"),
+    systemdBooted: join(root, "run-systemd-system"),
   };
 }
 

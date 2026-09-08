@@ -315,6 +315,33 @@ describe("the narrate worker", () => {
     expect(spec?.cwd).toBe(root);
   });
 
+  /**
+   * `--import` takes a **module specifier**, and an absolute Windows path is one with the scheme
+   * `c:`: Node rejects `--import C:\\repo\\hook.ts` with ERR_UNSUPPORTED_ESM_URL_SCHEME before it
+   * runs a line. Every other spawned child in this repository passes the hook as a `file://` URL;
+   * this call site was the last one still passing the bare path, and it is the one a `serve`
+   * running from its own sources reaches on the first narration job.
+   *
+   * The hook branch is the one this test reaches, and unconditionally: `narrateWorkerCommand()`
+   * picks the compiled entry by asking for `../workers/narrate.js` relative to **its own module**,
+   * which under Vitest is `src/daemon/workers.ts` and so resolves to `src/workers/narrate.js` — a
+   * file this package does not have and a build never puts there. `dist/workers/narrate.js` is
+   * reached only when the module itself is `dist/daemon/workers.js`, which no test run loads.
+   */
+  it("spells the ts hook as a file URL, so a Windows daemon can spawn narration at all", () => {
+    expect(existsSync(new URL("../workers/narrate.js", import.meta.url))).toBe(false);
+    writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
+
+    const args =
+      createWorkerRegistry({ root, stateDir }).explainer_narrate?.(
+        record(4, "explainer_narrate", "demo"),
+      )?.args ?? [];
+
+    expect(args[0]).toBe("--import");
+    expect(args[1]).toMatch(/^file:\/\/\/.*ts-source-hook\.ts$/);
+    expect(new URL(String(args[1])).protocol).toBe("file:");
+  });
+
   it("needs no installed workspace: narration is this package's own code, not Remotion", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
 

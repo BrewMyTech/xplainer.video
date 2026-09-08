@@ -19,9 +19,28 @@
  *    edited.
  * 4. **The contents**, in sorted path order: present, a regular file, the recorded size, the
  *    recorded hash; then every symlink by its unresolved target.
- * 5. **Anything extra.** A file in the tree that the manifest does not describe is a mismatch too:
- *    "the payload is exactly what was assembled" is the property, not "the payload contains what
- *    was assembled".
+ * 5. **Anything extra — and how much of it is allowed depends on which payload this is.** The two
+ *    payloads make different promises about their directories, so step 5 takes a
+ *    {@link TreeMode} rather than a single rule:
+ *
+ *    - **`"exhaustive"` (payload 1).** A file in the tree that the manifest does not describe is a
+ *      mismatch: "the payload is exactly what was assembled" is the property, not "the payload
+ *      contains what was assembled". Nothing but `runtime build` and `install stage` ever write
+ *      inside a runtime payload, so an extra file there is a real integrity failure.
+ *    - **`"described"` (payload 2).** The workspace is a *live* directory. Its manifest describes
+ *      `node_modules/`, `package.json` and `package-lock.json` and deliberately nothing else
+ *      (`setup/providers/workspace.ts`), while `setup` also copies in the engine-owned template
+ *      files — `remotion.config.ts`, `tailwind.css`, `tsconfig.json` — and the user's own work
+ *      lands beside them in `videos/`, `out/` and `public/`, with Remotion's `node_modules/.cache/`
+ *      and `.remotion/` appearing after the first render. Requiring the tree to hold nothing but
+ *      the manifest would refuse every workspace `setup` has ever produced, which is what made
+ *      `daemon update` exit `3` on every real machine. So the described entries must all be
+ *      present with matching digests — that is what proves the pins — and an undescribed file is
+ *      permitted **unless it shadows a described one**: a package copy nested under the described
+ *      `node_modules/` whose name that tree also carries at the top level. Node resolves the
+ *      nearest `node_modules` first, so such a copy is the version a render loads while the
+ *      manifest still records the pinned one, and that is the single way an extra file can make
+ *      the pin comparison below a lie.
  *
  * {@link verifyWorkspacePayload} then adds the check D2 exists for: the manifest's **resolved**
  * versions against the template's declared **pins**, package by package. A workspace resolved from
@@ -63,8 +82,23 @@ export type VerifyFailureReason =
   | "link-missing"
   | "link-changed"
   | "unexpected"
+  | "shadowed"
   | "pin-missing"
   | "pin-mismatch";
+
+/**
+ * How completely a payload's tree must match its manifest, chosen per payload and never globally.
+ *
+ * A parameter rather than a setting, because the answer is a property of the *payload* and not of
+ * the machine: payload 1 is a sealed directory nothing else writes into, payload 2 is a working
+ * directory whose whole purpose is that renders write into it. A process-wide switch would let one
+ * caller's tolerance relax the other caller's integrity check.
+ */
+export type TreeMode =
+  /** The tree holds the manifest and nothing else. Payload 1. */
+  | "exhaustive"
+  /** The manifest's entries must all match; other files are allowed unless they shadow one. */
+  | "described";
 
 /** The one mismatch a failed verification reports. */
 export type VerifyFailure = {
@@ -109,7 +143,13 @@ export function verifyRuntimePayload(payloadDir: string): VerifyReport {
   if (host !== null) {
     return { ok: false, checked: 0, failure: host };
   }
-  return verifyTree(payloadDir, manifest.files, manifest.links, RUNTIME_MANIFEST_FILE);
+  return verifyTree(
+    payloadDir,
+    manifest.files,
+    manifest.links,
+    RUNTIME_MANIFEST_FILE,
+    "exhaustive",
+  );
 }
 
 /**
@@ -118,6 +158,9 @@ export function verifyRuntimePayload(payloadDir: string): VerifyReport {
  * `pins` defaults to the template that shipped inside this very CLI, which is the copy a `setup`
  * on a user's machine would install from — so "the manifest matches the template's pins" is asked
  * of the same two documents at build time and at install time.
+ *
+ * The tree is checked in `"described"` mode: this is a live workspace, and step 5 of the module
+ * header says why the alternative refuses every one of them.
  */
 export function verifyWorkspacePayload(
   workspaceDir: string,
@@ -133,7 +176,13 @@ export function verifyWorkspacePayload(
   if (host !== null) {
     return { ok: false, checked: 0, failure: host };
   }
-  const tree = verifyTree(workspaceDir, manifest.files, manifest.links, WORKSPACE_MANIFEST_FILE);
+  const tree = verifyTree(
+    workspaceDir,
+    manifest.files,
+    manifest.links,
+    WORKSPACE_MANIFEST_FILE,
+    "described",
+  );
   if (!tree.ok) {
     return tree;
   }
@@ -202,12 +251,20 @@ function checkHost(platform: string, arch: string, what: string): VerifyFailure 
   return null;
 }
 
-/** Every file and link, in sorted order, then everything the manifest did not describe. */
+/**
+ * Every file and link, in sorted order, then everything the manifest did not describe.
+ *
+ * The first two passes are the same for both payloads: what the manifest names must be on disk,
+ * the recorded size, the recorded hash, and — for links — the recorded target. Only the third pass
+ * reads `mode`, and only in the direction of tolerance: `"described"` never accepts a described
+ * entry that `"exhaustive"` would reject.
+ */
 function verifyTree(
   root: string,
   files: readonly ManifestFile[],
   links: readonly ManifestLink[],
   manifestFile: string,
+  mode: TreeMode,
 ): VerifyReport {
   let checked = 0;
 
@@ -283,8 +340,12 @@ function verifyTree(
     ...files.map((entry) => entry.path),
     ...links.map((entry) => entry.path),
   ]);
+  const packages = mode === "described" ? topLevelPackages(described) : new Set<string>();
   for (const path of listTree(root)) {
-    if (!described.has(path)) {
+    if (described.has(path)) {
+      continue;
+    }
+    if (mode === "exhaustive") {
       return fail(
         checked,
         "unexpected",
@@ -292,9 +353,77 @@ function verifyTree(
         `${join(root, ...path.split("/"))} is in the payload and not in the manifest.`,
       );
     }
+    const shadowed = shadowedPackage(path, packages);
+    if (shadowed !== null) {
+      return fail(
+        checked,
+        "shadowed",
+        path,
+        `${join(root, ...path.split("/"))} is a nested copy of ${shadowed}, which this manifest ` +
+          `also describes at node_modules/${shadowed}. Node resolves the nearest node_modules ` +
+          `first, so the nested copy is what a render would load and the version this manifest ` +
+          `records is no longer the version in use. Reinstall the workspace with ` +
+          `\`xplainer setup --workspace\`.`,
+      );
+    }
   }
 
   return { ok: true, checked, failure: null };
+}
+
+/**
+ * The package names the manifest describes directly under the workspace's own `node_modules/`.
+ *
+ * Scoped names count as one package — `@remotion/cli`, not `@remotion` — because that is the
+ * directory depth Node's resolver treats as a package root, and it is the granularity
+ * `WorkspaceManifest.resolved` and the template's pins are both written at.
+ */
+function topLevelPackages(described: ReadonlySet<string>): Set<string> {
+  const names = new Set<string>();
+  for (const path of described) {
+    const segments = path.split("/");
+    if (segments[0] !== "node_modules") {
+      continue;
+    }
+    const name = packageNameAt(segments, 1);
+    if (name !== null) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * The described package an undescribed path would be resolved in place of, or `null`.
+ *
+ * Only a `node_modules` *nested inside* the workspace's own can shadow: a new name at the top level
+ * satisfies an import that previously failed rather than changing one that already resolved, and no
+ * pin the manifest records is affected by it.
+ */
+function shadowedPackage(path: string, packages: ReadonlySet<string>): string | null {
+  const segments = path.split("/");
+  if (segments[0] !== "node_modules") {
+    return null;
+  }
+  const nested = segments.lastIndexOf("node_modules");
+  if (nested < 1) {
+    return null;
+  }
+  const name = packageNameAt(segments, nested + 1);
+  return name !== null && packages.has(name) ? name : null;
+}
+
+/** The package name starting at `index`, taking the two segments a scoped name occupies. */
+function packageNameAt(segments: readonly string[], index: number): string | null {
+  const head = segments[index];
+  if (head === undefined || head === "" || segments[index + 1] === undefined) {
+    return null;
+  }
+  if (!head.startsWith("@")) {
+    return head;
+  }
+  const scope = segments[index + 1];
+  return scope !== undefined && segments[index + 2] !== undefined ? `${head}/${scope}` : null;
 }
 
 /** The manifest's resolved versions against the template's pins, package by package. */

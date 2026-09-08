@@ -70,7 +70,7 @@ import {
   startDaemon,
   stopDaemon,
 } from "../lifecycle.js";
-import { runProbe } from "../preflight.js";
+import { currentSupervisorEnvironment, runProbe } from "../preflight.js";
 import { registerCommands } from "../register.js";
 import { stageRuntime } from "../stage.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
@@ -401,15 +401,19 @@ async function installAsUser(): Promise<void> {
  * `lingerDir` is a parameter for one phase only, and the reason is measured rather than assumed:
  * on a machine with **no login session** the user manager exists only because lingering does, so
  * `loginctl disable-linger` takes the manager and the daemon with it and there is no running daemon
- * left to say "running, but not boot-persistent" about. `preflight.ts` already takes the directory
- * as a parameter, for the same reason it takes `platform`. The orchestrator measures the real
- * consequence separately, at the end, after everything else has been observed.
+ * left to say "running, but not boot-persistent" about. It rides on the `SupervisorEnvironment`,
+ * which is where every machine-owned path this account is identified within is injected; the rest
+ * of that environment is this real account's, because this phase is deliberately being run as the
+ * real unprivileged user. The orchestrator measures the real consequence separately, at the end,
+ * after everything else has been observed.
  */
 async function statusAsUser(stateDir: string, lingerDir: string | null): Promise<void> {
   const report = await daemonStatus({
     stateDir,
     run: runProbe,
-    ...(lingerDir === null ? {} : { paths: { lingerDir } }),
+    ...(lingerDir === null
+      ? {}
+      : { environment: { ...currentSupervisorEnvironment(), lingerDir } }),
   });
   process.stdout.write(
     `PROOF-JSON ${JSON.stringify({

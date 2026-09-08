@@ -60,6 +60,7 @@ import { readUpdateJournal, type UpdateTransition } from "../journal.js";
 import { updateDaemon } from "../transaction.js";
 import {
   fixtureEnvironment,
+  fixtureLingerMarker,
   PARKED_LINE,
   spell,
   updateHarness,
@@ -122,7 +123,10 @@ function park(what: string): never {
 
 const environment =
   platform === "win32" ? windowsFixtureEnvironment(home) : fixtureEnvironment(home);
-const harness = updateHarness({ stateDir });
+// The marker the fixture environment names, not the machine's: `install.ts` checks `existsSync` on
+// `<lingerDir>/<account>` after `enable-linger`, and on a Linux host an environment without one
+// resolves the runner's own `/var/lib/systemd/linger/$USER` and refuses with exit 5.
+const harness = updateHarness({ stateDir, lingerMarker: fixtureLingerMarker(environment) });
 
 /** Everything both `install` and `update` are told about which platform they are addressing. */
 const addressed = platform === process.platform ? {} : { platform, uid: 0, environment };

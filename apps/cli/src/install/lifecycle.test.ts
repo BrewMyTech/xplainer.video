@@ -32,6 +32,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -321,8 +322,20 @@ function lifecycleHarness(options: { stateDir: string; lingerMarker?: string }):
 }
 
 /** A macOS account and directories, built inside a scratch tree so nothing real is touched. */
-function macEnvironment(root: string): SupervisorEnvironment {
-  return { home: join(root, "home"), account: "tester" };
+function fixtureEnvironment(root: string): SupervisorEnvironment {
+  // The two Linux system directories are filled whatever platform the case addresses, because they
+  // are what keeps the *host* out of the answer: `probeLinger()` composes `<lingerDir>/<account>`
+  // and `probeSupervisor()` stats the booted directory, and a Linux runner executing this file
+  // would otherwise read its own `/var/lib/systemd/linger/$USER` and `/run/systemd/system`. The
+  // booted directory has to exist for the systemd branch to be reachable, so it is made here.
+  const systemdBooted = join(root, "run-systemd-system");
+  mkdirSync(systemdBooted, { recursive: true });
+  return {
+    home: join(root, "home"),
+    account: "tester",
+    lingerDir: join(root, "linger"),
+    systemdBooted,
+  };
 }
 
 /** Hold a port with a listener that is emphatically not an xplainer daemon. */
@@ -410,7 +423,7 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
 
       await installDaemon({
@@ -465,7 +478,7 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
 
       await installDaemon({
@@ -513,7 +526,7 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
 
       await installDaemon({
@@ -557,13 +570,9 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment: SupervisorEnvironment = { home: join(root, "home"), account: "tester" };
-      const lingerDir = join(root, "linger");
-      const booted = join(root, "run-systemd-system");
-      mkdirSync(booted, { recursive: true });
-      const marker = join(lingerDir, "tester");
+      const environment = fixtureEnvironment(root);
+      const marker = join(String(environment.lingerDir), "tester");
       const harness = lifecycleHarness({ stateDir, lingerMarker: marker });
-      const paths = { systemdBooted: booted, lingerDir };
 
       await installDaemon({
         stateDir,
@@ -572,7 +581,6 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
         platform: "linux",
         environment,
         run: harness.run,
-        paths,
         healthTimeoutMs: HEALTH_MS,
       });
       expect(existsSync(marker)).toBe(true);
@@ -583,7 +591,6 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
         platform: "linux",
         environment,
         run: harness.run,
-        paths,
       });
 
       expect(report.condition).toBe("ready");
@@ -599,6 +606,82 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
   );
 });
 
+/**
+ * A stand-in daemon on a real port: it answers `/healthz` and counts the TCP connections it was
+ * asked over, which is the property under test.
+ */
+async function healthzListener(): Promise<{ port: number; connections: () => number }> {
+  const sockets = new Set<Socket>();
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ status: "ok", version: "1.2.3", port: 0 }));
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+  });
+  await new Promise<void>((ready, failed) => {
+    server.once("error", failed);
+    server.listen(0, "127.0.0.1", ready);
+  });
+  const address = server.address();
+  listeners.push(() => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    server.close();
+  });
+  return {
+    port: typeof address === "object" && address !== null ? address.port : 0,
+    connections: () => sockets.size,
+  };
+}
+
+describe("daemon status — how the probe reaches the daemon", () => {
+  /**
+   * The flake this assertion exists for, and its cause. `pnpm --filter @xplainer/cli test` failed
+   * three runs in five with **no failing test** — "Test Files 63 passed, Errors 1 error" — moving
+   * between `install.test.ts` and this file. The error was always the same:
+   *
+   *     Error: setTypeOfService EINVAL
+   *      ❯ Socket.setTypeOfService node:net:911:13
+   *      ❯ writeH1 node:internal/deps/undici/undici:8022:16
+   *      ❯ _resume … ❯ Socket.emit node:events:514:28
+   *
+   * `daemonStatus` polled `/healthz` with the platform's `fetch`; Node's bundled undici keeps the
+   * connection and, on the **next** ask, resumes that pooled socket and calls
+   * `socket.setTypeOfService()` before writing. `node:net` reports a failed `setsockopt` by
+   * *throwing*, and undici writes from inside the socket's own event handler — so a socket the
+   * daemon had torn down between two status calls raised an uncaught exception past every
+   * `try`/`catch` in this repository and took the Vitest worker with it.
+   *
+   * The property that removes it is the one asserted here: **a connection per ask**. It is asserted
+   * on the default probe — the parameter is deliberately not passed — because the defect was in
+   * which client the default is.
+   */
+  it("opens a new connection for every ask, so no pooled socket is ever resumed", async () => {
+    const root = scratchDirectory();
+    const stateDir = installableState();
+    const daemon = await healthzListener();
+    const tokenFile = join(stateDir, "token");
+    writeFileSync(tokenFile, "a-token\n", { mode: 0o600 });
+    updateDaemonState(stateDir, { port: daemon.port, token_file: tokenFile });
+    const harness = lifecycleHarness({ stateDir });
+
+    for (let ask = 0; ask < 3; ask += 1) {
+      const report = await daemonStatus({
+        stateDir,
+        platform: "darwin",
+        environment: fixtureEnvironment(root),
+        run: harness.run,
+        uid: 501,
+      });
+      expect(report.probe.http_status).toBe(200);
+    }
+
+    expect(daemon.connections()).toBe(3);
+  });
+});
+
 describe("daemon status — the three queries, and nothing that parses launchctl print", () => {
   /**
    * Criterion 3, as a property of what actually ran. `launchctl print` is the one surface whose own
@@ -611,7 +694,7 @@ describe("daemon status — the three queries, and nothing that parses launchctl
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
 
       await installDaemon({
@@ -697,7 +780,7 @@ describe("daemon status — the three queries, and nothing that parses launchctl
     await daemonStatus({
       stateDir,
       platform: "darwin",
-      environment: macEnvironment(scratchDirectory()),
+      environment: fixtureEnvironment(scratchDirectory()),
       run: harness.run,
       uid: injected,
     });
@@ -821,7 +904,7 @@ describe("daemon status — the three queries, and nothing that parses launchctl
       const report = await daemonStatus({
         stateDir,
         platform: "darwin",
-        environment: macEnvironment(scratchDirectory()),
+        environment: fixtureEnvironment(scratchDirectory()),
         run: harness.run,
         uid: 501,
       });
@@ -847,7 +930,7 @@ describe("daemon start and daemon stop", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
 
       await installDaemon({
@@ -904,7 +987,7 @@ describe("daemon start and daemon stop", () => {
     async () => {
       const root = scratchDirectory();
       const stateDir = installableState();
-      const environment = macEnvironment(root);
+      const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
       await installDaemon({
         stateDir,
@@ -1008,7 +1091,7 @@ describe("daemon restart", () => {
     "clears the latch, drains the running daemon over its socket, and starts it again",
     async () => {
       const { stateDir, socket } = realDaemonState("launchd");
-      const environment = macEnvironment(scratchDirectory());
+      const environment = fixtureEnvironment(scratchDirectory());
       const harness = lifecycleHarness({ stateDir });
       const context = { stateDir, platform: "darwin" as const, environment, uid: 501 };
 
@@ -1060,7 +1143,7 @@ describe("daemon restart", () => {
     "runs systemctl --user reset-failed first, and reads the exit status systemd records",
     async () => {
       const { stateDir, socket } = realDaemonState("systemd");
-      const environment = { home: join(scratchDirectory(), "home"), account: "tester" };
+      const environment = fixtureEnvironment(scratchDirectory());
       const harness = lifecycleHarness({ stateDir });
       const context = { stateDir, platform: "linux" as const, environment, uid: 1000 };
 
@@ -1088,7 +1171,7 @@ describe("daemon restart", () => {
     "treats a daemon that is not running as nothing to drain, and starts it",
     async () => {
       const { stateDir } = realDaemonState("launchd");
-      const environment = macEnvironment(scratchDirectory());
+      const environment = fixtureEnvironment(scratchDirectory());
       const harness = lifecycleHarness({ stateDir });
       const context = { stateDir, platform: "darwin" as const, environment, uid: 501 };
 

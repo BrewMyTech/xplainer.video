@@ -104,9 +104,14 @@ function narrateWorkerCommand(): { command: string; args: string[] } {
     return { command: process.execPath, args: [compiled] };
   }
   const source = fileURLToPath(new URL("../workers/narrate.ts", import.meta.url));
-  const hook = fileURLToPath(new URL("./testing/ts-source-hook.ts", import.meta.url));
-  if (existsSync(source) && existsSync(hook)) {
-    return { command: process.execPath, args: ["--import", hook, source] };
+  // The entry is a path and the hook is a **URL**: `--import` takes a module specifier, and
+  // `C:\\Users\\…` parses as one with the scheme `c:`, which Node rejects with
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME. `spawn-child.ts` states the same rule for every other spawned
+  // test child; this was the last site still passing the bare path, and it is the one a Windows
+  // `serve` reaches from its own source tree.
+  const hookUrl = new URL("./testing/ts-source-hook.ts", import.meta.url);
+  if (existsSync(source) && existsSync(fileURLToPath(hookUrl))) {
+    return { command: process.execPath, args: ["--import", hookUrl.href, source] };
   }
   throw new Error(
     `the narration worker is missing: neither ${compiled} nor ${source} exists. This build is ` +
