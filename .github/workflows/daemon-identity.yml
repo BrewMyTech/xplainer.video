@@ -1,0 +1,268 @@
+# The `[runner]` half of T17: the three-row consistency check, on machines this
+# project's authors do not have.
+#
+# WHAT IT CLOSES. T17's criterion 10 — "Windows is runner-only; macOS and Linux
+# are local". Three things are behind that one line:
+#
+#   * The **comparison** (`apps/cli/src/install/supervisors/identity.test.ts`)
+#     runs on every one of the three operating systems here. Its supervisor and
+#     its `/healthz` are seams, which is what makes three platforms checkable
+#     from one machine — but row 3 is not a seam even there: every case in that
+#     file's third block spawns a **real `xplainer serve`** and recomputes the
+#     digest it advertises from the argv, the settings and the working directory
+#     that process was launched with. What this workflow adds is that the same
+#     thing happens on an operating system nobody here runs.
+#   * The **proof** (`apps/cli/src/install/testing/identity-proof.ts`) hands the
+#     four failure scenarios to a real service manager. The one that matters
+#     most cannot be simulated at all: `systemctl show` keeps answering with the
+#     manager's **cached** unit until `daemon-reload`, so an artefact rewritten
+#     and never reloaded is a desired-versus-loaded mismatch — and reading our
+#     own file back would have reported success. Measured locally in
+#     `infra/e2e/Dockerfile.systemd`; measured here on a hosted Linux VM and on a
+#     macOS runner that is not the machine the code was written on.
+#   * **Windows is runner-only**, and it is the platform nothing in this
+#     repository can measure. `Get-ScheduledTask`'s `Actions` — `Execute`,
+#     `Arguments` and `WorkingDirectory` — have never been read from a real
+#     registered task anywhere. The Windows job runs the comparison suite, runs
+#     the proof, and then **prints the raw answer** the query composes, before
+#     and after a rewrite of the local XML mirror, so the record is updated from
+#     what a real Task Scheduler said rather than from the documentation.
+#
+# WHY THE WINDOWS QUERY IS THREE `Key=value` LINES AND NOT `Format-List`.
+# `Format-List` wraps a value longer than the console width across lines, and an
+# installed `Arguments` is two absolute paths and six flags long — so a formatted
+# answer would arrive broken in the middle of a path and be compared as a
+# mismatch that is really a line break. The query composes the lines itself; the
+# measurement step below is what confirms the shape.
+#
+# THE THROWAWAY IDENTITY, PER PLATFORM. On macOS the proof translates every
+# command to `video.xplainer.t17-proof` and rewrites the plist's `Label` to
+# match, because a proof must not register the product's own label in a real
+# user's `launchd`. On Linux and Windows nothing is translated: systemd reads
+# `$XDG_CONFIG_HOME/systemd/user` and nowhere else, and Task Scheduler has one
+# store — so those legs register the real service in the runner's own account and
+# remove it in the proof's `finally` and again in the cleanup step below. They
+# are disposable VMs; a developer running the Linux leg locally uses
+# `infra/e2e/Dockerfile.systemd` for the same reason.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, the runner half of T17 is unproven, and no record
+# in this repository may say otherwise.** `workflow_dispatch` registers from the
+# repository's **default branch**, so this file has to reach `main` before the
+# API will accept a dispatch of it at all — GitHub's own rule, not a repository
+# setting — and `--ref` then chooses whose code runs. It has never been
+# dispatched.
+#
+#   gh workflow run daemon-identity.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-identity.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHAT RAN LOCALLY INSTEAD, AND WHAT IT SAID. Both `local` halves are done and
+# both passed on 2026-09-08: macOS against a real `launchd` on this machine, and
+# Linux against a real per-user `systemd` in `infra/e2e/Dockerfile.systemd`. The
+# Linux transcript carries the assertion this whole story exists for —
+# "systemd is still holding A: the loaded row is stale until `daemon-reload`" —
+# and, after the reload, "row 2 now agrees with row 1, so the digest is the only
+# detector left".
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The rule every proof workflow here
+# follows: these jobs assemble a ~160 MB payload and install a supervised daemon.
+# `ci.yml` is the gate that runs on every push; this is a proof, and a proof is
+# run when you want it.
+#
+# WHY NOTHING IS UPLOADED. Every job writes its whole transcript to stdout, so
+# the job log **is** the artefact — and that keeps this workflow clear of the
+# organisation-wide artifact-storage quota that has failed every upload step
+# since 2026-09-07.
+
+name: daemon identity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  systemd:
+    name: desired, loaded and responding against a real systemd (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # One payload assembly, one copy, two stagings, an install and four status
+    # passes, after a cold `turbo build`.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The assembler copies `apps/cli/dist`, and refuses a checkout that has
+      # none — so the build is a step of its own and a build failure is legible
+      # as one rather than as an assembly refusal.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The same step every other supervised proof uses, and for the same
+      # reason: a hosted runner has no login session, so `systemctl --user`
+      # reaches no manager until lingering starts one.
+      - name: A per-user systemd manager, and what this runner had before
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+
+      # Both halves in the one command T17's exit rule names. The transcript is
+      # also written to `.session/artifacts/e2e-identity.log`, which is not
+      # uploaded: the job log is the artefact.
+      - name: The comparison and the proof (T17)
+        run: pnpm e2e:identity
+
+      - name: Leave no unit and no linger record behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          systemctl --user disable --now xplainer.service 2>&1 || true
+          rm -f "$HOME/.config/systemd/user/xplainer.service"
+          systemctl --user daemon-reload 2>&1 || true
+          sudo loginctl disable-linger "$(id -un)" || true
+          echo "left: $(ls "$HOME/.config/systemd/user" 2>&1 || echo '<no unit directory>')"
+
+  launchd:
+    name: identity as the only detector, against a real launchd (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: The comparison and the proof (T17)
+        run: pnpm e2e:identity
+
+      # `launchctl` has no verb that removes an entry from the disable store —
+      # `enable` and `disable` set its value and there is no third one — so what
+      # an honest cleanup can do is boot the job out and say what it left.
+      - name: Leave no job loaded behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          launchctl bootout "gui/$(id -u)/video.xplainer.t17-proof" 2>&1 || true
+          launchctl bootout "gui/$(id -u)/video.xplainer.daemon" 2>&1 || true
+          echo "disable store now:"
+          launchctl print-disabled "gui/$(id -u)" 2>&1 | grep -i xplainer || echo "  no xplainer entry"
+
+  task-scheduler:
+    name: the loaded row from a real Task Scheduler (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The comparison suite alone first, so a failure in it is told apart from a
+      # failure in the proof's install. Its third block spawns a real `serve`, so
+      # this is also where a Windows daemon's own advertised digest is measured.
+      - name: The comparison, including a real `serve` on Windows (T17)
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/install/supervisors/identity.test.ts
+
+      # A measurement rather than an assertion, and it exits 0 either way: it
+      # registers a task with the shape this project's renderer produces, asks
+      # the query the shipped code composes, and prints the answer. Nothing in
+      # this repository has ever seen a real one, so the record is updated from
+      # this and not from the documentation.
+      - name: What `Get-ScheduledTask` answers, before and after an XML rewrite
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $name = 'xplainer-t17-measure'
+          $exe  = 'C:\Windows\System32\cmd.exe'
+          $args = '/c timeout /t 3600 --state-dir C:\t17\state --token-file C:\t17\state\token --socket \\.\pipe\xplainer-t17'
+          $action  = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory 'C:\t17'
+          $trigger = New-ScheduledTaskTrigger -AtLogOn
+          Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Force | Out-Null
+          Write-Output '--- the query the shipped code composes ---'
+          $a = @((Get-ScheduledTask -TaskName $name).Actions)[0]
+          "Execute=" + $a.Execute
+          "Arguments=" + $a.Arguments
+          "WorkingDirectory=" + $a.WorkingDirectory
+          Write-Output '--- and with no WorkingDirectory at all ---'
+          $bare = New-ScheduledTaskAction -Execute $exe -Argument $args
+          Set-ScheduledTask -TaskName $name -Action $bare -Trigger $trigger | Out-Null
+          $b = @((Get-ScheduledTask -TaskName $name).Actions)[0]
+          "Execute=" + $b.Execute
+          "Arguments=" + $b.Arguments
+          "WorkingDirectory=" + $b.WorkingDirectory
+          Unregister-ScheduledTask -TaskName $name -Confirm:$false
+
+      # The install-and-drift half. Expected to be the first execution of the
+      # Windows branch of `identity-proof.ts`, so a failure here is a
+      # measurement too: record it, do not hide it.
+      - name: The proof against a real Task Scheduler (T17)
+        continue-on-error: true
+        run: pnpm e2e:identity
+
+      - name: Leave no task behind
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\xplainer\*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
+          Write-Output 'left:'
+          Get-ScheduledTask -TaskPath '\xplainer\*' -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty TaskName
