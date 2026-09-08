@@ -208,6 +208,24 @@ export type CreateServerOptions = {
    * to tell "the field is missing" apart from "this release does not have it".
    */
   identity?: { run_id: string; runtime_digest: string };
+  /**
+   * Whether this machine's render toolchain is usable, asked at request time.
+   *
+   * [ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths requires a
+   * daemon whose toolchain is absent to *report* it rather than to answer `ok` and fail every
+   * render, and nothing produced that report before: `/healthz` said `ok` for a machine with no
+   * browser, no speech provider and no installed workspace. The seam is a function rather than a
+   * value because the condition changes **under a running daemon** — `xplainer setup` is a separate
+   * process, and a workspace can be deleted while the daemon is up — so a snapshot taken at bind
+   * would answer for a machine that no longer exists.
+   *
+   * A **parameter**, for the same reason the guard is one: `services/media-service` binds this same
+   * application in a container with no state directory and no toolchain to have an opinion about,
+   * and it passes none. Absent, `/healthz` answers `ok` with `reason: null`, so the body's shape is
+   * the same either way and a reader never has to tell "this release has no such field" apart from
+   * "this daemon is healthy".
+   */
+  toolchain?: () => { ok: boolean; reason: string | null };
 };
 
 /** A bound server, and the handle that stops it. */
@@ -325,16 +343,29 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
   // directory and the payload's content hash. Advertised rather than read back out of a file,
   // because a `daemon status` that inferred them from `runtime.json` would be asserting what the
   // last run wrote instead of what this process is.
+  // `status` is `degraded` with a machine-readable `reason` when this machine cannot render — the
+  // condition ADR 0020 §Degraded paths requires a daemon to report rather than to discover inside a
+  // job. It stays a `200`: the daemon is up, answering, and holding the queue; what is missing is
+  // something only `xplainer setup` can supply, and a `503` would make every liveness probe and
+  // every supervisor treat a working daemon as a failed one.
   const identity = options.identity ?? null;
-  app.get("/healthz", (c) =>
-    c.json({
-      status: "ok",
+  const toolchain =
+    options.toolchain ??
+    ((): { ok: boolean; reason: string | null } => ({
+      ok: true,
+      reason: null,
+    }));
+  app.get("/healthz", (c) => {
+    const health = toolchain();
+    return c.json({
+      status: health.ok ? "ok" : "degraded",
+      reason: health.ok ? null : health.reason,
       version,
       contract_version: MCP_CONTRACT_VERSION,
       run_id: identity?.run_id ?? null,
       runtime_digest: identity?.runtime_digest ?? null,
-    }),
-  );
+    });
+  });
 
   app.post("/mcp", async (c) => {
     const server = createMcpServer(backend, {
@@ -467,6 +498,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     ...(guardFactory !== undefined && { guard: gate }),
     ...(options.drain !== undefined && { drain: options.drain }),
     ...(options.identity !== undefined && { identity: options.identity }),
+    ...(options.toolchain !== undefined && { toolchain: options.toolchain }),
     // The seam T13 adds, and the whole of it: the set stays here, and what leaves this function is
     // a question that can be asked about one `Request` object.
     isOverIpc: (request) => overIpc.has(request),

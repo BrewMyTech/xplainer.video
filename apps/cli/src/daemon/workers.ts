@@ -31,6 +31,16 @@
  * `assertRenderable()` refuses a render whose narration or captions are missing. A factory that
  * throws costs a second; the render it stopped would have cost minutes and produced a silent MP4.
  *
+ * **The toolchain is read here too, and that is where a missing browser stops being a mystery.**
+ * `<state>/toolchain.json` is the record `xplainer setup` leaves and the only thing on the machine
+ * that says the browser and the speech provider a render needs are present — neither this daemon
+ * nor `daemon install` ever downloads (ADR 0005). So `explainer_still` and `explainer_render` read
+ * it before they build a `WorkerSpec`, and a missing or stale toolchain — including a workspace
+ * whose resolved Remotion no longer matches the template this build ships — is a **named refusal**
+ * on the job record rather than an `ENOENT` or a Chrome that quietly downloads itself inside a
+ * worker whose log tail is the only evidence anybody gets. `setup/toolchain.ts` owns the judgement;
+ * this file owns the moment it is asked.
+ *
  * **And it is where the video's write lock is taken** (`video-lock.ts`), last, once every refusal
  * above has had its chance — so a job that is going to be refused never takes a lock, and a job
  * that is going to spawn always holds one. `WorkerSpec.release` carries it to the runner, which
@@ -55,6 +65,7 @@ import {
 } from "@xplainer/render-core";
 import { readJobRequest } from "../job-request.js";
 import { findInstalledPackage, type NodeEntry, resolveNodeEntry } from "../runtime/launch-spec.js";
+import { assertToolchainReady } from "../setup/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
 import { acquireVideoWriteLock } from "./video-lock.js";
@@ -63,6 +74,14 @@ import { acquireVideoWriteLock } from "./video-lock.js";
 export type CreateWorkerRegistryOptions = {
   /** The shared Remotion workspace root every job reads and writes under. */
   root: string;
+  /**
+   * The daemon's state directory, where `xplainer setup` wrote `toolchain.json`.
+   *
+   * Passed in rather than resolved here, for the reason every other module in `daemon/` takes it as
+   * an argument: `serve --state-dir` moves it, and a registry that read the environment would gate
+   * renders on a marker in a directory this daemon is not using.
+   */
+  stateDir: string;
 };
 
 /**
@@ -157,7 +176,7 @@ function assertReadyToRender(source: string, publicDir: string): void {
  * conclusion. All three are present here; `daemon/start.ts` substitutes a test registry.
  */
 export function createWorkerRegistry(options: CreateWorkerRegistryOptions): WorkerRegistry {
-  const { root } = options;
+  const { root, stateDir } = options;
 
   /** Take this video's write lock, and hand the runner the way to give it back. */
   function lockVideo(slug: string, jobType: JobType, jobId: number): () => void {
@@ -188,6 +207,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_still");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
+      assertToolchainReady({ stateDir, workspaceRoot: root });
       assertReadyToRender(video.source, video.publicDir);
       const worker = remotionWorker(
         root,
@@ -211,6 +231,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_render");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
+      assertToolchainReady({ stateDir, workspaceRoot: root });
       assertReadyToRender(video.source, video.publicDir);
       const worker = remotionWorker(
         root,

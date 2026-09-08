@@ -179,6 +179,54 @@ describe("xplainer serve", () => {
     expect(bare.runtime_digest).toBeNull();
   });
 
+  /**
+   * ADR 0020 §Degraded paths: a daemon whose render toolchain is absent must **report** it, not
+   * answer `ok` and fail every render. Nothing produced that report before this story — `/healthz`
+   * said `ok` for a machine with no browser, no speech provider and no installed workspace.
+   *
+   * It stays a `200` deliberately. The daemon is up, answering and holding the queue; what is
+   * missing is something only `xplainer setup` can supply, and a `503` would make every liveness
+   * probe and every supervisor treat a working daemon as a failed one.
+   */
+  it("reports a degraded toolchain with its reason, and stays a 200", async () => {
+    running = await startServer({
+      backend: localBackend(),
+      port: 0,
+      toolchain: () => ({ ok: false, reason: "toolchain_missing" }),
+    });
+
+    const response = await fetch(`${running.url}/healthz`);
+    const body = (await response.json()) as { status: unknown; reason: unknown };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ status: "degraded", reason: "toolchain_missing" });
+  });
+
+  /**
+   * The seam is a function and not a value, because the condition changes **under a running
+   * daemon**: `xplainer setup` is a separate process, and a workspace can be deleted while this one
+   * is up. A snapshot taken at bind would answer for a machine that no longer exists.
+   */
+  it("asks the toolchain again on every request rather than once at bind", async () => {
+    let healthy = true;
+    running = await startServer({
+      backend: localBackend(),
+      port: 0,
+      toolchain: () =>
+        healthy ? { ok: true, reason: null } : { ok: false, reason: "toolchain_stale" },
+    });
+
+    const before = (await (await fetch(`${running.url}/healthz`)).json()) as { status: unknown };
+    healthy = false;
+    const after = (await (await fetch(`${running.url}/healthz`)).json()) as {
+      status: unknown;
+      reason: unknown;
+    };
+
+    expect(before.status).toBe("ok");
+    expect(after).toMatchObject({ status: "degraded", reason: "toolchain_stale" });
+  });
+
   it("keeps the advertised contract version independent of the release version it reports", async () => {
     running = await startServer({
       backend: localBackend(),

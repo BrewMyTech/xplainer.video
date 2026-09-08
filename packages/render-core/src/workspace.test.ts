@@ -64,7 +64,7 @@ describe("videoPaths", () => {
 });
 
 describe("materialiseWorkspace", () => {
-  it("copies the four template files and creates the three directories", () => {
+  it("copies every template file and creates the three directories", () => {
     const root = temporaryRoot();
 
     const result = materialiseWorkspace(root);
@@ -76,6 +76,30 @@ describe("materialiseWorkspace", () => {
     };
     expect(manifest.dependencies.remotion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(listVideoSlugs(root)).toEqual([]);
+  });
+
+  /**
+   * `npm ci` — the command both ends of the pinned resolution run — refuses a directory with no
+   * lockfile: "npm error `npm ci` can only install packages when your package.json and
+   * package-lock.json ... are in sync". A workspace materialised without one is therefore a
+   * workspace `xplainer setup --workspace` cannot install, which is why the file is asserted here
+   * as bytes on disk that parse and name the same package rather than as a member of a list.
+   */
+  it("puts the lockfile npm ci needs beside the package.json it locks", () => {
+    const root = temporaryRoot();
+
+    materialiseWorkspace(root);
+
+    expect(WORKSPACE_FILES).toContain("package-lock.json");
+    const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")) as {
+      name: string;
+      lockfileVersion: number;
+    };
+    const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      name: string;
+    };
+    expect(lock.name).toBe(manifest.name);
+    expect(lock.lockfileVersion).toBeGreaterThanOrEqual(2);
   });
 
   it("never overwrites a package.json a package manager has already installed against", () => {

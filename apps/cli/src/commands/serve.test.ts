@@ -55,6 +55,8 @@ import { isAlive } from "../daemon/worker-identity.js";
 import type { CliIo } from "../io.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { DRAIN_PATH } from "../server.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
+import { VIDEOS_DIR_ENV, WORKSPACE_DIR_NAME } from "../workspace-root.js";
 import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
@@ -86,12 +88,25 @@ function octal(value: number): string {
   return value.toString(8).padStart(4, "0");
 }
 
-/** Start a daemon and wait for the line ADR 0025 §Part three makes the readiness signal. */
+/**
+ * Start a daemon and wait for the line ADR 0025 §Part three makes the readiness signal.
+ *
+ * The fixture records a toolchain first. Every test in this file is about something else — the
+ * token, the settings, the drain, the socket — and a daemon whose toolchain is absent now answers
+ * `/healthz` with `{"status":"degraded","reason":"toolchain_missing"}` (T19), which is correct and
+ * is asserted where it is the subject (`server.test.ts`, and `scripts/e2e/toolchain.mjs` against a
+ * real acquisition). Recording one here is what keeps `ok` meaning "this daemon is healthy" rather
+ * than "this fixture forgot to run setup".
+ */
 async function serveUntilReady(
   entry: string,
   stateDir: string,
   env: Record<string, string> = {},
 ): Promise<{ child: SpawnedChild; ready: ReadyAnnouncement; token: string }> {
+  recordTestToolchain({
+    stateDir,
+    workspaceRoot: env[VIDEOS_DIR_ENV] ?? join(stateDir, WORKSPACE_DIR_NAME),
+  });
   const child = run(entry, ["--port", "0"], { XPLAINER_STATE_DIR: stateDir, ...env });
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   const token = readFileSync(env[TOKEN_FILE_ENV] ?? join(stateDir, TOKEN_FILE), "utf8").trim();
@@ -488,6 +503,10 @@ describe("the IPC listener", () => {
     expect(overSocket.status).toBe(200);
     expect(JSON.parse(overSocket.body)).toEqual({
       status: "ok",
+      // `null` because this daemon's toolchain is fine, not because the field is absent: the body's
+      // shape is the same either way, so a reader never has to tell "this release has no such
+      // field" apart from "this daemon can render" (T19).
+      reason: null,
       version: expect.any(String),
       contract_version: MCP_CONTRACT_VERSION,
       // The identity a supervised daemon advertises about itself: the ownership acquisition's own

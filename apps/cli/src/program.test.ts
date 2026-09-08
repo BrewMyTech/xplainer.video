@@ -242,16 +242,25 @@ describe("xplainer", () => {
     }
   });
 
-  it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
-    const deferred = [["setup"]];
+  /**
+   * `setup` was the last deferred stub, and this is what replaced that assertion.
+   *
+   * The surface is asserted rather than the behaviour: what each flag *does* is
+   * `commands/setup.test.ts`'s subject, and what belongs here is that the four options the rest of
+   * the phase's proofs and documents name — `--workspace` under a scrubbed `PATH`, `--skip-speech`
+   * on a platform with no speech route, `--tts-url` for a server somebody else runs, and
+   * `--state-dir` as `SETTING_FLAGS` spells it — are still on the command a user reaches.
+   */
+  it("offers setup's four documented options, now that it is no longer a stub", () => {
+    const setup = createProgram().commands.find((command) => command.name() === "setup");
 
-    for (const argv of deferred) {
-      const { stdout, stderr, exitCode } = await run(argv);
-
-      // The whole path, not the leaf: `xplainer install` is not a command.
-      expect(stderr).toBe(`xplainer ${argv.join(" ")}: not implemented in this phase\n`);
-      expect(stdout).toBe("");
-      expect(exitCode).toBe(2);
-    }
+    expect(setup?.options.map((option) => option.long)).toEqual([
+      "--workspace",
+      "--skip-browser",
+      "--skip-speech",
+      "--tts-url",
+      "--state-dir",
+      "--manifest",
+    ]);
   });
 });

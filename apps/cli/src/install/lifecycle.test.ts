@@ -39,7 +39,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type DaemonStart, readDaemonState, updateDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveIpcPath } from "../daemon/ipc.js";
-import { CHILD_SERVE, TS_SOURCE_HOOK } from "../daemon/testing/spawn-child.js";
+import {
+  CHILD_SERVE,
+  killAndWait,
+  removeTree,
+  TS_SOURCE_HOOK,
+} from "../daemon/testing/spawn-child.js";
 import { isAlive } from "../daemon/worker-identity.js";
 import { installDaemon } from "./install.js";
 import {
@@ -93,18 +98,22 @@ beforeAll(() => {
 }, 120_000);
 
 afterAll(() => {
-  rmSync(suiteScratch, { recursive: true, force: true });
+  removeTree(suiteScratch);
 });
 
-afterEach(() => {
-  for (const child of children.splice(0)) {
-    child.kill("SIGKILL");
-  }
+afterEach(async () => {
+  // The children are killed **and waited for** before anything is removed. A process that has been
+  // signalled still holds every file it had open until the kernel has finished with it, and Windows
+  // refuses to unlink a file with an open handle: `windows-latest` answered
+  // `EPERM, Permission denied: \\?\C:\Users\RUNNER~1\AppData\Local\Temp\xplainer-lifecycle-…` for
+  // five cases here on 2026-09-08. `removeTree` retries on top of that, for the handles a daemon's
+  // own descendants may still be closing after their parent has gone.
+  await Promise.all(children.splice(0).map((child) => killAndWait(child, 5_000)));
   for (const close of listeners.splice(0)) {
     close();
   }
   for (const directory of scratch.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+    removeTree(directory);
   }
 });
 
@@ -160,6 +169,14 @@ type LifecycleHarness = {
   commands: string[];
   /** Stop the daemon this harness started, as the supervisor's stop command would. */
   stop(): void;
+  /**
+   * Kill the daemon outright and wait for it to be gone.
+   *
+   * The state a `SIGKILL`ed daemon leaves — a stale `runtime.json`, nothing listening — as a fact
+   * rather than a race. {@link stop} sends `SIGTERM`, which starts the shipped 20-second drain, so
+   * a case that wants "not running" has to either wait out the drain or not ask for one.
+   */
+  kill(): Promise<void>;
   /** Make the disabled query answer "switched off". */
   switchOff(label: string): void;
 };
@@ -196,6 +213,14 @@ function lifecycleHarness(options: { stateDir: string; lingerMarker?: string }):
   const stop = (): void => {
     daemon?.kill("SIGTERM");
     daemon = null;
+  };
+
+  const kill = async (): Promise<void> => {
+    const child = daemon;
+    daemon = null;
+    if (child !== null) {
+      await killAndWait(child, 5_000);
+    }
   };
 
   const ok: ProbeResult = { started: true, status: 0, stdout: "", stderr: "" };
@@ -288,6 +313,7 @@ function lifecycleHarness(options: { stateDir: string; lingerMarker?: string }):
     run,
     commands,
     stop,
+    kill,
     switchOff: (label) => {
       disabledLabel = label;
     },
@@ -615,8 +641,17 @@ describe("daemon status — the three queries, and nothing that parses launchctl
       // Criterion 6, as an allowlist: every command a status ran, with the fact it establishes.
       // Anything else would be a fact coming from somewhere other than `/healthz`, our own files
       // and the documented queries.
+      //
+      // **Two GUI domains can legitimately appear, and which two depends on the machine.**
+      // `askSwitch` asks about the uid this case injects — 501, the ADR's own example — while the
+      // preflight's domain probe asks about the uid the *process* has, which is 501 on a macOS
+      // runner and 1001 on the Linux one that runs this same file. Pinning both to 501 made this a
+      // macOS-only assertion, and it failed on `ubuntu-latest` on 2026-09-08 for that reason and
+      // not for anything `daemon status` did.
+      const ownDomain = `launchctl print-disabled gui/${String(process.getuid?.() ?? 0)}`;
       const allowed = [
         "launchctl print-disabled gui/501", // the disabled-by-user-or-policy query, and the domain
+        ownDomain, // the same query, for the domain this process is actually in
         "lsof", // who holds the recorded port, when it is held
         "ss",
         "netstat",
@@ -624,13 +659,53 @@ describe("daemon status — the three queries, and nothing that parses launchctl
       for (const command of harness.commands) {
         expect(allowed.some((prefix) => command.startsWith(prefix))).toBe(true);
       }
-      // And the memoised runner asked launchd once, not once per caller.
-      expect(
-        harness.commands.filter((entry) => entry.startsWith("launchctl print-disabled")),
-      ).toHaveLength(1);
+      // And the memoised runner asked launchd once **per domain**, not once per caller: two callers
+      // asking the same question spend one subprocess, which is the whole point of memoising.
+      const disabledQueries = harness.commands.filter((entry) =>
+        entry.startsWith("launchctl print-disabled"),
+      );
+      expect(disabledQueries).toContain("launchctl print-disabled gui/501");
+      expect(new Set(disabledQueries).size).toBe(disabledQueries.length);
     },
     SPAWN_TIMEOUT_MS,
   );
+
+  /**
+   * The two GUI domains one status can ask about, which is why the allowlist above has room for
+   * two — reproduced here rather than left to the machine that happens to run this file.
+   *
+   * `askSwitch` asks about the uid it was **given**: an installer's, a supervisor's, or this
+   * suite's `501`. The preflight's own domain probe asks launchd about the uid this **process**
+   * has, because "does this account have a GUI domain at all" is a question about the caller. On a
+   * machine where those two differ the status runs two `print-disabled` commands, and that is not
+   * a fault: it is one question asked of two domains. `ubuntu-latest` is such a machine — 501
+   * injected, 1001 running — and injecting a uid that is deliberately not this process's makes the
+   * same divergence appear on any machine.
+   */
+  it("asks the switch question about the uid it was given, and the domain question about its own", async () => {
+    const stateDir = installableState();
+    const harness = lifecycleHarness({ stateDir });
+    const own = process.getuid?.() ?? 0;
+    const injected = own + 4242;
+    // A recorded registration, so there is something for the switch query to be about. No daemon is
+    // started: what is being observed is which commands a status runs, not what they answer.
+    updateDaemonState(stateDir, {
+      supervisor_kind: "launchd",
+      supervisor_artefact: join(scratchDirectory(), "agent.plist"),
+    });
+
+    await daemonStatus({
+      stateDir,
+      platform: "darwin",
+      environment: macEnvironment(scratchDirectory()),
+      run: harness.run,
+      uid: injected,
+    });
+
+    expect(harness.commands).toContain(`launchctl print-disabled gui/${String(injected)}`);
+    expect(harness.commands).toContain(`launchctl print-disabled gui/${String(own)}`);
+    expect(harness.commands.filter((entry) => entry.startsWith("launchctl print "))).toEqual([]);
+  });
 
   /** Criterion 4: the three queries, spelled as the plan and ADR 0020 name them. */
   it("asks the disabled question with the documented command on each platform", () => {
@@ -1018,8 +1093,14 @@ describe("daemon restart", () => {
       const context = { stateDir, platform: "darwin" as const, environment, uid: 501 };
 
       await startDaemon({ ...context, run: harness.run });
-      harness.stop();
-      // Gone, and the record it left behind is the stale one a killed daemon leaves.
+      // **Killed and waited for, rather than asked to stop.** `SIGTERM` starts the shipped
+      // 20-second drain, so a `restartDaemon` that ran straight after one met a daemon that was
+      // still answering `/healthz` while its socket had already gone — and got the *other* true
+      // sentence, "nothing is listening on … (ENOENT), though something answered /healthz a moment
+      // earlier". macOS finished the drain quickly enough to pass and `ubuntu-latest` did not, on
+      // 2026-09-08. A `SIGKILL` is also the state this case is named for: a daemon that is not
+      // running, and the stale `runtime.json` a killed one leaves behind.
+      await harness.kill();
       expect(existsSync(join(stateDir, "runtime.json"))).toBe(true);
 
       const outcome = await restartDaemon({ ...context, run: harness.run });

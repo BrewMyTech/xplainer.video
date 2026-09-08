@@ -81,13 +81,14 @@ import { resolveIpcPath } from "../../daemon/ipc.js";
 import type { LaunchSpec } from "../../runtime/launch-spec.js";
 import { SETTING_FLAGS } from "../../runtime/launch-spec.js";
 import { daemonStatus, restartDaemon } from "../lifecycle.js";
-import { type ProbeCommand, runProbe } from "../preflight.js";
+import { currentSupervisorEnvironment, type ProbeCommand, runProbe } from "../preflight.js";
 import {
   deregisterCommands,
   guiService,
   type RegistrationTarget,
   registerCommands,
 } from "../register.js";
+import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
 import { renderScheduledTask } from "../supervisors/schtasks.js";
 import { renderSystemdUnit } from "../supervisors/systemd.js";
@@ -103,9 +104,18 @@ export const THROWAWAY_TASK = "\\xplainer\\t14-proof";
 const LINUX_USER = "xplainer";
 const LINUX_UID = 1000;
 
-/** This file, and the source hook a child needs to run TypeScript. */
+/** This file, which a child is re-entered through. */
 const SELF = fileURLToPath(import.meta.url);
-const HOOK = fileURLToPath(new URL("../../daemon/testing/ts-source-hook.ts", import.meta.url));
+
+/**
+ * The source hook a child is started under, as a **file URL**.
+ *
+ * `--import` takes a module specifier, and an absolute Windows path is one with the scheme `c:` —
+ * `ERR_UNSUPPORTED_ESM_URL_SCHEME`, measured on `windows-latest` on 2026-09-08. `new URL(…,
+ * import.meta.url).href` is a `file:` URL on every platform, so this is one spelling rather than a
+ * Windows branch. {@link SELF} stays a path: an entry file is resolved, not parsed as a specifier.
+ */
+const HOOK = new URL("../../daemon/testing/ts-source-hook.ts", import.meta.url).href;
 const CHILD_SERVE = fileURLToPath(new URL("../../daemon/testing/child-serve.ts", import.meta.url));
 
 /**
@@ -203,6 +213,25 @@ type Bed = {
 };
 
 /**
+ * The account and the directories the three renderers build their paths from.
+ *
+ * On macOS and Linux the job is registered for the account this proof already runs as, and every
+ * path it renders points inside a scratch home. **Windows needs two more fields and neither is
+ * optional**: `schtasks.ts` builds the XML mirror and the log path from `%LOCALAPPDATA%` and
+ * refuses a blank one, and both the task's name and its S4U principal come from the qualified
+ * account — a fixture name would be a principal Task Scheduler cannot register a task for. So the
+ * `win32` form is this process's own environment with the scratch home kept, which is the account
+ * the runner is logged in as. Measured on `windows-latest` on 2026-09-08, before this existed:
+ * "SupervisorArtefactError: the task-scheduler artefact needs environment.localAppData, and it is
+ * the empty string".
+ */
+function proofEnvironment(home: string): SupervisorEnvironment {
+  return process.platform === "win32"
+    ? { ...currentSupervisorEnvironment(), home }
+    : { home, account: LINUX_USER };
+}
+
+/**
  * A state directory whose recorded port is the one this process is holding, and this platform's
  * artefact around the real `serve`.
  *
@@ -237,7 +266,7 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
     settings: { stateDir, tokenFile, socket },
     cwd: stateDir,
   };
-  const environment = { home, account: LINUX_USER };
+  const environment = proofEnvironment(home);
 
   let artefactPath: string;
   let identity: string;
@@ -425,7 +454,7 @@ async function proveTheSentence(bed: Bed, platform: NodeJS.Platform, uid: number
   const report = await daemonStatus({
     stateDir: bed.stateDir,
     platform,
-    environment: { home: bed.home, account: LINUX_USER },
+    environment: proofEnvironment(bed.home),
     uid,
     run: bed.run,
   });
@@ -461,7 +490,7 @@ async function proveRestartClearsIt(
   const attempt = await restartDaemon({
     stateDir: bed.stateDir,
     platform,
-    environment: { home: bed.home, account: LINUX_USER },
+    environment: proofEnvironment(bed.home),
     uid,
     run: bed.run,
   }).then(

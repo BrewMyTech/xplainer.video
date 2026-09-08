@@ -30,6 +30,10 @@ import { isAlive } from "./worker-identity.js";
  * announcement while this process is still between two statements — and a leader signalled in that
  * window dies of `SIGTERM`'s default action, leaving nothing for `SIGKILL` to reach and turning
  * "escalated to SIGKILL" into "SIGTERM was enough". Announcing last closes the window.
+ *
+ * **The handler means nothing on Windows**, where a signal is a `TerminateProcess` no process can
+ * decline. The scenario there is the other half of the same sentence: the leader dies at once and
+ * the grandchild it left behind is contained by the Job Object rather than by a group.
  */
 const STUBBORN_LEADER = `
 const { spawn } = require("node:child_process");
@@ -75,8 +79,19 @@ describe("terminateGroup", () => {
 
     const teardown = await terminateGroup(target ?? { pid: 0, pgid: null }, 200);
 
-    expect(teardown.signal).toBe("SIGKILL");
+    // **Which signal did the work is the platform's answer, not a preference.** On POSIX the leader
+    // ignores `SIGTERM`, the grace expires, and the escalation is what reaches it — `SIGKILL`. On
+    // Windows there is nothing to ignore: Node maps every signal to `TerminateProcess`, so the
+    // first call already killed the leader, the `SIGKILL` that follows finds no pid to deliver to,
+    // and `terminateGroup` reports the `SIGTERM` that actually ended it. Asserting `SIGKILL` there
+    // asserted a POSIX idiom against a platform without one, and failed on `windows-latest` on
+    // 2026-09-08 with "expected 'SIGTERM' to be 'SIGKILL'".
+    expect(teardown.signalled).toBe(true);
+    expect(teardown.signal).toBe(process.platform === "win32" ? "SIGTERM" : "SIGKILL");
     expect(await untilGone(leader.pid ?? 0)).toBe(true);
+    // The grandchild is the claim both platforms have to answer, by two different mechanisms: the
+    // process group on POSIX, and — on Windows — the Job Object whose keeper the `SIGKILL` above
+    // killed, closing the job's last handle. This line is the one the runner is here for.
     expect(await untilGone(grandchild)).toBe(true);
   });
 

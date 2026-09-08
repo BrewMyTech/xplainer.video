@@ -497,6 +497,69 @@ that phase 0 only declared a dependency on.
   API; no render or TTS code has crept into `apps/desktop` (the phase-0 grep still passes).
 - **P2-4** `xplainer setup` downloads, verifies and installs both artefacts on a clean
   machine per OS, and a corrupted download fails loudly rather than half-installing.
+  - *Amended 2026-09-08 (T19): three artefacts, not two, and the delivery position is stated rather
+    than assumed.* `setup` acquires the browser, a speech route and the **render workspace** — the
+    third is payload 2, which survives daemon updates and is materialised by
+    `xplainer setup --workspace`, the visible user step
+    [ADR 0005](adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md) defines. The browser
+    is admitted on the **expected** digest the toolchain manifest carries for the exact URL the
+    pinned Remotion line resolves, never on a digest taken from the bytes that arrived. Speech has
+    three routes — `--tts-url`, the Docker image pinned by digest, and the manifest's bundle — and
+    when none is possible `setup` exits `3` naming all three. **Nothing is published to
+    `cdn.xplainer.video` in this phase**, so a `bundle` acquisition cannot succeed anywhere and
+    **Windows has no working speech route at all**; that half of this row stays *pending*, and T20
+    is where the message a user meets says so. `pnpm e2e:toolchain` is the proof, and the run of
+    **2026-09-08** on macOS arm64 passed every leg: `setup --workspace` exits `0` under
+    `env -i PATH=/usr/bin:/bin` with no `node` resolvable for the parent, the resolved tree matches
+    the template's pins, `remotion versions` exits `0` against it, every path `toolchain.json`
+    records exists, and `/healthz` answers
+    `{"status":"degraded","reason":"toolchain_missing"}` when one is moved aside and `ok` when it is
+    put back (`.session/artifacts/e2e-toolchain.log`).
+  - *Amended 2026-09-08 (T20): the status of this row is **PENDING — met on macOS and Linux, not met
+    on Windows**, and the delivery position behind that is written down rather than implied.*
+    Nothing is published to the R2 bucket in this phase and **no command in this repository publishes
+    to it**: `infra/terraform` creates the bucket and the proxied `cdn.<zone>` record, connecting the
+    bucket to that custom domain and adding its Cache Rule are manual steps Terraform does not
+    manage, neither is scheduled here, and the upload is the release owner's. So
+    `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers nothing usable, which is the
+    intended state and not an outage. On **macOS and Linux** the row is met over the other two speech
+    routes — `--tts-url` and the `docker` image pinned by digest — with the browser admitted on the
+    expected digest a manifest named by `--manifest` carries. On **Windows none of the three routes
+    exists**: nothing is published for `bundle` to fetch, the pinned Kokoro-FastAPI image is
+    linux/amd64 and a `windows-latest` runner has no engine that runs one, and `--tts-url` records a
+    server somebody else already runs rather than acquiring one. **The milestone that closes it is phase 4** — a native speech bundle per platform,
+    published with the manifest to that bucket behind the connected custom domain and its Cache Rule.
+    Until then the `bundle` provider's download, resume, checksum and atomic-install machinery is
+    implemented and proved against the fixture server, `setup`'s refusal says all of this in the
+    message a user meets (`deliveryPosition()` in `apps/cli/src/setup/manifest.ts`), and
+    `infra/README.md` §*The delivery position, phase 2* records it. One consequence belongs here too:
+    because the installer carries the interpreter payload and not the render workspace, and nothing
+    is published for it to download, **first-run rendering needs a network** — the first
+    `xplainer setup --workspace` resolves the template's pins with the shipped npm from the public
+    registry, which is [ADR 0005](adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)'s
+    contract for the other two artefacts applied to the third.
+  - *Amended 2026-09-08 (T33): what `setup` installed is now asserted by rendering with it, and the
+    live speech route is exercised once with no fixture.* `pnpm e2e:toolchain` carries the render
+    half: from the same isolated artefact, out of the **materialised** workspace — never the
+    checkout's `node_modules`, which is `scripts/e2e/render.mjs`'s deliberate shortcut and not this
+    gate's — `narrate → still → render`, with the MP4 read back by `ffprobe` exactly as
+    `apps/cli/src/workers/render.test.ts` reads one. Measured on **2026-09-08**, macOS arm64, with
+    `XPLAINER_TTS_FIXTURE` unset and the narration synthesised by a real Kokoro-FastAPI: a
+    1920×1080 30/1 h264 MP4 with an **aac** stream, 259 frames — `timings.durationInFrames` exactly,
+    and not `Root.tsx`'s 300-frame Studio placeholder — lasting within 7.67 ms of `timings.json`,
+    whose own 8641 ms total matches the WAV's measured duration within 0.292 ms; a 960×540 still at
+    scale 0.5; and the scene changing on boundary frame 150 by 2.822% of the marker band against
+    0.000% of the frame-to-frame noise either side of it. **Who starts the speech provider is
+    decided and recorded**: `XPLAINER_TTS_URL` if one is supplied — which is `e2e-linux.yml`'s
+    `services:` block, and was one of the two runs measured — else a container the gate starts from
+    the digest in the receipt `setup` wrote and **stops in a `finally`**, which was the other
+    (`xplainer-t33-kokoro-98316`, started from
+    `ghcr.io/remsky/kokoro-fastapi-cpu@sha256:28d6f0b6…` on a port the OS chose, answering with 68
+    voices on attempt 11 and gone afterwards); else the leg is **skipped with its reason** — which
+    is what Windows gets this phase, where the render half still runs from T3's fixture audio after
+    `setup --skip-speech --workspace`. The `docker` question is asked with the **scrubbed** `PATH`
+    the artefact is run under, because a probe from the gate's own `PATH` promises a route `setup`
+    then cannot take. Transcript: `.session/artifacts/e2e-toolchain.log`.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
 - **P2-6** Standalone binaries run `--version`, `serve` and `mcp` on each OS with no Node
@@ -573,6 +636,30 @@ that phase 0 only declared a dependency on.
     that must itself reach readiness. In every case the previous pinned copy is running at the
     end, state written by the newer version is intact, and exactly one daemon holds the
     exclusive ownership ADR 0024 requires.
+  - *Amended 2026-09-08 (T33): the sixth assertion — **the rolled-back daemon renders** — is now
+    run, and running it found a blocking defect in the precondition that guards it.* B5 ends every
+    rollback with readiness (the installed workspace satisfies the pins of the runtime that came
+    back) and defers the PNG to this batch, where `setup` has supplied a browser and a real
+    workspace. `apps/cli/src/setup/testing/rollback-render.ts`, the last phase of
+    `pnpm e2e:toolchain`, reruns **every case that ends in a rollback** — the five durable
+    boundaries an updater can be killed at, and the replacement that never becomes ready — against
+    a payload the shipped assembler produced, and asks the daemon each recovery put back for a
+    still. Measured on **2026-09-08**, macOS arm64: all six recovered daemons answered `/healthz`
+    as release A with `status: ok` and each rendered a 960×540 PNG of 21311 bytes.
+    **That measurement required a one-line local change that is not in this tree**, because the
+    precondition as written refuses every real machine:
+    `openTransaction()` (`apps/cli/src/install/update/transaction.ts:806`) verifies the **live**
+    workspace with `verifyWorkspacePayload()`, which re-hashes the whole workspace root and refuses
+    every file its payload manifest does not describe — and that manifest describes only
+    `node_modules/`, `package.json` and `package-lock.json`. So the three template files
+    `materialiseWorkspace()` copies in (`remotion.config.ts`, `tailwind.css`, `tsconfig.json`) fail
+    it **before any tool call**, and Remotion's own `node_modules/.cache/webpack/` fails it after
+    the first render: `xplainer daemon update` exits `3` on every machine `setup --workspace` has
+    run on. `apps/cli/src/setup/toolchain.ts` states the rule the call breaks — a live workspace is
+    checked from its own manifest and never re-hashed, because `videos/`, `public/` and `out/` are
+    files the manifest has never described and never should. **The gate asserts the precondition
+    up front and fails there**, so this row stays *pending* until the check asks the manifest
+    question instead.
 - **P2-13** A parent knows the daemon is ready without sleeping or guessing. **The method is
   conditional on P2-S4's outcome**, because the two candidate mechanisms give different
   guarantees and it would be wrong to assert the stronger one while permitting the weaker:

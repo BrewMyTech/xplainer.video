@@ -10,7 +10,7 @@ leftover.
 
 | Path | What it is | Who it serves |
 | --- | --- | --- |
-| `terraform/` | An R2 bucket for release artefacts and the cached custom domain that delivers them. | Auto-update, and the first-run downloads `xplainer setup` performs. |
+| `terraform/` | An R2 bucket for release artefacts and the cached custom domain that delivers them. | Auto-update, and the first-run downloads `xplainer setup` performs — **nothing is published to it yet**, which *The delivery position, phase 2* below states in full. |
 | `docker-compose.tts.yml` | The Kokoro TTS container on `127.0.0.1:8880`, alone. | A developer who has Docker and wants the pinned speech server in one command. |
 | `e2e/` | A Debian image that runs the end-to-end render on Linux, and its build-context filter. | Roadmap **P1-1**, whose second half is "on a headless Linux VM". |
 
@@ -100,6 +100,51 @@ Verify with a cold then a warm request:
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect MISS
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect HIT
 ```
+
+### The delivery position, phase 2
+
+**Nothing is published to this bucket, and no command in this repository publishes to it.**
+`terraform apply` creates the bucket and the proxied `cdn.<zone>` record and stops there; the two
+steps above are manual and neither is scheduled in this phase; and the upload itself is the release
+owner's, in the phase-4 work that builds the per-platform speech bundles. So
+`https://cdn.xplainer.video/toolchain/v1/manifest.json` — the address
+`apps/cli/src/setup/manifest.ts` fixes for the toolchain manifest, and the only one `xplainer setup`
+reads over the network — answers nothing usable today. **That is this phase's intended state, not an
+outage**, and it is written here so that nobody goes looking for a broken CDN.
+
+`xplainer setup` says the same thing rather than reporting a DNS or HTTP error: `deliveryPosition()`
+in that module is the paragraph its refusal carries, and it names what still works on the machine
+that is reading it.
+
+| Platform | Browser | Speech | Roadmap **P2-4** |
+| --- | --- | --- | --- |
+| macOS, Linux | the pinned Remotion line's headless shell, on the **expected** digest a manifest named with `--manifest` carries | `--tts-url <url>`, a server you already run; or the `docker` route's pinned Kokoro-FastAPI image | **met** |
+| Windows | the same | **none of the three**: nothing is published for `bundle`, the pinned image is linux/amd64 and `windows-latest` has no engine for it, and `--tts-url` acquires nothing | **pending** |
+
+Two consequences of the empty bucket are worth stating plainly, because both look like defects from
+the outside:
+
+- **A browser acquisition needs a manifest named by hand.** The bytes come from Google's own storage
+  host at the URL the pinned Remotion line resolves; only the expected digest comes from the
+  manifest. With nothing published, that digest arrives from `--manifest <path or https URL>` (or
+  `XPLAINER_TOOLCHAIN_MANIFEST`), and from the reviewed copy committed beside the module when the
+  CLI is running out of a checkout.
+- **The `bundle` provider is finished code with nothing to fetch.** Its download, resume, checksum
+  and atomic-install path is proved against the fixture server in
+  `apps/cli/src/setup/testing/artefact-server.ts`. What is missing is the publication.
+
+**The milestone that closes P2-4 on Windows is phase 4**: a native relocatable speech bundle per
+platform, published together with the manifest to this bucket, behind the custom domain connected in
+step 1 and the Cache Rule added in step 2.
+
+**First-run rendering needs a network, by the same argument.** The desktop installer carries the
+interpreter payload — Node and npm — and deliberately not the render workspace, which is a few
+hundred megabytes and would not survive the size argument in
+[ADR 0005](../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md). Nothing is
+published here for it to download either, so the first `xplainer setup --workspace` resolves the
+template's pinned dependencies with the shipped npm, from the public registry. That is ADR 0005's
+own contract for the other two artefacts, applied to the third, and it is stated here and in
+`docs/ROADMAP.md` rather than discovered on a first run.
 
 ### The bucket is a new bucket, not a renamed one
 

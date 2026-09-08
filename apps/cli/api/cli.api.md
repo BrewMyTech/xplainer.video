@@ -63,6 +63,15 @@ export type CreateLocalBackendOptions = {
      * where the videos are.
      */
     root?: string;
+    /**
+     * The daemon's state directory, where `xplainer setup` wrote `toolchain.json`.
+     *
+     * Defaults to `state-dir.ts`'s resolution. `commands/serve.ts` passes the directory the daemon
+     * took ownership of, for the same reason it passes `root`: `serve --state-dir` moves it, and a
+     * backend reading the environment would gate a tool call on a marker in a directory this daemon
+     * is not using.
+     */
+    stateDir?: string;
 };
 
 /**
@@ -222,6 +231,27 @@ export type CreateServerOptions = {
     identity?: {
         run_id: string;
         runtime_digest: string;
+    };
+    /**
+     * Whether this machine's render toolchain is usable, asked at request time.
+     *
+     * [ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths requires a
+     * daemon whose toolchain is absent to *report* it rather than to answer `ok` and fail every
+     * render, and nothing produced that report before: `/healthz` said `ok` for a machine with no
+     * browser, no speech provider and no installed workspace. The seam is a function rather than a
+     * value because the condition changes **under a running daemon** — `xplainer setup` is a separate
+     * process, and a workspace can be deleted while the daemon is up — so a snapshot taken at bind
+     * would answer for a machine that no longer exists.
+     *
+     * A **parameter**, for the same reason the guard is one: `services/media-service` binds this same
+     * application in a container with no state directory and no toolchain to have an opinion about,
+     * and it passes none. Absent, `/healthz` answers `ok` with `reason: null`, so the body's shape is
+     * the same either way and a reader never has to tell "this release has no such field" apart from
+     * "this daemon is healthy".
+     */
+    toolchain?: () => {
+        ok: boolean;
+        reason: string | null;
     };
 };
 

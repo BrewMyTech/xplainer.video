@@ -33,6 +33,7 @@ import {
 } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeJobRequest } from "../job-request.js";
+import { recordTestToolchain, writeTestWorkspaceManifest } from "../setup/testing/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import { makeJobRecord } from "./testing/records.js";
 import { videoLockPath } from "./video-lock.js";
@@ -41,6 +42,7 @@ import { createWorkerRegistry } from "./workers.js";
 
 const roots: string[] = [];
 let root = "";
+let stateDir = "";
 
 function temporaryRoot(): string {
   const directory = mkdtempSync(join(tmpdir(), "xplainer-workers-"));
@@ -83,6 +85,10 @@ function narratedVideo(slug: string): void {
  * path that is not a shim.
  */
 function pretendInstalled(): string {
+  // A machine where `xplainer setup` has run: the marker, its two acquisitions, and the workspace
+  // manifest. The factory reads all three before it builds a spec, so a fixture that gave only the
+  // tree would be a fixture every Remotion case now refuses.
+  recordTestToolchain({ stateDir, workspaceRoot: root });
   const packageDir = join(root, "node_modules", "@remotion", "cli");
   mkdirSync(packageDir, { recursive: true });
   writeFileSync(
@@ -105,6 +111,7 @@ function pretendInstalled(): string {
 
 beforeEach(() => {
   root = temporaryRoot();
+  stateDir = temporaryRoot();
 });
 
 afterEach(() => {
@@ -119,7 +126,7 @@ describe("the render worker", () => {
     const entry = pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
-    const spec = createWorkerRegistry({ root }).explainer_render?.(
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
       record(1, "explainer_render", "demo"),
     );
 
@@ -146,7 +153,7 @@ describe("the render worker", () => {
     pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
-    const spec = createWorkerRegistry({ root }).explainer_render?.(
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
       record(1, "explainer_render", "demo"),
     );
 
@@ -159,14 +166,17 @@ describe("the render worker", () => {
 
   it("refuses a workspace that has only the .bin shim, because the shim is not the CLI", () => {
     narratedVideo("demo");
+    recordTestToolchain({ stateDir, workspaceRoot: root });
     const bin = join(root, "node_modules", ".bin");
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, REMOTION_BIN), "#!/usr/bin/env node\n");
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
-    ).toThrow(/npm install/);
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
+    ).toThrow(/xplainer setup --workspace/);
   });
 
   it("restores an engine-owned file that drifted, before the render is built", () => {
@@ -176,7 +186,9 @@ describe("the render worker", () => {
     const shell = join(videoPaths(root, "demo").source, "Video.tsx");
     writeFileSync(shell, "// hand-edited through write_source_to");
 
-    createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo"));
+    createWorkerRegistry({ root, stateDir }).explainer_render?.(
+      record(1, "explainer_render", "demo"),
+    );
 
     expect(readFileSync(shell)).toEqual(readScaffoldTemplate("Video.tsx"));
   });
@@ -188,17 +200,76 @@ describe("the render worker", () => {
     rmSync(videoPaths(root, "demo").captions);
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
     ).toThrow(/captions/);
   });
 
   it("refuses a workspace nobody installed, naming the command that fixes it", () => {
     narratedVideo("demo");
+    recordTestToolchain({ stateDir, workspaceRoot: root });
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
-    ).toThrow(/npm install/);
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
+    ).toThrow(/xplainer setup --workspace/);
+  });
+
+  /**
+   * The gate `toolchain.json` exists for, asked at the one moment it can still be reported.
+   *
+   * Nothing else on this machine says whether the browser a render draws every frame with is here:
+   * the daemon never downloads, so a machine where `setup` has not run renders nothing and the only
+   * question is whether it says so now or three minutes into a job.
+   */
+  it("refuses a machine where setup has never run, before it looks at the workspace at all", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    rmSync(join(stateDir, "toolchain.json"));
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    expect(() =>
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
+    ).toThrow(/xplainer setup/);
+  });
+
+  /** A recorded artefact that has been cleaned away is a different repair from a missing marker. */
+  it("refuses when a path the marker recorded is no longer on this machine", () => {
+    narratedVideo("demo");
+    const marker = recordTestToolchain({ stateDir, workspaceRoot: root });
+    pretendInstalled();
+    rmSync(marker.chrome.path);
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    expect(() =>
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
+    ).toThrow(/no longer on this machine/);
+  });
+
+  /** The skew D2 is about: the workspace is intact and is not the one this build's template wants. */
+  it("refuses a workspace resolved for a template this build no longer ships", () => {
+    narratedVideo("demo");
+    pretendInstalled();
+    writeTestWorkspaceManifest({
+      stateDir,
+      workspaceRoot: root,
+      resolved: { remotion: "4.0.495" },
+      pins: { remotion: "4.0.494" },
+    });
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+
+    expect(() =>
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
+    ).toThrow(/remotion versions/);
   });
 });
 
@@ -208,7 +279,7 @@ describe("the still worker", () => {
     const entry = pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_still", slug: "demo", frame: 12, scale: 1 });
 
-    const spec = createWorkerRegistry({ root }).explainer_still?.(
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_still?.(
       record(1, "explainer_still", "demo"),
     );
 
@@ -234,7 +305,7 @@ describe("the narrate worker", () => {
   it("is this build's own entry, told only where the workspace and the job are", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: false });
 
-    const spec = createWorkerRegistry({ root }).explainer_narrate?.(
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_narrate?.(
       record(4, "explainer_narrate", "demo"),
     );
 
@@ -248,7 +319,9 @@ describe("the narrate worker", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_narrate?.(record(4, "explainer_narrate", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_narrate?.(
+        record(4, "explainer_narrate", "demo"),
+      ),
     ).not.toThrow();
   });
 });
@@ -289,7 +362,7 @@ describe("the video write lock", () => {
     pretendInstalled();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
-    const spec = createWorkerRegistry({ root }).explainer_render?.(
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
       record(1, "explainer_render", "demo"),
     );
 
@@ -305,7 +378,9 @@ describe("the video write lock", () => {
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
     ).toThrow(/is being written by another process/);
   });
 
@@ -314,7 +389,9 @@ describe("the video write lock", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_narrate?.(record(4, "explainer_narrate", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_narrate?.(
+        record(4, "explainer_narrate", "demo"),
+      ),
     ).toThrow(/is being written by another process/);
   });
 
@@ -325,7 +402,9 @@ describe("the video write lock", () => {
     writeJobRequest(root, 2, { job_type: "explainer_render", slug: "other" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(2, "explainer_render", "other")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(2, "explainer_render", "other"),
+      ),
     ).not.toThrow();
   });
 
@@ -340,7 +419,9 @@ describe("the video write lock", () => {
     rmSync(videoPaths(root, "demo").captions);
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
     ).toThrow(/captions/);
     expect(existsSync(videoLockPath(root, "demo"))).toBe(false);
   });
@@ -349,7 +430,9 @@ describe("the video write lock", () => {
 describe("a job whose two halves disagree", () => {
   it("is refused when there is no request document at all", () => {
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(9, "explainer_render", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(9, "explainer_render", "demo"),
+      ),
     ).toThrow(/no request document/);
   });
 
@@ -359,7 +442,9 @@ describe("a job whose two halves disagree", () => {
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "other" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", "demo")),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", "demo"),
+      ),
     ).toThrow(/recorded against video "demo" but its request document names "other"/);
   });
 
@@ -367,7 +452,9 @@ describe("a job whose two halves disagree", () => {
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     expect(() =>
-      createWorkerRegistry({ root }).explainer_render?.(record(1, "explainer_render", null)),
+      createWorkerRegistry({ root, stateDir }).explainer_render?.(
+        record(1, "explainer_render", null),
+      ),
     ).toThrow(/names no video/);
   });
 });

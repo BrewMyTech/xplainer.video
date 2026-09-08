@@ -10,7 +10,7 @@ scaffold generator** under `src/scaffold/`, the **narration port** under `src/na
 **render preflight** that refuses an unrenderable job before Chrome is launched.
 
 `src/workspace.ts` is the map: `videoPaths(root, slug)` is the only place `videos/<slug>` and
-`public/<slug>` are paired, `materialiseWorkspace()` copies the four template files in without ever
+`public/<slug>` are paired, `materialiseWorkspace()` copies the template files in without ever
 overwriting one, and `remotionBinary()` answers `null` for a workspace nobody has installed. It
 writes directories and copies files; it spawns nothing, renders nothing and installs nothing.
 
@@ -110,7 +110,13 @@ Then the root procedure: `pnpm verify`.
   `explainer_create` would un-pin a workspace someone had already installed; and installing is a
   visible step a user takes ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)),
   never something a tool call does. `remotionBinary()` returning `null` — rather than a guessed path
-  — is what lets a caller say "run `npm install` in `<root>`" instead of failing inside `spawn`.
+  — is what lets a caller say "run `xplainer setup --workspace`" instead of failing inside `spawn`.
+- **`package-lock.json` is a member of `WORKSPACE_FILES`, and that is what makes the install
+  possible.** `npm ci` — the command both ends of the pinned resolution run, the staged payload at
+  build time and `xplainer setup --workspace` on a user's machine — exits `EUSAGE` in a directory
+  with no lockfile. So the two files travel together, placed by the one function that places the
+  template, rather than by whichever installer happens to run next. Adding a file here changes
+  `WORKSPACE_FILES`, which is exported, so it changes this package's API report as well.
 
 ## How to add
 

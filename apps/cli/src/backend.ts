@@ -68,6 +68,7 @@ import {
 import type { JobRunner } from "./daemon/runner.js";
 import { resolveStateDir } from "./daemon/state-dir.js";
 import { type JobRequest, writeJobRequest } from "./job-request.js";
+import { checkToolchain } from "./setup/toolchain.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
 
 /**
@@ -138,6 +139,15 @@ export type CreateLocalBackendOptions = {
    * where the videos are.
    */
   root?: string;
+  /**
+   * The daemon's state directory, where `xplainer setup` wrote `toolchain.json`.
+   *
+   * Defaults to `state-dir.ts`'s resolution. `commands/serve.ts` passes the directory the daemon
+   * took ownership of, for the same reason it passes `root`: `serve --state-dir` moves it, and a
+   * backend reading the environment would gate a tool call on a marker in a directory this daemon
+   * is not using.
+   */
+  stateDir?: string;
 };
 
 function assertSlug(slug: unknown): string {
@@ -302,7 +312,8 @@ function queued(
  */
 export function createLocalBackend(options: CreateLocalBackendOptions): RenderBackend {
   const { runner } = options;
-  const root = options.root ?? resolveWorkspaceRoot(resolveStateDir());
+  const stateDir = options.stateDir ?? resolveStateDir();
+  const root = options.root ?? resolveWorkspaceRoot(stateDir);
 
   function requireVideo(slug: string): VideoPaths {
     const video = videoPaths(root, slug);
@@ -328,9 +339,25 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
     return video;
   }
 
+  /**
+   * Refuse a render this machine's toolchain cannot carry out, with the worker factory's own answer.
+   *
+   * The two gates asked different questions before this: the tool call asked `isWorkspaceInstalled`
+   * — is there a `.bin/remotion` shim anywhere up the tree — while the worker factory resolved
+   * `@remotion/cli`'s own package and read `toolchain.json`. Two predicates over one condition is
+   * how a tool call succeeds and the job it queued then fails, which is precisely the outcome an
+   * agent holding a `job_id` cannot act on. So the call now asks `checkToolchain`, the same
+   * judgement `daemon/workers.ts` applies a moment later, and the shim check stays as the first
+   * thing said about a workspace nobody has installed at all — its sentence names the one command
+   * that fixes it, and the toolchain's names whichever component is actually absent.
+   */
   function requireInstalledWorkspace(): void {
     if (!isWorkspaceInstalled(root)) {
       throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", workspaceNotInstalledMessage(root));
+    }
+    const toolchain = checkToolchain({ stateDir, workspaceRoot: root });
+    if (!toolchain.ok) {
+      throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", toolchain.detail);
     }
   }
 

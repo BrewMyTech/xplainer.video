@@ -342,6 +342,23 @@ jobs:
       # or an environment variable would be writing a secret into the run's own
       # log surface. It is a throwaway local account on a throwaway VM either
       # way, and the shorter its value's life the better.
+      #
+      # WHOSE ENVIRONMENT THE CHILD GETS, WHICH IS THE HALF THIS STEP GOT WRONG
+      # FIRST TIME. `Start-Process -Credential` starts the process as the named
+      # account and hands it **this** session's environment block, so the first
+      # run of this job installed as `xplainer-t11` while reading runneradmin's
+      # `%USERNAME%` and `%LOCALAPPDATA%`: it rendered a task for the wrong
+      # principal and tried to mirror the XML into a profile the child has no
+      # right to write. Measured on 2026-09-08, run 34177262200:
+      #
+      #   xplainer daemon install: the task-scheduler artefact could not be
+      #   written at C:\Users\runneradmin\AppData\Local\xplainer\service\…:
+      #   EPERM: operation not permitted, mkdir '…\xplainer\service'
+      #
+      # — rolled back cleanly, exit 3. So the standard user's own profile
+      # directories go into the environment before the install is started, and
+      # a throwaway logon creates that profile first, because a local account
+      # that has never logged on has no `C:\Users\<user>` at all.
       - name: Install as the standard user
         shell: pwsh
         env:
@@ -357,7 +374,34 @@ jobs:
           $credential = New-Object System.Management.Automation.PSCredential(
             "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
 
+          # The logon that creates the profile. `Start-Process -Credential` logs
+          # on with the profile loaded, so this throwaway process is what makes
+          # C:\Users\<user> and the AppData tree under it exist to be read.
+          Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit', '0' `
+            -Credential $credential -WorkingDirectory $PWD -Wait
+          $account = New-Object System.Security.Principal.NTAccount(
+            $env:COMPUTERNAME, $env:STANDARD_USER)
+          $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+          $profileDir = (Get-ItemProperty $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
+          if ([string]::IsNullOrWhiteSpace($profileDir)) {
+            throw "no profile directory recorded for $sid after a logon as $env:STANDARD_USER"
+          }
+          Write-Host "principal: $env:COMPUTERNAME\$env:STANDARD_USER, profile: $profileDir"
+
+          # The environment the child is given, rather than the one it would
+          # inherit: `%USERNAME%` and `%USERDOMAIN%` are what the renderer builds
+          # `\xplainer\<user>-daemon` and the S4U principal from, `%USERPROFILE%`
+          # is what Node's `homedir()` reads, and `%LOCALAPPDATA%` is where the
+          # task XML and the daemon's log go. `$env:USER` is set too because the
+          # account name is read as USER, then USERNAME, then LOGNAME.
           $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          $env:USER = $env:STANDARD_USER
+          $env:USERNAME = $env:STANDARD_USER
+          $env:USERDOMAIN = $env:COMPUTERNAME
+          $env:USERPROFILE = $profileDir
+          $env:LOCALAPPDATA = Join-Path $profileDir 'AppData\Local'
+          $env:APPDATA = Join-Path $profileDir 'AppData\Roaming'
           $process = Start-Process -FilePath 'node' -Wait -PassThru `
             -ArgumentList @(
               'apps\cli\dist\bin.js', 'daemon', 'install',
@@ -370,6 +414,15 @@ jobs:
           Get-ScheduledTask -TaskPath '\xplainer\' | Format-List | Out-String | Write-Host
           Get-ScheduledTaskInfo -TaskName "\xplainer\$env:STANDARD_USER-daemon" |
             Format-List | Out-String | Write-Host
+          # The mirrored artefact, under the standard user's own profile and
+          # nobody else's — which is the claim the environment above exists to
+          # make true, and the one whose failure ended the first run of this job.
+          # Its presence is asserted; printing it is best effort, because reading
+          # another account's profile file is a permission question of its own.
+          $mirror = Join-Path $env:LOCALAPPDATA 'xplainer\service\xplainer-daemon.xml'
+          if (-not (Test-Path $mirror)) { throw "the install mirrored no artefact at $mirror" }
+          Write-Host "artefact: $mirror"
+          Get-Content $mirror -ErrorAction SilentlyContinue | Write-Host
 
       # Criterion 11: T3's create → put_source → narrate gate against the
       # **installed** daemon. `mcp --attach` reads the socket out of the
@@ -517,7 +570,24 @@ jobs:
           Set-LocalUser -Name $env:STANDARD_USER -Password $secret
           $credential = New-Object System.Management.Automation.PSCredential(
             "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+          # The same environment the install was given, for the same reason: an
+          # uninstall reading runneradmin's profile would look for a task named
+          # after the wrong account and report having removed nothing. The
+          # profile exists by now, so this one needs no logon of its own.
+          $account = New-Object System.Security.Principal.NTAccount(
+            $env:COMPUTERNAME, $env:STANDARD_USER)
+          $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+          $profileDir = (Get-ItemProperty $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
           $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T11_ROOT 'state'
+          if (-not [string]::IsNullOrWhiteSpace($profileDir)) {
+            $env:USER = $env:STANDARD_USER
+            $env:USERNAME = $env:STANDARD_USER
+            $env:USERDOMAIN = $env:COMPUTERNAME
+            $env:USERPROFILE = $profileDir
+            $env:LOCALAPPDATA = Join-Path $profileDir 'AppData\Local'
+            $env:APPDATA = Join-Path $profileDir 'AppData\Roaming'
+          }
           $removed = Start-Process -FilePath 'node' -Wait -PassThru `
             -ArgumentList @('apps\cli\dist\bin.js', 'daemon', 'uninstall') `
             -Credential $credential -WorkingDirectory $PWD

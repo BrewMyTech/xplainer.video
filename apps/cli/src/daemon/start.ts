@@ -368,7 +368,7 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
     now,
     // The real three kinds, unless a caller substitutes its own — which only the tests do, with a
     // worker that needs neither Remotion nor a TTS server.
-    workers: options.workers ?? createWorkerRegistry({ root: workspaceRoot }),
+    workers: options.workers ?? createWorkerRegistry({ root: workspaceRoot, stateDir }),
     ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
     ...(options.logFlushIntervalMs === undefined
       ? {}

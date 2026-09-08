@@ -224,6 +224,20 @@ async function attemptOnce(
   };
 }
 
+/**
+ * The statuses a `/healthz` body may carry that mean **this daemon is up and answering**.
+ *
+ * `degraded` is one of them, and that is a decision rather than a leniency. T19 made `/healthz`
+ * report `{"status":"degraded","reason":"toolchain_missing"}` for a machine whose render toolchain
+ * is absent — ADR 0020 §Degraded paths requires that condition to be *reported* — and the daemon in
+ * that state has taken ownership, reconciled its jobs, bound both listeners and is serving every
+ * tool that does not render. Treating it as "nothing answered" would make `daemon start` and
+ * `daemon restart` fail on exactly the machine ADR 0005 expects: one where `xplainer setup` has not
+ * run yet, and where the next step is to run it rather than to reinstall a daemon that is working.
+ * `daemon status --json` is where the condition is surfaced, as its own `degraded` code.
+ */
+const ANSWERING_STATUSES: readonly string[] = ["ok", "degraded"];
+
 /** The two identity fields `/healthz` carries, or `null` when the body is not one of ours. */
 function parseHealth(body: string): { version: string; contractVersion: string } | null {
   let parsed: unknown;
@@ -236,7 +250,10 @@ function parseHealth(body: string): { version: string; contractVersion: string }
     return null;
   }
   const record = parsed as Record<string, unknown>;
-  if (record.status !== "ok" || typeof record.version !== "string") {
+  if (typeof record.status !== "string" || !ANSWERING_STATUSES.includes(record.status)) {
+    return null;
+  }
+  if (typeof record.version !== "string") {
     return null;
   }
   const contract = record.contract_version;

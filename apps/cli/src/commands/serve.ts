@@ -98,6 +98,7 @@ import {
 } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT, IpcBindError, startServer } from "../server.js";
+import { checkToolchain } from "../setup/toolchain.js";
 
 /** The highest port a TCP listener can bind. */
 const MAX_PORT = 65535;
@@ -285,6 +286,7 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       const backend = createLocalBackend({
         runner: daemon.runner,
         root: daemon.workspaceRoot,
+        stateDir,
       });
 
       // The `0700` directory and a socket path free of whatever the last run left behind, made
@@ -324,6 +326,13 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         // Row 3 of the consistency check, taken before this bind and unchanged by anything after
         // it. `/healthz` advertises it; nothing infers it from a file.
         identity: daemon.identity,
+        // Asked per request rather than once: `xplainer setup` runs in another process, and a
+        // workspace can be removed while this daemon is up, so a snapshot would answer for a
+        // machine that no longer exists.
+        toolchain: () => {
+          const status = checkToolchain({ stateDir, workspaceRoot: daemon.workspaceRoot });
+          return { ok: status.ok, reason: status.reason };
+        },
         guard: (boundPort) =>
           createLoopbackGuard({
             token,

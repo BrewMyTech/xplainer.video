@@ -230,6 +230,132 @@ by measurement rather than preference — `Type=exec` with no `NotifyAccess=` (A
 note), `KillMode=mixed` with `TimeoutStopSec=45s`, and `ExitTimeOut=45` as its macOS counterpart
 (ADR 0024's) — and the golden tests assert the whole file, not a key at a time.
 
+### `src/setup/` — what the toolchain is allowed to be, and how it arrives
+
+[ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md) books "a CDN
+and a version/checksum manifest" as infrastructure and requires that "the download path has to
+verify the checksum before extracting". This directory is that manifest, that download, and the
+archive reader between them.
+
+| Module | What it owns |
+|---|---|
+| `manifest.ts` | The manifest's address, its shape, and the mirror of the pinned Remotion line's own Chrome URL selector |
+| `source.ts` | Which of the three manifest sources answered — `--manifest`, the published address, this checkout's committed copy |
+| `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, and the staging-then-`rename` commit |
+| `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, and every unsafe entry refused |
+| `providers/chrome.ts` | The headless shell the pinned selector names, admitted on the manifest's **expected** digest |
+| `providers/speech.ts` | The three speech routes, their precedence, and the refusal that names all three |
+| `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
+| `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
+| `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
+| `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
+| `toolchain.manifest.json` | The reviewed document itself — per-platform expected digests, captured at manifest-build time |
+| `testing/` | The loopback artefact server with one route per failure, the writer for archives no archiver produces, and a real marker for the suites downstream |
+
+**`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
+run to themselves; `--skip-*` flags trim the default; both together give the union. So
+`setup --workspace` is the workspace and nothing else — the form the D8 proof runs under a scrubbed
+`PATH`, which must not drag a browser download or a Docker pull in behind it — while
+`setup --skip-speech` is the browser and the workspace, which is the only form Windows has this
+phase. A partial run **exits `0`** and names what is still to acquire: `toolchain.json` records all
+three components or it is not a valid document, so an incomplete run merges into what the last one
+recorded and writes nothing until the set is complete.
+
+**`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8), composed with
+`path.delimiter`.** npm runs lifecycle scripts through `sh -c` and third-party scripts call bare
+`node` — `esbuild`'s `postinstall`, reached through the Remotion tree's 268 packages — so an install
+from a payload under a scrubbed `PATH` exits `127` and leaves no workspace at all. This does **not**
+reopen D1: D1 refused `PATH` injection for *render workers* because it leaks an interpreter onto the
+`PATH` of everything they spawn, Chrome and ffmpeg included, and the installer spawns neither.
+`npm ci`, never `npm install`, and never `--ignore-scripts` — which also exits `0` today and makes
+the workspace's completeness depend on no package in that tree ever needing its install script.
+
+**The daemon never starts a speech container.** `setup` pulls the pinned image, the user or the
+supervisor runs it, and the daemon reports its absence with the command that starts it
+(`speechContainerCommand()`). What `toolchain.json` records for that route is a **receipt** — a
+pulled image is not a path, and the marker's `path` is checked for existence by the install
+preflight — so `setup` re-asks `docker image inspect` on every run rather than trusting the file it
+wrote.
+
+**The gate is the one that owns a provider's lifetime, and it is not the daemon.** `setup` pulls;
+`scripts/e2e/toolchain.mjs` then needs something to narrate *against* for its one live step, and its
+precedence is written down rather than improvised: `XPLAINER_TTS_URL` if an operator or a workflow
+`services:` block already provides one, else a container the gate starts **from the digest in the
+receipt `setup` wrote** on a port the OS chose and stops in a `finally`, else the narration leg is
+skipped with its reason printed. Owning a container for the length of one gate run is not the daemon
+owning one. On Windows the third branch is the only one there is (§2.5, P2-4), and the render half
+still runs — from `XPLAINER_TTS_FIXTURE`, after the browser-and-workspace-only
+`setup --skip-speech --workspace` — so the skip is a skip and never a pass.
+
+**`setup/testing/rollback-render.ts` is T16's sixth assertion, and it lives here because only this
+batch has a browser.** B5's boundary suite and its failure proof end every rollback with *readiness*
+— the installed workspace satisfies the pins of the runtime that came back — and a daemon that
+answers `/healthz` and cannot render is the failure class the precondition exists for. So this entry
+reruns every case that ends in a rollback (the five durable boundaries and the replacement that never
+becomes ready), against a payload the shipped assembler produced, the workspace `setup` materialised
+and the browser it acquired, and asserts a **PNG** out of the daemon each recovery put back. It is
+`pnpm e2e:toolchain`'s last phase and is spawned by it; it is never part of `pnpm verify`.
+
+**The manifest is fetched from `cdn.<zone_name>` and never from `r2.dev`.** `infra/terraform`
+provisions exactly one hostname — `main.tf`'s `local.cdn_hostname`, a **proxied** CNAME onto the
+bucket — and its own comment gives the reason: the bucket's `r2.dev` URL "is explicitly not cached
+by Cloudflare, so serving a ~110 MB CLI binary or a several-hundred-megabyte voice pack from it
+would pay origin egress on every single download". `toolchainManifestUrl()` refuses an `r2.dev`
+zone rather than trusting nobody will type one, and a **speech** entry served from any other host
+is refused when the manifest is parsed. Chrome's host is not checked that way, deliberately: its
+URL is chosen by the selector, not by the document.
+
+**Nothing is published to that hostname in this phase, and the refusal says so.** `terraform`
+creates the bucket and the record; connecting the bucket to the custom domain and adding its Cache
+Rule are manual steps it deliberately does not manage, neither is scheduled here, and no command in
+this repository uploads a manifest — so the published address answers nothing usable, deliberately.
+`deliveryPosition()` is the paragraph `ManifestUnreachable` carries, and it is **per platform**: on
+macOS and Linux it names the two speech routes that do work (`--tts-url`, and the `docker` image
+pinned by digest); on Windows it says there is **no working speech route at all** — nothing
+published for `bundle`, a linux/amd64 image `windows-latest` has no engine for, and a `--tts-url`
+that acquires nothing — and names phase 4 as the milestone rather than offering a route that will
+not work there. That asymmetry is roadmap
+P2-4's — met on macOS and Linux, pending on Windows — and `infra/README.md` §*The delivery position,
+phase 2* is where the infrastructure half is recorded.
+
+**The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
+`@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
+whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
+— and ADR 0020's "Alpine is blocked on rendering, not on init" is what a key ignoring the C library
+buys you. `manifest.ts` therefore **mirrors** that function, `manifest.test.ts` drives the real one
+over all 80 branch combinations and compares, and `selectChromeArtefact()` looks the URL up. Two
+consequences worth keeping: the manifest **cannot redirect a download**, because the URL fetched is
+the selector's rather than the document's; and a configuration with no recorded entry is a refusal
+naming the URL, never a download of unreviewed bytes.
+
+**Digests are expected, never recorded.** Nothing here writes a manifest, and no path takes a digest
+from the bytes that arrived — `sha256` is a required input to the download. A digest recorded on
+first acquisition cannot reject an incorrect-but-intact archive; it only detects later drift.
+
+**Verify, then extract, then commit — in that order.** The archive is checked against its expected
+digest, unpacked into a staging directory **beside** the destination, and committed with one
+`rename`, the same argument `install/stage.ts` makes for a payload. A digest checked after unpacking
+would already have written a hundred megabytes of somebody else's archive where a render will look.
+
+**Every failure is named, and the names are the ones ADR 0005 asks for**: `short-body` (resumable,
+the partial is kept), `checksum-mismatch` (the partial is deleted, so a wrong body is never resumed
+onto), `resume-not-honoured` (a `206` for a range nobody asked for — appending it would produce a
+right-length, wrong-content file), and `proxy-interception` (a `407`, an HTML filter page quoted
+back, or a TLS handshake that never reached the origin). That last one **is** the acceptance
+condition: "a download that fails behind a corporate proxy must say so, not produce a render that
+fails later with a missing-binary error."
+
+**It speaks `node:http`, and that is a measurement rather than a preference.** On Node 24 a `407`
+never reaches a `fetch` caller — undici turns it into a network error whose `cause` is an empty
+`Error` with no `code` — so the proxy branch would be unreachable code. The artefact URLs also
+redirect (the arm64 Linux build's CDN answers `307`), and the redirect policy is a pure function so
+the https-downgrade refusal is asserted rather than assumed.
+
+**The zip reader is written here rather than depended on.** A new *runtime* dependency of this
+package is a change to payload 1, to the publish contract and to every installer, which is a large
+blast radius for a fully specified format. It reads the central directory, never the local headers,
+and it refuses an entry that climbs out of the destination before anything is written.
+
 ## Public surface
 
 From `src/index.ts`: `createServer`, `startServer`, `DEFAULT_PORT`, `DEFAULT_HOSTNAME` and their
@@ -308,6 +434,16 @@ pnpm e2e:update
 # scenarios against this machine's own service manager, where the loaded row really does go stale.
 # Not part of `pnpm verify`, for the same reason `e2e:update` is not.
 pnpm e2e:identity
+
+# `setup` on a machine that behaves as though it has no Node, and then a picture. The artefact is
+# moved out of the checkout, `setup --workspace` proves D8 under `env -i PATH=/usr/bin:/bin`, the
+# marker is written over the offline copy route, `/healthz` is shown degrading, and then
+# narrate → still → render out of the **materialised** workspace with the MP4 read back by
+# `ffprobe` — followed by T16's rollback cases, rerun until each recovered daemon produces a PNG.
+# Not part of `pnpm verify` and it must not become part of it: ~147 MB of payload, a ~234 MB
+# workspace install, a ~100 MB browser, a render, and two more payloads staged six times over.
+pnpm e2e:toolchain
+XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm e2e:toolchain   # reuse a server you already run
 
 # The `[runner]` halves. The artefact gate — narration, then payload 2 and its D1/D2/D3
 # assertions — on ubuntu, macos and windows; the two platform spikes on the machines a

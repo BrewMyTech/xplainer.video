@@ -81,8 +81,15 @@ const LINUX_USER = "xplainer";
 /** This file, so the root orchestrator can re-enter it as the unprivileged user. */
 const SELF = fileURLToPath(import.meta.url);
 
-/** The source hook the child is started under, since the child runs TypeScript sources. */
-const HOOK = fileURLToPath(new URL("../../daemon/testing/ts-source-hook.ts", import.meta.url));
+/**
+ * The source hook a child is started under, as a **file URL**.
+ *
+ * `--import` takes a module specifier, and an absolute Windows path is one with the scheme `c:` —
+ * `ERR_UNSUPPORTED_ESM_URL_SCHEME`, measured on `windows-latest` on 2026-09-08. `new URL(…,
+ * import.meta.url).href` is a `file:` URL on every platform, so this is one spelling rather than a
+ * Windows branch. {@link SELF} stays a path: an entry file is resolved, not parsed as a specifier.
+ */
+const HOOK = new URL("../../daemon/testing/ts-source-hook.ts", import.meta.url).href;
 
 let failures = 0;
 

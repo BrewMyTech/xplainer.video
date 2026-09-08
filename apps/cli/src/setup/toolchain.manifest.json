@@ -1,0 +1,90 @@
+{
+  "format_version": 1,
+  "chrome": {
+    "remotion": "4.0.495",
+    "version": "149.0.7790.0",
+    "expected": {
+      "darwin-arm64": {
+        "status": "recorded",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/mac-arm64/chrome-headless-shell-mac-arm64.zip",
+        "sha256": "17ef152eba8ffcfebc42e25ab295eb040d8e62455cff7dfcc735b652456d6899",
+        "size": 98080877
+      },
+      "darwin-x64": {
+        "status": "recorded",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/mac-x64/chrome-headless-shell-mac-x64.zip",
+        "sha256": "2597bf0940b54afbdfcb76519b5c8cf423cec49eea90ce1c4123456aca47a851",
+        "size": 103187459
+      },
+      "linux-x64-glibc": {
+        "status": "recorded",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/linux64/chrome-headless-shell-linux64.zip",
+        "sha256": "a3b011ab4c726e215cdeb623907a09cfb48f07054a7271fdda555ee2ae4f804d",
+        "size": 119987220,
+        "libc": "glibc",
+        "min_glibc": "2.31"
+      },
+      "linux-x64-glibc235": {
+        "status": "recorded",
+        "url": "https://remotion.media/chromium-headless-shell-linux-x64-149.0.7790.0.zip?clear",
+        "sha256": "f11d8e76f043a8a70c7ebdae2834f94370ad329ed997ddcdfd5dbcd803f53f76",
+        "size": 96395776,
+        "libc": "glibc",
+        "min_glibc": "2.35"
+      },
+      "linux-x64-amazonlinux2023": {
+        "status": "recorded",
+        "url": "https://remotion.media/chromium-headless-shell-amazon-linux-x64-149.0.7790.0.zip?clear",
+        "sha256": "e752ceee45a183b3500744ee34b4ae2a03335c41d5ce27c349e943e68ab9b1ed",
+        "size": 98356499,
+        "libc": "glibc"
+      },
+      "linux-arm64-glibc": {
+        "status": "unavailable",
+        "url": "https://playwright.azureedge.net/builds/chromium/1421/chromium-headless-shell-linux-arm64.zip",
+        "reason": "Measured 2026-09-08: playwright.azureedge.net answers 307 to playwright.download.prss.microsoft.com, which answers 400 GatewayExceptionResponse (24 bytes). The artefact the pinned Remotion line selects for an arm64 Linux with glibc below 2.35 is not retrievable, so there is nothing to record a digest for. Run xplainer setup on an arm64 base with glibc 2.35 or newer (Debian bookworm, Ubuntu 24.04), which selects the remotion.media build recorded as linux-arm64-glibc235.",
+        "libc": "glibc",
+        "min_glibc": "2.31"
+      },
+      "linux-arm64-glibc235": {
+        "status": "recorded",
+        "url": "https://remotion.media/chromium-headless-shell-linux-arm64-149.0.7790.0.zip?clear",
+        "sha256": "c8ac2ea8fed57653d07c80caacb67bb0e833af32012059bfccf90b6246302706",
+        "size": 92243209,
+        "libc": "glibc",
+        "min_glibc": "2.35"
+      },
+      "linux-arm64-amazonlinux2023": {
+        "status": "recorded",
+        "url": "https://remotion.media/chromium-headless-shell-amazon-linux-arm64-149.0.7790.0.zip?clear",
+        "sha256": "d1eb83a59313db3804f3e52b5193571f695e6e2f5b2ff10e4accb5b45b277edf",
+        "size": 93778089,
+        "libc": "glibc"
+      },
+      "win32-x64": {
+        "status": "recorded",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/win64/chrome-headless-shell-win64.zip",
+        "sha256": "8a112c0e768907ff382ff994dcde35cdbd0e1f5a3a475da93d3a83e3260e78c2",
+        "size": 118785025
+      }
+    }
+  },
+  "speech": {
+    "linux-x64": {
+      "status": "unavailable",
+      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+    },
+    "linux-arm64": {
+      "status": "unavailable",
+      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+    },
+    "darwin-arm64": {
+      "status": "unavailable",
+      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+    },
+    "win32-x64": {
+      "status": "unavailable",
+      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+    }
+  }
+}
