@@ -279,6 +279,20 @@ describe("resolveTokenOrigin", () => {
     ).toBe(recorded);
   });
 
+  it("treats a half-record — a minted origin with no recorded path — as this daemon's mint", () => {
+    // The shape a release that wrote the origin at mint time and the path at readiness left
+    // behind after a start that failed in between. Reading it as the operator's would pass
+    // R-SEC-9's fifth precondition on stale bookkeeping.
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        recordedOrigin: "minted",
+        recordedTokenFile: null,
+      }),
+    ).toBe("minted");
+  });
+
   it("reads an unrecorded origin at a path a previous run recorded as this daemon's mint", () => {
     expect(
       resolveTokenOrigin({

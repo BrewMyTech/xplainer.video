@@ -346,7 +346,6 @@ describe("a run recording its own end", () => {
         port: 8787,
         addresses: ["http://127.0.0.1:8787"],
         socket: null,
-        tokenFile: join(stateDir, "token"),
         contractVersion: "1",
       });
       await outcome.daemon.close();

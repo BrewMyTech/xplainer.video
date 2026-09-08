@@ -33,18 +33,82 @@
 #     packaging failure, which is exactly the ambiguity `bootstrap` exists to
 #     remove.
 
+# WHEN THIS RUNS, AND ON WHAT. This workflow was the single most expensive
+# thing in the repository: 856 of the 2,106 billed Actions minutes spent
+# between 2026-09-05 and 2026-09-08, 620 of them macOS. It triggered on `push`
+# with no branch filter and on `pull_request`, so it packed on all three
+# operating systems twice per commit — seven of those twenty runs were commits
+# that only mirrored workflow files and packaged nothing new. The installers
+# themselves are unchanged; what changed is the arithmetic in front of them.
+#
+#   * `pull_request` is gone. An installer is not review feedback. Say what
+#     that costs rather than pretending it costs nothing: the Linux half of
+#     the desktop unit tests below is still run on every pull request by `ci`'s
+#     `check` job, but their macOS and Windows halves — the fixtures that spawn
+#     a real interpreter and drive a real `launchctl` or `ScheduledTasks` — now
+#     run on a `v*` tag and on a dispatch that asks for them, not on every
+#     commit. That is the trade this file makes, deliberately.
+#   * A push to `main` packs on ubuntu-latest only (1x), and only when the code
+#     that ends up inside an installer changed — the `paths` list below.
+#   * A `v*` tag packs on all three. Path filters are not evaluated for pushes
+#     of tags, so a release tag reaches the matrix whatever it touched.
+#   * A manual dispatch packs exactly the operating systems it selected, which
+#     is how a macOS or Windows installer is obtained between releases.
+
 name: desktop
 
 on:
   push:
-  pull_request:
+    branches: [main]
+    tags: ["v*"]
+    # Everything an installer is built from. `apps/**` covers apps/desktop,
+    # apps/cli and `electron-builder.yml`; `packages/**` covers the workspace
+    # dependencies `--filter @xplainer/desktop... build` reaches; the rest is
+    # the toolchain pin and the lockfile the build resolves against. Python is
+    # deliberately absent: this workflow runs no `uv sync` at all (see below),
+    # so `.python-version`, `pyproject.toml` and `uv.lock` cannot change what
+    # it produces.
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "services/**"
+      - "scripts/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".npmrc"
+      - ".node-version"
+      - "turbo.json"
+      - ".github/workflows/desktop.yml"
+  # One checkbox per operating system, for the run that wants an installer this
+  # workflow would not otherwise build. Linux is on by default because it is
+  # the 1x runner; a macOS pack bills at 10x and a Windows one at 2x.
+  workflow_dispatch:
+    inputs:
+      linux:
+        description: Pack on ubuntu-latest.
+        type: boolean
+        default: true
+      macos:
+        description: Pack on macos-latest (bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Pack on windows-latest (bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A second push to `main` cancels the first one's runners. A manual dispatch
+  # carries its selection in the group, so it neither cancels nor is cancelled
+  # by an automatic run and two dispatches collide only when they asked for the
+  # same operating systems. `cancel-in-progress` is false on a tag: a release
+  # build is never superseded.
+  group: desktop-${{ github.ref }}-${{ github.event_name }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 defaults:
   run:
@@ -53,13 +117,28 @@ defaults:
 jobs:
   package:
     name: package (${{ matrix.os }})
+    # A dispatch with every box cleared has asked for nothing; skip it rather
+    # than start a matrix for it. Automatic events always pass.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.linux || inputs.macos || inputs.windows }}
     runs-on: ${{ matrix.os }}
     strategy:
       # All three runners report independently: a Windows NSIS failure must not
       # cancel the macOS dmg build that would have told us it was Windows-only.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Two rules in one vector, because the steps below are one copy and
+        # must stay one copy. An automatic event picks the whole set on a `v*`
+        # tag and ubuntu-latest alone on a push to `main`; a dispatch starts
+        # from the whole set and the `exclude` list trims it to the boxes that
+        # were ticked. `unused` matches no entry in the vector, so a selected
+        # operating system is excluded by nothing, and an unselected one is
+        # removed before a runner is allocated rather than skipped after one
+        # has already been billed for.
+        os: ${{ fromJSON(github.event_name != 'workflow_dispatch' && (startsWith(github.ref, 'refs/tags/') && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        exclude:
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.linux) && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.macos) && 'unused' || 'macos-latest' }}
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.windows) && 'unused' || 'windows-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

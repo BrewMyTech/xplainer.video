@@ -38,7 +38,10 @@
  *   The route is given a seam over the handle installed below rather than a second implementation,
  *   so there is exactly one drain and one exit code however it was asked for.
  * - **State on disk** — `daemon.json` and `runtime.json`, written by `markReady()` at the moment
- *   both facts are known.
+ *   both facts are known. With one deliberate exception: `token_file` and `token_origin` are
+ *   written together, below, at the moment the token's provenance is decided, because they are one
+ *   fact about one file and a start that mints and then fails to bind never reaches `markReady()`
+ *   at all.
  * - **The ready line** (`../daemon/ready.ts`): one JSON line on stdout, once, after ownership,
  *   reconciliation and the binds. Everything else this command says goes to **stderr**, which is
  *   what keeps stdout a machine-readable contract for a parent that spawned the daemon
@@ -431,8 +434,21 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // Recorded on every start, loopback or not, so that the answer survives into the next one:
       // the run that can see the file being created is the only run that can decide this, and a
       // remote bind three restarts later still needs it (`daemon/token.ts` §resolveTokenOrigin).
-      if (tokenOrigin !== recorded.token_origin) {
-        updateDaemonState(stateDir, { token_origin: tokenOrigin });
+      //
+      // **The path is written with it, in the same call**, and that is the correction of
+      // 2026-09-08. `token_origin` is a fact about the file `token_file` names and about no other,
+      // so a record holding one without the other answers for a file it cannot identify. Writing
+      // them apart is what made that reachable: `token_origin` was written here, `token_file` only
+      // at `markReady()` after both binds, so any ordinary failed start — a held port, a
+      // certificate pair that will not load, a socket path this platform refuses — left `minted`
+      // behind with no path beside it. The next start read "the record names no file of mine",
+      // answered `operator` for the very token this daemon had minted a moment earlier, and
+      // R-SEC-9's fifth precondition was met by a bookkeeping gap rather than by an operator.
+      // Before the bind rather than after it for the same reason: the mint is the event that has
+      // to survive, and the run that mints and then fails is exactly the run whose answer the next
+      // one inherits.
+      if (tokenOrigin !== recorded.token_origin || tokenPath !== recorded.token_file) {
+        updateDaemonState(stateDir, { token_origin: tokenOrigin, token_file: tokenPath });
       }
 
       // Configured → recorded → default, which is ADR 0020 §Port and discovery's precedence. The
@@ -562,7 +578,6 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         port: bound.running.port,
         addresses: [bound.running.url],
         socket: bound.running.socket,
-        tokenFile: tokenPath,
         contractVersion: MCP_CONTRACT_VERSION,
       });
 

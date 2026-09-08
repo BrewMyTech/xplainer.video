@@ -200,6 +200,16 @@ export function resolveTokenOrigin(request: TokenOriginRequest): TokenOrigin {
   if (request.minted) {
     return "minted";
   }
+  if (request.recordedTokenFile === null && request.recordedOrigin === "minted") {
+    // A half-record: `token_origin` without `token_file`. Only one thing ever wrote that shape —
+    // a release that recorded the origin at mint time and the path at readiness, after a start
+    // that failed in between (held port, bad certificate, refused socket path). The file at the
+    // resolved path is therefore the daemon's own mint, and reading it as the operator's would
+    // let that stale bookkeeping pass R-SEC-9's fifth precondition on the next remote bind. The
+    // two fields are now written together, so a healthy start replaces this record; until one
+    // does, the conservative answer is the one that refuses.
+    return "minted";
+  }
   if (request.recordedTokenFile !== request.path) {
     return "operator";
   }

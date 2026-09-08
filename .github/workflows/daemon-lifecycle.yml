@@ -34,8 +34,14 @@
 # setting — and `--ref` then chooses whose code runs. It has never been
 # dispatched.
 #
-#   gh workflow run daemon-lifecycle.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-lifecycle.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-lifecycle.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
+# a bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
+# (2x) for the leg a given question needs, and all three for the run that is
+# offered as full platform coverage.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. The rule `e2e-runtime.yml`,
 # `e2e-linux.yml`, `phase2-proofs.yml` and `daemon-windows.yml` all follow. These
@@ -58,20 +64,58 @@
 name: daemon lifecycle
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x and Windows at 2x, and re-running a green macOS leg to
+  # look at a red Windows one is how 1,360 macOS minutes disappeared in three
+  # days. Select all three for the run that is offered as full platform
+  # coverage, and record the SHA and the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows legs (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   assertion:
     name: the four sentences (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos || inputs.windows }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -117,6 +161,7 @@ jobs:
 
   launchd:
     name: the queries against a real launchd (macos-latest)
+    if: ${{ inputs.macos }}
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -163,6 +208,7 @@ jobs:
 
   systemd:
     name: the queries against a real systemd (ubuntu-latest)
+    if: ${{ inputs.linux }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -228,6 +274,7 @@ jobs:
 
   schtasks:
     name: what Get-ScheduledTask actually reports (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 

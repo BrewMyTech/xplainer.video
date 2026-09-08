@@ -91,8 +91,6 @@ export type DaemonBinding = {
   addresses: readonly string[];
   /** The IPC socket path, or `null` while the daemon has only a TCP listener (P1-9). */
   socket: string | null;
-  /** The path — never the value — of the bearer token file (R-SEC-6). */
-  tokenFile: string;
   /** `MCP_CONTRACT_VERSION`, so `status` can report it without an HTTP call. */
   contractVersion: string;
 };
@@ -397,14 +395,19 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
           started_at: startedAt.toISOString(),
         });
         // The durable half. `port` is what a later `serve` binds and what `status` probes, so this
-        // write is what makes ADR 0020's "the recorded port is a contract" true; `token_file`,
-        // `socket_path` and `contract_version` are here so a reader learns all three without an
-        // HTTP call it may not be able to make — and `socket_path` in particular is what a
-        // `--socket` was for, since a setting nothing records is a setting nothing can check.
+        // write is what makes ADR 0020's "the recorded port is a contract" true; `socket_path` and
+        // `contract_version` are here so a reader learns them without an HTTP call it may not be
+        // able to make — and `socket_path` in particular is what a `--socket` was for, since a
+        // setting nothing records is a setting nothing can check.
+        //
+        // `token_file` is **not** here, and its absence is load-bearing: it is written by
+        // `commands/serve.ts` in the same call as `token_origin`, at the moment the token's
+        // provenance is decided, because the two are one fact about one file and a record carrying
+        // either alone answers R-SEC-9 about a file it cannot name. Readiness is far too late for
+        // it — a start that mints and then fails to bind never reaches this method at all.
         updateDaemonState(stateDir, {
           port: binding.port,
           contract_version: binding.contractVersion,
-          token_file: binding.tokenFile,
           socket_path: binding.socket,
         });
         markDaemonReady(stateDir, ownership.boot_nonce, now().toISOString());

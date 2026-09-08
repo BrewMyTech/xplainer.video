@@ -1,4 +1,13 @@
-# Packaging `xplainer` as a standalone binary
+# Packaging `xplainer` as a standalone binary — **phase-4 work**
+
+**This file is a record, not an instruction to build a binary today.** The single-executable
+artefact it describes is deferred to **phase 4**, with code signing and notarisation, and the
+deferral is a decision taken *on the measurements below* rather than a scheduling preference: the
+recipe as written does not produce a binary at all (measurement 1), the bundle that can be coaxed
+into building throws before any command runs (measurements 2 and 3), and the artefact phase 2
+actually ships — the relocatable directory — needs no bundler, no `import.meta` rewrite and no SEA
+asset API and is measured working (measurements 4 and 5). ADR 0027 §Consequences records the
+relabelling; `docs/ROADMAP.md` phase 4 owns the milestone.
 
 **Nothing in this directory runs in CI, in this phase or by accident.** There is no
 workflow, no Turbo task and no `package.json` script that invokes any of it. The recipe is
@@ -187,7 +196,7 @@ from the artefact and shipping the sources instead).
 
 **It does not run as written** — measurement 1 stops it at step 0 — and it is kept because it is the
 record of how the SEA decision was reached, and of what a later phase would have to fix first.
-Producing, signing and shipping real binaries is roadmap phase 2 work; this file is the same kind of
+Producing, signing and shipping real binaries is roadmap **phase 4**; this file is the same kind of
 deliberately-manual artefact as `services/tts-sidecar/packaging/`, and spec §Non-Goals scopes both
 out of the scaffold.
 
@@ -270,8 +279,10 @@ codesign --sign - xplainer
 
 `--macho-segment-name NODE_SEA` is required on macOS and rejected everywhere else. The
 `codesign --sign -` is ad-hoc: it satisfies the loader, it is not notarisation, and it will
-still show Gatekeeper warnings on another machine. Signing and notarisation are phase-2 work
-and deliberately out of scope here (spec §Non-Goals).
+still show Gatekeeper warnings on another machine. Signing and notarisation are **phase-4** work
+and deliberately out of scope here (spec §Non-Goals) — and the ad-hoc signature is not a
+contradiction of "every artefact this phase produces is unsigned": it is the loader's minimum for
+a mutated Mach-O, which is a phase-4 detail of the binary rather than a distribution signature.
 
 ### Linux (x64)
 
@@ -291,7 +302,7 @@ uses, is a reasonable floor.
 
 ### Windows (x64)
 
-PowerShell, and no signing in this phase — the installers this repository produces are
+PowerShell, and no signing before phase 4 — the installers this repository produces are
 unsigned by design (spec §Non-Goals, AC-4):
 
 ```powershell
@@ -313,7 +324,7 @@ reason macOS needs it.
 real file both in the source tree and in `dist/`, and which AC-14a depends on. Inside a
 single executable there is no such file.
 
-Two fixes were written down here, and both are still phase-2 decisions with consequences rather
+Two fixes were written down here, and both are **phase-4** decisions with consequences rather
 than one-liners to bury in a build script:
 
 - **Bake it in.** Add a build-time constant (esbuild `--define`) that `version.ts` prefers
@@ -362,12 +373,16 @@ SEA binary is ever produced, the same three commands are what it has to answer:
 ./xplainer serve --port 8787 &  # then: curl -sf localhost:8787/healthz
 ```
 
-## When this becomes automatic
+## When this becomes automatic — phase 4
 
 Phase 2 of `docs/ROADMAP.md` owns the artefact that actually ships, and on the evidence above it is
 the relocatable directory rather than a single executable: it needs no bundler, no `import.meta`
-rewrite and no SEA asset API, and it is measured working today. Should a single-file binary be
-wanted later, it is a matrix over `macos-14` (arm64), `macos-13` (x64), `ubuntu-latest` (x64) and
-`windows-latest` (x64) running the steps above and uploading the artefact unsigned, exactly as
-`.github/workflows/desktop.yml` already does for the Electron installers — and the two blockers in
-measurements 1 and 2 have to be cleared first.
+rewrite and no SEA asset API, and it is measured working today. **The single executable is phase-4
+work**, and this file is its record: a matrix over `macos-14` (arm64), `macos-13` (x64),
+`ubuntu-latest` (x64) and `windows-latest` (x64) running the steps above and uploading the artefact,
+exactly as `.github/workflows/desktop.yml` already does for the Electron installers — signed and
+notarised there, which is the other half of the phase-4 milestone. **Two blockers have to be cleared
+before any of that is reachable**, and both are measured rather than guessed: the top-level `await`
+in `src/bin.ts` (measurement 1), and a bundler-safe answer for all six `import.meta.url` sites
+(measurement 2), of which the two that resolve **directories** need SEA assets or a file beside the
+binary.

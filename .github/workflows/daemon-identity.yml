@@ -53,8 +53,14 @@
 # setting — and `--ref` then chooses whose code runs. It has never been
 # dispatched.
 #
-#   gh workflow run daemon-identity.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-identity.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-identity.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
+# a bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
+# (2x) for the leg a given question needs, and all three for the run that is
+# offered as full platform coverage.
 #
 # WHAT RAN LOCALLY INSTEAD, AND WHAT IT SAID. Both `local` halves are done and
 # both passed on 2026-09-08: macOS against a real `launchd` on this machine, and
@@ -77,14 +83,42 @@
 name: daemon identity
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x and Windows at 2x, and re-running a green macOS leg to
+  # look at a red Windows one is how 1,360 macOS minutes disappeared in three
+  # days. Select all three for the run that is offered as full platform
+  # coverage, and record the SHA and the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows legs (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   systemd:
     name: desired, loaded and responding against a real systemd (ubuntu-latest)
+    if: ${{ inputs.linux }}
     runs-on: ubuntu-latest
     # One payload assembly, one copy, two stagings, an install and four status
     # passes, after a cold `turbo build`.
@@ -151,6 +185,7 @@ jobs:
 
   launchd:
     name: identity as the only detector, against a real launchd (macos-latest)
+    if: ${{ inputs.macos }}
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -190,6 +225,7 @@ jobs:
 
   task-scheduler:
     name: the loaded row from a real Task Scheduler (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -249,11 +285,15 @@ jobs:
           "WorkingDirectory=" + $b.WorkingDirectory
           Unregister-ScheduledTask -TaskName $name -Confirm:$false
 
-      # The install-and-drift half. Expected to be the first execution of the
-      # Windows branch of `identity-proof.ts`, so a failure here is a
-      # measurement too: record it, do not hide it.
+      # The install-and-drift half, and the reason this job exists. It is the
+      # first execution of the Windows branch of `identity-proof.ts`, so a
+      # failure here is worth recording — but it is recorded as a red square.
+      # This step carried `continue-on-error: true` until 2026-09-08, which
+      # made the job green whether the proof passed or not; a proof that may
+      # fail silently proves nothing, so the flag is gone. The measurement
+      # step above keeps its own `continue-on-error` deliberately: that one
+      # asks what `Get-ScheduledTask` answers and both answers are results.
       - name: The proof against a real Task Scheduler (T17)
-        continue-on-error: true
         run: pnpm e2e:identity
 
       - name: Leave no task behind

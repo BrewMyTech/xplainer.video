@@ -17,16 +17,33 @@
 # installs ffmpeg and the Chrome libraries directly — the same set
 # `infra/e2e/Dockerfile` installs, in this distribution's spelling.
 #
-#   gh workflow run e2e-linux.yml --ref main
+#   gh workflow run e2e-linux.yml --ref main -f linux=true
 #   gh run watch "$(gh run list --workflow e2e-linux.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# `linux` is the per-OS boolean every proof workflow in this repository now
+# carries, and here it is the only one there could be: the single job below is
+# `ubuntu-latest`, the 1x runner. It defaults to `true`, so the dispatch above
+# behaves exactly as it did before the flag existed; clearing it is how a
+# dispatch is cancelled after the fact without cancelling the run by hand.
 
 name: e2e-linux
 
 on:
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the render on ubuntu-latest.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref that asked for
+  # the same thing — a re-run of the same request — and nothing else.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -35,6 +52,7 @@ defaults:
 jobs:
   render:
     name: end-to-end render (linux)
+    if: ${{ inputs.linux }}
     runs-on: ubuntu-latest
     # The render itself is fast — 30 seconds for 491 frames in the local Docker
     # proof of 2026-09-07. The budget is for everything around it on a cold

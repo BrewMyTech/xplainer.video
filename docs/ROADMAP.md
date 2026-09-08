@@ -649,12 +649,25 @@ owner's, and it is what turns those lines from pending into met or into defects.
   - *Amended 2026-09-08 (T30): the status of this row, in one line, so it cannot be read as a
     pass.* **PENDING — met on macOS and Linux; pending on Windows, closed by the phase-4
     milestone: native speech bundles per platform, published with the manifest behind the connected
-    custom domain.** The evidence for the two platforms where it is met is the T19, T20 and T33
-    amendments above — `pnpm e2e:toolchain`, `.session/artifacts/e2e-toolchain.log` — and the
-    Windows half has no route this phase rather than a failing one: nothing is published for
-    `bundle` to fetch, the pinned Kokoro-FastAPI image is linux/amd64, and `--tts-url` records a
-    server somebody else already runs. The runner leg matches: in `e2e-toolchain` run `34206449083`
-    (`f73e8cc`), the `windows-latest` job's **setup refuses and names no working speech route** step
+    custom domain.** Each platform's evidence is named separately, because "met on macOS and Linux"
+    is two claims and they rest on two different runs. **macOS** is the T19, T20 and T33 amendments
+    above: `pnpm e2e:toolchain` on macOS arm64 on 2026-09-08, transcript
+    `.session/artifacts/e2e-toolchain.log`. **Linux** is the `ubuntu-latest` leg of `e2e-toolchain`
+    run `34206449083` (`f73e8cc`), on a real x86-64 Linux VM, where **phases 1–6 passed** — `setup`
+    under the scrubbed `PATH`, the workspace resolved from the template's pins, the browser admitted
+    on its expected digest, live narration from a Kokoro container the gate started from the digest
+    in the receipt `setup` wrote and stopped in its `finally`, then the still and the render. That
+    run's **last** phase did not pass and it is not this criterion's: T16's rollback-render rerun
+    exited `5`, because `apps/cli/src/setup/testing/rollback-render.ts` built its fixture
+    environment without the injected linger marker and so met the real
+    `/var/lib/systemd/linger/<user>` on a Linux host — a defect in the harness, fixed in `d376533`,
+    and **not re-dispatched**, because Actions is billing-blocked for this organisation — the note
+    above this list, which names that fix among the ones with no runner evidence at all. So the
+    Linux half of this row is proven for what P2-4 asks, and its gate has not been green
+    end-to-end since the fix. The **Windows** half has no route this phase rather than a failing
+    one: nothing is published for `bundle` to fetch, the pinned Kokoro-FastAPI image is linux/amd64,
+    and `--tts-url` records a server somebody else already runs. The runner leg matches: in that
+    same run, the `windows-latest` job's **setup refuses and names no working speech route** step
     passed and only its upload step failed — which is the refusal being correct, not the criterion
     being met.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid

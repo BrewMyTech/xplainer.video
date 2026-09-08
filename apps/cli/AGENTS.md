@@ -812,7 +812,14 @@ Then the root procedure: `pnpm verify`.
   file `token_file` names and for no other**: a token at a path this state directory never wrote is
   the operator's however often this daemon has minted one of its own, and a start that inherited the
   recorded answer refused an operator's `--token-file` for ever in a sentence claiming this daemon
-  had minted a file it had never seen. `0.0.0.0`, `::`, `[::]` and `*`
+  had minted a file it had never seen. **Because the record answers for a file, the two fields are
+  one write**: `serve` writes `token_origin` and `token_file` in the same `updateDaemonState` call,
+  at the moment the token is read or minted, and `markReady` writes neither. Writing them apart was
+  a hole rather than an untidiness — `token_origin` at the mint and `token_file` only at readiness
+  meant every ordinary failed start (a held port, an unloadable certificate pair, a socket path the
+  platform refuses) left `minted` on disk with no path beside it, and the next start read "the
+  record names no file of mine" and answered `operator` for the token this daemon had just minted,
+  meeting the fifth precondition by bookkeeping. `0.0.0.0`, `::`, `[::]` and `*`
   are refused outright, acknowledgement or not. Everything argv decides is decided before ownership,
   and the token's provenance **before the mint** — the three answers are `absent`, `minted` and
   `operator`, and a check asked after `loadOrMintToken` created the credential it then refused — so

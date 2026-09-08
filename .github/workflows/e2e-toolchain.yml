@@ -46,16 +46,49 @@
 # setting. Once it is there, `--ref` chooses which branch's code the run
 # executes.
 #
-#   gh workflow run e2e-toolchain.yml --ref "$(git branch --show-current)"
+#   gh workflow run e2e-toolchain.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow e2e-toolchain.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
+# a bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
+# (2x) for the leg a given question needs, and all three for the run that is
+# offered as full platform coverage.
 
 name: e2e-toolchain
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x and Windows at 2x, and re-running a green macOS leg to
+  # look at a red Windows one is how 1,360 macOS minutes disappeared in three
+  # days. Select all three for the run that is offered as full platform
+  # coverage, and record the SHA and the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows legs (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -64,6 +97,8 @@ defaults:
 jobs:
   gate:
     name: toolchain gate (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos || inputs.windows }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Three answers, not one verdict: a Windows failure must not cancel the
@@ -71,6 +106,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
     # The gate itself is minutes of work. The budget is for everything around it
     # on a cold runner, each paid in full on every run: the install, a full
     # `turbo build` with no cache, the workspace's `npm ci`, Chrome's download,
@@ -200,6 +244,7 @@ jobs:
 
   windows-delivery-position:
     name: setup names no speech route (windows, T20 criterion 3)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     # A `setup` that refuses in its first phase, and a build to reach it.
     timeout-minutes: 30

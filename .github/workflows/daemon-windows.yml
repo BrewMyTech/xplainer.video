@@ -41,8 +41,16 @@
 # setting — and `--ref` then chooses whose code runs. It has never been
 # dispatched.
 #
-#   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-windows.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# `windows` is the per-OS boolean every proof workflow in this repository now
+# carries, and here it is the only one there could be: all five jobs below are
+# `windows-latest`. It therefore defaults to `true` rather than to the `false`
+# the macOS and Windows checkboxes take elsewhere — a default of `false` would
+# make the ordinary dispatch of this file a no-op, which is not a saving, it is
+# a workflow that lies about having run. Clearing it is how a dispatch is
+# cancelled after the fact without cancelling the run by hand.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. The same rule `e2e-runtime.yml`,
 # `e2e-linux.yml` and `phase2-proofs.yml` follow. This job creates a local
@@ -72,6 +80,10 @@ name: daemon-windows
 on:
   workflow_dispatch:
     inputs:
+      windows:
+        description: Run the Windows jobs (windows-latest, bills at 2x).
+        type: boolean
+        default: true
       standard_user:
         description: The local standard account the task is registered for.
         required: false
@@ -84,9 +96,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref that asked for
+  # the same thing — a re-run of the same request — and nothing else.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   measure:
     name: rename, and which call warns (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -206,6 +225,7 @@ jobs:
 
   containment:
     name: a worker's whole tree dies with it (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -272,6 +292,7 @@ jobs:
 
   install:
     name: install under the S4U principal, then create → narrate (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -618,6 +639,7 @@ jobs:
   # observed from a machine that has no `icacls`.
   token-acl:
     name: the token's ACL, its re-verification, and a rotation (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -798,6 +820,7 @@ jobs:
   # job that can say whether a second account is actually kept out.
   pipe-acl:
     name: a second local account cannot open the pipe (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 

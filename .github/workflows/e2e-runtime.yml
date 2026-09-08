@@ -55,20 +55,55 @@
 # setting. Once it is there, `--ref` chooses which branch's code the run
 # executes, so a branch under review is dispatched by name.
 #
-#   gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
+#   gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow e2e-runtime.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
+# a bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
+# (2x) for the leg a given question needs, and all three for the run that is
+# offered as full platform coverage.
 
 name: e2e-runtime
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x and Windows at 2x, and re-running a green macOS leg to
+  # look at a red Windows one is how 1,360 macOS minutes disappeared in three
+  # days. Select all three for the run that is offered as full platform
+  # coverage, and record the SHA and the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows legs (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   gate:
     name: runtime gate (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos || inputs.windows }}
     runs-on: ${{ matrix.os }}
     strategy:
       # The point of the matrix is three answers, not one verdict: a Windows
@@ -77,6 +112,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
     # The gate's own MCP half is a minute of work. The budget is for everything
     # around it on a cold runner — the install, a full `turbo build` with no
     # cache, payload 2's `npm ci` and the two hash walks over the tree it

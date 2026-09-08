@@ -216,16 +216,44 @@ export type ScheduledTasksShim = {
 /**
  * The stand-in `ScheduledTasks` module, as text, so the Windows branch is readable from any machine.
  *
- * **Both functions declare `-TaskName`, and that is the correction of 2026-09-08.** They used to
- * take nothing but `[Parameter(ValueFromRemainingArguments = $true)] $Rest`, which captures
- * *positional* leftovers and **not** an unknown named parameter: PowerShell's binder answers
- * `-TaskName 'x'` on such a function with a terminating "A parameter cannot be found that matches
- * parameter name 'TaskName'". The CLI's query is
- * `(Get-ScheduledTask -TaskName '<identity>').State`, so the shim threw, the query wrote nothing to
- * stdout, exited non-zero, and `readSwitch` — which reads `unregistered` out of "cannot find", and
- * `unknown` out of anything else — answered `unknown`. That is exactly what `windows-latest`
- * reported on 2026-09-08: `expected 'unknown' to be 'off'`, blamed on the app, produced by the
- * arrangement.
+ * **The symptom is measured; the cause is not, and this docblock used to state one as though it
+ * were.** What happened is that a `windows-latest` run of the desktop suite on 2026-09-08 reported
+ * `expected 'unknown' to be 'off'` for `discovery.test.ts`'s switched-off case — the arrangement
+ * below did not answer the CLI's query, and the app was blamed for the arrangement. That line is
+ * the whole of the Windows evidence, and it is recorded here as the run report it was: the
+ * transcript is not in this repository.
+ *
+ * **It does not tell you which failure it was.** The previous text of this docblock said the old
+ * shim declared nothing but `[Parameter(ValueFromRemainingArguments = $true)] $Rest`, that
+ * PowerShell's binder therefore refused `-TaskName` outright, and that `readSwitch` turned the
+ * refusal into `unknown` because it reads `unregistered` only out of "cannot find" — offered as the
+ * mechanism rather than as a candidate. `readSwitch` cannot carry that weight. Measured on
+ * 2026-09-08 against `@xplainer/cli`'s own built `install/lifecycle.js`: its `task-scheduler` branch
+ * matches `/cannot find|does not exist|no mapping/i`, so the binder's actual wording — "A parameter
+ * cannot be **found** that matches parameter name 'TaskName'" — classifies as `unknown`, and so
+ * does the real cmdlet's "No MSFT_ScheduledTask objects found with property 'TaskName' equal to
+ * …", and so does every other non-zero answer. `unknown` is what *any* failure of this arrangement
+ * looks like from the test, which leaves the binder and an auto-load that reached the system module
+ * equally consistent with the line.
+ *
+ * **What the correction of 2026-09-08 actually changed is a fact about the diff**, and only the
+ * third item makes a future failure attributable:
+ *
+ * 1. {@link switchedOffEnvironment} sets `PSModulePath` to the shim's directory **and nothing
+ *    else**. It used to prepend that directory to the machine's own, which left the real
+ *    `ScheduledTasks` under `$PSHOME` discoverable and made the answer a question about search
+ *    order.
+ * 2. Both functions declare `-TaskName` and `-TaskPath` — the real cmdlet's own two named
+ *    parameters — beside the remaining-arguments catch-all, and `Get-ScheduledTask` echoes
+ *    `TaskName` back. The shim answers the query's exact shape instead of depending on how the
+ *    binder treats a name it has no parameter for.
+ * 3. {@link assertScheduledTasksShimAnswers} runs the CLI's own query **before** the arrangement is
+ *    handed out, so a shim that does not answer fails naming itself rather than the app.
+ *
+ * **None of the three has run on a Windows runner.** They landed after the commit from which every
+ * GitHub Actions job in this organisation is refused on billing (`docs/ROADMAP.md` §Phase 2's note
+ * on the runner halves), so the correction is unverified on the only platform it is about, and the
+ * next dispatch of `desktop.yml` is what tests it.
  */
 export function scheduledTasksShim(state: string = SWITCHED_OFF_STATE): ScheduledTasksShim {
   return {

@@ -11,6 +11,13 @@
 #              means exactly one thing: the repository does not bootstrap on
 #              that operating system. (AC-1a, AC-1b, AC-1c, AC-1e)
 #
+#              It is `workflow_dispatch`-only, one boolean per operating
+#              system. The claim it discharges changes when the lockfiles,
+#              `.node-version` or `.python-version` change and at no other
+#              time, so it is dispatched for those changes and for the
+#              candidate before a release — where all three are selected —
+#              rather than paid for on every push. See the triggers below.
+#
 #   check      The full quality gate, on ubuntu-latest. One discrete step per
 #              assertion so the job summary names the check that failed.
 #              (AC-2, AC-3b, AC-4a, AC-9, AC-12b, AC-14f, AC-15e)
@@ -33,16 +40,50 @@
 
 name: ci
 
+# WHY THE TRIGGERS ARE NARROW, AND WHY THE BOOTSTRAP IS MANUAL. Between
+# 2026-09-05 and 2026-09-08 this repository spent 2,106 billed Actions minutes
+# and exhausted the organisation's included allowance mid-run. 430 of them were
+# this workflow, 220 of those macOS: `on: push` with no branch filter ran `ci`
+# on every branch, `pull_request` ran it a second time on the same commit, and
+# each of those runs paid for a three-OS `bootstrap` whose macOS leg bills at
+# 10x and whose Windows leg at 2x. Nothing below weakens an assertion: `check`
+# and `images` still run automatically on every pull request and every push to
+# `main`, and `bootstrap` still installs on the same three operating systems.
+# What changed is who asks for the expensive two.
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  # One checkbox per operating system. Linux is on by default because it is the
+  # 1x runner; macOS (10x) and Windows (2x) are opted into by the dispatch that
+  # needs them, so iterating on a Windows failure never re-pays for macOS.
+  workflow_dispatch:
+    inputs:
+      linux:
+        description: Bootstrap on ubuntu-latest.
+        type: boolean
+        default: true
+      macos:
+        description: Bootstrap on macos-latest (bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Bootstrap on windows-latest (bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Automatic runs supersede one another per ref, so a second push to a branch
+  # cancels the first one's runners. A manual bootstrap carries its own
+  # selection in the group, so it neither cancels nor is cancelled by the
+  # branch's automatic run, and two dispatches cancel each other only when they
+  # asked for the same operating systems. A tag build is never cancelled.
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 defaults:
   run:
@@ -51,11 +92,24 @@ defaults:
 jobs:
   bootstrap:
     name: bootstrap (${{ matrix.os }})
+    # Manual only, and only for what the dispatch selected. A dispatch with
+    # every box cleared has asked for nothing and is skipped rather than
+    # started.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.linux || inputs.macos || inputs.windows) }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing while an unselected one is
+        # removed before a runner is allocated. That is where the saving is: a
+        # job that starts and then skips its steps has already been billed for
+        # the runner it booted.
+        exclude:
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.linux) && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.macos) && 'unused' || 'macos-latest' }}
+          - os: ${{ (github.event_name != 'workflow_dispatch' || inputs.windows) && 'unused' || 'windows-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

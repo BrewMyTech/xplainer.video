@@ -201,7 +201,7 @@ registers from the repository's **default branch**, so the file has to be on `ma
 will accept a dispatch at all; `--ref` then chooses whose code runs:
 
 ```sh
-gh workflow run daemon-remote.yml --ref "$(git branch --show-current)"
+gh workflow run daemon-remote.yml --ref "$(git branch --show-current)" -f macos=true  # linux=true by default; both legs are the two-platform claim
 gh run watch "$(gh run list --workflow daemon-remote.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 

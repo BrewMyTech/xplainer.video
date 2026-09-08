@@ -235,6 +235,10 @@ export type DaemonState = {
    * ADR 0020 §Port and discovery lists the token file among `daemon.json`'s durable fields, and
    * R-SEC-6 is why it is a *path*: `/proc/<pid>/cmdline` is world-readable and
    * `systemctl --user show` prints `Environment=`, so the value never appears anywhere but the file.
+   *
+   * Written by `serve` in the **same call** as {@link DaemonState.token_origin}, at the moment the
+   * token is read or minted rather than at readiness: the origin is a fact about *this* file, so a
+   * record carrying one of the two without the other answers R-SEC-9 about a file it cannot name.
    */
   token_file: string | null;
   /**
@@ -250,8 +254,9 @@ export type DaemonState = {
    * Whether the token in {@link DaemonState.token_file} is this daemon's own mint or the operator's.
    *
    * Written by `serve` on every start, from {@link TokenOrigin} and the file it actually read, so
-   * that R-SEC-9's "a non-default token" is a fact on disk rather than a guess about a secret.
-   * `null` is a state directory no release that records this has served yet.
+   * that R-SEC-9's "a non-default token" is a fact on disk rather than a guess about a secret, and
+   * always in the same call as {@link DaemonState.token_file} — see there for why the pair is
+   * indivisible. `null` is a state directory no release that records this has served yet.
    */
   token_origin: TokenOrigin | null;
   /**

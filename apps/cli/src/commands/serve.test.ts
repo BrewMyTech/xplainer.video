@@ -737,6 +737,76 @@ describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () =>
   }, 40_000);
 
   /**
+   * The record has to survive a start that never bound, because that is when it is written.
+   *
+   * `token_origin` and `token_file` are one fact about one file, and they used to be written at two
+   * different moments: the origin the instant the token was minted, the path only at `markReady()`
+   * after both listeners were up. Any ordinary failed start therefore left `minted` on disk with no
+   * path beside it — a held port, a certificate pair that will not load, a socket path this platform
+   * refuses — and `resolveTokenOrigin` read "the record names no file of mine" and answered
+   * `operator` for the very token this daemon had minted seconds earlier. The next `--bind` then met
+   * R-SEC-9's fifth precondition without an operator having supplied anything, and said so: "with an
+   * operator token from `<state>/token`", about a file nobody but this daemon had ever written.
+   */
+  it("still refuses its own minted token after a start that failed before it bound", async () => {
+    const stateDir = stateDirectory();
+    const certificate = writeSelfSignedCertificate(stateDir, { names: ["192.0.2.10"] });
+
+    // A start that gets as far as the mint and no further: the port is taken, so it exits 10 from
+    // the bind, long after `loadOrMintToken` created the file and long before `markReady()`.
+    const squatter = createServer();
+    await new Promise<void>((listening) => {
+      squatter.listen(0, "127.0.0.1", listening);
+    });
+    const held = squatter.address();
+    const heldPort = typeof held === "object" && held !== null ? held.port : 0;
+    try {
+      const failed = run(CHILD_SERVE, ["--port", String(heldPort)], {
+        XPLAINER_STATE_DIR: stateDir,
+      });
+      expect((await failed.waitForExit()).code).toBe(10);
+    } finally {
+      await new Promise<void>((closed) => {
+        squatter.close(() => {
+          closed();
+        });
+      });
+    }
+
+    // The mint happened, and the record answers for the file it made — both halves, or neither.
+    const tokenPath = join(stateDir, TOKEN_FILE);
+    expect(existsSync(tokenPath)).toBe(true);
+    const afterFailure = readDaemonState(stateDir);
+    expect(afterFailure.token_origin).toBe("minted");
+    expect(afterFailure.token_file).toBe(tokenPath);
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        "192.0.2.10",
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        certificate.certPath,
+        TLS_KEY_FLAG,
+        certificate.keyPath,
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const exit = await child.waitForExit();
+
+    expect(exit.code).toBe(1);
+    expect(child.stderr()).toContain("is the one this daemon minted for itself");
+    expect(child.stdout()).toBe("");
+    expect(readRuntimeState(stateDir)).toBeNull();
+    expect(existsSync(stateDirLayout(stateDir).lock)).toBe(false);
+  }, 40_000);
+
+  /**
    * The other half of the same correction, and the case the record used to make unreachable.
    *
    * `token_origin` answers for the file `token_file` names and for no other. A state directory that

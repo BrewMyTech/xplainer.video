@@ -41,8 +41,12 @@
 # setting — and `--ref` then chooses whose code runs. It has never been
 # dispatched.
 #
-#   gh workflow run daemon-remote.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-remote.yml --ref "$(git branch --show-current)" -f macos=true
 #   gh run watch "$(gh run list --workflow daemon-remote.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`: a bare dispatch
+# allocates the 1x Linux runner and nothing else, and the line above adds the
+# 10x macOS leg. R-SEC-9 is only two-platform evidence with both selected.
 #
 # WHAT RAN LOCALLY INSTEAD, AND WHAT IT SAID. Both phases passed on macOS on
 # 2026-09-08, twice: once against the address the gate chose for itself
@@ -65,14 +69,39 @@
 name: daemon remote
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x, and re-running a green macOS leg to look at a red Linux
+  # one is how 1,360 macOS minutes disappeared in three days. Select both for
+  # the run that is offered as two-platform coverage, and record the SHA and
+  # the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux leg (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS leg (macos-latest, bills at 10x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for a
+  # different operating system running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}
+  cancel-in-progress: true
+
 jobs:
   remote:
     name: R-SEC-9 on a non-loopback address (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos }}
     runs-on: ${{ matrix.os }}
     # A cold `turbo build`, five sub-second refusals and one daemon that answers
     # nine requests. Everything past the build is seconds.
@@ -82,6 +111,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
 
     steps:
       - name: Checkout
