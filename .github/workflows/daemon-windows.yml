@@ -41,8 +41,16 @@
 # setting — and `--ref` then chooses whose code runs. It has never been
 # dispatched.
 #
-#   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-windows.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# `windows` is the per-OS boolean every proof workflow in this repository now
+# carries, and here it is the only one there could be: all five jobs below are
+# `windows-latest`. It therefore defaults to `true` rather than to the `false`
+# the macOS and Windows checkboxes take elsewhere — a default of `false` would
+# make the ordinary dispatch of this file a no-op, which is not a saving, it is
+# a workflow that lies about having run. Clearing it is how a dispatch is
+# cancelled after the fact without cancelling the run by hand.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. The same rule `e2e-runtime.yml`,
 # `e2e-linux.yml` and `phase2-proofs.yml` follow. This job creates a local
@@ -72,17 +80,32 @@ name: daemon-windows
 on:
   workflow_dispatch:
     inputs:
+      windows:
+        description: Run the Windows jobs (windows-latest, bills at 2x).
+        type: boolean
+        default: true
       standard_user:
         description: The local standard account the task is registered for.
         required: false
         default: xplainer-t11
+      second_user:
+        description: The second local account T26's pipe probe runs as.
+        required: false
+        default: xplainer-t26
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref that asked for
+  # the same thing — a re-run of the same request — and nothing else.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   measure:
     name: rename, and which call warns (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -202,6 +225,7 @@ jobs:
 
   containment:
     name: a worker's whole tree dies with it (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -268,6 +292,7 @@ jobs:
 
   install:
     name: install under the S4U principal, then create → narrate (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 45
 
@@ -342,6 +367,23 @@ jobs:
       # or an environment variable would be writing a secret into the run's own
       # log surface. It is a throwaway local account on a throwaway VM either
       # way, and the shorter its value's life the better.
+      #
+      # WHOSE ENVIRONMENT THE CHILD GETS, WHICH IS THE HALF THIS STEP GOT WRONG
+      # FIRST TIME. `Start-Process -Credential` starts the process as the named
+      # account and hands it **this** session's environment block, so the first
+      # run of this job installed as `xplainer-t11` while reading runneradmin's
+      # `%USERNAME%` and `%LOCALAPPDATA%`: it rendered a task for the wrong
+      # principal and tried to mirror the XML into a profile the child has no
+      # right to write. Measured on 2026-09-08, run 34177262200:
+      #
+      #   xplainer daemon install: the task-scheduler artefact could not be
+      #   written at C:\Users\runneradmin\AppData\Local\xplainer\service\…:
+      #   EPERM: operation not permitted, mkdir '…\xplainer\service'
+      #
+      # — rolled back cleanly, exit 3. So the standard user's own profile
+      # directories go into the environment before the install is started, and
+      # a throwaway logon creates that profile first, because a local account
+      # that has never logged on has no `C:\Users\<user>` at all.
       - name: Install as the standard user
         shell: pwsh
         env:
@@ -357,7 +399,34 @@ jobs:
           $credential = New-Object System.Management.Automation.PSCredential(
             "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
 
+          # The logon that creates the profile. `Start-Process -Credential` logs
+          # on with the profile loaded, so this throwaway process is what makes
+          # C:\Users\<user> and the AppData tree under it exist to be read.
+          Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'exit', '0' `
+            -Credential $credential -WorkingDirectory $PWD -Wait
+          $account = New-Object System.Security.Principal.NTAccount(
+            $env:COMPUTERNAME, $env:STANDARD_USER)
+          $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+          $profileDir = (Get-ItemProperty $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
+          if ([string]::IsNullOrWhiteSpace($profileDir)) {
+            throw "no profile directory recorded for $sid after a logon as $env:STANDARD_USER"
+          }
+          Write-Host "principal: $env:COMPUTERNAME\$env:STANDARD_USER, profile: $profileDir"
+
+          # The environment the child is given, rather than the one it would
+          # inherit: `%USERNAME%` and `%USERDOMAIN%` are what the renderer builds
+          # `\xplainer\<user>-daemon` and the S4U principal from, `%USERPROFILE%`
+          # is what Node's `homedir()` reads, and `%LOCALAPPDATA%` is where the
+          # task XML and the daemon's log go. `$env:USER` is set too because the
+          # account name is read as USER, then USERNAME, then LOGNAME.
           $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          $env:USER = $env:STANDARD_USER
+          $env:USERNAME = $env:STANDARD_USER
+          $env:USERDOMAIN = $env:COMPUTERNAME
+          $env:USERPROFILE = $profileDir
+          $env:LOCALAPPDATA = Join-Path $profileDir 'AppData\Local'
+          $env:APPDATA = Join-Path $profileDir 'AppData\Roaming'
           $process = Start-Process -FilePath 'node' -Wait -PassThru `
             -ArgumentList @(
               'apps\cli\dist\bin.js', 'daemon', 'install',
@@ -370,6 +439,15 @@ jobs:
           Get-ScheduledTask -TaskPath '\xplainer\' | Format-List | Out-String | Write-Host
           Get-ScheduledTaskInfo -TaskName "\xplainer\$env:STANDARD_USER-daemon" |
             Format-List | Out-String | Write-Host
+          # The mirrored artefact, under the standard user's own profile and
+          # nobody else's — which is the claim the environment above exists to
+          # make true, and the one whose failure ended the first run of this job.
+          # Its presence is asserted; printing it is best effort, because reading
+          # another account's profile file is a permission question of its own.
+          $mirror = Join-Path $env:LOCALAPPDATA 'xplainer\service\xplainer-daemon.xml'
+          if (-not (Test-Path $mirror)) { throw "the install mirrored no artefact at $mirror" }
+          Write-Host "artefact: $mirror"
+          Get-Content $mirror -ErrorAction SilentlyContinue | Write-Host
 
       # Criterion 11: T3's create → put_source → narrate gate against the
       # **installed** daemon. `mcp --attach` reads the socket out of the
@@ -517,7 +595,24 @@ jobs:
           Set-LocalUser -Name $env:STANDARD_USER -Password $secret
           $credential = New-Object System.Management.Automation.PSCredential(
             "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+          # The same environment the install was given, for the same reason: an
+          # uninstall reading runneradmin's profile would look for a task named
+          # after the wrong account and report having removed nothing. The
+          # profile exists by now, so this one needs no logon of its own.
+          $account = New-Object System.Security.Principal.NTAccount(
+            $env:COMPUTERNAME, $env:STANDARD_USER)
+          $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+          $profileDir = (Get-ItemProperty $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
           $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T11_ROOT 'state'
+          if (-not [string]::IsNullOrWhiteSpace($profileDir)) {
+            $env:USER = $env:STANDARD_USER
+            $env:USERNAME = $env:STANDARD_USER
+            $env:USERDOMAIN = $env:COMPUTERNAME
+            $env:USERPROFILE = $profileDir
+            $env:LOCALAPPDATA = Join-Path $profileDir 'AppData\Local'
+            $env:APPDATA = Join-Path $profileDir 'AppData\Roaming'
+          }
           $removed = Start-Process -FilePath 'node' -Wait -PassThru `
             -ArgumentList @('apps\cli\dist\bin.js', 'daemon', 'uninstall') `
             -Credential $credential -WorkingDirectory $PWD
@@ -534,3 +629,379 @@ jobs:
             ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
           Remove-LocalUser -Name $env:STANDARD_USER -ErrorAction SilentlyContinue
           Write-Host 'tasks and account removed'
+
+  # ── T26 ────────────────────────────────────────────────────────────────────
+  #
+  # R-SEC-5's Windows half, both ends of it, and R-SEC-8's rotation against a
+  # daemon that stays installed. Everything below is only answerable here: a
+  # mode is not protection on this platform, so the entry `icacls` writes and
+  # the entry `daemon status` reads back are the protection, and neither can be
+  # observed from a machine that has no `icacls`.
+  token-acl:
+    name: the token's ACL, its re-verification, and a rotation (windows-latest)
+    if: ${{ inputs.windows }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      # The unit halves first, so a failure here is read as "the command line or
+      # the parse is wrong" rather than as "Windows disagrees". Everything after
+      # this step is about the filesystem and the pipe.
+      - name: The ACL and pipe-descriptor units
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/daemon/windows-acl.test.ts src/daemon/pipe-acl.test.ts
+          src/daemon/token.test.ts src/commands/token.test.ts
+
+      # A real daemon mints a real token, and `icacls` is asked what is on it.
+      # `/inheritance:r /grant:r` leaves exactly one entry, so the assertion is
+      # an exact one: this account, and nothing else, and no `(I)`.
+      - name: A minted token carries one entry, for this account, not inherited
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'xplainer-t26'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          $daemon = Start-Process -FilePath 'node' -PassThru `
+            -ArgumentList @('apps\cli\dist\bin.js', 'serve', '--port', '0') `
+            -RedirectStandardOutput (Join-Path $root 'ready.json') `
+            -RedirectStandardError (Join-Path $root 'serve.log')
+          "XPLAINER_T26_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "XPLAINER_T26_PID=$($daemon.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
+          foreach ($attempt in 1..60) {
+            if (Test-Path $token) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path $token)) {
+            Get-Content (Join-Path $root 'serve.log') | Write-Host
+            throw "the daemon never minted a token"
+          }
+
+          $acl = Get-Acl -Path $token
+          $acl.AccessToString | Write-Host
+          if ($acl.AreAccessRulesProtected -ne $true) {
+            throw "inheritance was not removed from $token"
+          }
+          $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+          $rules = @($acl.Access)
+          if ($rules.Count -ne 1) {
+            throw "expected exactly one entry on $token, found $($rules.Count)"
+          }
+          $granted = $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
+          if ($granted -ne $me) {
+            throw "the entry on $token names $granted and not $me"
+          }
+          Write-Host "token ACL: one entry, $granted, not inherited"
+
+      # The second half of R-SEC-5, and the only place it can fire: inheritance
+      # is switched back on underneath a running daemon, and `daemon status` has
+      # to say so. Nothing else about the file changes — the mode is identical
+      # before and after — which is exactly why the re-verification exists.
+      - name: daemon status warns once inheritance is restored
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T26_ROOT 'state'
+          $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
+
+          $clean = & node apps\cli\dist\bin.js daemon status 2>&1 | Out-String
+          $clean | Write-Host
+          if ($clean -notmatch 'token file:\s+.*one access-control entry') {
+            throw "daemon status did not report the token file as owner-only"
+          }
+
+          icacls $token /inheritance:e | Out-Null
+          icacls $token | Write-Host
+          $widened = & node apps\cli\dist\bin.js daemon status 2>&1 | Out-String
+          $widened | Write-Host
+          if ($widened -notmatch 'token file:\s+WARNING') {
+            throw "daemon status did not warn after inheritance was restored"
+          }
+          if ($widened -notmatch 'Inheritance has been restored') {
+            throw "the warning did not name inheritance as the reason"
+          }
+          Write-Host 're-verification warned, and named the remedy'
+
+      # R-SEC-8 end to end, against the daemon started two steps above: it is
+      # still running, it was never restarted, and after the rotation both the
+      # new value and the retired one open it. The new files carry the same
+      # single entry the mint's did, because a grace file holds a live
+      # credential.
+      - name: token rotate, with the daemon still up, and both values accepted
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T26_ROOT 'state'
+          $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
+          $previous = "$token.previous"
+          # Undo the widening of the step above, so what is asserted below is
+          # the rotation's own doing.
+          icacls $token /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+
+          $ready = Get-Content (Join-Path $env:XPLAINER_T26_ROOT 'ready.json') -Raw | ConvertFrom-Json
+          $port = $ready.port
+          $before = (Get-Content $token -Raw).Trim()
+          $healthz = "http://127.0.0.1:$port/healthz"
+          $answer = Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $before" } -UseBasicParsing
+          if ($answer.StatusCode -ne 200) { throw "the daemon did not answer its own token" }
+
+          & node apps\cli\dist\bin.js token rotate --grace 600 | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "token rotate exited $LASTEXITCODE" }
+          $after = (Get-Content $token -Raw).Trim()
+          if ($after -eq $before) { throw "the token file was not rewritten" }
+
+          foreach ($path in @($token, $previous)) {
+            $acl = Get-Acl -Path $path
+            if ($acl.AreAccessRulesProtected -ne $true -or @($acl.Access).Count -ne 1) {
+              $acl.AccessToString | Write-Host
+              throw "$path is not owner-only after the rotation"
+            }
+          }
+
+          foreach ($value in @($after, $before)) {
+            $reply = Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $value" } -UseBasicParsing
+            if ($reply.StatusCode -ne 200) { throw "a value inside the window was refused" }
+          }
+          Write-Host 'rotated: both values accepted by a daemon that was never restarted'
+
+          & node apps\cli\dist\bin.js token rotate --grace 0 | Write-Host
+          $third = (Get-Content $token -Raw).Trim()
+          if (Test-Path $previous) { throw "--grace 0 left a grace file behind" }
+          foreach ($value in @($before, $after)) {
+            try {
+              Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $value" } -UseBasicParsing | Out-Null
+              throw "a retired value still opened the daemon after --grace 0"
+            } catch [System.Net.WebException] {
+              if ($_.Exception.Response.StatusCode.value__ -ne 401) { throw }
+            }
+          }
+          $last = Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $third" } -UseBasicParsing
+          if ($last.StatusCode -ne 200) { throw "the newest token was refused" }
+          Write-Host 'closed: only the newest value is accepted'
+
+      - name: Stop the daemon
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ($env:XPLAINER_T26_PID) {
+            taskkill /PID $env:XPLAINER_T26_PID /T /F | Out-Host
+          }
+          if ($env:XPLAINER_T26_ROOT) {
+            Get-Content (Join-Path $env:XPLAINER_T26_ROOT 'serve.log') -ErrorAction SilentlyContinue |
+              Write-Host
+          }
+
+  # The gap neither ADR 0020 nor round 1 closed: `icacls` on the token says
+  # nothing about the **named pipe**, which on Windows replaces the `0700`
+  # directory that authenticates the unix socket. Microsoft documents the
+  # default descriptor libuv's pipe is born with as granting "read access to
+  # members of the Everyone group and the anonymous account", so this is the one
+  # job that can say whether a second account is actually kept out.
+  pipe-acl:
+    name: a second local account cannot open the pipe (windows-latest)
+    if: ${{ inputs.windows }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: Create the second local account
+        shell: pwsh
+        env:
+          SECOND_USER: ${{ inputs.second_user }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
+          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
+          New-LocalUser -Name $env:SECOND_USER -Password $secret -AccountNeverExpires `
+            -PasswordNeverExpires | Out-Null
+          "XPLAINER_T26_SECOND_PASSWORD=$password" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "created $env:COMPUTERNAME\$env:SECOND_USER (Users only)"
+
+      # The daemon binds its pipe and narrows it. The descriptor is read back in
+      # the step after this one, because "Everyone is gone" is the fact the
+      # two-account probe below is a consequence of.
+      - name: Start a daemon and note the pipe it bound
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'xplainer-t26-pipe'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          $daemon = Start-Process -FilePath 'node' -PassThru `
+            -ArgumentList @('apps\cli\dist\bin.js', 'serve', '--port', '0') `
+            -RedirectStandardOutput (Join-Path $root 'ready.json') `
+            -RedirectStandardError (Join-Path $root 'serve.log')
+          "XPLAINER_T26_PIPE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "XPLAINER_T26_PIPE_PID=$($daemon.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $readyFile = Join-Path $root 'ready.json'
+          $ready = $null
+          foreach ($attempt in 1..60) {
+            if ((Test-Path $readyFile) -and (Get-Content $readyFile -Raw).Trim() -ne '') {
+              $ready = Get-Content $readyFile -Raw | ConvertFrom-Json
+              break
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          if ($null -eq $ready) {
+            Get-Content (Join-Path $root 'serve.log') | Write-Host
+            throw 'the daemon never announced a ready line'
+          }
+          Get-Content (Join-Path $root 'serve.log') | Write-Host
+          $name = $ready.socket -replace '^\\\\[.?]\\pipe\\', ''
+          "XPLAINER_T26_PIPE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "pipe: $($ready.socket)"
+
+      # `shell: powershell` — Windows PowerShell, deliberately, and the same host
+      # `daemon/pipe-acl.ts` shells out to. `PipeSecurity`, `PipeAccessRule` and
+      # `PipeStream.GetAccessControl()` are instance members of the .NET Framework
+      # types; in PowerShell 7 the same three live behind
+      # `System.IO.Pipes.AccessControl`'s extension methods and a static factory,
+      # so a step written for one host does not run on the other. One host, one
+      # spelling, on both sides of this proof.
+      - name: The pipe's descriptor names this account and not Everyone
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = $env:XPLAINER_T26_PIPE_NAME
+          # `ReadData` and not only `ReadPermissions`: this constructor derives the
+          # pipe's direction from the rights and throws ArgumentOutOfRangeException
+          # for a value carrying neither `ReadData` nor `WriteData`, so a
+          # permissions-only probe never opens the pipe it is asking about. The
+          # same rule is why `daemon/pipe-acl.ts`'s own opener asks for it.
+          $rights = [System.IO.Pipes.PipeAccessRights]'ReadData,ReadPermissions'
+          $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, $rights,
+            [System.IO.Pipes.PipeOptions]::None,
+            [System.Security.Principal.TokenImpersonationLevel]::None,
+            [System.IO.HandleInheritability]::None)
+          try {
+            $client.Connect(5000)
+            $security = $client.GetAccessControl()
+            $sddl = $security.GetSecurityDescriptorSddlForm('Access')
+            Write-Host "pipe DACL: $sddl"
+            $everyone = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
+            if ($sddl -match [regex]::Escape($everyone.Value)) {
+              throw "the pipe still grants Everyone: $sddl"
+            }
+            $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+            if ($sddl -notmatch [regex]::Escape($me.Value)) {
+              throw "the pipe does not grant this account: $sddl"
+            }
+          } finally {
+            $client.Dispose()
+          }
+          Write-Host 'pipe descriptor: this account, and not Everyone'
+
+      # The assertion the whole story is for. A second local account opens the
+      # pipe the way any client would — `PipeDirection.In`, which the **default**
+      # descriptor grants to Everyone — and has to be refused.
+      - name: A second local account is refused the pipe
+        shell: pwsh
+        env:
+          SECOND_USER: ${{ inputs.second_user }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:XPLAINER_T26_PIPE_ROOT
+          $probeDir = Join-Path $root 'probe'
+          New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
+          $probe = Join-Path $probeDir 'open-pipe.ps1'
+          # Written a line at a time rather than as a here-string: a here-string's
+          # terminator has to start its own line, and a line at column 0 inside a
+          # YAML block scalar ends the block. Every line below is single-quoted
+          # PowerShell, so nothing here is expanded until the second account runs
+          # it — which is why the server name arrives as a parameter and the two
+          # answers are barewords.
+          $lines = @(
+            'param([string]$Server, [string]$Name, [string]$Answer)',
+            '$direction = [System.IO.Pipes.PipeDirection]::In',
+            '$client = New-Object System.IO.Pipes.NamedPipeClientStream($Server, $Name, $direction)',
+            'try {',
+            '  $client.Connect(3000)',
+            '  Set-Content -Path $Answer -Value opened -Encoding ascii',
+            '} catch {',
+            '  $failure = $_.Exception',
+            '  $denied = ($failure -is [System.UnauthorizedAccessException]) -or',
+            '    ($failure.InnerException -is [System.UnauthorizedAccessException])',
+            '  if ($denied) {',
+            '    Set-Content -Path $Answer -Value denied -Encoding ascii',
+            '  } else {',
+            '    $said = "other: " + $failure.GetType().FullName + ": " + $failure.Message',
+            '    Set-Content -Path $Answer -Value $said -Encoding ascii',
+            '  }',
+            '} finally {',
+            '  $client.Dispose()',
+            '}'
+          )
+          $lines | Set-Content -Path $probe -Encoding ascii
+          $answer = Join-Path $probeDir 'answer.txt'
+          icacls $probeDir /grant "$($env:SECOND_USER):(OI)(CI)M" | Out-Null
+
+          $secret = ConvertTo-SecureString -String $env:XPLAINER_T26_SECOND_PASSWORD `
+            -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential(
+            "$env:COMPUTERNAME\$env:SECOND_USER", $secret)
+          $run = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -Credential $credential `
+            -WorkingDirectory $probeDir `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+              '-File', $probe, '-Server', '.', '-Name', $env:XPLAINER_T26_PIPE_NAME,
+              '-Answer', $answer)
+          Write-Host "the second account's probe exited $($run.ExitCode)"
+          if (-not (Test-Path $answer)) { throw 'the second account wrote no answer at all' }
+          $said = (Get-Content $answer -Raw).Trim()
+          Write-Host "the second account got: $said"
+          if ($said -ne 'denied') {
+            throw "a second local account was not refused the pipe: $said"
+          }
+          Write-Host 'two accounts, one pipe, and only the creating account can open it'
+
+      - name: Stop the daemon and remove the second account
+        if: always()
+        shell: pwsh
+        env:
+          SECOND_USER: ${{ inputs.second_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ($env:XPLAINER_T26_PIPE_PID) {
+            taskkill /PID $env:XPLAINER_T26_PIPE_PID /T /F | Out-Host
+          }
+          Remove-LocalUser -Name $env:SECOND_USER -ErrorAction SilentlyContinue
+          Write-Host 'daemon stopped and account removed'

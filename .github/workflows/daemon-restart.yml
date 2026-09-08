@@ -40,8 +40,14 @@
 # GitHub's own rule, not a repository setting — and `--ref` then chooses whose
 # code runs. It has never been dispatched.
 #
-#   gh workflow run daemon-restart.yml --ref "$(git branch --show-current)"
+#   gh workflow run daemon-restart.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-restart.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
+# a bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
+# (2x) for the leg a given question needs, and all three for the run that is
+# offered as full platform coverage.
 #
 # WHAT RUNS LOCALLY INSTEAD, AND WHERE. The macOS half runs on a developer's own
 # Mac against a real launchd, and the Linux half runs in
@@ -64,20 +70,58 @@
 name: daemon restart
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of this proof still exists and
+  # none of them is weakened; what the booleans decide is which of them a given
+  # dispatch pays for. Linux is on by default because it is the 1x runner;
+  # macOS bills at 10x and Windows at 2x, and re-running a green macOS leg to
+  # look at a red Windows one is how 1,360 macOS minutes disappeared in three
+  # days. Select all three for the run that is offered as full platform
+  # coverage, and record the SHA and the selection beside its result.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS legs (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows legs (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   assertion:
     name: the drain route and the restart verb (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos || inputs.windows }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
 
     steps:
       - name: Checkout
@@ -101,21 +145,29 @@ jobs:
       - name: Build every member
         run: pnpm turbo build
 
-      # The four files that are about the drain, not the whole suite. Windows is
-      # the reason this matters: `daemon/ipc.ts` gives that platform a **named
-      # pipe** rather than a unix socket, and every assertion here — the `202`
-      # over the socket, the `404` over TCP, the real spawned `serve` drained
-      # over its own endpoint — has only ever run against a socket.
+      # The files that are about the drain and about what protects the two files
+      # a daemon writes, not the whole suite. Windows is the reason this matters
+      # twice over: `daemon/ipc.ts` gives that platform a **named pipe** rather
+      # than a unix socket, and every assertion here — the `202` over the socket,
+      # the `404` over TCP, the real spawned `serve` drained over its own
+      # endpoint — has only ever run against a socket; and a mode there protects
+      # nothing, so `daemon/windows-acl.ts` applies ADR 0020 §R-SEC-5's explicit
+      # ACL at creation and `token.test.ts` is where a real `icacls` says whether
+      # it took. The last two are seconds each and run everywhere, so the POSIX
+      # halves of both claims stay asserted beside the Windows ones.
       - name: The drain route, the client, the drained process and the restart verb
         run: >
           pnpm --filter @xplainer/cli exec vitest run
           src/server.test.ts
           src/daemon/control.test.ts
+          src/daemon/token.test.ts
+          src/daemon/windows-acl.test.ts
           src/commands/serve.test.ts
           src/install/lifecycle.test.ts
 
   systemd:
     name: systemctl --user restart during a job (ubuntu-latest)
+    if: ${{ inputs.linux }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -180,6 +232,7 @@ jobs:
 
   launchd:
     name: launchctl kickstart -k during a job (macos-latest)
+    if: ${{ inputs.macos }}
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -226,6 +279,7 @@ jobs:
 
   schtasks:
     name: the Task Scheduler adapter, executed at all (windows-latest)
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     timeout-minutes: 30
 

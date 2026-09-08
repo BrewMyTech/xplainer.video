@@ -46,20 +46,50 @@
 # setting. Once it is there, `--ref` chooses which branch's code the run
 # executes, so a branch under review is dispatched by name.
 #
-#   gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)"
+#   gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow phase2-proofs.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `windows=false`: a bare dispatch
+# allocates the 1x Linux runners — the P2-S4 readiness spike and the Linux half
+# of P2-S5 — and nothing else, and the line above adds the 2x Windows leg. Both
+# are needed for the two-platform claim P2-S5 makes.
 
 name: phase-2 proofs
 
 on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg of these spikes still exists
+  # and none of them is weakened; what the booleans decide is which of them a
+  # given dispatch pays for. Linux is on by default because it is the 1x
+  # runner; Windows bills at 2x, and re-dispatching a whole workflow to look at
+  # one platform's failure is how 2,106 billed minutes disappeared in three
+  # days.
   workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux legs (ubuntu-latest) — P2-S4, and P2-S5's Linux half.
+        type: boolean
+        default: true
+      windows:
+        description: Run the Windows leg of P2-S5 (windows-latest, bills at 2x).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for a
+  # different operating system running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
 jobs:
   spike-p2-s4:
     name: P2-S4 systemd readiness (ubuntu-latest)
+    # The readiness spike is a systemd measurement and has no other platform:
+    # it follows the Linux checkbox.
+    if: ${{ inputs.linux }}
     runs-on: ubuntu-latest
     # Nine cases, five timed starts in two of them, and a `turbo build` with no
     # cache before any of it. The budget also has to cover the fallback: if this
@@ -141,6 +171,8 @@ jobs:
 
   spike-p2-s5:
     name: P2-S5 drain adapters (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.windows }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Two answers, not one verdict: the Windows leg is the half that has never
@@ -148,6 +180,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected
+        # operating system is excluded by nothing and an unselected one is
+        # removed before a runner is allocated — which is where the saving is.
+        # A job that starts and then skips its steps has already been billed
+        # for the runner it booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
     # Six systemd cases or five Task Scheduler ones, each with a restart and a
     # drain whose whole point is that it takes seconds. No build precedes them.
     timeout-minutes: 30
