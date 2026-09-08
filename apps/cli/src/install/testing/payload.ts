@@ -40,6 +40,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import {
   MANIFEST_VERSION,
+  type ManifestPackage,
   PAYLOAD_BIN_DIR,
   PAYLOAD_LIB_DIR,
   PAYLOAD_NPM_CLI,
@@ -50,6 +51,9 @@ import {
 
 /** The package a payload's launch contract names, and the directory it lives in. */
 export const FIXTURE_PACKAGE = "@xplainer/cli";
+
+/** The package whose `template/package.json` declares the workspace pins a runtime resolves. */
+export const TEMPLATE_FIXTURE_PACKAGE = "@xplainer/render-core";
 
 /** What {@link buildFixturePayload} was asked for. */
 export type FixturePayloadOptions = {
@@ -80,6 +84,16 @@ export type FixturePayloadOptions = {
    * preflight's `X_OK` probe answers about the same bytes it would on Windows.
    */
   extraInterpreters?: readonly string[] | undefined;
+  /**
+   * The workspace pins a `@xplainer/render-core` inside the payload declares, or none.
+   *
+   * A real payload always carries one — `render-core`'s `files` allowlist ships `template/`, so
+   * every runtime states which Remotion line its workspace resolves — and T15's pre-drain check
+   * compares exactly that document between two payloads. It is an option rather than the default
+   * because most suites here are about staging, naming and launching, and a payload with one more
+   * package in it is a payload with a different content digest and therefore a different slot name.
+   */
+  templatePins?: Readonly<Record<string, string>> | undefined;
 };
 
 /** One built fixture payload. */
@@ -135,6 +149,41 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
   );
   writeFileSync(entry, entrySource(options.marker));
 
+  const templatePackages: ManifestPackage[] = [];
+  if (options.templatePins !== undefined) {
+    const templateDir = join(
+      options.outDir,
+      ...PAYLOAD_LIB_DIR.split("/"),
+      ...TEMPLATE_FIXTURE_PACKAGE.split("/"),
+    );
+    mkdirSync(join(templateDir, "template"), { recursive: true });
+    writeFileSync(
+      join(templateDir, "package.json"),
+      `${JSON.stringify({ name: TEMPLATE_FIXTURE_PACKAGE, version: options.version }, null, 2)}\n`,
+    );
+    // The same two fields `runtime/verify.ts` reads out of the real template, and in the same
+    // document: `dependencies` is what a workspace resolves and `devDependencies` travels with it.
+    writeFileSync(
+      join(templateDir, "template", "package.json"),
+      `${JSON.stringify(
+        {
+          name: "@xplainer/render-workspace",
+          version: "1.0.0",
+          private: true,
+          dependencies: { ...options.templatePins },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    templatePackages.push({
+      path: `${PAYLOAD_LIB_DIR}/${TEMPLATE_FIXTURE_PACKAGE}`,
+      name: TEMPLATE_FIXTURE_PACKAGE,
+      version: options.version,
+      workspace: true,
+    });
+  }
+
   // The manifest names npm's entry, so the payload carries one: a manifest that describes a file
   // the artefact does not have is a manifest `verify` would call a payload with a hole in it.
   const npmCli = join(options.outDir, ...PAYLOAD_NPM_CLI.split("/"));
@@ -166,6 +215,7 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
         version: options.version,
         workspace: true,
       },
+      ...templatePackages,
     ],
     files: scan.files,
     links: scan.links,
@@ -239,8 +289,40 @@ if (verb === "serve") {
   const token = readFileSync(tokenFile, "utf8").trim();
   const socket = flag("--socket") ?? null;
 
-  const server = createServer((request, response) => {
+  // Shutting down is one function, because two callers reach it: the drain route below and
+  // SIGTERM. Both end the way the real daemon's step 6 ends — runtime.json removed, exit 0 —
+  // which is what \`awaitStopped()\` is watching for.
+  let shuttingDown = false;
+  const shutDown = () => {
+    const already = shuttingDown;
+    shuttingDown = true;
+    if (!already) {
+      setTimeout(() => {
+        rmSync(join(stateDir, "runtime.json"), { force: true });
+        if (socket !== null) {
+          rmSync(socket, { force: true });
+        }
+        process.exit(0);
+      }, 50);
+    }
+    return already;
+  };
+
+  const handler = (request, response) => {
     response.setHeader("content-type", "application/json");
+    if ((request.url ?? "").startsWith("/api/daemon/drain") && request.method === "POST") {
+      const already = shutDown();
+      response.statusCode = 202;
+      response.end(
+        JSON.stringify({
+          event: "draining",
+          timeout_ms: 5000,
+          pid: process.pid,
+          already_draining: already,
+        }),
+      );
+      return;
+    }
     if ((request.url ?? "").startsWith("/healthz")) {
       if (request.headers.authorization !== "Bearer " + token) {
         response.statusCode = 401;
@@ -254,7 +336,26 @@ if (verb === "serve") {
       return;
     }
     response.end(JSON.stringify(identity));
-  });
+  };
+
+  const server = createServer(handler);
+  // The IPC listener is the one ADR 0024's drain arrives on, and it is the same application: one
+  // handler, two listeners, exactly as \`startServer({ ipc })\` binds them. A path this platform
+  // cannot listen on is reported and skipped rather than fatal — a fixture that refused to start
+  // because a named pipe could not be bound on macOS would fail every case that never drains.
+  if (socket !== null) {
+    try {
+      mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+      rmSync(socket, { force: true });
+      const ipc = createServer(handler);
+      ipc.on("error", (error) => {
+        process.stderr.write("ipc listen failed: " + String(error) + "\\n");
+      });
+      ipc.listen(socket);
+    } catch (error) {
+      process.stderr.write("ipc listen failed: " + String(error) + "\\n");
+    }
+  }
   const requested = Number(flag("--port") ?? "0");
   server.listen(requested, "127.0.0.1", () => {
     const address = server.address();
@@ -294,6 +395,9 @@ if (verb === "serve") {
   });
   process.on("SIGTERM", () => {
     rmSync(join(stateDir, "runtime.json"), { force: true });
+    if (socket !== null) {
+      rmSync(socket, { force: true });
+    }
     server.close();
     process.exit(0);
   });

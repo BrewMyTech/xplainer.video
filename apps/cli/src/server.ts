@@ -193,6 +193,21 @@ export type CreateServerOptions = {
    * Only `commands/serve.ts` passes one, because only a daemon has ADR 0024's six steps to run.
    */
   drain?: DrainSeam;
+  /**
+   * Who is answering, as `/healthz` advertises it: the run id and the startup digest.
+   *
+   * The third row of ADR 0025's consistency check, and the only one on macOS — where no query
+   * exists for what `launchd` actually loaded (§1.3b D7), a plist rewritten and never reloaded is
+   * caught here or nowhere. It is **passed in** rather than computed here, because the value has to
+   * be the snapshot `daemon/start.ts` froze after ownership and before this server bound: a server
+   * that computed it at request time would answer for the process as it is now rather than for the
+   * process as it was launched.
+   *
+   * Absent for `services/media-service`, which takes no state directory and holds no ownership; the
+   * two fields are then `null`, so the body's shape is the same either way and a reader never has
+   * to tell "the field is missing" apart from "this release does not have it".
+   */
+  identity?: { run_id: string; runtime_digest: string };
 };
 
 /** A bound server, and the handle that stops it. */
@@ -305,8 +320,20 @@ export function createServer(backend: RenderBackend, options: CreateServerOption
   // daemon *before* it starts proxying a session, and `serverInfo.version` in
   // the handshake carries `version` below — the release number — which is the
   // wrong number to compare (ADR 0025 §Note, 2026-09-06: P1-S3 settled).
+  // `run_id` and `runtime_digest` are the identity row: pinned to this run's ownership nonce and to
+  // an immutable startup snapshot over the effective argv, the resolved settings, the working
+  // directory and the payload's content hash. Advertised rather than read back out of a file,
+  // because a `daemon status` that inferred them from `runtime.json` would be asserting what the
+  // last run wrote instead of what this process is.
+  const identity = options.identity ?? null;
   app.get("/healthz", (c) =>
-    c.json({ status: "ok", version, contract_version: MCP_CONTRACT_VERSION }),
+    c.json({
+      status: "ok",
+      version,
+      contract_version: MCP_CONTRACT_VERSION,
+      run_id: identity?.run_id ?? null,
+      runtime_digest: identity?.runtime_digest ?? null,
+    }),
   );
 
   app.post("/mcp", async (c) => {
@@ -439,6 +466,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     ...(options.version !== undefined && { version: options.version }),
     ...(guardFactory !== undefined && { guard: gate }),
     ...(options.drain !== undefined && { drain: options.drain }),
+    ...(options.identity !== undefined && { identity: options.identity }),
     // The seam T13 adds, and the whole of it: the set stays here, and what leaves this function is
     // a question that can be asked about one `Request` object.
     isOverIpc: (request) => overIpc.has(request),

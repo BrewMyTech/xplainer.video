@@ -22,15 +22,15 @@
  * an already-configured program still holds the default one. Without the two
  * calls below, `xplainer daemon --help` and a bare `xplainer daemon` would write
  * straight to the process streams and call `process.exit` — invisible to the
- * test that has to prove this group lists exactly seven verbs. Production
+ * test that has to prove this group lists exactly nine verbs. Production
  * behaviour is unchanged, because `processIo` is the process streams and
  * `process.exit`.
  *
  * **`helpCommand(false)` is load-bearing here too**, for the reason `program.ts`
  * gives: commander adds an implicit `help [command]` entry to any command that
- * has subcommands, which would make this group list eight.
+ * has subcommands, which would make this group list ten.
  *
- * **All seven verbs have arrived.** `install` and `uninstall` are the pair that
+ * **All nine verbs have arrived.** `install` and `uninstall` are the pair that
  * had to ship together — an install nobody can undo is not something to put on a
  * stranger's machine, and P2-10's "a refused install leaves the machine as it
  * was" is only checkable if there is a command that puts it back. `start`,
@@ -38,10 +38,12 @@
  * `install/lifecycle.ts`. `restart` was last because it is the one verb that
  * needs the daemon's own drain route: clear the application and supervisor
  * failure latches, `POST /api/daemon/drain` over IPC, wait for the process to
- * go, then start and wait for readiness. The group's `toEqual` listing in
- * `program.test.ts` never changed through any of it — it is the surface that is
- * fixed, not which half of it is implemented — and the deferred list there is
- * now `setup` alone.
+ * go, then start and wait for readiness. `update` and `recover` are the last
+ * pair and they arrived together for the same reason `install` and `uninstall`
+ * did: an update that can leave a machine with nothing running is not something
+ * to put on a stranger's machine unless one named command puts it back. The
+ * group's listing in `program.test.ts` grew by exactly those two, and its
+ * deferred list is `setup` alone.
  *
  * **Everything a person reads goes to stdout, and a refusal goes to stderr with
  * its documented exit code.** `install.ts` and `uninstall.ts` decide *what* is
@@ -50,6 +52,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { readDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
@@ -76,6 +79,20 @@ import {
 } from "../install/lifecycle.js";
 import { currentSupervisorEnvironment } from "../install/preflight.js";
 import { type UninstallOutcome, uninstallDaemon } from "../install/uninstall.js";
+import { OperationLockRefused, withOperationLock } from "../install/update/lock.js";
+import {
+  RECOVER_COMMAND,
+  readUpdateStatus,
+  recoverUpdate,
+  type UpdateStatus,
+  updateStatusSentences,
+} from "../install/update/recover.js";
+import {
+  requireNoUnfinishedTransaction,
+  type UpdateOutcome,
+  UpdateRefusal,
+  updateDaemon,
+} from "../install/update/transaction.js";
 import type { CliIo } from "../io.js";
 
 /** The largest port number a `--port` may name. */
@@ -85,6 +102,8 @@ const MAX_PORT = 65_535;
 const DAEMON_VERBS = [
   ["install", "Install the daemon so it starts on boot or login"],
   ["uninstall", "Remove the installed daemon and its supervisor registration"],
+  ["update", "Switch the installed daemon to another runtime, and roll back if it will not start"],
+  ["recover", "Finish or undo an update that was interrupted"],
   ["start", "Start the installed daemon and wait for it to answer"],
   ["stop", "Stop the running daemon"],
   ["restart", "Restart the daemon, clearing a latched start failure"],
@@ -108,6 +127,8 @@ type DaemonVerb = (typeof DAEMON_VERBS)[number][0];
 const IMPLEMENTED: Readonly<Record<DaemonVerb, (io: CliIo) => Command>> = {
   install: createInstallCommand,
   uninstall: createUninstallCommand,
+  update: createUpdateCommand,
+  recover: createRecoverCommand,
   start: createStartCommand,
   stop: createStopCommand,
   restart: createRestartCommand,
@@ -159,15 +180,21 @@ function createInstallCommand(io: CliIo): Command {
       const stateDir = resolveStateDir();
       let outcome: InstallOutcome;
       try {
-        outcome = await installDaemon({
-          stateDir,
-          ...(options.runtime === undefined ? {} : { payloadDir: options.runtime }),
-          ...(options.port === undefined ? {} : { port: options.port }),
-          log: (line) => {
-            io.writeOut(`xplainer daemon install: ${line}\n`);
-          },
-        });
+        outcome = await underOperationLock(stateDir, "install", async () =>
+          installDaemon({
+            stateDir,
+            ...(options.runtime === undefined ? {} : { payloadDir: options.runtime }),
+            ...(options.port === undefined ? {} : { port: options.port }),
+            log: (line) => {
+              io.writeOut(`xplainer daemon install: ${line}\n`);
+            },
+          }),
+        );
       } catch (error) {
+        const refused = reportOperationRefusal(io, "install", error);
+        if (refused !== null) {
+          return io.exit(refused);
+        }
         if (error instanceof InstallRefusal) {
           io.writeErr(`xplainer daemon install: ${error.message}\n`);
           for (const undone of error.undone) {
@@ -179,6 +206,181 @@ function createInstallCommand(io: CliIo): Command {
       }
       io.writeOut(describeInstall(outcome));
     });
+}
+
+/** What commander parses out of `daemon update`. */
+type UpdateOptions = {
+  from?: string;
+  build?: boolean;
+  recover?: boolean;
+};
+
+/**
+ * Run an install or an update under the operation lock, refusing an unfinished transaction first.
+ *
+ * Two guards, and they answer two different questions. The **lock** is about *now*: two updaters,
+ * or an updater and an installer, would stage a runtime the other is switching away from. The
+ * **journal** is about the past: a second transaction opened over an unfinished one would record a
+ * new previous runtime over the one the first is still holding, which is the single thing that
+ * turns a recoverable interruption into an unrecoverable one.
+ *
+ * **The lock is taken only when the state directory already exists**, and that is deliberate rather
+ * than lazy. Creating the directory to hold a lock file would make `daemon install` write on a
+ * machine where it is about to refuse for want of a setup marker, and P2-10's obligation is that a
+ * refused install leaves the machine as it found it. Nothing is given up: an updater requires an
+ * *installed* daemon, so on a machine with no state directory there is no update to interleave with.
+ */
+async function underOperationLock<T>(
+  stateDir: string,
+  verb: "install" | "update",
+  act: () => Promise<T>,
+): Promise<T> {
+  if (!existsSync(stateDir)) {
+    return act();
+  }
+  return withOperationLock(stateDir, verb, async () => {
+    requireNoUnfinishedTransaction({ stateDir, steps: [] }, verb);
+    return act();
+  });
+}
+
+/** Print a refused lock or a refused journal, and answer with its exit code, or `null` if neither. */
+function reportOperationRefusal(io: CliIo, verb: string, error: unknown): number | null {
+  if (error instanceof OperationLockRefused) {
+    io.writeErr(`xplainer daemon ${verb}: ${error.message}\n`);
+    return error.exitCode;
+  }
+  if (error instanceof UpdateRefusal) {
+    io.writeErr(`xplainer daemon ${verb}: ${error.message}\n`);
+    for (const step of error.steps) {
+      io.writeErr(`  did: ${step}\n`);
+    }
+    // Named here rather than woven into every message: a refusal that left the journal behind is
+    // one command away from a running daemon, and that command is the same one in every case.
+    if (error.recoverable) {
+      io.writeErr(`  an unfinished transaction is on disk; \`${RECOVER_COMMAND}\` finishes it.\n`);
+    }
+    return error.exitCode;
+  }
+  return null;
+}
+
+/**
+ * `daemon update` — stage the named runtime, drain, switch, start, and put the old one back if the
+ * new one does not become ready.
+ *
+ * The source is **explicit** and there is no default: `--from` names a payload
+ * `xplainer runtime build --out` produced, `--build` assembles a fresh one from this program's own
+ * checkout, and "whatever is on `PATH`" is the answer ADR 0025 §Part one measured as wrong — a
+ * package manager replaces the *global* CLI and leaves the pinned copy the supervisor executes
+ * exactly where it was, which is the fact this command exists for.
+ *
+ * `--recover` is the second spelling of `daemon recover`, for the user who reaches for `update`
+ * again after one was interrupted: a plain `update` refuses to start a second transaction and names
+ * the command, and this flag is that command without a second thing to type.
+ */
+function createUpdateCommand(io: CliIo): Command {
+  return new Command("update")
+    .description(
+      "Switch the installed daemon to another runtime, and roll back if it will not start",
+    )
+    .option(
+      "--from <dir>",
+      "a payload-1 directory from `xplainer runtime build --out` to update to",
+    )
+    .option("--build", "assemble a fresh payload from this program's own checkout and update to it")
+    .option(
+      "--recover",
+      `finish or undo an interrupted update, exactly as \`${RECOVER_COMMAND}\` does`,
+    )
+    .action(async (options: UpdateOptions) => {
+      const stateDir = resolveStateDir();
+      if (options.recover === true) {
+        await runRecovery(io, "update", stateDir);
+        return;
+      }
+      let outcome: UpdateOutcome;
+      try {
+        outcome = await updateDaemon({
+          stateDir,
+          ...(options.from === undefined ? {} : { from: options.from }),
+          ...(options.build === undefined ? {} : { build: options.build }),
+          log: (line) => {
+            io.writeOut(`xplainer daemon update: ${line}\n`);
+          },
+        });
+      } catch (error) {
+        const refused = reportOperationRefusal(io, "update", error);
+        if (refused !== null) {
+          return io.exit(refused);
+        }
+        throw error;
+      }
+      io.writeOut(describeUpdate("update", outcome));
+    });
+}
+
+/**
+ * `daemon recover` — the commanded half of the recovery decision.
+ *
+ * `daemon status` reports an interrupted transaction and names this command; this command is the
+ * only thing that acts on one. It resumes the transaction from the transition the journal recorded
+ * — completing it when the incoming runtime becomes ready, and putting the retained previous one
+ * back when it does not — because both outcomes end with a daemon that is running and answering,
+ * which is the whole point of retaining the previous runtime in the first place.
+ */
+function createRecoverCommand(io: CliIo): Command {
+  return new Command("recover")
+    .description("Finish or undo an update that was interrupted")
+    .action(async () => {
+      await runRecovery(io, "recover", resolveStateDir());
+    });
+}
+
+/** Run the recovery and say what it did, or print the refusal and exit with its code. */
+async function runRecovery(io: CliIo, verb: string, stateDir: string): Promise<boolean> {
+  let outcome: UpdateOutcome;
+  try {
+    outcome = await recoverUpdate({
+      stateDir,
+      log: (line) => {
+        io.writeOut(`xplainer daemon ${verb}: ${line}\n`);
+      },
+    });
+  } catch (error) {
+    const refused = reportOperationRefusal(io, verb, error);
+    if (refused !== null) {
+      return io.exit(refused);
+    }
+    throw error;
+  }
+  io.writeOut(describeUpdate(verb, outcome));
+  return true;
+}
+
+/** What an update or a recovery did, in the order it did it. */
+function describeUpdate(verb: string, outcome: UpdateOutcome): string {
+  const lines = [
+    `xplainer daemon ${verb}: ${outcome.supervisor.identity} runs ${outcome.running.slot} and is ` +
+      "answering.",
+    `  transaction: ${outcome.transactionId}`,
+    `  runtime:     ${outcome.running.runtime_dir}`,
+    `  previous:    ${outcome.previous.slot} — retained at ${outcome.previous.runtime_dir}`,
+    `  artefact:    ${outcome.supervisor.artefact}`,
+    `  health:      ${outcome.health.url} answered in ${String(outcome.health.elapsedMs)} ms, ` +
+      `release ${outcome.health.version}, tool contract ${outcome.health.contractVersion}`,
+    `  run:         ${outcome.runId ?? "unrecorded"} — the run that answered, not the one drained`,
+  ];
+  if (outcome.source !== null) {
+    lines.push(`  source:      ${outcome.source.detail}`);
+  }
+  for (const step of outcome.steps) {
+    lines.push(`  did: ${step}`);
+  }
+  for (const command of outcome.commands) {
+    lines.push(`  ran: ${command}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function createUninstallCommand(io: CliIo): Command {
@@ -296,7 +498,21 @@ function createRestartCommand(io: CliIo): Command {
   return new Command("restart")
     .description("Restart the daemon, clearing a latched start failure")
     .action(async () => {
-      await lifecycleVerb(io, "restart", () => restartDaemon({ stateDir: resolveStateDir() }));
+      const stateDir = resolveStateDir();
+      // An interrupted update is finished **before** anything is restarted, and this is the
+      // "or a later `daemon restart`" half of the recovery decision. A restart into an unfinished
+      // transaction would drain and start whatever the artefact currently names — which after the
+      // switch is the runtime that may not come up, and before it is a runtime the journal is
+      // still holding a rollback target for. The recovery ends with a daemon that is running, so
+      // the restart below is then a restart of something rather than a guess.
+      if (readUpdateStatus(stateDir).state === "interrupted") {
+        io.writeOut(
+          "xplainer daemon restart: an update of this daemon was interrupted; finishing or " +
+            "undoing it first.\n",
+        );
+        await runRecovery(io, "restart", stateDir);
+      }
+      await lifecycleVerb(io, "restart", () => restartDaemon({ stateDir }));
     });
 }
 
@@ -313,8 +529,16 @@ function createStatusCommand(io: CliIo): Command {
     .description("Report whether the daemon is installed, running and healthy")
     .option("--json", "write one JSON object with a stable condition code instead of prose")
     .action(async (options: { json?: boolean }) => {
-      const report = await daemonStatus({ stateDir: resolveStateDir() });
-      io.writeOut(options.json === true ? `${JSON.stringify(report)}\n` : describeStatus(report));
+      const stateDir = resolveStateDir();
+      const report = await daemonStatus({ stateDir });
+      // Read, never repaired: `readUpdateStatus` opens one file and asks whether a pid is alive,
+      // and that is the whole of what this verb is allowed to do about an interrupted update.
+      const update = readUpdateStatus(stateDir);
+      io.writeOut(
+        options.json === true
+          ? `${JSON.stringify({ ...report, update })}\n`
+          : describeStatus(report, update),
+      );
       if (report.exit_code !== 0) {
         io.exit(report.exit_code);
       }
@@ -482,7 +706,7 @@ function describeRestart(outcome: RestartOutcome): string {
  * "the port came from the record and nothing answered on it" and "the port came from the default
  * because nothing has recorded one" are different problems that would otherwise read the same.
  */
-export function describeStatus(report: DaemonStatusReport): string {
+export function describeStatus(report: DaemonStatusReport, update: UpdateStatus): string {
   const supervisor = report.supervisor;
   const lines = [
     `condition:       ${report.condition}`,
@@ -497,6 +721,7 @@ export function describeStatus(report: DaemonStatusReport): string {
     `  switched off?  ${supervisor.switch.detail}`,
     `                 (${supervisor.switch.query ?? "no query on this platform"})`,
     `  loaded config: ${supervisor.loaded.detail}`,
+    `identity:        ${report.identity.detail}`,
     `daemon.json:     port ${report.daemon.port ?? "unrecorded"}, contract ${
       report.daemon.contract_version ?? "unrecorded"
     }, installed ${report.daemon.installed_version ?? "unrecorded"}`,
@@ -504,6 +729,14 @@ export function describeStatus(report: DaemonStatusReport): string {
       report.runtime === null
         ? "absent — no run has bound, or the last one shut down cleanly"
         : `pid ${String(report.runtime.pid ?? "unknown")} (a hint until the probe below confirms it)`
+    }`,
+    `  desired:       ${report.identity.desired.digest ?? "none recorded"} — ${
+      report.identity.desired.detail
+    }`,
+    `  responding:    ${report.identity.responding.runtime_digest ?? "not advertised"}${
+      report.identity.responding.run_id === null
+        ? ""
+        : ` (run ${report.identity.responding.run_id})`
     }`,
     `probing:         ${report.probe.url}/healthz`,
     `  answered:      ${
@@ -532,13 +765,52 @@ export function describeStatus(report: DaemonStatusReport): string {
   if (report.failed_starts > 0) {
     lines.push(`failed starts:   ${String(report.failed_starts)} in a row, newest last`);
   }
-  if (report.sentences.length > 0) {
+  // Which detector fired, named. On macOS only one of the two can ever fire — there is no
+  // loaded-configuration query there (§1.3b D7) — so saying which one did is the difference between
+  // "the identity is wrong" and "the configuration is wrong", and only one of those is knowable on
+  // every platform.
+  for (const mismatch of report.identity.mismatches) {
+    lines.push(
+      `MISMATCH:        ${mismatch.detector} — ${mismatch.field}`,
+      `  desired:       ${mismatch.desired}`,
+      `  found:         ${mismatch.found}`,
+      `  ${mismatch.detail}`,
+    );
+  }
+  lines.push(`update:          ${describeUpdateState(update)}`);
+  const updateSentences = updateStatusSentences(update);
+  if (report.sentences.length > 0 || updateSentences.length > 0) {
     lines.push("says:");
     for (const sentence of report.sentences) {
       lines.push(`  ${sentence.text}`);
     }
+    for (const sentence of updateSentences) {
+      lines.push(`  ${sentence}`);
+    }
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** The journal, in the one labelled line the report carries above its sentences. */
+function describeUpdateState(update: UpdateStatus): string {
+  switch (update.state) {
+    case "none":
+      return "no transaction is in progress and none was interrupted";
+    case "in-flight":
+      return (
+        `transaction ${update.transaction.transactionId} is in progress at ` +
+        `"${update.transaction.transition}" (${update.transaction.updater.detail})`
+      );
+    case "interrupted":
+      return (
+        `transaction ${update.transaction.transactionId} was INTERRUPTED at ` +
+        `"${update.transaction.transition}" — run \`${RECOVER_COMMAND}\``
+      );
+    case "newer":
+      return `${update.path} was written by a newer release (format_version ${String(update.formatVersion)})`;
+    case "unreadable":
+      return `${update.path} cannot be read: ${update.detail}`;
+  }
 }
 
 /** A `--lines` commander will not accept unless it is a positive whole number. */

@@ -1,0 +1,275 @@
+# The `[runner]` half of T15: the update transaction against real service
+# managers, on machines this project's authors do not have.
+#
+# WHAT IT CLOSES. T15's last criterion — "the unit assertions and the real
+# update run on runners as well as local". Both halves are here, in one job per
+# platform:
+#
+#   1. **The unit suite**, `src/install/update/transaction.test.ts`. It spawns
+#      real daemons, kills a real updater with `SIGKILL` and reads the real
+#      journal off disk at every supervisor command, so it is worth running
+#      somewhere other than one developer's Mac. `ci.yml` already runs it on
+#      `ubuntu-latest` as part of `pnpm verify`; this workflow adds macOS.
+#   2. **The real update**, `install/update/testing/update-proof.ts`. It
+#      assembles two payloads with the shipped assembler, installs the first
+#      under the platform's real supervisor, and runs the transaction: a drain
+#      over the daemon's own socket, an artefact rewrite, a supervisor reload,
+#      and an authenticated `/healthz` that has to report the **new** release
+#      from a run that is not the one that was drained.
+#   3. **T16's failure injection**, `pnpm e2e:update`. The same suite again —
+#      it is the cheap half and running it twice costs a minute — and then
+#      `install/update/testing/failure-proof.ts`, which is the *other* real
+#      transaction: a replacement that starts and never becomes ready, a
+#      rollback that has to land, and the two refusals that must disturb
+#      nothing, each asserted on its message as well as its exit code.
+#
+# WHAT T16 ADDS THAT T15's TWO STEPS DO NOT. T15 proves an update that works.
+# T16 kills the updater between every pair of durable transitions and asserts
+# twice per boundary — `daemon status` names the transition and the recovery
+# command, and after that command the previous runtime is answering, the newer
+# version's state is intact, one process is running out of the state directory,
+# nothing that looks like Chrome or ffmpeg survives, and the rolled-back
+# runtime's own template pins are satisfied by the installed workspace. The
+# **still itself** — a PNG out of the recovered daemon — needs the browser and
+# the payload-2 workspace T19 and T33 install, so B6's `toolchain.mjs` reruns
+# every rollback case and renders it. That is a split, not an omission.
+#
+# WHAT EACH PLATFORM ADDS THAT THE OTHER CANNOT. macOS is where `launchd` is
+# asked whether it accepts a **rewritten** plist — `bootstrap` does not refresh
+# an already-loaded definition, so the switch boots the job out first, and that
+# sequence has no equivalent anywhere else. Linux is where `systemctl --user
+# daemon-reload` is asked the same question about a rewritten unit, and where
+# the daemon runs under a per-user manager started by lingering rather than by a
+# login. Windows is deliberately **absent**, and that is a gap rather than an
+# omission for T15's own two steps: `Register-ScheduledTask -Force` is the switch
+# there, and `daemon-windows.yml` is the job that measures the rename underneath
+# it. T16's criterion names all three platforms, so the third job below runs
+# `pnpm e2e:update` on `windows-latest` — **and it is expected to fail until the
+# `daemon/testing/` defects the 2026-09-08 dispatch measured are fixed**: the
+# source hook is passed to `--import` as a bare path (`ERR_UNSUPPORTED_ESM_URL_SCHEME`)
+# and a temp directory is removed while a child still holds a handle (`EPERM`).
+# `scripts/e2e/update.mjs` already passes that hook as a file URL, so a failure
+# from the job below is the suite's own child spawns and not this script's. The
+# job is here rather than absent because a criterion that names Windows is
+# either measured or reported unmet, and a workflow that never ran measures
+# nothing.
+#
+# THE THROWAWAY IDENTITY, PER PLATFORM. On macOS the proof translates every
+# command to `video.xplainer.t15-proof` and rewrites the plist's `Label` to
+# match, exactly as `install/testing/supervisor-proof.ts` does, because a proof
+# must not register the product's own label in a real user's `launchd`. On Linux
+# it does **not** translate: systemd reads `$XDG_CONFIG_HOME/systemd/user` or
+# `~/.config/systemd/user` and nowhere else, so a unit written under a scratch
+# home is a unit the manager never sees. That leg therefore installs the real
+# `xplainer.service` in the runner's own config directory, and both the proof's
+# own `finally` and the cleanup step below remove it. It is a disposable VM;
+# a developer running the Linux leg locally uses `infra/e2e/Dockerfile.systemd`
+# for the same reason.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, the runner half of T15 is unproven.**
+# `workflow_dispatch` registers from the repository's **default branch**, so this
+# file has to reach `main` before the API will accept a dispatch of it at all —
+# GitHub's own rule, not a repository setting — and `--ref` then chooses whose
+# code runs. It has never been dispatched.
+#
+#   gh workflow run daemon-update.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-update.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHAT RUNS LOCALLY INSTEAD. The macOS half runs on a developer's own Mac
+# against a real launchd, with the command in `update-proof.ts`'s header; the
+# unit suite runs in `pnpm verify`. This workflow adds the two machines that
+# cannot be reached from there: a hosted Linux VM with a per-user systemd, and a
+# macOS runner that is not the machine the code was written on.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The rule every proof workflow here
+# follows: these jobs assemble two ~160 MB payloads, install a supervised daemon
+# and wait out real drains and readiness waits. `ci.yml` is the gate that runs on
+# every push; this is a proof, and a proof is run when you want it.
+#
+# WHY NOTHING IS UPLOADED. Both jobs write their whole transcript to stdout, so
+# the job log **is** the artefact — and that keeps this workflow clear of the
+# organisation-wide artifact-storage quota that has failed every upload step
+# since 2026-09-07.
+
+name: daemon update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  systemd:
+    name: the update transaction against a real systemd (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Two payload assemblies, an install, a drain, a switch and two readiness
+    # waits, after a cold `turbo build`.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The assembler copies `apps/cli/dist`, and refuses a checkout that has
+      # none — so the build is a step of its own and a build failure is legible
+      # as one rather than as an assembly refusal.
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: The update transaction's unit suite (T15, criterion 1)
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/install/update/transaction.test.ts
+
+      # The same step every other supervised proof uses, and for the same
+      # reason: a hosted runner has no login session, so `systemctl --user`
+      # reaches no manager until lingering starts one.
+      - name: A per-user systemd manager, and what this runner had before
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "user: $(id)"
+          echo "systemctl --user is-system-running before: $(systemctl --user is-system-running 2>&1 || true)"
+          sudo loginctl enable-linger "$(id -un)" || true
+          runtime_dir="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          state=""
+          for _ in $(seq 1 20); do
+            state=$(systemctl --user is-system-running 2>&1 || true)
+            case "$state" in running|degraded|starting) break ;; esac
+            sleep 1
+          done
+          echo "systemctl --user is-system-running after:  ${state:-<none>}"
+
+      - name: The real update, A to B (T15, criterion 2)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/update/testing/update-proof.ts
+
+      # The boundary suite again plus the failure-injection proof, in the one
+      # command T16's criterion names. The transcript is also written to
+      # `.session/artifacts/e2e-update.log`, which is not uploaded: the job log
+      # is the artefact, and every upload step in this organisation has failed
+      # on the storage quota since 2026-09-07.
+      - name: The failure injection, killed updaters and refusals (T16)
+        run: pnpm e2e:update
+
+      - name: Leave no unit and no linger record behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          systemctl --user disable --now xplainer.service 2>&1 || true
+          rm -f "$HOME/.config/systemd/user/xplainer.service"
+          systemctl --user daemon-reload 2>&1 || true
+          sudo loginctl disable-linger "$(id -un)" || true
+          echo "left: $(ls "$HOME/.config/systemd/user" 2>&1 || echo '<no unit directory>')"
+
+  launchd:
+    name: the update transaction against a real launchd (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every member
+        run: pnpm turbo build
+
+      - name: The update transaction's unit suite (T15, criterion 1)
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/install/update/transaction.test.ts
+
+      # A `macos-latest` runner is a GUI-less session, and `launchctl bootstrap
+      # gui/<uid>` is what the shipped installer uses. If that domain is not
+      # reachable here the proof says so in its own words and fails; it is not
+      # worked around, because a proof that quietly measured `system/` would be
+      # measuring an arrangement this product does not install.
+      - name: The real update, A to B (T15, criterion 2)
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts \
+            apps/cli/src/install/update/testing/update-proof.ts
+
+      - name: The failure injection, killed updaters and refusals (T16)
+        run: pnpm e2e:update
+
+      - name: Leave no job and no plist behind
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          launchctl bootout "gui/$(id -u)/video.xplainer.t15-proof" 2>&1 || true
+          launchctl bootout "gui/$(id -u)/video.xplainer.t16-proof" 2>&1 || true
+          rm -f "$HOME/Library/LaunchAgents/video.xplainer.daemon.plist"
+          echo "loaded: $(launchctl list | grep -i xplainer || echo '<nothing of ours>')"
+          echo "enable records (inert, launchctl offers no verb that removes one):"
+          launchctl print-disabled "gui/$(id -u)" 2>&1 | grep -i xplainer || echo "  <none>"
+
+  task-scheduler:
+    name: the failure injection against a real Task Scheduler (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # Expected to fail today, and the reason is a defect in the shared test
+      # scaffolding rather than in this story: see the header. Recorded rather
+      # than skipped, because a criterion that names Windows is either measured
+      # or reported unmet.
+      - name: The failure injection, both halves (T16)
+        run: pnpm e2e:update
+
+      # Nothing is translated on this platform, so the proof registers the
+      # product's own task name on this throwaway VM and its `finally` removes
+      # it. This step is the second line of defence.
+      - name: Leave no registered task behind
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Get-ScheduledTask -TaskPath "\xplainer\*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "unregistering $($_.TaskName)"
+              Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false
+            }
+          Write-Host "left: $((Get-ScheduledTask -TaskPath '\xplainer\*' -ErrorAction SilentlyContinue | Measure-Object).Count) task(s)"

@@ -229,6 +229,11 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
 
       const outcome = await startDaemon({
         stateDir: stateDirSetting.path,
+        // The two other settings travel in as the flags they were given, so the startup identity
+        // snapshot `startDaemon()` freezes describes the settings this daemon really resolved —
+        // and so they are resolved once, by their own resolvers, rather than here and there.
+        ...(options.tokenFile === undefined ? {} : { tokenFile: options.tokenFile }),
+        ...(options.socket === undefined ? {} : { socket: options.socket }),
         log: (line) => {
           io.writeErr(`${line}\n`);
         },
@@ -316,6 +321,9 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         hostname: bind.hostname,
         ipc: { path: ipc.path },
         drain: { timeoutMs: DEFAULT_DRAIN_TIMEOUT_MS, pid: process.pid, begin: beginDrain },
+        // Row 3 of the consistency check, taken before this bind and unchanged by anything after
+        // it. `/healthz` advertises it; nothing infers it from a file.
+        identity: daemon.identity,
         guard: (boundPort) =>
           createLoopbackGuard({
             token,

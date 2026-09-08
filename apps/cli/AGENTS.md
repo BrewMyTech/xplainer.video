@@ -179,7 +179,7 @@ consumer may hold its path — which is what the launcher is for.
 | `stage.ts` | `<state>/runtime/<version>-<digest>/`: the content-addressed name, the sibling temp dir, the one `rename`, and what is staged already |
 | `launcher.ts` | `<state>/bin/xplainer[.cmd]`: the generated two-line script, and its rewrite as one more small-file temp → rename |
 | `preflight.ts` | Every question an install asks before it writes: the setup marker, the supervisor, the program, the port, lingering, the disable record, the token file |
-| `supervisors/` | The three artefact renderers — the systemd unit, the LaunchAgent plist, the Task Scheduler document — behind one `SupervisorAdapter` |
+| `supervisors/` | The three artefact renderers — the systemd unit, the LaunchAgent plist, the Task Scheduler document — behind one `SupervisorAdapter`, plus `identity.ts`: the three-row consistency check |
 | `testing/` | A real, small payload-1 artefact whose entry is a miniature daemon, so a launch can be proved by launching |
 
 Two of the four sources **refuse** this phase, by name: `sea-binary` is phase 4 and
@@ -203,6 +203,20 @@ the Debian container that has none. Its refusals carry codes from the table and 
 the setup marker and for a program that will not execute, `6` for no user manager and for a Task
 Scheduler that refuses a query, `7` for a held port. The two `5`s — lingering denied, no batch-logon
 right — are the writing phase's, because neither can be established without attempting it.
+
+**`supervisors/identity.ts` compares three rows, and the third one is advertised rather than
+read.** *Desired* is `daemon.json`'s launch spec, *loaded* is what the supervisor is actually
+holding, and *responding* is the `run_id` and `runtime_digest` the answering daemon puts in
+`/healthz`. Two rows cannot see the failure the check exists for: an artefact rewritten and never
+reloaded leaves the old definition running while every file this project owns says otherwise, and
+reading our own file back reports success. Measured on systemd 252 — `systemctl show` keeps
+answering from the manager's cached unit until `daemon-reload`, which is what makes row 2 worth
+asking for and why it is asked of the **manager** and not of the file. Row 3 is a snapshot
+`daemon/start.ts` freezes after ownership and before the binds, over the effective argv, the
+resolved settings, the working directory and the payload's content hash, and **never** from
+`daemon.json` — a digest read out of the record would agree with the record, which on macOS (where
+there is no row 2 at all) would leave nothing to detect a failed switch with. `daemon status` names
+which detector fired. Nothing here writes; `pnpm e2e:identity` is the real-supervisor proof.
 
 **The three renderers are pure, and every setting they emit travels in the argv.** Each takes a
 `LaunchSpec` and answers with a path, a mode, the name its own supervisor addresses the daemon by,
@@ -282,13 +296,30 @@ HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/dir
 # daemon.json, no launch record and nothing staged.
 HOME=$FAKE_HOME XPLAINER_STATE_DIR=$(mktemp -d) node apps/cli/dist/bin.js connect claude --spawn
 
+# The update transaction under injected failure: the boundary suite — a real updater killed at
+# every durable transition, twice-asserted per boundary — and then a real payload assembled,
+# installed under this machine's own supervisor and rolled back. Not part of `pnpm verify`; on
+# macOS it registers a throwaway label and boots it out, and on Linux it installs the real unit in
+# this account's own config directory because that is the only place systemd looks.
+pnpm e2e:update
+
+# Desired, loaded and responding, compared. The suite runs all three platforms with the supervisor
+# and `/healthz` as seams — and a real `serve` for row 3 — and the proof then drives four drift
+# scenarios against this machine's own service manager, where the loaded row really does go stale.
+# Not part of `pnpm verify`, for the same reason `e2e:update` is not.
+pnpm e2e:identity
+
 # The `[runner]` halves. The artefact gate — narration, then payload 2 and its D1/D2/D3
-# assertions — on ubuntu, macos and windows; then the two platform spikes on the machines a
-# developer has none of, including the Task Scheduler half that runs nowhere else. Both workflows
-# are registered from the default branch, so a new one has to reach `main` before either line
-# resolves at all; `--ref` then chooses whose code runs.
+# assertions — on ubuntu, macos and windows; the two platform spikes on the machines a
+# developer has none of, including the Task Scheduler half that runs nowhere else; and the update
+# transaction against real service managers; and the loaded-configuration row read from a real Task
+# Scheduler, which has never been asked anywhere. Every workflow is registered from the default branch,
+# so a new one has to reach `main` before the line resolves at all; `--ref` then chooses whose code
+# runs.
 gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
 gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)"
+gh workflow run daemon-update.yml --ref "$(git branch --show-current)"
+gh workflow run daemon-identity.yml --ref "$(git branch --show-current)"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -306,8 +337,9 @@ Then the root procedure: `pnpm verify`.
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
   second adds the installed supervisor — whether it is switched off, what it loaded, and whether
   the daemon is boot-persistent — which is why it has a condition set of its own. `connect` and
-  `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the seven
-  lifecycle verbs — for the same reason and with the same implicit `help [command]` disabled.
+  `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the nine
+  lifecycle verbs, `update` and `recover` among them — for the same reason and with the same
+  implicit `help [command]` disabled.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
   note ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive
   ownership). Reconciliation *rewrites other processes' records*, so a second `serve` has to be

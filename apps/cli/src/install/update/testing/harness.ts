@@ -1,0 +1,247 @@
+/**
+ * A supervisor that really starts and stops the daemon, and records what the journal said when.
+ *
+ * `install.test.ts` established the shape and the reason: `run` — how a supervisor command reaches
+ * the outside world — is the one seam, because three platforms' command sequences have to be
+ * checkable from one machine and a Task Scheduler sequence cannot be run on macOS at all. Everything
+ * else is real: a real payload, a real staged copy, real artefact bytes on a real disk, and a real
+ * spawned daemon that mints a real bearer token and answers a real authenticated `GET /healthz`.
+ *
+ * This harness adds the one thing an update needs that an install did not: **at every supervisor
+ * command it records what `<state>/update.json` said at that moment**. That turns "the durable
+ * record's transitions" from something a test would have to infer into a sequence it can assert —
+ * the switch commands must see `drained`, the start command must see `switched` — which is the
+ * evidence that each boundary was made durable *before* the step it licenses ran, rather than
+ * written at the end from memory.
+ *
+ * It lives beside the suite rather than inside it because two processes need it: the test, and the
+ * child entry that parks a half-finished transaction so it can be killed
+ * ({@link file://./interrupt-update.ts}). A second copy of "what does `launchctl bootstrap` do" in
+ * the child would be a second opinion about the platform.
+ */
+
+import { type ChildProcess, spawn } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import process from "node:process";
+import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
+import { isAlive } from "../../../daemon/worker-identity.js";
+import type { ProbeCommand, ProbeResult, ProbeRunner } from "../../preflight.js";
+import type { SupervisorEnvironment } from "../../supervisors/artefact.js";
+import { readUpdateJournal, type UpdateTransition } from "../journal.js";
+
+/**
+ * The line the parked updater prints before it stops existing.
+ *
+ * It lives here rather than in `interrupt-update.ts` because that module *is* a child entry: it
+ * installs a daemon and starts an update the moment it is loaded, so a suite that imported a
+ * constant from it would run an install inside the Vitest worker.
+ */
+export const PARKED_LINE = "parked at";
+
+/** One supervisor command, and the journal's transition at the moment it was run. */
+export type HarnessCall = {
+  /** `program arg arg`, exactly as it was run. */
+  command: string;
+  /** The transition `<state>/update.json` recorded then, or `null` when there was no journal. */
+  transition: UpdateTransition | null;
+};
+
+/** What one harness recorded and can be asked to do differently. */
+export type UpdateHarness = {
+  run: ProbeRunner;
+  /** Every command, in order, with the journal's state at the time. */
+  calls: HarnessCall[];
+  /** Every command, in order, as `program arg arg`. */
+  commands(): string[];
+  /** Refuse to start a launch spec whose executable names this runtime directory. */
+  refuseStartOf(runtimeDir: string): void;
+  /** Stop whatever it started, for a suite's `afterEach`. */
+  stopAll(): void;
+};
+
+/** What {@link updateHarness} needs. */
+export type UpdateHarnessOptions = {
+  /** The state directory whose `daemon.json` names the spec to start. */
+  stateDir: string;
+  /** Where `loginctl enable-linger` should create its marker, for the Linux ordering. */
+  lingerMarker?: string | undefined;
+  /** Told about every daemon this harness spawns, so a suite can kill it. */
+  onSpawn?: ((child: ChildProcess) => void) | undefined;
+};
+
+/**
+ * The account and directories a fixture install renders its artefact paths from.
+ *
+ * A scratch `home` rather than this account's, for the reason `supervisor-proof.ts` gives about its
+ * throwaway label: a test must not put a plist in a real user's `~/Library/LaunchAgents` or a unit
+ * in their `~/.config/systemd/user`. Every field is filled so the same object drives all three
+ * platforms' renderers.
+ */
+export function fixtureEnvironment(home: string): SupervisorEnvironment {
+  return {
+    home,
+    account: "tester",
+    configHome: join(home, ".config"),
+    localAppData: join(home, "AppData", "Local"),
+    systemRoot: join(home, "Windows"),
+  };
+}
+
+/**
+ * A Windows account and its directories, inside a scratch tree so nothing real is touched.
+ *
+ * The `win32` renderers build every artefact path from these four fields, so a case that drives the
+ * Task Scheduler sequence from another machine needs one — and needs the *same* one in the suite
+ * and in the child entry that parks a `win32` transaction, or the two would name two tasks.
+ */
+export function windowsFixtureEnvironment(root: string): SupervisorEnvironment {
+  return {
+    home: join(root, "Users", "tester"),
+    account: "CORP\\tester",
+    configHome: join(root, "Users", "tester", ".config"),
+    localAppData: join(root, "Users", "tester", "AppData", "Local"),
+    systemRoot: join(root, "Windows"),
+  };
+}
+
+/** One command as a single line, which is how the assertions name a sequence. */
+export function spell(command: ProbeCommand): string {
+  return `${command.program} ${command.argv.join(" ")}`;
+}
+
+/**
+ * A supervisor that does the two things a supervisor does, and records the journal as it goes.
+ *
+ * The start reads **`daemon.json`'s launch spec**, which is what makes a switch observable: after
+ * the artefact has been rewritten the record names the incoming runtime, so the process this
+ * harness spawns is the incoming daemon and the `/healthz` the transaction waits on is that
+ * process's own answer. A harness that spawned a path the test had composed would prove nothing
+ * about the switch.
+ */
+export function updateHarness(options: UpdateHarnessOptions): UpdateHarness {
+  const calls: HarnessCall[] = [];
+  let child: ChildProcess | null = null;
+  let refuseFor: string | null = null;
+
+  const start = (): void => {
+    if (child !== null) {
+      return;
+    }
+    const spec = readDaemonState(options.stateDir).launch_spec;
+    if (spec === null) {
+      throw new Error("the supervisor was asked to start a daemon before a spec was recorded");
+    }
+    if (refuseFor !== null && spec.executable.startsWith(refuseFor)) {
+      return;
+    }
+    const spawned = spawn(spec.executable, [...spec.argv], {
+      cwd: spec.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child = spawned;
+    spawned.once("exit", () => {
+      if (child === spawned) {
+        child = null;
+      }
+    });
+    options.onSpawn?.(spawned);
+  };
+
+  /**
+   * Stop the daemon **this state directory records**, whoever started it.
+   *
+   * A supervisor's stop is not addressed to a process this harness happens to hold a handle for:
+   * `systemctl --user stop` and `launchctl kill` end the job the manager started, and the manager
+   * outlives every updater. T16 makes that difference load-bearing. An updater killed at the
+   * `staged` boundary leaves the daemon it had not yet drained **running and orphaned**, and the
+   * recovery that follows runs in another process — so a stop that could only signal `child` would
+   * find nothing to signal, `stopDaemon()` would wait for a daemon that never stops answering, and
+   * the case would fail for a reason that has nothing to do with the transaction. The recorded pid
+   * is signalled as well, which is what the real supervisor would have done.
+   */
+  const stop = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    child?.kill(signal);
+    child = null;
+    const recorded = readRuntimeState(options.stateDir)?.pid;
+    if (typeof recorded !== "number" || !isAlive(recorded)) {
+      return;
+    }
+    try {
+      process.kill(recorded, signal);
+    } catch {
+      // It exited between the liveness check and the signal, which is the outcome asked for.
+    }
+  };
+
+  const run: ProbeRunner = (command) => {
+    const spelled = spell(command);
+    const read = readUpdateJournal(options.stateDir);
+    calls.push({ command: spelled, transition: read.journal?.transition ?? null });
+    const answer: ProbeResult = { started: true, status: 0, stdout: "", stderr: "" };
+
+    if (command.program === "loginctl" && command.argv.includes("enable-linger")) {
+      if (options.lingerMarker !== undefined) {
+        mkdirSync(dirname(options.lingerMarker), { recursive: true });
+        writeFileSync(options.lingerMarker, "");
+      }
+      return answer;
+    }
+    if (command.program === "loginctl" && command.argv.includes("disable-linger")) {
+      if (options.lingerMarker !== undefined) {
+        rmSync(options.lingerMarker, { force: true });
+      }
+      return answer;
+    }
+    if (command.program === "launchctl" && command.argv[0] === "print-disabled") {
+      return { ...answer, stdout: "\tdisabled services = {\n\t}\n" };
+    }
+    if (command.program === "systemctl" && command.argv[0] === "--user") {
+      if (command.argv.includes("is-system-running")) {
+        return { ...answer, stdout: "running\n" };
+      }
+      if (command.argv.includes("enable") || command.argv[1] === "start") {
+        start();
+      }
+      if (command.argv.includes("disable") || command.argv[1] === "stop") {
+        stop();
+      }
+      return answer;
+    }
+    if (command.program === "launchctl") {
+      // `RunAtLoad` is what starts a freshly bootstrapped job, so `bootstrap` is where the process
+      // appears — which is also why the switch boots the job out first.
+      if (command.argv[0] === "bootstrap" || command.argv[0] === "kickstart") {
+        start();
+      }
+      if (command.argv[0] === "bootout" || command.argv[0] === "kill") {
+        stop();
+      }
+      return answer;
+    }
+    if (spelled.includes("Register-ScheduledTask") || spelled.includes("Start-ScheduledTask")) {
+      start();
+      return answer;
+    }
+    if (spelled.includes("Stop-ScheduledTask") || spelled.includes("Unregister-ScheduledTask")) {
+      stop();
+      return answer;
+    }
+    if (spelled.includes("Get-ScheduledTaskInfo")) {
+      return { ...answer, stdout: "LastTaskResult    : 267011\nNumberOfMissedRuns : 0\n" };
+    }
+    return answer;
+  };
+
+  return {
+    run,
+    calls,
+    commands: () => calls.map((call) => call.command),
+    refuseStartOf: (runtimeDir: string) => {
+      refuseFor = runtimeDir;
+    },
+    stopAll: () => {
+      stop("SIGKILL");
+    },
+  };
+}

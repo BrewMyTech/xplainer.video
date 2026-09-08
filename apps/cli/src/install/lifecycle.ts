@@ -99,6 +99,14 @@ import {
 import { guiService, POWERSHELL, POWERSHELL_ARGV, type RegistrationTarget } from "./register.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import {
+  checkIdentity,
+  type IdentityReport,
+  type LoadedIdentity,
+  readDesired,
+  readLoaded,
+  readResponding,
+} from "./supervisors/identity.js";
+import {
   launchAgentLogPath,
   SYSTEMD_UNIT_NAME,
   supervisorAdapter,
@@ -198,7 +206,7 @@ export type SwitchFact = {
   detail: string;
 };
 
-/** The loaded-configuration query (T17's row), and why macOS has none. */
+/** The loaded-configuration query (T17's row 2), and why macOS has none. */
 export type LoadedConfigurationFact = {
   /** Whether this platform has a documented query for what the supervisor actually loaded. */
   available: boolean;
@@ -206,8 +214,16 @@ export type LoadedConfigurationFact = {
   query: string | null;
   /** Whether it ran to completion. */
   answered: boolean;
-  /** Its stdout, trimmed, exactly as the supervisor printed it. Never parsed here. */
+  /** Its stdout, trimmed, exactly as the supervisor printed it. */
   output: string;
+  /**
+   * The same answer as the three values a launch spec can be compared against.
+   *
+   * `supervisors/identity.ts` does the parsing, and it is given this raw output rather than a
+   * runner, so every platform's vocabulary is asserted from one machine — the same arrangement
+   * {@link readSwitch} has for the same reason.
+   */
+  identity: LoadedIdentity;
   /** What was asked, or why nothing was. */
   detail: string;
 };
@@ -307,6 +323,10 @@ export type HealthBody = {
   status?: unknown;
   version?: unknown;
   contract_version?: unknown;
+  /** The answering run's ownership nonce (T17's row 3). */
+  run_id?: unknown;
+  /** The answering run's immutable startup snapshot (T17's row 3). */
+  runtime_digest?: unknown;
 };
 
 /** The setup marker's answer, reduced to what the degraded sentence needs. */
@@ -366,7 +386,24 @@ export type DaemonStatusReport = {
     holder_pid: number | null;
     holder_detail: string | null;
   };
-  health: { status: string | null; version: string | null; contract_version: string | null } | null;
+  health: {
+    status: string | null;
+    version: string | null;
+    contract_version: string | null;
+    /** The answering run's ownership nonce, or `null` from a daemon that advertises none. */
+    run_id: string | null;
+    /** The answering run's startup digest, or `null` from a daemon that advertises none. */
+    runtime_digest: string | null;
+  } | null;
+  /**
+   * The three-row consistency check: desired, loaded and responding.
+   *
+   * It is a field of the report rather than a verb of its own because every input it needs is
+   * already read here — `daemon.json`, the loaded-configuration query and `/healthz` — and a second
+   * command that asked for all three again could disagree with this one about a machine that had
+   * changed in between.
+   */
+  identity: IdentityReport;
   toolchain: ToolchainFact;
   boot_persistence: BootPersistenceFact;
   /** How many starts in a row failed before the daemon was ready, newest first. */
@@ -518,13 +555,19 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         ],
       };
     case "task-scheduler":
+      // Three `Key=value` lines, composed by the script itself rather than by a formatter.
+      // `Format-List` wraps a value longer than the console width across lines, and an installed
+      // `Arguments` is two absolute paths and six flags long — so a formatted answer would arrive
+      // broken in the middle of a path and be compared as a mismatch that is really a line break.
+      // String concatenation also turns an absent `WorkingDirectory` into an empty value on its own
+      // line rather than into no line at all, which keeps the three keys always present.
       return {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `Get-ScheduledTask -TaskName ${quote(target.identity)} | ` +
-            "Select-Object -ExpandProperty Actions | " +
-            "Format-List -Property Execute,Arguments,WorkingDirectory",
+          `$action = @((Get-ScheduledTask -TaskName ${quote(target.identity)}).Actions)[0]; ` +
+            '"Execute=" + $action.Execute; "Arguments=" + $action.Arguments; ' +
+            '"WorkingDirectory=" + $action.WorkingDirectory',
         ],
       };
   }
@@ -711,8 +754,21 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
             status: reportedString(answer.body.status),
             version: reportedString(answer.body.version),
             contract_version: reportedString(answer.body.contract_version),
+            run_id: reportedString(answer.body.run_id),
+            runtime_digest: reportedString(answer.body.runtime_digest),
           }
         : null,
+    identity: checkIdentity({
+      kind: daemon.supervisor_kind,
+      // The record already read above, rather than a second read of the same file: a `daemon.json`
+      // edited between the two would make the report disagree with itself.
+      desired: readDesired({ stateDir: request.stateDir, state: daemon }),
+      loaded: loaded.identity,
+      // `answer.body` is only a body when something answered `200`; anything else advertises
+      // nothing, and `readResponding` says so rather than inventing an absence.
+      responding: readResponding(answer.kind === "ok" ? answer.body : {}),
+      recordedRunId: typeof runtime?.run_id === "string" ? runtime.run_id : null,
+    }),
     toolchain,
     boot_persistence: boot,
     failed_starts: failedStarts,
@@ -1374,16 +1430,31 @@ function askLoadedConfiguration(
       query: null,
       answered: false,
       output: "",
+      identity: {
+        available: false,
+        answered: false,
+        command: null,
+        environment: null,
+        cwd: null,
+        detail: "nothing is registered here",
+      },
       detail: "nothing is registered here, so there is no loaded configuration to read",
     };
   }
   const command = loadedConfigurationQuery(target);
   if (command === null) {
+    const identity = readLoaded(target.kind, target.identity, {
+      started: false,
+      status: null,
+      stdout: "",
+      stderr: "",
+    });
     return {
       available: false,
       query: null,
       answered: false,
       output: "",
+      identity,
       detail:
         "launchd has no documented query for what it loaded — `launchctl print`'s own manual says " +
         '"This output is NOT API in any sense at all" — so on macOS the responding identity in ' +
@@ -1396,6 +1467,7 @@ function askLoadedConfiguration(
     query: spell(command),
     answered: answer.started && answer.status === 0,
     output: answer.stdout.trim(),
+    identity: readLoaded(target.kind, target.identity, answer),
     detail:
       answer.started && answer.status === 0
         ? `read from ${target.identity}`

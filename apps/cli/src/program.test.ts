@@ -155,12 +155,14 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly the seven lifecycle verbs under `daemon --help`", async () => {
+  it("lists exactly the nine lifecycle verbs under `daemon --help`", async () => {
     const { stdout, exitCode } = await run(["daemon", "--help"]);
 
     expect(listedCommands(stdout)).toEqual([
       "install",
       "uninstall",
+      "update",
+      "recover",
       "start",
       "stop",
       "restart",

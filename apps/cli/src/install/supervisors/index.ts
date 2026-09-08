@@ -34,6 +34,26 @@ export {
   type SupervisorEnvironment,
 } from "./artefact.js";
 export {
+  checkIdentity,
+  type DesiredIdentity,
+  type DesiredRequest,
+  expectedLoaded,
+  IDENTITY_DIGEST_LENGTH,
+  type IdentityDetector,
+  type IdentityMismatch,
+  type IdentityReport,
+  type IdentityRequest,
+  identityDigest,
+  type LaunchIdentity,
+  type LoadedIdentity,
+  payloadDigestIn,
+  type RespondingIdentity,
+  readDesired,
+  readLoaded,
+  readResponding,
+  type SupervisorAnswer,
+} from "./identity.js";
+export {
   LAUNCH_AGENT_LABEL,
   LAUNCH_AGENT_MODE,
   launchAgentLogPath,
@@ -49,6 +69,7 @@ export {
   taskName,
   taskSchedulerAdapter,
   taskXmlPath,
+  windowsArgumentLine,
 } from "./schtasks.js";
 export {
   renderSystemdUnit,

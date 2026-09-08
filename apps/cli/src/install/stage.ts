@@ -131,12 +131,16 @@ export function stagedRuntimeRoot(stateDir: string): string {
 /**
  * The package whose `bin` entry the launch contract names.
  *
+ * Exported because the update transaction asks the same question of two payloads at once — the
+ * installed runtime and the incoming one — and a second implementation of "which package is this
+ * payload's root" could disagree with the one that named the directory.
+ *
  * Found through `launch.entry` rather than by looking `@xplainer/cli` up by name, so the answer is
  * a fact about *this* payload: the assembler takes a `rootPackage` option, and a manifest that says
  * its entry lives in one package while the slot was named after another would be a directory name
  * that describes nothing on disk.
  */
-function rootPackageOf(manifest: RuntimeManifest): ManifestPackage {
+export function rootPackageOf(manifest: RuntimeManifest): ManifestPackage {
   let best: ManifestPackage | null = null;
   for (const entry of manifest.packages) {
     if (!manifest.launch.entry.startsWith(`${entry.path}/`)) {

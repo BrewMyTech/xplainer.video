@@ -490,6 +490,13 @@ describe("the IPC listener", () => {
       status: "ok",
       version: expect.any(String),
       contract_version: MCP_CONTRACT_VERSION,
+      // The identity a supervised daemon advertises about itself: the ownership acquisition's own
+      // nonce, and the startup snapshot `daemon/start.ts` froze before this listener bound. They
+      // are asserted as *present and non-empty* here, because what this case is about is the two
+      // listeners; `install/supervisors/identity.test.ts` is where the values are recomputed from
+      // the launch that produced them.
+      run_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      runtime_digest: expect.stringMatching(/^[0-9a-f]{16}$/),
     });
   }, 30_000);
 

@@ -205,6 +205,24 @@ export type CreateServerOptions = {
      * Only `commands/serve.ts` passes one, because only a daemon has ADR 0024's six steps to run.
      */
     drain?: DrainSeam;
+    /**
+     * Who is answering, as `/healthz` advertises it: the run id and the startup digest.
+     *
+     * The third row of ADR 0025's consistency check, and the only one on macOS — where no query
+     * exists for what `launchd` actually loaded (§1.3b D7), a plist rewritten and never reloaded is
+     * caught here or nowhere. It is **passed in** rather than computed here, because the value has to
+     * be the snapshot `daemon/start.ts` froze after ownership and before this server bound: a server
+     * that computed it at request time would answer for the process as it is now rather than for the
+     * process as it was launched.
+     *
+     * Absent for `services/media-service`, which takes no state directory and holds no ownership; the
+     * two fields are then `null`, so the body's shape is the same either way and a reader never has
+     * to tell "the field is missing" apart from "this release does not have it".
+     */
+    identity?: {
+        run_id: string;
+        runtime_digest: string;
+    };
 };
 
 /** A bound server, and the handle that stops it. */

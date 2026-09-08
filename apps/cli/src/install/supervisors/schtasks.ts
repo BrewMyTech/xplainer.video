@@ -148,7 +148,7 @@ export function renderScheduledTask(
   const account = escapeXml(
     requireValue(environment.account, "environment.account", TASK_SCHEDULER_KIND),
   );
-  const argumentLine = escapeXml(spec.argv.map(quoteWindowsArgument).join(" "));
+  const argumentLine = escapeXml(windowsArgumentLine(spec.argv));
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
@@ -213,6 +213,17 @@ export const taskSchedulerAdapter: SupervisorAdapter = {
   artefactPath: taskXmlPath,
   render: renderScheduledTask,
 };
+
+/**
+ * The argv as one command line, in the form Task Scheduler stores and hands back.
+ *
+ * Exported because `identity.ts` has to say what the registered task's `Arguments` *should* be
+ * before it can call a difference a mismatch, and a second implementation of the quoting rule would
+ * report a drift that is only a disagreement between two copies of it.
+ */
+export function windowsArgumentLine(argv: readonly string[]): string {
+  return argv.map(quoteWindowsArgument).join(" ");
+}
 
 /** The emitted settings, as one unbroken run inside the argv the `<Arguments>` line carries. */
 function requireArgvCarries(argv: readonly string[], emitted: readonly string[]): void {

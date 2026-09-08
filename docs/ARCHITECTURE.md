@@ -182,7 +182,8 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 ## 6. The runtime
 
 **What exists today.** `apps/cli/src/server.ts` builds one Hono application — `GET /healthz`
-returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable HTTP, and
+returning `{status, version, contract_version, run_id, runtime_digest}`, `POST /mcp` speaking
+Streamable HTTP, and
 `GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
 The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
 scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
@@ -329,6 +330,20 @@ into `createMcpServer`, so the handshake reports the release number, and both nu
 side by side in that one body. `MCP_CONTRACT_VERSION` lives in `@xplainer/protocol`, which also
 exports `isContractCompatible(daemon, shim)`; the predicate is **major-compatible**, so an additive
 change attaches and only a removal refuses.
+
+**Identity, and why the release number is not it.** The same body carries `run_id` and
+`runtime_digest`, and they answer a different question from either version: *is the daemon that is
+answering the daemon this machine meant to install?* `run_id` is the ownership acquisition's
+`boot_nonce`, so two runs of the same configuration differ; `runtime_digest` is an immutable startup
+snapshot taken after ownership and before the binds, over the effective argv, the resolved settings,
+the working directory and the staged payload's content hash — never from `daemon.json`, because a
+value read from the record would agree with the record by construction. `daemon status` compares
+three rows: **desired** (`daemon.json`'s launch spec), **loaded** (`systemctl --user show -p ExecStart
+-p Environment -p WorkingDirectory --value` on Linux, `Get-ScheduledTask` for the registered task on
+Windows — and **nothing on macOS**, where `launchctl print`'s manual disclaims its own structure) and
+**responding** (these two fields). It names which detector found a difference, because on macOS the
+identity one is the only one there is. `apps/cli/src/install/supervisors/identity.ts` is the whole of
+it; `pnpm e2e:identity` is how it is proved against a real service manager.
 
 **Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), built).** The daemon announces
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners

@@ -143,6 +143,42 @@ describe("xplainer serve", () => {
     expect(body.version).toBe(CLI_VERSION);
   });
 
+  /**
+   * The identity row, and the one caller that has none.
+   *
+   * A server built with no identity is `services/media-service`: it takes no state directory and
+   * holds no ownership, so there is nothing for it to advertise. Both fields are then `null` rather
+   * than absent, which is what keeps the body one shape — a reader never has to tell "this release
+   * does not have the field" apart from "this server is not a daemon".
+   */
+  it("advertises the identity it was given on /healthz, and nulls where it was given none", async () => {
+    running = await startServer({
+      backend: localBackend(),
+      port: 0,
+      identity: {
+        run_id: "0d5f1d4a-1e2b-4c3d-8e9f-0a1b2c3d4e5f",
+        runtime_digest: "0123456789abcdef",
+      },
+    });
+    const advertised = (await (await fetch(`${running.url}/healthz`)).json()) as {
+      run_id: unknown;
+      runtime_digest: unknown;
+    };
+    expect(advertised.run_id).toBe("0d5f1d4a-1e2b-4c3d-8e9f-0a1b2c3d4e5f");
+    expect(advertised.runtime_digest).toBe("0123456789abcdef");
+    await running.close();
+
+    running = await startServer({ backend: localBackend(), port: 0 });
+    const bare = (await (await fetch(`${running.url}/healthz`)).json()) as {
+      status: unknown;
+      run_id: unknown;
+      runtime_digest: unknown;
+    };
+    expect(bare.status).toBe("ok");
+    expect(bare.run_id).toBeNull();
+    expect(bare.runtime_digest).toBeNull();
+  });
+
   it("keeps the advertised contract version independent of the release version it reports", async () => {
     running = await startServer({
       backend: localBackend(),
