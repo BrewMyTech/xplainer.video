@@ -34,9 +34,12 @@
  * **Windows is code-pathed and not tested here.** A named pipe is not a filesystem entry: it has no
  * mode, no directory and nothing to unlink, and its name is global to the machine — so the name
  * carries a digest of the state directory, which is what keeps two users' daemons (and two test
- * runs) from colliding on one pipe. ADR 0020 §Security R-SEC-5 already records the honest gap this
- * leaves: on Windows "a mode is not protection", and the ACL work that would close it belongs to
- * the installer in phase 2.
+ * runs) from colliding on one pipe. A digest is not an access check, though, and the pipe libuv
+ * creates carries the default descriptor Microsoft documents as granting "read access to members of
+ * the Everyone group and the anonymous account" — so {@link secureIpcEndpoint} replaces it, right
+ * after the bind, with one that names this account and nobody else. `daemon/pipe-acl.ts` is that
+ * mechanism and the reasoning behind it; this module is where the two transports' protections are
+ * asked for by one name.
  */
 
 import { createHash } from "node:crypto";
@@ -44,6 +47,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { removeIfPresent } from "./durable-write.js";
+import { type PipeAclResult, restrictPipeToOwner } from "./pipe-acl.js";
 import {
   type SettingDecision,
   type SettingSource,
@@ -199,4 +203,24 @@ export function prepareIpcSocket(request: IpcSocketRequest): PreparedIpcSocket {
   chmodSync(directory, STATE_DIR_MODE);
   removeIfPresent(path);
   return { path, removeOnShutdown: true, source };
+}
+
+/**
+ * Narrow the endpoint that was just bound to the account this daemon runs as.
+ *
+ * Called **after** `listen()` and not before, because on Windows there is nothing to narrow until
+ * libuv has created the pipe: `net.Server.listen()` takes no security descriptor, so the pipe is
+ * born with the default one and is replaced a moment later. On POSIX there is nothing to do here at
+ * all — {@link prepareIpcSocket} already made the socket's directory `0700`, and that directory is
+ * the authentication — so the answer is `not-applicable` and `serve` says which of the two
+ * protections this platform actually got.
+ */
+export function secureIpcEndpoint(
+  path: string,
+  platform: string = process.platform,
+): PipeAclResult {
+  if (!isNamedPipe(path)) {
+    return { outcome: "not-applicable" };
+  }
+  return restrictPipeToOwner(path, platform);
 }

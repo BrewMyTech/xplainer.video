@@ -37,6 +37,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { describeStatus } from "../commands/daemon.js";
 import { type DaemonStart, readDaemonState, updateDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveIpcPath } from "../daemon/ipc.js";
@@ -72,6 +73,7 @@ import { runProbe } from "./preflight.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import { buildFixturePayload } from "./testing/payload.js";
 import { ACQUIRED_DIR, writeToolchainMarker } from "./testing/toolchain.js";
+import { readUpdateStatus } from "./update/recover.js";
 
 /** The budget for a case that stages a payload and starts a real daemon out of it. */
 const SPAWN_TIMEOUT_MS = 90_000;
@@ -957,6 +959,71 @@ describe("daemon status — the three queries, and nothing that parses launchctl
       }).state,
     ).toBe("unknown");
   });
+
+  /**
+   * R-SEC-5's second half, reaching the report: "…and `xplainer daemon status` re-verifies it and
+   * warns if inheritance has been restored".
+   *
+   * Two cases, because the answer is a property of the platform. On `win32` the entry is read back
+   * with a `icacls <path>` **query** — no `/grant`, no `/inheritance`, so the read-only rule this
+   * command lives under is kept — and a file that has been widened underneath the daemon is a
+   * warning naming what was found. Everywhere else the mode already carries the property, so there
+   * is nothing to re-verify and no command is run at all. What `icacls`'s own output means is
+   * `daemon/windows-acl.test.ts`'s subject; what this asserts is that the report asks.
+   */
+  it(
+    "re-reads the token file's access-control entry on Windows, and warns when it is widened",
+    async () => {
+      const stateDir = installableState();
+      const harness = lifecycleHarness({ stateDir });
+      const tokenPath = join(stateDir, "token");
+      const widened =
+        `${tokenPath} BUILTIN\\Users:(I)(RX)\n` +
+        `                 MACHINE\\tester:(I)(F)\n\nSuccessfully processed 1 files\n`;
+      const run: ProbeRunner = (command) =>
+        command.program === "icacls"
+          ? { started: true, status: 0, stdout: widened, stderr: "" }
+          : harness.run(command);
+
+      const report = await daemonStatus({
+        stateDir,
+        platform: "win32",
+        environment: fixtureEnvironment(scratchDirectory()),
+        run,
+        uid: 501,
+      });
+
+      expect(report.token_acl.path).toBe(tokenPath);
+      expect(report.token_acl.query).toBe(`icacls ${tokenPath}`);
+      expect(report.token_acl.state).toBe("widened");
+      expect(report.token_acl.detail).toContain("Inheritance has been restored");
+      expect(describeStatus(report, readUpdateStatus(stateDir))).toContain(
+        "token file:      WARNING —",
+      );
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "has no access-control entry to re-verify on a platform whose mode is the protection",
+    async () => {
+      const stateDir = installableState();
+      const harness = lifecycleHarness({ stateDir });
+
+      const report = await daemonStatus({
+        stateDir,
+        platform: "darwin",
+        environment: fixtureEnvironment(scratchDirectory()),
+        run: harness.run,
+        uid: 501,
+      });
+
+      expect(report.token_acl.state).toBe("not-applicable");
+      expect(report.token_acl.query).toBeNull();
+      expect(harness.commands.some((spelled) => spelled.startsWith("icacls"))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
   /** With nothing installed there is no service to ask about, and that is a report, not a throw. */
   it(

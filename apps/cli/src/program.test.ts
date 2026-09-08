@@ -133,7 +133,7 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly serve, status, mcp, setup, connect, daemon and runtime under --help", async () => {
+  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime and token under --help", async () => {
     const { stdout, exitCode } = await run(["--help"]);
 
     expect(listedCommands(stdout)).toEqual([
@@ -144,6 +144,7 @@ describe("xplainer", () => {
       "connect",
       "daemon",
       "runtime",
+      "token",
     ]);
     expect(exitCode).toBe(0);
   });
@@ -176,6 +177,18 @@ describe("xplainer", () => {
     const { stdout, exitCode } = await run(["runtime", "--help"]);
 
     expect(listedCommands(stdout)).toEqual(["build", "verify"]);
+    expect(exitCode).toBe(0);
+  });
+
+  /**
+   * One verb, and the listing is asserted with `toEqual` for the same reason every other group's
+   * is: ADR 0020 §Security R-SEC-8 names `token rotate` and nothing else, and a second verb under
+   * this group would be a second way to touch the credential.
+   */
+  it("lists exactly rotate under `token --help`", async () => {
+    const { stdout, exitCode } = await run(["token", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["rotate"]);
     expect(exitCode).toBe(0);
   });
 

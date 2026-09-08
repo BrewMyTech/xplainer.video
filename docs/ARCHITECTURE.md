@@ -276,7 +276,7 @@ owns it, never invented at the call site.
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
-| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`, and the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed) |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`; `xplainer token rotate` with no token file to rotate; and the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed) |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
 | `5` | Administrator privileges required: the supervisor is here and refuses *this* user the right the daemon needs — Windows `SCHED_S_BATCH_LOGON_PROBLEM`, or `--at-boot` (`ADMIN_REQUIRED_EXIT_CODE`) | ADR 0020 | **built** in `daemon install`'s writing phase, where both of its conditions live because both can only be established by *attempting* the thing: lingering is asked for first and checked by `test -e /var/lib/systemd/linger/$USER` rather than by `loginctl`'s status, and the missing batch-logon right is read off `LastTaskResult` after the health check has already failed, named as a candidate and never as a diagnosis |
 | `6` | No supported supervisor on this machine, so there is nothing to install into — the remediation is the one that needs none, `xplainer connect claude --spawn` (`NO_SUPERVISOR_EXIT_CODE`) | ADR 0020 | **built** in the install preflight, in two conditions: no user service manager (`/run/systemd/system` absent, or `systemctl --user` reaching none), and a Task Scheduler that refuses a query. `--spawn` is built, so the remediation is runnable — except in the one case where it is not the leading one: systemd booted the machine and the manager is absent *because* `/var/lib/systemd/linger/$USER` is, where the message leads with `sudo loginctl enable-linger` |
@@ -284,7 +284,7 @@ owns it, never invented at the call site.
 | `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
 | `10` | **`serve`-time ownership**: another process holds this machine's runtime — the state directory is owned, or the recorded port is taken — by something that is running now (`OWNERSHIP_REFUSED_EXIT_CODE`) | ADR 0020, ADR 0024 | **built** |
 | `11` | State file unreadable | ADR 0020 | **built** |
-| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
+| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built**, in `serve` and in `xplainer token rotate` |
 | `70` | Internal error | ADR 0020 | **built** |
 
 **Job lifecycle (phase 1, [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)).** Five

@@ -76,6 +76,7 @@
  * rather than a timer.
  */
 
+import { createServer as createSecureServer } from "node:https";
 import { createAdaptorServer, type ServerType, serve } from "@hono/node-server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer, type RenderBackend } from "@xplainer/mcp-server";
@@ -248,7 +249,12 @@ export type CreateServerOptions = {
 export type RunningServer = {
   /** The port actually bound — resolved, so port `0` reports its real value. */
   port: number;
-  /** The origin the server answers on, with no trailing slash. */
+  /**
+   * The origin the server answers on, with no trailing slash.
+   *
+   * `https:` when {@link StartServerOptions.tls} was given and `http:` otherwise, so the value
+   * `serve` puts in `runtime.json`'s `addresses` and prints is one a client can use as it stands.
+   */
   url: string;
   /**
    * The IPC endpoint this server is also listening on, or `null` when it was not asked for one.
@@ -308,6 +314,19 @@ export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"
    * listener is bound, which is what `services/media-service` wants.
    */
   ipc?: { path: string };
+  /**
+   * The operator's certificate and key, which turns this listener into an `https` one.
+   *
+   * Present only for the deliberately non-loopback bind of ADR 0020 §Security R-SEC-9, where TLS is
+   * one of the five preconditions; `daemon/tls.ts` reads and checks the pair, and `commands/serve.ts`
+   * refuses the bind before this function is called if it is missing. Omitted is plain `http`,
+   * which is what every loopback daemon and `services/media-service` behind its own terminator get.
+   *
+   * The values are the PEM text rather than paths: this function does no I/O, and a caller that
+   * passed a path would be asking the *listener* to decide what happens when the file cannot be
+   * read — a decision that belongs before the bind, next to the other four refusals.
+   */
+  tls?: { cert: string; key: string };
 };
 
 /**
@@ -534,8 +553,25 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const authority =
     hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname;
 
+  // The one difference TLS makes to this function: which `createServer` the adaptor calls and what
+  // scheme the resulting origin carries. Everything above it — the app, the guard, the two
+  // listeners — is identical, because R-SEC-9 is about what a remote bind *costs* and not about
+  // serving something different once it is paid for.
+  const material = options.tls;
+  const scheme = material === undefined ? "http" : "https";
+  const serveOptions =
+    material === undefined
+      ? { fetch: app.fetch, hostname, port }
+      : {
+          fetch: app.fetch,
+          hostname,
+          port,
+          createServer: createSecureServer,
+          serverOptions: { cert: material.cert, key: material.key },
+        };
+
   const tcp = await new Promise<{ port: number; server: ServerType }>((resolve, reject) => {
-    const server = serve({ fetch: app.fetch, hostname, port }, (address) => {
+    const server = serve(serveOptions, (address) => {
       if (guardFactory !== undefined) {
         armed = guardFactory(address.port);
       }
@@ -549,7 +585,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   if (ipcPath === undefined) {
     return {
       port: tcp.port,
-      url: `http://${authority}:${tcp.port}`,
+      url: `${scheme}://${authority}:${tcp.port}`,
       socket: null,
       close: closeTcp,
     };
@@ -581,7 +617,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const closeIpc = closer(ipc);
   return {
     port: tcp.port,
-    url: `http://${authority}:${tcp.port}`,
+    url: `${scheme}://${authority}:${tcp.port}`,
     socket: ipcPath,
     close: async () => {
       await closeIpc();

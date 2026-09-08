@@ -7,7 +7,9 @@
  * Round 2 of the plan said `uninstall` "rotates the token" while P2-9 required "no live token", and
  * the two cannot both hold: rotation mints a new value and leaves it on disk. So `uninstall`
  * **deletes** the file, and `xplainer token rotate` is what a daemon that stays installed uses.
- * Nothing is left to be stolen, and P2-9 is satisfiable as the roadmap words it.
+ * Nothing is left to be stolen, and P2-9 is satisfiable as the roadmap words it. A rotation that
+ * ran shortly before leaves a *second* live value in its grace file, so that goes too — taking one
+ * of two working credentials would leave behind exactly what this rule exists to prevent.
  *
  * ## Lingering is never disabled — not even lingering this project enabled
  *
@@ -51,7 +53,7 @@ import process from "node:process";
 import { readDaemonState, type SupervisorKind } from "../daemon/daemon-state.js";
 import { resolveIpcPath } from "../daemon/ipc.js";
 import { stateDirLayout } from "../daemon/state-dir.js";
-import { resolveTokenPath } from "../daemon/token.js";
+import { previousTokenPath, resolveTokenPath } from "../daemon/token.js";
 import type { InstallCommand } from "./install.js";
 import { LAUNCHER_DIR, launcherPath } from "./launcher.js";
 import {
@@ -214,6 +216,15 @@ export function uninstallDaemon(request: UninstallRequest): UninstallOutcome {
   rmSync(tokenPath, { force: true });
   const token = { path: tokenPath, deleted: !existsSync(tokenPath) };
   removed.push({ what: "the bearer token", path: tokenPath, existed: tokenExisted });
+  // And the value an `xplainer token rotate` retired, if its window has not closed yet: a rotation
+  // leaves **two** working credentials on disk, and an uninstall that took only one of them would
+  // leave exactly the live token P2-9 says must not survive.
+  const graceFile = previousTokenPath(tokenPath);
+  const graceExisted = existsSync(graceFile);
+  rmSync(graceFile, { force: true });
+  if (graceExisted) {
+    removed.push({ what: "a retired token in its grace window", path: graceFile, existed: true });
+  }
 
   // ── Lingering: reported, never removed ───────────────────────────────────────────────────────
   const lingerUser = environment.account;

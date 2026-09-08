@@ -1,14 +1,16 @@
 /**
  * The `xplainer` command surface.
  *
- * Seven entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
+ * Eight entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
  * and `mcp`, which work; `connect`, a group of two verbs — `claude` and `codex` —
  * which write an agent's stdio configuration (`commands/connect.ts`); `setup`,
  * which reports that it is deferred and exits 2; `daemon`, a group of seven
  * verbs — `install`, `uninstall`, `start`, `stop`, `restart`, `status`, `logs` —
  * that report the same thing and exit the same way (`commands/daemon.ts`); and
  * `runtime`, a group of two verbs — `build` and `verify` — that assemble and
- * re-hash the two relocatable payloads (`commands/runtime.ts`).
+ * re-hash the two relocatable payloads (`commands/runtime.ts`); and `token`, a
+ * group of one verb — `rotate` — which is ADR 0020 §Security R-SEC-8's rotation
+ * with its grace window (`commands/token.ts`).
  *
  * **`runtime` is a build-time command living in the shipped binary on purpose.**
  * `runtime build --workspace` installs the template that ships inside
@@ -58,6 +60,7 @@ import { createRuntimeCommand } from "./commands/runtime.js";
 import { createServeCommand } from "./commands/serve.js";
 import { createSetupCommand } from "./commands/setup.js";
 import { createStatusCommand } from "./commands/status.js";
+import { createTokenCommand } from "./commands/token.js";
 import { type CliIo, processIo } from "./io.js";
 import { CLI_VERSION } from "./version.js";
 
@@ -87,6 +90,7 @@ export function createProgram(io: CliIo = processIo): Command {
   program.addCommand(createConnectCommand(io));
   program.addCommand(createDaemonCommand(io));
   program.addCommand(createRuntimeCommand(io));
+  program.addCommand(createTokenCommand(io));
 
   return program;
 }

@@ -8,21 +8,31 @@
  * you can only produce with a real file.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
-import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
+import { PRECONDITION_UNMET_EXIT_CODE, TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
 import { ownerOnly, protectionOf } from "./testing/platform.js";
 import {
+  createTokenRing,
+  DEFAULT_TOKEN_GRACE_MS,
+  discardExpiredGrace,
   loadOrMintToken,
+  MAX_TOKEN_GRACE_MS,
+  previousTokenPath,
+  readGraceToken,
+  resolveTokenOrigin,
   resolveTokenPath,
   resolveTokenPathSetting,
+  rotateToken,
   TOKEN_BYTES,
   TOKEN_FILE,
   TOKEN_FILE_ENV,
+  TOKEN_PREVIOUS_SUFFIX,
+  TokenMissingError,
   TokenUnreadableError,
   tokenProtection,
 } from "./token.js";
@@ -223,5 +233,264 @@ describe("loadOrMintToken", () => {
     const token = loadOrMintToken(path);
 
     expect(Object.values(process.env)).not.toContain(token.value);
+  });
+});
+
+/**
+ * R-SEC-9's "a non-default token", made decidable.
+ *
+ * The value cannot answer this — the mint is 32 random bytes and so is a good operator token — so
+ * the answer is provenance, and the ordering of these four cases is the whole rule. The one that
+ * matters most is the third: a state directory served by a release older than `token_origin`
+ * recorded the path it minted into, and reading that as the operator's would let an upgrade turn
+ * this daemon's own default into a credential a remote bind accepts.
+ */
+describe("resolveTokenOrigin", () => {
+  const path = "/state/token";
+
+  it("calls the file this start created its own, whatever is recorded", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: true,
+        path,
+        recordedOrigin: "operator",
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
+  });
+
+  it.each(["minted", "operator"] as const)("inherits a recorded origin of %s", (recorded) => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        recordedOrigin: recorded,
+        recordedTokenFile: path,
+      }),
+    ).toBe(recorded);
+  });
+
+  it("reads an unrecorded origin at a path a previous run recorded as this daemon's mint", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        recordedOrigin: null,
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
+  });
+
+  it.each([
+    ["a directory nothing has recorded", null],
+    ["a path that is not the recorded one", "/state/other-token"],
+  ])(
+    "calls a file it did not make and cannot account for the operator's: %s",
+    (_case, recorded) => {
+      expect(
+        resolveTokenOrigin({
+          minted: false,
+          path,
+          recordedOrigin: null,
+          recordedTokenFile: recorded,
+        }),
+      ).toBe("operator");
+    },
+  );
+});
+
+describe("rotateToken", () => {
+  /**
+   * The whole of R-SEC-8 in one case: a new value in the token file, the old one still on disk with
+   * a deadline, and neither of them anywhere a reader of `daemon.json` could find it.
+   */
+  it("writes a new token and keeps the old one for the window", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+
+    const rotated = rotateToken({ path, graceMs: 60_000, now: at });
+
+    const after = readFileSync(path, "utf8").trim();
+    expect(after).not.toBe(before.value);
+    expect(Buffer.from(after, "base64url")).toHaveLength(TOKEN_BYTES);
+    expect(rotated.previousPath).toBe(previousTokenPath(path));
+    expect(rotated.graceUntil.toISOString()).toBe("2026-09-08T10:01:00.000Z");
+    expect(readGraceToken(previousTokenPath(path), at)).toBe(before.value);
+  });
+
+  /** The grace file holds a live credential, so it is protected exactly as the token is. */
+  it("gives the retired value the same protection the token has", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+
+    rotateToken({ path, graceMs: 60_000 });
+
+    expect(protectionOf(previousTokenPath(path))).toBe(ownerOnly(STATE_FILE_MODE));
+    expect(protectionOf(path)).toBe(ownerOnly(STATE_FILE_MODE));
+  });
+
+  /**
+   * `--grace 0` is the answer to a leak, and it has to leave nothing behind: a grace file from an
+   * earlier rotation would keep a value alive that this rotation exists to kill.
+   */
+  it("removes an earlier grace file when the window is zero", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+    rotateToken({ path, graceMs: 60_000 });
+    expect(existsSync(previousTokenPath(path))).toBe(true);
+
+    const rotated = rotateToken({ path, graceMs: 0 });
+
+    expect(rotated.previousPath).toBeNull();
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+  });
+
+  /** Nothing to rotate is a precondition, not a failure: exit `3`, and nothing is written. */
+  it("refuses a token file that is not there, having written nothing", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+
+    let raised: unknown;
+    try {
+      rotateToken({ path });
+    } catch (error) {
+      raised = error;
+    }
+
+    expect(raised).toBeInstanceOf(TokenMissingError);
+    expect((raised as TokenMissingError).exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+  });
+
+  /** A window is a weakening with a deadline, so there is a longest one and it is checked here. */
+  it("refuses a window longer than a day, or a negative one", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const minted = loadOrMintToken(path, stateDir);
+
+    expect(() => rotateToken({ path, graceMs: MAX_TOKEN_GRACE_MS + 1 })).toThrow(RangeError);
+    expect(() => rotateToken({ path, graceMs: -1 })).toThrow(RangeError);
+    expect(readFileSync(path, "utf8").trim()).toBe(minted.value);
+  });
+
+  it("names the grace file beside the token, whatever --token-file put it", () => {
+    expect(previousTokenPath("/run/secrets/xplainer")).toBe(
+      `/run/secrets/xplainer${TOKEN_PREVIOUS_SUFFIX}`,
+    );
+  });
+});
+
+describe("readGraceToken", () => {
+  /** A closed window is decided on the clock, so the same file answers differently a minute later. */
+  it("stops answering once the window has closed", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    rotateToken({ path, graceMs: 60_000, now: at });
+
+    expect(readGraceToken(previousTokenPath(path), new Date(at.getTime() + 59_000))).toBe(
+      before.value,
+    );
+    expect(readGraceToken(previousTokenPath(path), new Date(at.getTime() + 60_000))).toBeNull();
+  });
+
+  /**
+   * The grace file is an addition to the token, never the authentication itself, so a corrupt one
+   * is `null` rather than an error. The token keeps its own strictness, which the case above this
+   * file's `loadOrMintToken` block asserts.
+   */
+  it("reads a corrupt record as no grace at all", () => {
+    const stateDir = stateDirectory();
+    const previous = join(stateDir, `${TOKEN_FILE}${TOKEN_PREVIOUS_SUFFIX}`);
+    writeFileSync(previous, "{not json", { mode: STATE_FILE_MODE });
+
+    expect(readGraceToken(previous)).toBeNull();
+
+    writeFileSync(previous, JSON.stringify({ token: "", grace_until: "2099-01-01T00:00:00.000Z" }));
+    expect(readGraceToken(previous)).toBeNull();
+  });
+});
+
+describe("discardExpiredGrace", () => {
+  it("removes a closed window's file and leaves an open one alone", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    rotateToken({ path, graceMs: 60_000, now: at });
+
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 30_000))).toBe(false);
+    expect(existsSync(previousTokenPath(path))).toBe(true);
+
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 61_000))).toBe(true);
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 62_000))).toBe(false);
+  });
+});
+
+describe("createTokenRing", () => {
+  /**
+   * The property the whole rotation rests on: the daemon holds no string, so a file written by
+   * another process is picked up without a restart and both values open the daemon until the
+   * window closes.
+   */
+  it("accepts the new token and the retired one, then only the new one", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    let clock = at;
+    const ring = createTokenRing({ path, now: () => clock });
+
+    expect(ring.tokens()).toEqual([before.value]);
+
+    rotateToken({ path, graceMs: 60_000, now: at });
+    const after = readFileSync(path, "utf8").trim();
+
+    expect(ring.tokens()).toEqual([after, before.value]);
+
+    clock = new Date(at.getTime() + 61_000);
+    expect(ring.tokens()).toEqual([after]);
+  });
+
+  /** A rotation with no window locks the old holder out on the very next request. */
+  it("drops the old value at once when the rotation kept no window", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const ring = createTokenRing({ path });
+    expect(ring.tokens()).toEqual([before.value]);
+
+    rotateToken({ path, graceMs: 0 });
+
+    expect(ring.tokens()).not.toContain(before.value);
+    expect(ring.tokens()).toHaveLength(1);
+  });
+
+  /**
+   * A read that fails keeps the previous answer, because the one moment the token file is
+   * unreadable is the moment something is renaming over it — and a burst of `401`s is a worse
+   * answer to a rotation than a request served with the value this daemon last read.
+   */
+  it("keeps the values it has when the file cannot be read", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const minted = loadOrMintToken(path, stateDir);
+    const ring = createTokenRing({ path });
+    expect(ring.tokens()).toEqual([minted.value]);
+
+    writeFileSync(path, "   \n", { mode: STATE_FILE_MODE });
+
+    expect(ring.tokens()).toEqual([minted.value]);
+  });
+
+  it("defaults the window to five minutes", () => {
+    expect(DEFAULT_TOKEN_GRACE_MS).toBe(300_000);
   });
 });

@@ -678,6 +678,68 @@ state directory, which keeps two accounts and two runs off one another's endpoin
 **Not done: the re-verification.** Nothing re-reads the entry, so inheritance restored underneath a
 running daemon is not noticed and `daemon status` says nothing about it.
 
+## Note, 2026-09-08, later the same day: both of those are now done, and R-SEC-8 with them
+
+The two paragraphs above are kept as written because they record what was true when the token half
+landed. Both gaps are closed by the same story, and how each was closed is worth having here.
+
+**The re-verification.** `daemon/windows-acl.ts` gained a **query** — `icacls <path>`, with no
+`/grant` and no `/inheritance`, so `daemon status` stays inside its own read-only rule — and a pure
+parser over what it prints. `/inheritance:r /grant:r` leaves exactly **one** entry on the file, so
+the rule is exact rather than lenient: a second principal is a grant somebody made, an `(I)` flag is
+inheritance having been switched back on, and either is a `WARNING —` line in `daemon status` naming
+what was found and the `icacls` that narrows it again. Off Windows there is no entry and the line
+says the mode is the protection rather than reporting a check that did not happen.
+
+**The pipe, and the sentence above that has to be corrected.** "Node offers no way to pass a
+security descriptor" is still true — `ListenOptions` has `readableAll` and `writableAll`, which
+*widen* a pipe through `uv_pipe_chmod`, and nothing that narrows one — but *creation* was never the
+only moment available. Microsoft documents what libuv's `NULL` gets: "The ACLs in the default
+security descriptor for a named pipe grant full control to the LocalSystem account, administrators,
+and the creator owner. **They also grant read access to members of the Everyone group and the
+anonymous account**"
+([CreateNamedPipeA](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)),
+and it documents the way to change one: "To change the security descriptor of a named pipe, call
+the **SetSecurityInfo** function"
+([Named Pipe Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)).
+So `daemon/pipe-acl.ts` opens a handle to the daemon's own pipe asking for `ChangePermissions` and
+`ReadPermissions` and **nothing else** — no read, no write, so the connection carries no data and
+cannot — and replaces the DACL with one protected entry for this account's own SID.
+
+Three things make that sound rather than a trick, and each is a documented fact rather than an
+observation of one machine:
+
+- **The descriptor belongs to the pipe, not to the instance.** "If a new named pipe is being
+  created, the access control list (ACL) from the security attributes parameter defines the
+  discretionary access control for the named pipe", and creating a further instance is *access
+  checked* against "the DACL in the named pipe's security descriptor". Libuv creates an instance per
+  accepted connection; every one of them is checked against what this writes.
+- **The entry is `FullControl` rather than read-and-write**, because `FILE_CREATE_PIPE_INSTANCE` is
+  part of it and a daemon that narrowed itself out of the right to accept a second connection would
+  have made itself unusable.
+- **The identity is the token's `User` SID**, not its owner: an elevated process's owner may be
+  `BUILTIN\Administrators`, and an entry for the administrators group is not "the creating user
+  only".
+
+**What it costs, stated rather than discovered.** The pipe exists with the default descriptor
+between `listen()` and this call — the same create-then-narrow window the token file has on this
+platform, and as short as one can be — and the narrowing occupies one pipe instance for the length
+of one call, which the daemon's own HTTP server sees as a connection that opens and closes without a
+request. A failure is **reported and never fatal**, for the reason the token's is: `serve`'s line
+about the IPC listener says which of the two protections this platform got, and refusing to serve
+over a missing `powershell.exe` would trade a wider pipe for no service at all.
+
+**R-SEC-8's rotation, in the same story.** `xplainer token rotate` writes a new 32-byte value and
+keeps the old one in a grace file beside the token — same `0600`, same explicit entry — with the
+instant it stops being accepted recorded next to it and in `daemon.json`'s new `token_rotation`
+(two timestamps and a **path**; the value stays in the file R-SEC-6 puts it in). The guard is handed
+a **function** rather than a string, so a daemon that stays installed picks the rotation up on its
+next request: no restart, no control route, and both values open it until the window closes. The
+default window is five minutes and the longest is a day, because a window is a weakening with a
+deadline. `daemon uninstall` still **deletes** rather than rotates, and now deletes the grace file
+too — a rotation leaves two working credentials, and taking one of them would leave behind exactly
+the live token P2-9 says must not survive.
+
 **Measured while doing it, because it cost a full CI round to find.** The Task Scheduler document
 `supervisors/schtasks.ts` renders declares `encoding="UTF-16"` while the file on disk is UTF-8, and
 that is not an inconsistency to tidy away. `Register-ScheduledTask -Xml` takes a **string**, which

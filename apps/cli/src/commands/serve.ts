@@ -63,6 +63,16 @@
  * All three are written into `daemon.json` at readiness, so `xplainer status --json` reports what
  * this process used rather than what somebody intended.
  *
+ * **What a non-loopback bind costs, in one place.** ADR 0020 §Security R-SEC-9 is a list of five
+ * preconditions rather than a flag, and this command is where all five are asked: `daemon/binding.ts`
+ * refuses `0.0.0.0` and `::` outright and refuses any other non-loopback address without
+ * `--i-understand-remote-exposure`; `daemon/tls.ts` refuses one without `--tls-cert`, `--tls-key`
+ * and at least one `--allow-host`, and refuses one whose bearer token is the value this daemon
+ * minted for itself. The first four are decided **before ownership is taken**, and the fifth before
+ * anything is bound, so every refusal leaves the machine exactly as it found it. What the guard
+ * gets is `allowHosts` — the operator's names *added* to loopback, never replacing them — which is
+ * the CVE-2026-65105 lesson: widening a bind must add authority and remove none.
+ *
  * **Never add `serve --detach`.** [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md)
  * rejects self-daemonisation outright: `launchd.plist(5)` EXPECTATIONS says a job **MUST NOT**
  * "call `daemon(3)`" or "do the moral equivalent … by calling `fork(2)` and have the parent process
@@ -82,17 +92,30 @@ import {
   resolveBindAddress,
   resolveDaemonPort,
 } from "../daemon/binding.js";
-import { readDaemonState } from "../daemon/daemon-state.js";
+import { readDaemonState, type TokenOrigin, updateDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_INTERNAL_EXIT_CODE, USAGE_EXIT_CODE } from "../daemon/exit-codes.js";
 import { createLoopbackGuard } from "../daemon/guard.js";
-import { type PreparedIpcSocket, prepareIpcSocket } from "../daemon/ipc.js";
+import { type PreparedIpcSocket, prepareIpcSocket, secureIpcEndpoint } from "../daemon/ipc.js";
+import { pipeProtection } from "../daemon/pipe-acl.js";
 import { formatReadyLine, readyAnnouncement } from "../daemon/ready.js";
 import { DEFAULT_DRAIN_TIMEOUT_MS, type WorkerRegistry } from "../daemon/runner.js";
 import { installShutdownHandlers, type ShutdownHandle } from "../daemon/shutdown.js";
 import { type StartedDaemon, startDaemon } from "../daemon/start.js";
 import { resolveStateDirSetting, STATE_DIR_ENV } from "../daemon/state-dir.js";
 import {
+  ALLOW_HOST_FLAG,
+  loadTlsMaterial,
+  mintedTokenRefusal,
+  remoteExposureRefusal,
+  TLS_CERT_FLAG,
+  TLS_KEY_FLAG,
+  type TlsMaterial,
+} from "../daemon/tls.js";
+import {
+  createTokenRing,
+  discardExpiredGrace,
   loadOrMintToken,
+  resolveTokenOrigin,
   resolveTokenPathSetting,
   TOKEN_FILE_ENV,
   TokenUnreadableError,
@@ -124,10 +147,19 @@ type ServeOptions = {
   port?: number;
   bind?: string;
   iUnderstandRemoteExposure?: boolean;
+  tlsCert?: string;
+  tlsKey?: string;
+  /** Every `--allow-host`, collected in the order they were given. Empty when none was. */
+  allowHost?: string[];
   stateDir?: string;
   tokenFile?: string;
   socket?: string;
 };
+
+/** Commander's accumulator for a repeatable option: the previous list plus this occurrence. */
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 
 /**
  * The two things a *process-level* test has to reach inside a running `serve`, and that
@@ -202,6 +234,18 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       "acknowledge that a non-loopback --bind exposes this daemon beyond this machine",
     )
     .option(
+      `${TLS_CERT_FLAG} <path>`,
+      "PEM certificate chain; required for a non-loopback --bind, refused for a loopback one",
+    )
+    .option(`${TLS_KEY_FLAG} <path>`, "PEM private key for the certificate above")
+    .option(
+      `${ALLOW_HOST_FLAG} <host>`,
+      "a hostname the Host allowlist gains beside loopback; repeatable, required for a " +
+        "non-loopback --bind",
+      collect,
+      [],
+    )
+    .option(
       `${STATE_DIR_FLAG} <path>`,
       `durable state directory; overrides ${STATE_DIR_ENV}, then the platform default`,
     )
@@ -224,6 +268,37 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       if (!bind.ok) {
         io.writeErr(`${bind.message}\n`);
         io.exit(USAGE_EXIT_CODE);
+      }
+
+      // The three R-SEC-9 preconditions argv decides — TLS in both halves, and at least one
+      // operator host — asked here for the same reason the bind was: a daemon that discovered a
+      // missing certificate after binding would already have been reachable, unencrypted, on the
+      // address the operator was trying to protect. The fifth, the token's provenance, needs the
+      // state directory and is asked below.
+      const allowHosts = options.allowHost ?? [];
+      const remoteRefusal = remoteExposureRefusal({
+        loopback: bind.loopback,
+        hostname: bind.hostname,
+        ...(options.tlsCert === undefined ? {} : { certPath: options.tlsCert }),
+        ...(options.tlsKey === undefined ? {} : { keyPath: options.tlsKey }),
+        allowHosts,
+      });
+      if (remoteRefusal !== null) {
+        io.writeErr(`${remoteRefusal}\n`);
+        io.exit(USAGE_EXIT_CODE);
+      }
+
+      // Read and checked before ownership too: `loadTlsMaterial()` only reads two files the
+      // operator already owns, and a certificate that turns out not to be one is a usage error
+      // rather than a daemon that took the state directory and then gave it back.
+      let tls: TlsMaterial | null = null;
+      if (options.tlsCert !== undefined && options.tlsKey !== undefined) {
+        const material = loadTlsMaterial({ certPath: options.tlsCert, keyPath: options.tlsKey });
+        if (!material.ok) {
+          io.writeErr(`${material.message}\n`);
+          io.exit(USAGE_EXIT_CODE);
+        }
+        tls = material.material;
       }
 
       // Flag → variable → platform default, decided before ownership is attempted, because the
@@ -256,10 +331,23 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       // cannot be used: a daemon that cannot enforce authentication must not serve.
       const tokenSetting = resolveTokenPathSetting(stateDir, { flag: options.tokenFile });
       const tokenPath = tokenSetting.path;
-      let token: string;
+      // Read once, before the token, because both the token's provenance and the port come out of
+      // it and a second read between the two would be reading a file this process has since
+      // written. Reading it at all is safe only here: ownership is held.
+      const recorded = readDaemonState(stateDir);
+      // Declared without a value because the only path that leaves this block without assigning it
+      // is the `catch`, and every branch of that one exits. The token's *value* is deliberately not
+      // kept: what the guard is given below is the ring over the file, so that a rotation in
+      // another process is picked up rather than shadowed by a string read at start-up.
+      let tokenOrigin: TokenOrigin;
       try {
         const minted = loadOrMintToken(tokenPath, stateDir);
-        token = minted.value;
+        tokenOrigin = resolveTokenOrigin({
+          minted: minted.minted,
+          path: tokenPath,
+          recordedOrigin: recorded.token_origin,
+          recordedTokenFile: recorded.token_file,
+        });
         if (minted.minted) {
           // What actually protects the file, named, because it differs by platform: a mode on the
           // two that have one, and the explicit ACL of ADR 0020 R-SEC-5 on the one that does not.
@@ -279,12 +367,46 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         io.exit(DAEMON_INTERNAL_EXIT_CODE);
       }
 
+      // A grace window that closed while this daemon was down is a secret with nothing left to
+      // open, so the file goes rather than sitting in the state directory waiting to be found in a
+      // backup. Enforcement is the ring's — expiry is decided on the clock, not on the file's
+      // presence — so this is hygiene, and it is done once here rather than per request.
+      if (discardExpiredGrace(tokenPath)) {
+        io.writeErr(
+          `xplainer serve: removed the expired rotation grace file beside ${tokenPath}; the ` +
+            "value in it had already stopped being accepted.\n",
+        );
+      }
+
+      // What the guard is handed, and it is a function of the two files rather than a value read
+      // once: `ring.tokens()` answers what is accepted *now*, which after a rotation is two values.
+      const ring = createTokenRing({ path: tokenPath });
+
+      // Recorded on every start, loopback or not, so that the answer survives into the next one:
+      // the run that can see the file being created is the only run that can decide this, and a
+      // remote bind three restarts later still needs it (`daemon/token.ts` §resolveTokenOrigin).
+      if (tokenOrigin !== recorded.token_origin) {
+        updateDaemonState(stateDir, { token_origin: tokenOrigin });
+      }
+
+      // R-SEC-9's fifth precondition, and the last thing between an acknowledged remote bind and a
+      // listener. Still before anything is bound — the state directory is given back, which is the
+      // same thing an unreadable token file does one branch above.
+      if (!bind.loopback) {
+        const refusal = mintedTokenRefusal({ origin: tokenOrigin, path: tokenPath });
+        if (refusal !== null) {
+          await daemon.close();
+          io.writeErr(`${refusal}\n`);
+          io.exit(USAGE_EXIT_CODE);
+        }
+      }
+
       // Configured → recorded → default, which is ADR 0020 §Port and discovery's precedence. The
       // recorded value is read after ownership: reading it earlier would mean reading a file this
       // process might not be allowed to have.
       const port = resolveDaemonPort({
         configured: options.port,
-        recorded: readDaemonState(stateDir).port,
+        recorded: recorded.port,
         fallback: DEFAULT_PORT,
       });
 
@@ -347,13 +469,21 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
           const status = checkToolchain({ stateDir, workspaceRoot: daemon.workspaceRoot });
           return { ok: status.ok, reason: status.reason };
         },
+        // The operator's certificate, or nothing at all. `remoteExposureRefusal()` above is what
+        // makes "nothing at all" mean "this is a loopback bind" rather than "TLS was forgotten".
+        ...(tls === null ? {} : { tls: { cert: tls.cert, key: tls.key } }),
         guard: (boundPort) =>
           createLoopbackGuard({
-            token,
+            // The ring rather than the string, so that a `token rotate` in another process reaches
+            // this daemon without a restart and its grace window is honoured here rather than
+            // promised somewhere else (ADR 0020 §Security R-SEC-8).
+            tokens: ring.tokens,
             port: () => boundPort,
-            // R-SEC-9: a widened bind *adds* its authority and takes nothing away, so the guard
-            // cannot be disabled by relaxing the bind — which is the CVE that section cites.
-            ...(bind.loopback ? {} : { hostnames: [bind.hostname] }),
+            // R-SEC-9: the operator's hosts are *added* to loopback and take nothing away, so the
+            // guard cannot be disabled by relaxing the bind — which is the CVE that section cites.
+            // The bind address is not added on its own: an authority nobody asked for is an
+            // authority nobody decided about, and `--allow-host` is where that decision is made.
+            ...(allowHosts.length === 0 ? {} : { allowHosts }),
             log: (line) => {
               io.writeErr(`xplainer serve: ${line}\n`);
             },
@@ -384,6 +514,14 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         io.exit(failure.exitCode);
       }
 
+      // The IPC endpoint asks for no token, so *this* is its authentication — and on Windows the
+      // pipe libuv just created is readable by every local account until this call replaces its
+      // descriptor. Done here, immediately after `listen()` and before this daemon announces
+      // anything, because there is nothing to narrow before the bind and nothing worth delaying
+      // it past: the window is as short as a create-then-narrow can make it, exactly as the token
+      // file's is on that platform.
+      const ipcProtection = secureIpcEndpoint(bound.running.socket ?? ipc.path);
+
       daemon.markReady({
         port: bound.running.port,
         addresses: [bound.running.url],
@@ -409,10 +547,16 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
       }
 
       if (!bind.loopback) {
+        // Said even though all five preconditions were met, because meeting them is what makes the
+        // exposure deliberate rather than what makes it safe: ADR 0020 §Security keeps remote
+        // exposure outside the supported configuration, and this line is where a reader learns
+        // which certificate and which authorities this daemon is actually trusting.
         io.writeErr(
-          `xplainer serve: bound ${bind.hostname}, which is not loopback. This is outside the ` +
-            "supported configuration: there is no TLS here, and the bearer token is the only thing " +
-            "between this daemon and anyone who can reach that address.\n",
+          `xplainer serve: bound ${bind.hostname}, which is not loopback, over TLS from ` +
+            `${tls?.certPath ?? "<none>"}. Reachable as ${allowHosts.join(", ")} — plus loopback, ` +
+            "which the guard never gives up — with an operator token from " +
+            `${tokenPath}. Remote exposure remains outside the supported configuration ` +
+            "(ADR 0020 §Security R-SEC-9).\n",
         );
       }
       io.writeErr(
@@ -420,9 +564,10 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
           `port from ${port.source}; every TCP request needs the bearer token in ${tokenPath}.\n`,
       );
       io.writeErr(
-        `xplainer serve: also listening on ${ipc.path}, where filesystem permissions are the ` +
-          "authentication and no token is asked for — that is the socket `xplainer mcp --attach` " +
-          "dials, and it is why an agent's configuration holds no URL and no secret.\n",
+        `xplainer serve: also listening on ${ipc.path}, where ${pipeProtection(ipcProtection)} is ` +
+          "the authentication and no token is asked for — that is the socket " +
+          "`xplainer mcp --attach` dials, and it is why an agent's configuration holds no URL and " +
+          "no secret.\n",
       );
       // Which input decided each setting, said once. A supervisor that cannot deliver a variable —
       // Task Scheduler's `<Exec>` has no environment map — is exactly the case where a daemon

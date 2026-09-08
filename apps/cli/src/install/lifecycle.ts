@@ -83,6 +83,7 @@ import {
 } from "../daemon/daemon-state.js";
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveTokenPath } from "../daemon/token.js";
+import { type AclVerdict, aclQuery, readAclVerdict } from "../daemon/windows-acl.js";
 import { DEFAULT_PORT, DRAIN_PATH } from "../server.js";
 import { awaitHealthy, HealthTimeout, loopbackGet } from "./health.js";
 import {
@@ -404,6 +405,16 @@ export type DaemonStatusReport = {
    */
   identity: IdentityReport;
   toolchain: ToolchainFact;
+  /**
+   * The token file's own protection, re-read rather than assumed.
+   *
+   * ADR 0020 §Security R-SEC-5 asks for both halves — "an explicit ACL applied at creation … and
+   * `xplainer daemon status` re-verifies it and warns if inheritance has been restored" — and only
+   * this command can do the second one: the mint happens once, and `/inheritance:r` is undone by
+   * one `icacls`, a restored backup or an installer that resets a tree, none of which changes
+   * anything else about the file.
+   */
+  token_acl: TokenAclFact;
   boot_persistence: BootPersistenceFact;
   /** How many starts in a row failed before the daemon was ready, newest first. */
   failed_starts: number;
@@ -696,6 +707,7 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
     detail: describeToolchain(preflight),
   };
   const boot = bootPersistence(kind, preflight, daemon);
+  const tokenAcl = askTokenAcl(tokenPath, platform, run);
 
   const condition = classify({
     probe: answer,
@@ -766,9 +778,47 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
       recordedRunId: typeof runtime?.run_id === "string" ? runtime.run_id : null,
     }),
     toolchain,
+    token_acl: tokenAcl,
     boot_persistence: boot,
     failed_starts: failedStarts,
   };
+}
+
+/** The token file's protection, as `daemon status` reports it. */
+export type TokenAclFact = {
+  /** The file the entry was read off, which is the one this report says the daemon reads. */
+  path: string;
+  /** The `icacls` that was run, or `null` where the platform has no entry to re-verify. */
+  query: string | null;
+  /** `not-applicable` off Windows, `owner-only` when it still is, `widened` or `unknown`. */
+  state: AclVerdict["state"];
+  /** The sentence, which on `widened` names what it found and the command that narrows it again. */
+  detail: string;
+};
+
+/**
+ * Re-read the token file's access-control entry, on the platform that has one.
+ *
+ * The command goes through the same {@link ProbeRunner} the supervisor queries use, so a test
+ * drives it with a recorded answer on any machine and the one real `icacls` on `windows-latest` is
+ * the same code path. It is a **query**: `icacls <path>` with no `/grant` and no `/inheritance`,
+ * which is as read-only as `launchctl print-disabled` beside it — `daemon status` reports, and the
+ * mint and `token rotate` are the two places that write an entry.
+ */
+function askTokenAcl(path: string, platform: string, run: ProbeRunner): TokenAclFact {
+  if (platform !== "win32") {
+    const verdict = readAclVerdict(
+      path,
+      { started: false, status: null, stdout: "", stderr: "" },
+      undefined,
+      platform,
+    );
+    return { path, query: null, state: verdict.state, detail: verdict.detail };
+  }
+  const command = aclQuery(path);
+  const answer = run(command);
+  const verdict = readAclVerdict(path, answer, undefined, platform);
+  return { path, query: spell(command), state: verdict.state, detail: verdict.detail };
 }
 
 /**

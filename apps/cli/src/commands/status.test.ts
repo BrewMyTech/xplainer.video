@@ -20,7 +20,7 @@ import process from "node:process";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { waitForReadyLine } from "../daemon/ready.js";
-import { STATE_DIR_ENV, stateDirLayout } from "../daemon/state-dir.js";
+import { DAEMON_STATE_FILE, STATE_DIR_ENV, stateDirLayout } from "../daemon/state-dir.js";
 import { CHILD_SERVE, type SpawnedChild, spawnEntry } from "../daemon/testing/spawn-child.js";
 import { TOKEN_FILE } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
@@ -151,12 +151,17 @@ describe("xplainer status", () => {
    */
   it("says something else is on the port when the daemon refuses our token", async () => {
     const stateDir = stateDirectory();
-    await daemonOn(stateDir);
-    // The daemon holds its token in memory; replacing the file leaves `status` holding a token
-    // that daemon never minted, which is exactly the shape of the mismatch this line is for.
-    writeFileSync(join(stateDir, TOKEN_FILE), "a-token-that-daemon-never-minted\n");
+    const { port } = await daemonOn(stateDir);
+    // Two state directories, which is what the condition actually describes: a daemon holds the
+    // port, and *this* record's token is not its token. Corrupting the running daemon's own token
+    // file would no longer produce it — the daemon follows that file, so that it can pick up an
+    // `xplainer token rotate` without a restart (ADR 0020 §Security R-SEC-8) — and a simulation
+    // that leans on the daemon *not* reading its own credential was never the shape of the fault.
+    const intruded = stateDirectory();
+    writeFileSync(join(intruded, DAEMON_STATE_FILE), JSON.stringify({ format_version: 1, port }));
+    writeFileSync(join(intruded, TOKEN_FILE), "a-token-that-daemon-never-minted\n");
 
-    const { stdout, exitCode } = await status(stateDir);
+    const { stdout, exitCode } = await status(intruded);
 
     expect(exitCode).toBe(4);
     expect(stdout).toContain("something is on that port that is not this daemon");
@@ -347,8 +352,11 @@ describe("xplainer status --json", () => {
 
   /** One HTTP status, two conditions, because the remedies have nothing in common. */
   it("tells a refused token apart from having no token to present", async () => {
+    const held = stateDirectory();
+    const { port } = await daemonOn(held);
+    // The same two-directory arrangement the prose case above uses, and for the same reason.
     const intruded = stateDirectory();
-    await daemonOn(intruded);
+    writeFileSync(join(intruded, DAEMON_STATE_FILE), JSON.stringify({ format_version: 1, port }));
     writeFileSync(join(intruded, TOKEN_FILE), "a-token-that-daemon-never-minted\n");
     const refused = await statusJson(intruded);
     expect(refused.report.condition).toBe("unauthorized");

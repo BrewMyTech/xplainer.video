@@ -1,0 +1,124 @@
+# The `[runner]` half of P2-5: R-SEC-9 on an address that is not loopback, on
+# machines this project's authors do not have.
+#
+# WHAT IT RUNS. `pnpm e2e:remote` — `scripts/e2e/remote.mjs` — which is one
+# command with two phases. Phase 1 spawns five `xplainer serve` commands, each
+# missing exactly one of ADR 0020 §Security R-SEC-9's requirements, **while the
+# script itself holds the port they were told to bind**: a `serve` that reaches
+# `listen()` exits `10` naming that port as already in use, so an exit `1`
+# carrying the refusal proves the precondition was decided before the bind
+# rather than after it — and a sixth command with every precondition supplied is
+# run onto the same held port and required to exit `10`, which is what proves the
+# trap was armed. Phase 2 binds a real TLS listener on the runner's own
+# private address and asks it four questions — unauthenticated is `401`, the
+# operator's token is `200`, a valid token with `Host: evil.com` is `403`, and
+# the loopback authorities are still admitted while the bound address itself is
+# not, because `--allow-host` is where that decision is made.
+#
+# WHY IT IS WORTH A RUNNER AT ALL, WHEN THE GATE IS `local` IN THE PLAN. The
+# assertions are the same everywhere; the **address** is not. This machine's
+# author runs it against a home LAN address on macOS. A hosted runner is a
+# different network stack, a different interface layout — `eth0` and `docker0` on
+# Linux, `en0` on macOS — and a different kernel's answer to "may this process
+# listen there". The gate picks the first non-internal IPv4 that accepts a
+# listener and **prints which one it chose**, so the job log records the address
+# the proof was actually made on rather than the one it hoped for.
+#
+# WHY WINDOWS IS NOT HERE, AND IT IS NOT BECAUSE IT WAS SKIPPED. The guard, the
+# five refusals and the TLS listener are portable code, asserted on all three
+# operating systems by `apps/cli`'s own suites. What is genuinely different on
+# Windows is the *filesystem* half of R-SEC-5 — the token file's ACL and the
+# named pipe's security descriptor, neither of which a `0600` mode expresses —
+# and that has its own two-account proof in `daemon-windows.yml`, which is T26's.
+# Adding a third leg here would run the same portable code on a third runner and
+# prove nothing the other two do not.
+#
+# THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
+# dispatched and has reported, the runner half of P2-5 is unproven, and no record
+# in this repository may say otherwise.** `workflow_dispatch` registers from the
+# repository's **default branch**, so this file has to reach `main` before the
+# API will accept a dispatch of it at all — GitHub's own rule, not a repository
+# setting — and `--ref` then chooses whose code runs. It has never been
+# dispatched.
+#
+#   gh workflow run daemon-remote.yml --ref "$(git branch --show-current)"
+#   gh run watch "$(gh run list --workflow daemon-remote.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# WHAT RAN LOCALLY INSTEAD, AND WHAT IT SAID. Both phases passed on macOS on
+# 2026-09-08, twice: once against the address the gate chose for itself
+# (`192.168.139.3`, a bridge interface) and once against this machine's own LAN
+# address (`XPLAINER_REMOTE_BIND=192.168.29.157`, `en0`). Forty-two assertions,
+# exit `0`, including "the same request without TLS is not answered at all" and
+# "Host: 192.168.29.157 — the address this daemon is bound to — is 403".
+#
+# WHY workflow_dispatch AND NOTHING ELSE. The rule every proof workflow here
+# follows, and this one has a second reason: it binds a listener on the runner's
+# real network address. That is a few seconds behind TLS, an operator token and a
+# `Host` allowlist, on a disposable VM — but it is not something to do on every
+# push.
+#
+# WHY NOTHING IS UPLOADED. The gate writes its whole transcript to stdout, so the
+# job log **is** the artefact — and that keeps this workflow clear of the
+# organisation-wide artifact-storage quota that has failed every upload step
+# since 2026-09-07.
+
+name: daemon remote
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remote:
+    name: R-SEC-9 on a non-loopback address (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A cold `turbo build`, five sub-second refusals and one daemon that answers
+    # nine requests. Everything past the build is seconds.
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The gate spawns `apps/cli/dist/bin.js`, and refuses a checkout that has
+      # none — so the build is a step of its own and a build failure is legible
+      # as one rather than as a refusal to start.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # Recorded before the gate runs, because the address it picks is the one
+      # fact about this job that is not in the repository: a reader of a red run
+      # needs to know what this runner's interfaces looked like.
+      - name: The addresses this runner has
+        shell: bash
+        run: |
+          set -uo pipefail
+          if command -v ip >/dev/null 2>&1; then
+            ip -brief address show || true
+          else
+            ifconfig || true
+          fi
+
+      # The one command P2-5 names. The transcript is also written to
+      # `.session/artifacts/e2e-remote.log`, which is not uploaded: the job log
+      # is the artefact.
+      - name: The refusals and the remote listener (P2-5)
+        run: pnpm e2e:remote

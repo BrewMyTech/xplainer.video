@@ -4,10 +4,12 @@
  * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §Security states them as
  * requirements rather than features, and this file is all four in one middleware:
  *
- * - **R-SEC-2 — `Host` allowlist, exact match, every TCP route.** The allowlist is exactly
- *   `{127.0.0.1:PORT, localhost:PORT, [::1]:PORT}` and it is built **after** bind, because
- *   `startServer()` only learns the real port in the listen callback and `--port 0` has to keep
- *   working. Mismatch → `403`. **Never a parser:** `http://2130706433:8787` and
+ * - **R-SEC-2 — `Host` allowlist, exact match, every TCP route.** The allowlist is
+ *   `{127.0.0.1:PORT, localhost:PORT, [::1]:PORT}` **plus one entry per `--allow-host` the
+ *   operator gave**, and it is built **after** bind, because `startServer()` only learns the real
+ *   port in the listen callback and `--port 0` has to keep working. Mismatch → `403`. Every entry
+ *   is spelled the same way — a name with the bound port appended — so the operator's hosts are
+ *   compared exactly as the loopback ones are. **Never a parser:** `http://2130706433:8787` and
  *   `http://0x7f000001:8787` both reach loopback and would pass a "does this look like 127.0.0.1"
  *   test, so the check is string equality against a list and nothing else. `Host` is the header
  *   that catches DNS rebinding, because script cannot set it and every HTTP/1.1 request carries it.
@@ -16,13 +18,21 @@
  *   ranked first and runs first here.
  * - **R-SEC-4 — a bearer token on every route, `/healthz` included**, compared with
  *   `crypto.timingSafeEqual` after a length check; failure → `401` with `WWW-Authenticate: Bearer`.
+ *   The accepted set is asked for per request rather than captured once, because R-SEC-8's rotation
+ *   gives the retired value a grace window and a daemon that stays installed has to honour it
+ *   without a restart (`daemon/token.ts` §createTokenRing).
  *   Authenticating `/healthz` is load-bearing twice: an unauthenticated `{status, version}` tells a
  *   web page which xplainer to attack, and a `401` against *our* token is what lets `status` say
  *   "something is on our port that is not our daemon".
  * - **R-SEC-9 — the guard is unconditional.** It does not weaken when the bind widens. That is the
  *   CVE-2026-65105 lesson written down: Ollama's `Host` validation was conditional on a loopback
- *   bind, so widening the bind silently disabled the whole defence. Here a widened bind *adds* its
- *   authority to the allowlist and removes nothing.
+ *   bind, so widening the bind silently disabled the whole defence. Here a widened bind *adds* the
+ *   operator's own hostnames to the allowlist and removes nothing — loopback stays on it, every
+ *   entry is still compared by string equality, and `Host: evil.com` is `403` on a daemon bound to
+ *   a LAN address exactly as it is on one bound to `127.0.0.1`. There is no branch on the bind
+ *   address anywhere in this file, which is the property that makes that true rather than a
+ *   promise: `daemon/tls.ts` decides what a remote bind *costs*, and this file never learns that
+ *   one happened.
  *
  * **R-SEC-10 — `Authorization` is redacted at the logger, not at call sites.** {@link redactAuthorization}
  * is the only thing that ever renders that header, and every rejection is logged with its reason and
@@ -53,8 +63,18 @@ export type GuardLog = (line: string) => void;
 
 /** What {@link createLoopbackGuard} needs. */
 export type LoopbackGuardOptions = {
-  /** The secret from `daemon/token.ts`. Compared, never logged. */
-  token: string;
+  /**
+   * The values accepted right now, newest first. Compared, never logged.
+   *
+   * A function rather than a string, and for the same class of reason {@link LoopbackGuardOptions.port}
+   * is one: the answer is not fixed for the life of the process. R-SEC-8's `xplainer token rotate`
+   * runs in another process against a daemon that stays installed, and for the length of its grace
+   * window **both** the new value and the retired one open this daemon — so what the guard holds is
+   * `daemon/token.ts`'s ring, which re-reads the two files when either changes. Each candidate is
+   * compared in constant time and the first match wins; an empty list refuses everything, which is
+   * the safe direction for a middleware whose absence means "no authentication".
+   */
+  tokens: () => readonly string[];
   /**
    * The bound port, read **per request**.
    *
@@ -65,17 +85,24 @@ export type LoopbackGuardOptions = {
    */
   port: () => number | null;
   /**
-   * Extra authorities to allow, for the deliberately widened bind of R-SEC-9.
+   * The operator's `--allow-host` values, which R-SEC-9 requires at least one of for a remote bind.
    *
-   * They are *added* to the loopback set. The guard never subtracts.
+   * They are *added* to the loopback set, and the guard never subtracts: the whole point of the
+   * CVE this rule comes from is that widening a bind must not take an authority off this list.
+   * Empty on the ordinary loopback daemon, which is every daemon that was not asked for otherwise.
    */
-  hostnames?: readonly string[];
+  allowHosts?: readonly string[];
   log?: GuardLog;
 };
 
-/** The authorities a `Host` header may carry for a listener bound on `port`. */
-export function loopbackAuthorities(port: number, extra: readonly string[] = []): string[] {
-  const hosts = [...LOOPBACK_HOSTS, ...extra];
+/**
+ * The authorities a `Host` header may carry for a listener bound on `port`.
+ *
+ * Loopback first, then the operator's, and both spelled `name:port` — one rule for the whole list,
+ * so that an operator's host is neither weaker nor stronger than `127.0.0.1` is here.
+ */
+export function loopbackAuthorities(port: number, allowHosts: readonly string[] = []): string[] {
+  const hosts = [...LOOPBACK_HOSTS, ...allowHosts];
   return hosts.map((host) => `${host}:${port}`);
 }
 
@@ -90,12 +117,30 @@ export function redactAuthorization(value: string | undefined): string {
 }
 
 /** Constant-time comparison that cannot be short-circuited by a length difference. */
-function tokenMatches(presented: string, expected: string): boolean {
+export function tokenMatches(presented: string, expected: string): boolean {
   const a = Buffer.from(presented, "utf8");
   const b = Buffer.from(expected, "utf8");
   // `timingSafeEqual` throws on differing lengths, so the length check has to come first; a length
   // difference is not a secret, and the value it leaks — how long the token is — is public.
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Whether any accepted value matches, each compared in constant time.
+ *
+ * Every candidate is compared — the loop does not stop at the first match — so the answer takes the
+ * same work whether the presented value is the live token, the one inside its grace window, or
+ * neither. A short-circuit here would make "which of the two did you send" measurable, which is a
+ * smaller leak than the token itself and still not one to introduce for the sake of one comparison.
+ */
+export function anyTokenMatches(presented: string, accepted: readonly string[]): boolean {
+  let matched = false;
+  for (const candidate of accepted) {
+    if (tokenMatches(presented, candidate)) {
+      matched = true;
+    }
+  }
+  return matched;
 }
 
 /** The token a request presents, or `null` when it presents none in the scheme we accept. */
@@ -119,7 +164,7 @@ export function createLoopbackGuard(options: LoopbackGuardOptions): MiddlewareHa
 
   return async function loopbackGuard(c, next) {
     const port = options.port();
-    const authorities = port === null ? [] : loopbackAuthorities(port, options.hostnames ?? []);
+    const authorities = port === null ? [] : loopbackAuthorities(port, options.allowHosts ?? []);
     const origins = allowedOrigins(authorities);
     const method = c.req.method;
     const path = new URL(c.req.url).pathname;
@@ -132,8 +177,8 @@ export function createLoopbackGuard(options: LoopbackGuardOptions): MiddlewareHa
           error: {
             code: "FORBIDDEN_HOST",
             message:
-              "This daemon serves loopback callers only, and answers to " +
-              `${authorities.join(", ")}. See ADR 0020 §Security R-SEC-2.`,
+              `This daemon answers to ${authorities.join(", ")} and to nothing else. ` +
+              "See ADR 0020 §Security R-SEC-2 and R-SEC-9.",
           },
         },
         403,
@@ -148,7 +193,7 @@ export function createLoopbackGuard(options: LoopbackGuardOptions): MiddlewareHa
           error: {
             code: "FORBIDDEN_ORIGIN",
             message:
-              `The Origin ${origin} is not a loopback origin of this daemon. ` +
+              `The Origin ${origin} is not an origin of this daemon. ` +
               "See ADR 0020 §Security R-SEC-3.",
           },
         },
@@ -158,7 +203,7 @@ export function createLoopbackGuard(options: LoopbackGuardOptions): MiddlewareHa
 
     const authorization = c.req.header("authorization");
     const presented = presentedToken(authorization);
-    if (presented === null || !tokenMatches(presented, options.token)) {
+    if (presented === null || !anyTokenMatches(presented, options.tokens())) {
       log(`401 bearer token rejected: ${redactAuthorization(authorization)} (${method} ${path})`);
       c.header("WWW-Authenticate", BEARER_CHALLENGE);
       return c.json(

@@ -30,6 +30,7 @@
     "e2e:toolchain": "node scripts/e2e/toolchain.mjs",
     "e2e:update": "node scripts/e2e/update.mjs",
     "e2e:identity": "node scripts/e2e/identity.mjs",
+    "e2e:remote": "node scripts/e2e/remote.mjs",
     "e2e:render:linux": "node scripts/e2e/linux.mjs",
     "e2e:macos": "node scripts/e2e/render.mjs"
   },

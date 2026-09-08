@@ -30,6 +30,7 @@ import {
   prepareIpcSocket,
   resolveIpcPath,
   resolveIpcSocket,
+  secureIpcEndpoint,
   WINDOWS_PIPE_PREFIX,
 } from "./ipc.js";
 import { STATE_DIR_MODE } from "./state-dir.js";
@@ -283,5 +284,27 @@ describe("preparing the socket directory", () => {
     // Refused before anything was created: a directory left behind by a refusal is a directory the
     // next attempt has to reason about.
     expect(existsSync(join(deep, IPC_DIR))).toBe(false);
+  });
+});
+
+/**
+ * Which of the two protections each transport gets, decided by the path rather than by a flag.
+ *
+ * The `0700` directory is the unix socket's authentication and there is nothing to add to it; the
+ * named pipe has no directory and is born readable by every local account, so it is the one that
+ * gets an explicit descriptor (`daemon/pipe-acl.ts`). Asking the question by path is what keeps
+ * `--socket` from being able to choose the wrong answer.
+ */
+describe("secureIpcEndpoint", () => {
+  it("has nothing to add to a socket inside a 0700 directory", () => {
+    expect(secureIpcEndpoint("/tmp/xplainer/ipc/xplainer.sock", "win32")).toEqual({
+      outcome: "not-applicable",
+    });
+  });
+
+  it("sends a named pipe to the descriptor narrowing, which is a no-op off Windows", () => {
+    expect(secureIpcEndpoint(`${WINDOWS_PIPE_PREFIX}xplainer-abc`, "darwin")).toEqual({
+      outcome: "not-applicable",
+    });
   });
 });

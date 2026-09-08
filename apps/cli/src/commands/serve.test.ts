@@ -20,6 +20,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -31,13 +32,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { request } from "node:http";
+import { request as secureRequest } from "node:https";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
+import { checkServerIdentity } from "node:tls";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { REMOTE_EXPOSURE_FLAG } from "../daemon/binding.js";
+import { readDaemonState, readRuntimeState } from "../daemon/daemon-state.js";
 import { IPC_DIR, IPC_SOCKET_FILE, isNamedPipe, resolveIpcPath } from "../daemon/ipc.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { parseReadyLine, type ReadyAnnouncement, waitForReadyLine } from "../daemon/ready.js";
@@ -45,10 +49,12 @@ import { DEFAULT_DRAIN_TIMEOUT_MS } from "../daemon/runner.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDirLayout } from "../daemon/state-dir.js";
 import {
   endpointGone,
+  lanAddress,
   ownerOnly,
   protectionOf,
   testIpcEndpoint,
 } from "../daemon/testing/platform.js";
+import { writeSelfSignedCertificate } from "../daemon/testing/self-signed.js";
 import {
   CHILD_SERVE,
   CHILD_SERVE_JOB,
@@ -56,9 +62,11 @@ import {
   spawnEntry,
   untilGone,
 } from "../daemon/testing/spawn-child.js";
+import { ALLOW_HOST_FLAG, TLS_CERT_FLAG, TLS_KEY_FLAG } from "../daemon/tls.js";
 import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
 import type { CliIo } from "../io.js";
+import { createProgram } from "../program.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { DRAIN_PATH } from "../server.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
@@ -67,6 +75,28 @@ import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
 const SHUTDOWN_BUDGET_MS = 25_000;
+
+/**
+ * `xplainer token rotate <argv…>` through the real program, in this process.
+ *
+ * The *daemon* is the spawned child and this is the operator's other terminal, which is the shape
+ * the rotation actually has: two processes and one pair of files between them.
+ *
+ * @returns the exit code the command asked for, or `undefined` when it asked for none.
+ */
+async function rotate(argv: readonly string[]): Promise<number | undefined> {
+  let requested: number | undefined;
+  const io: CliIo = {
+    writeOut(): void {},
+    writeErr(): void {},
+    exit(code): never {
+      requested = code;
+      throw new Error(`xplainer token rotate exited ${String(code)}`);
+    },
+  };
+  await createProgram(io).parseAsync(["token", "rotate", ...argv], { from: "user" });
+  return requested;
+}
 
 const scratch: string[] = [];
 const children: ChildProcess[] = [];
@@ -193,6 +223,52 @@ function postDrain(socketPath: string): Promise<{ status: number; body: string }
   });
 }
 
+/**
+ * One `GET /healthz` over TLS, with exactly the headers given and the certificate pinned.
+ *
+ * Two options are set explicitly and neither is decoration. **`servername`**, because Node derives
+ * SNI from the `Host` header when none is given, so `Host: evil.com` would fail the certificate
+ * check before the guard ever saw it and would prove the wrong thing entirely; it is a DNS name in
+ * the certificate rather than the address, since Node deprecates an IP there (RFC 6066).
+ * **`checkServerIdentity`**, so the name verified is the address this request actually dialled and
+ * not whichever one SNI carried. `rejectUnauthorized` stays on — `ca` is the daemon's own
+ * certificate — so this is a real handshake against a real chain, not an encrypted socket nobody
+ * checked.
+ */
+function getHealthzOverTls(
+  target: { host: string; port: number; ca: string; servername: string },
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const call = secureRequest(
+      {
+        host: target.host,
+        port: target.port,
+        path: "/healthz",
+        method: "GET",
+        headers,
+        ca: target.ca,
+        servername: target.servername,
+        checkServerIdentity: (_presented, certificate) =>
+          checkServerIdentity(target.host, certificate),
+        agent: false,
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    call.once("error", reject);
+    call.end();
+  });
+}
+
 afterEach(() => {
   for (const child of children.splice(0)) {
     child.kill("SIGKILL");
@@ -289,6 +365,47 @@ describe("the bearer token a daemon mints on its first start", () => {
     expect(exit.code).toBe(12);
     expect(child.stderr()).toContain("refusing to serve unauthenticated");
     expect(child.stdout()).toBe("");
+  }, 30_000);
+
+  /**
+   * R-SEC-8's rotation against a daemon that is **running**, which is the only place it can be
+   * proved: the guard holds no string, so the value written by another process reaches this daemon
+   * without a restart, and both values open it until the window closes.
+   *
+   * The rotation goes through the real `xplainer token rotate` — this process's program, the
+   * daemon's is the spawned child — because a test that wrote the two files itself would prove the
+   * ring and not the command.
+   */
+  it("accepts a rotated token, and the retired one, without restarting", async () => {
+    const stateDir = stateDirectory();
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir);
+    const authorised = (value: string): Record<string, string> => ({
+      host: `127.0.0.1:${ready.port}`,
+      authorization: `Bearer ${value}`,
+    });
+
+    expect((await getHealthz({ port: ready.port }, authorised(token))).status).toBe(200);
+
+    expect(await rotate(["--state-dir", stateDir, "--grace", "600"])).toBeUndefined();
+    const rotated = readFileSync(join(stateDir, TOKEN_FILE), "utf8").trim();
+    expect(rotated).not.toBe(token);
+
+    // The new value, on a daemon that has been up since before the file changed.
+    expect((await getHealthz({ port: ready.port }, authorised(rotated))).status).toBe(200);
+    // And the retired one, which is the whole of what the window buys: an agent holding the old
+    // value in its environment keeps working until somebody restarts it.
+    expect((await getHealthz({ port: ready.port }, authorised(token))).status).toBe(200);
+
+    const record = readDaemonState(stateDir).token_rotation;
+    expect(record?.previous_token_file).toBe(`${join(stateDir, TOKEN_FILE)}.previous`);
+
+    // Closing the window is the same command with no window, and it takes effect on the next
+    // request rather than on the next start.
+    expect(await rotate(["--state-dir", stateDir, "--grace", "0"])).toBeUndefined();
+    const third = readFileSync(join(stateDir, TOKEN_FILE), "utf8").trim();
+    expect((await getHealthz({ port: ready.port }, authorised(token))).status).toBe(401);
+    expect((await getHealthz({ port: ready.port }, authorised(rotated))).status).toBe(401);
+    expect((await getHealthz({ port: ready.port }, authorised(third))).status).toBe(200);
   }, 30_000);
 });
 
@@ -446,6 +563,211 @@ describe("the bind refusals", () => {
     },
     30_000,
   );
+});
+
+/**
+ * ADR 0020 §Security R-SEC-9, as a process a supervisor could really start.
+ *
+ * The refusals are asserted where they matter — **before anything is bound**, and for the four that
+ * argv alone decides, before the state directory is even taken — because a daemon that discovered a
+ * missing certificate after binding would already have been reachable, unencrypted, on the address
+ * the operator was trying to protect. `192.0.2.10` is RFC 5737 TEST-NET-1 and is never bound by any
+ * of these: the refusal happens first, which is the property, so the address only has to be
+ * non-loopback and not a machine anybody has.
+ *
+ * The last case is the one the CVE is about, and it needs a real listener on a real non-loopback
+ * address ({@link lanAddress}), a real certificate ({@link writeSelfSignedCertificate}) and a real
+ * TLS handshake. `node:https` rather than `fetch` for the same reason the rest of this file uses
+ * `node:http`: `fetch` writes the `Host` header itself, and `Host` is the whole subject.
+ */
+describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () => {
+  it.each([
+    ["::", ["--bind", "::"], "binds every interface"],
+    [":: even when acknowledged", ["--bind", "::", REMOTE_EXPOSURE_FLAG], "refused"],
+    [
+      "a remote bind with the acknowledgement and nothing else",
+      ["--bind", "192.0.2.10", REMOTE_EXPOSURE_FLAG],
+      TLS_CERT_FLAG,
+    ],
+    [
+      "a remote bind with half a TLS pair",
+      ["--bind", "192.0.2.10", REMOTE_EXPOSURE_FLAG, TLS_CERT_FLAG, "/nowhere/tls.crt"],
+      TLS_KEY_FLAG,
+    ],
+    [
+      "a remote bind with TLS and no operator allowlist",
+      [
+        "--bind",
+        "192.0.2.10",
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        "/nowhere/tls.crt",
+        TLS_KEY_FLAG,
+        "/nowhere/tls.key",
+      ],
+      ALLOW_HOST_FLAG,
+    ],
+    [
+      "TLS on a loopback bind, which would break every local caller",
+      [TLS_CERT_FLAG, "/nowhere/tls.crt", TLS_KEY_FLAG, "/nowhere/tls.key"],
+      "xplainer status",
+    ],
+  ])(
+    "refuses %s before it takes the state directory",
+    async (_case, args, expected) => {
+      const stateDir = stateDirectory();
+
+      const child = run(CHILD_SERVE, [...args, "--port", "0"], { XPLAINER_STATE_DIR: stateDir });
+      const exit = await child.waitForExit();
+
+      expect(exit.code).toBe(1);
+      expect(child.stderr()).toContain(expected);
+      expect(child.stdout()).toBe("");
+      expect(readdirSync(stateDir)).toEqual([]);
+    },
+    30_000,
+  );
+
+  it("refuses a certificate that is not there, still before ownership", async () => {
+    const stateDir = stateDirectory();
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        "192.0.2.10",
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        join(stateDir, "absent.crt"),
+        TLS_KEY_FLAG,
+        join(stateDir, "absent.key"),
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const exit = await child.waitForExit();
+
+    expect(exit.code).toBe(1);
+    expect(child.stderr()).toContain("could not read the TLS certificate");
+    expect(child.stderr()).toContain("Nothing has been bound.");
+    expect(readdirSync(stateDir)).toEqual([]);
+  }, 30_000);
+
+  /**
+   * The fifth precondition is the only one that needs the state directory, so this refusal happens
+   * *after* ownership — and gives it back. What makes it decidable is `daemon.json`'s
+   * `token_origin`, and the record left behind says `minted` because that is what this start did.
+   */
+  it("refuses the token it minted for itself, and binds nothing", async () => {
+    const stateDir = stateDirectory();
+    const certificate = writeSelfSignedCertificate(stateDir, { names: ["192.0.2.10"] });
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        "192.0.2.10",
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        certificate.certPath,
+        TLS_KEY_FLAG,
+        certificate.keyPath,
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const exit = await child.waitForExit();
+
+    expect(exit.code).toBe(1);
+    expect(child.stderr()).toContain("is the one this daemon minted for itself");
+    expect(child.stdout()).toBe("");
+    expect(readDaemonState(stateDir).token_origin).toBe("minted");
+    // Nothing was bound, and the state directory was given back: `runtime.json` is written by
+    // `markReady()` and `owner.lock` by the acquisition this refusal released.
+    expect(readRuntimeState(stateDir)).toBeNull();
+    expect(existsSync(stateDirLayout(stateDir).lock)).toBe(false);
+  }, 30_000);
+
+  it("serves TLS to an operator's allowlist, and still answers 403 to Host: evil.com", async () => {
+    const stateDir = stateDirectory();
+    const address = lanAddress();
+    const certificate = writeSelfSignedCertificate(stateDir, {
+      names: [address, "daemon.internal"],
+    });
+    // The operator's token, written before this daemon ever runs: a file `serve` finds rather
+    // than makes is what `resolveTokenOrigin()` calls the operator's, and it is the only kind
+    // R-SEC-9 lets guard a remote listener.
+    const token = randomBytes(32).toString("base64url");
+    writeFileSync(join(stateDir, TOKEN_FILE), `${token}\n`, { mode: 0o600 });
+    recordTestToolchain({ stateDir, workspaceRoot: join(stateDir, WORKSPACE_DIR_NAME) });
+
+    const child = run(
+      CHILD_SERVE,
+      [
+        "--port",
+        "0",
+        "--bind",
+        address,
+        REMOTE_EXPOSURE_FLAG,
+        TLS_CERT_FLAG,
+        certificate.certPath,
+        TLS_KEY_FLAG,
+        certificate.keyPath,
+        ALLOW_HOST_FLAG,
+        address,
+        ALLOW_HOST_FLAG,
+        "daemon.internal",
+      ],
+      { XPLAINER_STATE_DIR: stateDir },
+    );
+    const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
+    const target = {
+      host: address,
+      port: ready.port,
+      ca: certificate.cert,
+      servername: "daemon.internal",
+    };
+    const authorized = { authorization: `Bearer ${token}` };
+
+    // The certificate is verified rather than waved through: `ca` is the one this daemon was
+    // given, and the connection is to the address its subjectAltName names.
+    expect(
+      (await getHealthzOverTls(target, { ...authorized, host: `${address}:${ready.port}` })).status,
+    ).toBe(200);
+    expect(
+      (await getHealthzOverTls(target, { ...authorized, host: `daemon.internal:${ready.port}` }))
+        .status,
+    ).toBe(200);
+    // Loopback is still on the list. Widening a bind adds authority and removes none — which is
+    // the sentence CVE-2026-65105 is the counterexample to.
+    expect(
+      (await getHealthzOverTls(target, { ...authorized, host: `127.0.0.1:${ready.port}` })).status,
+    ).toBe(200);
+
+    const impostor = await getHealthzOverTls(target, {
+      ...authorized,
+      host: `evil.com:${ready.port}`,
+    });
+    expect(impostor.status).toBe(403);
+    expect(impostor.body).toContain("FORBIDDEN_HOST");
+
+    // The token is still asked for, on the widened bind, on `/healthz`.
+    const unauthenticated = await getHealthzOverTls(target, { host: `${address}:${ready.port}` });
+    expect(unauthenticated.status).toBe(401);
+
+    expect(child.stderr()).toContain(`bound ${address}, which is not loopback, over TLS from`);
+    expect(child.stderr()).toContain(certificate.certPath);
+    const state = readDaemonState(stateDir);
+    expect(state.token_origin).toBe("operator");
+    expect(state.port).toBe(ready.port);
+    expect(readRuntimeState(stateDir)?.addresses).toEqual([`https://${address}:${ready.port}`]);
+  }, 40_000);
 });
 
 describe("a port that is already taken", () => {

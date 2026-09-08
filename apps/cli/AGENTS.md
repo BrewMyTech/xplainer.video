@@ -44,10 +44,13 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `daemon-state.ts` | `daemon.json` and `runtime.json`, the breaker over each run's own recorded outcome, and the installer's own fields |
 | `start.ts` | The ordering: ownership → reconciliation → the runner, handed to `commands/serve.ts` to bind |
 | `workers.ts` | The registry `start.ts` registers: one `WorkerSpec` per job kind, and the last gate before Chrome |
-| `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600` |
+| `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600`, whose token it is, R-SEC-8's rotation and the ring the guard asks |
+| `windows-acl.ts` | The `icacls` entry a Windows file gets at creation, and the query `daemon status` re-verifies it with |
+| `pipe-acl.ts` | The security descriptor the Windows named pipe gets after its bind, granting the creating account and nobody else |
 | `guard.ts` | The four layers every TCP request passes: `Host`, `Origin`, the token, the redacted log |
 | `ipc.ts` | The socket path and `--socket`, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
 | `binding.ts` | Which addresses `--bind` may take, and the port precedence — two pure functions, no I/O |
+| `tls.ts` | R-SEC-9's other three preconditions: the operator's certificate pair, the `--allow-host` allowlist, and a token this daemon did not mint |
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
 | `exit-codes.ts` | The start-up codes, quoting the table in `docs/ARCHITECTURE.md` §6 |
@@ -60,12 +63,18 @@ Windows, or `XPLAINER_STATE_DIR` — holds:
 ```
 owner.lock          the ownership artefact: pid, start token, boot id, nonce (0600)
 token               DURABLE. 32 random bytes, base64url, 0600 — or wherever XPLAINER_TOKEN_FILE says
+token.previous      DURABLE while a rotation's grace window is open: the retired value and the
+                    instant it stops being accepted, at the same 0600 and behind the same Windows
+                    entry. Written by `xplainer token rotate`, ignored once expired, removed by the
+                    next start, by the next rotation and by `daemon uninstall`
 toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versions, resolved paths,
                     sha256 and provider, and the workspace payload's platform and version. A
                     checked contract (`packages/protocol/schemas/toolchain.json`), because `setup`
                     writes it and the install preflight and `daemon update` both read it
-daemon.json         DURABLE. serve writes port, contract_version, token_file, socket_path,
-                    directory_flush, recentStarts[], stalled; install writes supervisor_kind,
+daemon.json         DURABLE. serve writes port, contract_version, token_file, token_origin,
+                    socket_path, directory_flush, recentStarts[], stalled; `token rotate` writes
+                    token_rotation (two timestamps and a path, never a value); install writes
+                    supervisor_kind,
                     supervisor_artefact, runtime_dir, launch_spec, program_source,
                     linger_enabled_by_us, launchd_enable_record_created, log_sink,
                     installed_version
@@ -465,6 +474,13 @@ SETTINGS=$(mktemp -d)
 node apps/cli/dist/bin.js serve --port 0 \
   --state-dir "$SETTINGS" --token-file "$SETTINGS/token" --socket "$SETTINGS/run/x.sock"
 
+# R-SEC-8's rotation, against the daemon started above and without stopping it: the new value and
+# the retired one both open it until the window closes. No value is printed — the token stays in
+# the file R-SEC-6 puts it in — so the way to see it is to read that file.
+node apps/cli/dist/bin.js token rotate --grace 600
+curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
+node apps/cli/dist/bin.js token rotate --grace 0   # the answer to a leak: no window, no grace file
+
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
 
 # What `connect` would write, into a throwaway HOME rather than your own agent configuration.
@@ -536,15 +552,17 @@ Then the root procedure: `pnpm verify`.
   the browser's own credentials attached. `api/routes.test.ts` asserts that no answer, allowed or
   refused, on either listener, carries an `access-control-*` header.
 - **The command surface is asserted with `toEqual`, never widened to `toContain`** (`AC-14b`). The
-  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, and it only holds
-  because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
+  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`, and
+  it only holds because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
   second adds the installed supervisor — whether it is switched off, what it loaded, and whether
   the daemon is boot-persistent — which is why it has a condition set of its own. `connect` and
   `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the nine
   lifecycle verbs, `update` and `recover` among them — for the same reason and with the same
-  implicit `help [command]` disabled.
+  implicit `help [command]` disabled. So do `runtime` (`build`, `verify`) and `token`, whose one
+  verb is `rotate`: ADR 0020 §Security R-SEC-8 names that and nothing else, and a second verb under
+  that group would be a second way to touch the credential.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
   note ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive
   ownership). Reconciliation *rewrites other processes' records*, so a second `serve` has to be
@@ -606,12 +624,15 @@ Then the root procedure: `pnpm verify`.
   by nothing else. The state directory *above* it is left exactly as found — ADR 0020 and
   `state-dir.ts` own that one, and `ipc/` is the last directory on the path to the socket, so
   narrowing it is sufficient. Windows gets a named pipe named after a digest
-  of the state directory, which has no mode, no directory and nothing to unlink. Half of ADR 0020
-  §Security R-SEC-5's Windows gap is now closed and half is not, and the split is worth knowing:
-  the **token** gets the explicit ACL that record asks for (`daemon/windows-acl.ts`, applied at the
-  mint), and the **pipe** does not, because `net.Server.listen({ path })` offers no way to pass a
-  security descriptor and this package ships no native addon. What the pipe has instead is a name
-  no other state directory produces.
+  of the state directory, which has no mode, no directory and nothing to unlink — and a **security
+  descriptor of its own**, because a digest is not an access check. `net.Server.listen({ path })`
+  takes no descriptor (`readableAll`/`writableAll` only *widen* one) and this package ships no
+  native addon, so the pipe is born with the default Microsoft documents as granting "read access
+  to members of the Everyone group and the anonymous account" and `daemon/pipe-acl.ts` replaces it
+  immediately after the bind: one protected entry, `FullControl` — which is what leaves libuv the
+  `FILE_CREATE_PIPE_INSTANCE` it needs for the next accepted connection — for this token's own
+  `User` SID. The descriptor belongs to the *pipe* rather than to one instance, which is what makes
+  narrowing it once enough. Reported, never fatal, exactly as the token's entry is.
 - **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
   store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
   takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
@@ -718,10 +739,11 @@ Then the root procedure: `pnpm verify`.
   carries none — filesystem permissions are that transport's authentication — and
   `services/media-service` carries its own at phase 3. Three rules inside it are not negotiable
   (ADR 0020 §Security): the `Host` allowlist is **exact string equality** against
-  `{127.0.0.1, localhost, [::1]}:PORT` and never a parser, because `http://2130706433:8787` reaches
-  loopback too; a widened bind **adds** its authority and removes nothing, because a validation that
-  weakens when the bind widens is exactly CVE-2026-65105; and `/healthz` needs the token like
-  everything else. `Authorization` is redacted at the logger (`redactAuthorization`), request bodies
+  `{127.0.0.1, localhost, [::1]}:PORT` **plus one entry per `--allow-host`**, and never a parser,
+  because `http://2130706433:8787` reaches loopback too; the operator's hostnames are **added** and
+  nothing is removed, because a validation that weakens when the bind widens is exactly
+  CVE-2026-65105; and `/healthz` needs the token like everything else. There is no branch on the
+  bind address in `guard.ts` at all, which is what makes that a property rather than a promise. `Authorization` is redacted at the logger (`redactAuthorization`), request bodies
   are never logged at all, and every rejection *is* logged with its reason and the offending value.
   The allowlist is built **after** bind, from the port the OS gave us, which is why `startServer()`
   takes a `GuardFactory` and `--port 0` keeps working.
@@ -771,6 +793,17 @@ Then the root procedure: `pnpm verify`.
   no secret. The two refusals that happen before a report exists — a state file that cannot be read
   (`11`) and a `--url` that is not an endpoint (`1`) — write a sentence to stderr and nothing to
   stdout, so a caller tells them apart by exit code rather than by parsing an error object.
+- **A non-loopback bind costs all five of R-SEC-9's preconditions, and four of them are refused
+  before the state directory is taken.** An explicit `--bind`, `--i-understand-remote-exposure`,
+  `--tls-cert` **and** `--tls-key`, at least one `--allow-host`, and a bearer token this daemon did
+  not mint — which `daemon.json`'s `token_origin` is what makes decidable, because 32 random bytes
+  an operator wrote and 32 the mint generated are the same value. `0.0.0.0`, `::`, `[::]` and `*`
+  are refused outright, acknowledgement or not. Everything argv decides is decided before ownership
+  and the token's provenance before the bind, so every refusal leaves the machine as it found it,
+  and the message names **every** missing precondition at once rather than one per run.
+  `daemon/tls.ts` never generates a certificate: the operator supplies the pair, and TLS on a
+  *loopback* bind is refused because `status`, `daemon restart` and the desktop all reach a local
+  daemon over `http`.
 - **The bearer token travels as a path, never as a value** (R-SEC-6): `XPLAINER_TOKEN_FILE` names a
   file, `/proc/<pid>/cmdline` is world-readable and `systemctl --user show` prints `Environment=`.
   `daemon/token.ts` is the only reader of that file; the guard is handed a string. And it is not a
@@ -782,8 +815,22 @@ Then the root procedure: `pnpm verify`.
   `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"`, in `daemon/windows-acl.ts` — and `serve`
   names in one line which of the two protections this platform got. A failure to apply it is
   **reported, never fatal**: a daemon that refused to start over a missing `icacls` would trade a
-  weaker file for no service at all. What is still not built is R-SEC-5's other half, `daemon
-  status` re-verifying the entry and warning when inheritance has been restored underneath it.
+  weaker file for no service at all. R-SEC-5's other half is `daemon status`: it re-reads the entry
+  with a plain `icacls <path>` **query** and prints `WARNING —` when a second principal is on the
+  file or an `(I)` flag says inheritance has been restored, naming both what it found and the
+  command that narrows it again.
+- **The guard is handed a function, so a rotation reaches a daemon that is already running.**
+  ADR 0020 §Security R-SEC-8's `xplainer token rotate` writes a new value and keeps the old one in
+  `<token>.previous` for a grace window — five minutes by default, a day at most, `0` for a leak —
+  and `daemon/token.ts`'s ring re-reads both files whenever either changes, so **both** values open
+  the daemon until the window closes and neither a restart nor a control route is involved. Two
+  consequences to keep straight. The daemon **follows its own token file**, so a test that
+  simulates an intruder by overwriting it is simulating the wrong thing: what "something is on our
+  port that is not our daemon" looks like is a *second* state directory recording that port. And
+  `daemon uninstall` still **deletes** rather than rotates — and deletes the grace file too, because
+  a rotation leaves two working credentials and taking one of them leaves behind exactly the live
+  token P2-9 forbids. No value is ever printed by the command or written to `daemon.json`; what the
+  record carries is two instants and a path.
 - **`SIGTERM` is six steps and ends in exit `0`** ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md)
   §Drain on planned restart): stop accepting, give the running job **20 s**, `SIGTERM` then
   `SIGKILL` its whole process group, mark anything still `running` *or* `queued` as `error` with
@@ -825,7 +872,10 @@ Then the root procedure: `pnpm verify`.
 
 **A command:** add the module under `src/commands/` (one concept per file, kebab-case), register it
 in `src/program.ts`, and — until it does something — register it as a stub that names itself and
-exits `NOT_IMPLEMENTED_EXIT_CODE`. Update the `toEqual` surface assertion in the same commit.
+exits `NOT_IMPLEMENTED_EXIT_CODE`. Update the `toEqual` surface assertion in the same commit. A
+**group** carries its own `configureOutput()` and `exitOverride()` on the group *and* on every verb:
+commander's `addCommand()` copies neither, so a group that configures only itself leaves its verbs
+writing to the process streams and calling the real `process.exit`.
 
 **A route:** add it in `src/server.ts` and test it against a started server, not against the app
 object alone. Both listeners get it: the guard is mounted before every route, so a route that must

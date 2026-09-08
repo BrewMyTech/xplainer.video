@@ -4,9 +4,9 @@
  * Every assertion below runs a real `xplainer` — through a real payload layout, spawned the way
  * decision D10 spawns it — against a state directory this test put into the state it is about.
  * Nothing is mocked and nothing is stubbed: `ready` is a daemon whose toolchain marker the CLI's
- * own fixture writer wrote, `unauthorized` is a token file whose value the running daemon no longer
- * accepts, `occupied` is a second process holding the recorded port, and `disabled` is a supervisor
- * that answers the documented query with "switched off".
+ * own fixture writer wrote, `unauthorized` is a second state directory recording a port a daemon
+ * that is not its own holds, `occupied` is a second process holding the recorded port, and
+ * `disabled` is a supervisor that answers the documented query with "switched off".
  *
  * The waits are long because the arrangements are real: a daemon start, a `/healthz` probe that
  * times out when nothing is there, and a supervisor query are all seconds rather than milliseconds.
@@ -224,14 +224,22 @@ describe("discover", () => {
       const resources = payloadResources();
       const stateDir = temporaryDirectory();
       const live = await startDaemon({ resources, stateDir });
-      // The daemon read its token at start and holds it; the file now says something else, which is
-      // exactly what "something is on our port that is not our daemon" looks like from outside.
-      writeFileSync(live.tokenFile, `${"b".repeat(43)}\n`, { mode: 0o600 });
+      // Two state directories, which is what this outcome actually describes: a daemon holds the
+      // port, and *this* record's token is not its token. Overwriting the running daemon's own
+      // token file no longer produces it — the daemon follows that file so that it can pick up an
+      // `xplainer token rotate` without a restart (ADR 0020 §Security R-SEC-8) — and a simulation
+      // that leans on the daemon *not* reading its own credential was never the shape of the fault.
+      const intruded = temporaryDirectory();
+      writeFileSync(
+        join(intruded, "daemon.json"),
+        `${JSON.stringify({ format_version: 1, port: live.port }, null, 2)}\n`,
+      );
+      writeFileSync(join(intruded, "token"), `${"b".repeat(43)}\n`, { mode: 0o600 });
 
       const discovery = await discover({
         resourcesPath: resources,
-        stateDir,
-        env: environmentFor(stateDir),
+        stateDir: intruded,
+        env: environmentFor(intruded),
       });
 
       expect(discovery.outcome).toBe("unauthorized");

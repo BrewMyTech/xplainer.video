@@ -754,6 +754,12 @@ export function describeStatus(report: DaemonStatusReport, update: UpdateStatus)
   }
   lines.push(
     `toolchain:       ${report.toolchain.detail}`,
+    // R-SEC-5's second half, and it is a *warning* when it fires: the token file is what the guard
+    // rests on, and an entry that has been widened underneath a running daemon changes nothing that
+    // any other line here would show.
+    `token file:      ${report.token_acl.state === "widened" ? "WARNING — " : ""}${
+      report.token_acl.detail
+    }`,
     `boot-persistent: ${
       report.boot_persistence.persistent === null
         ? "n/a"

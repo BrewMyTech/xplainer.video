@@ -176,6 +176,41 @@ export const PROGRAM_SOURCES: readonly ProgramSource[] = [
 ];
 
 /**
+ * Where the bearer token in {@link DaemonState.token_file} came from.
+ *
+ * This is the field ADR 0020 §Security R-SEC-9's "a non-default token" is decided against, and it
+ * exists because the *value* cannot answer the question: 32 random bytes an operator wrote and 32
+ * random bytes `daemon/token.ts` minted are indistinguishable, so provenance has to be recorded at
+ * the moment it is known rather than inferred later from the secret.
+ *
+ * `minted` is the daemon's own default — the value `loadOrMintToken()` generated so that the guard
+ * could be non-optional on a machine where nothing else had arranged one. `operator` is a token
+ * this daemon found rather than made, which is the only kind a non-loopback bind is allowed to be
+ * authenticated with.
+ */
+export type TokenOrigin = "minted" | "operator";
+
+/** Every {@link TokenOrigin}, for a caller validating one it read off disk. */
+export const TOKEN_ORIGINS: readonly TokenOrigin[] = ["minted", "operator"];
+
+/**
+ * What one `xplainer token rotate` left behind, as `daemon.json` records it.
+ *
+ * ADR 0020 §Security R-SEC-8 asks for "a new token with a grace window for the old one", and a
+ * window is only honest if somebody can see when it closes. Every field here is a timestamp or a
+ * path — the retired value lives in the file `previous_token_file` names, at the same `0600` and
+ * behind the same Windows entry as the token itself.
+ */
+export type TokenRotation = {
+  /** ISO 8601, when the rotation happened. */
+  rotated_at: string;
+  /** ISO 8601, when the retired value stops being accepted. Equal to `rotated_at` for `--grace 0`. */
+  grace_until: string;
+  /** Where the retired value is waiting, or `null` for a rotation that kept none. */
+  previous_token_file: string | null;
+};
+
+/**
  * The launch contract `install` rendered into the supervisor artefact, exactly as it was written.
  *
  * It is `LaunchSpec` itself rather than a second declaration of the same four fields, so a field
@@ -211,6 +246,24 @@ export type DaemonState = {
    * actually bound rather than what an installer intended.
    */
   socket_path: string | null;
+  /**
+   * Whether the token in {@link DaemonState.token_file} is this daemon's own mint or the operator's.
+   *
+   * Written by `serve` on every start, from {@link TokenOrigin} and the file it actually read, so
+   * that R-SEC-9's "a non-default token" is a fact on disk rather than a guess about a secret.
+   * `null` is a state directory no release that records this has served yet.
+   */
+  token_origin: TokenOrigin | null;
+  /**
+   * The last `xplainer token rotate`, or `null` where none has run in this directory.
+   *
+   * Three timestamps and a **path**, and no value: R-SEC-6 keeps the secret out of every file but
+   * the token's own, and a grace record in `daemon.json` would put a live credential in the one
+   * document `status --json` prints. What this is for is the question a person asks after rotating
+   * — is the old token still open, and until when — which `daemon status` answers from here without
+   * reading either secret.
+   */
+  token_rotation: TokenRotation | null;
   /** What a directory flush did on this platform, recorded once rather than thrown. */
   directory_flush: string | null;
   /** Which supervisor `install` registered the daemon with, or `null` on a machine with none. */
@@ -412,6 +465,30 @@ function asLaunchSpec(value: unknown): RecordedLaunchSpec | null {
   return { executable, argv, settings: { stateDir, tokenFile, socket }, cwd };
 }
 
+/**
+ * The rotation record, or `null` for anything that is not one.
+ *
+ * Parsed rather than cast for the reason {@link asLaunchSpec} is: `daemon.json` is a file a person
+ * can edit, and a half-written record read back as a rotation would have `daemon status` reporting
+ * a grace window that nothing is honouring.
+ */
+function asTokenRotation(value: unknown): TokenRotation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const rotatedAt = candidate.rotated_at;
+  const graceUntil = candidate.grace_until;
+  if (typeof rotatedAt !== "string" || typeof graceUntil !== "string") {
+    return null;
+  }
+  return {
+    rotated_at: rotatedAt,
+    grace_until: graceUntil,
+    previous_token_file: asNullableString(candidate.previous_token_file),
+  };
+}
+
 /** Read `daemon.json`, filling in the defaults of a directory that has never held one. */
 export function readDaemonState(stateDir: string): DaemonState {
   const raw = readObject(stateDirLayout(stateDir).daemonState);
@@ -422,6 +499,8 @@ export function readDaemonState(stateDir: string): DaemonState {
     contract_version: asNullableString(raw.contract_version),
     token_file: asNullableString(raw.token_file),
     socket_path: asNullableString(raw.socket_path),
+    token_origin: asMember(raw.token_origin, TOKEN_ORIGINS),
+    token_rotation: asTokenRotation(raw.token_rotation),
     directory_flush: asNullableString(raw.directory_flush),
     supervisor_kind: asMember(raw.supervisor_kind, SUPERVISOR_KINDS),
     supervisor_artefact: asNullableString(raw.supervisor_artefact),

@@ -141,3 +141,164 @@ export function restrictToOwner(
   }
   return { outcome: "applied", command: spelled };
 }
+
+// ── Re-verification: the second half of R-SEC-5 ─────────────────────────────────────────────────
+//
+// "…and `xplainer daemon status` re-verifies it and warns if inheritance has been restored." An
+// entry applied at creation is a fact about one moment; `/inheritance:r` is undone by one
+// `icacls <path> /inheritance:e`, by a backup restore, or by an installer that resets a tree, and
+// nothing about the file's mode would change when it happened. So the entry is read back and
+// compared against the one this module writes, and the comparison is a pure function of `icacls`'s
+// own output so that it is asserted from a machine that has no `icacls`.
+
+/** One access-control entry, as `icacls` prints it. */
+export type AclEntry = {
+  /** The principal, exactly as `icacls` spelled it — `MACHINE\\alice`, `BUILTIN\\Users`. */
+  account: string;
+  /** The rights blob, parentheses included: `(R,W)`, `(I)(F)`, `(OI)(CI)(F)`. */
+  rights: string;
+  /** Whether the entry is inherited — the `(I)` flag, which is what "inheritance restored" means. */
+  inherited: boolean;
+};
+
+/** What a re-verification concluded. */
+export type AclVerdict =
+  /** Not `win32`: there is no entry to re-verify, and the mode is the protection. */
+  | { state: "not-applicable"; detail: string; entries: readonly AclEntry[] }
+  /** Exactly one entry, this account's, not inherited. What {@link restrictToOwner} leaves behind. */
+  | { state: "owner-only"; detail: string; entries: readonly AclEntry[] }
+  /** Somebody else is on the file, or inheritance is back. The warning R-SEC-5 asks for. */
+  | { state: "widened"; detail: string; entries: readonly AclEntry[] }
+  /** `icacls` could not be run, or said something this parser does not recognise. */
+  | { state: "unknown"; detail: string; entries: readonly AclEntry[] };
+
+/** The command that reads a path's entries back. */
+export function aclQuery(path: string): { program: string; argv: string[] } {
+  return { program: "icacls", argv: [path] };
+}
+
+/** What a command that was run produced, narrowed to what this module reads. */
+export type AclProbeResult = {
+  started: boolean;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
+
+/**
+ * The trailer `icacls` prints after the entries, in the locale GitHub's runners use.
+ *
+ * Matched as a prefix rather than in full because the counts vary, and treated as *one* of two
+ * terminators — the other being a blank line — so that a localised trailer this does not recognise
+ * ends the entries rather than being parsed as one.
+ */
+const ICACLS_TRAILER = /^(?:Successfully processed|Failed processing)/;
+
+/**
+ * Every access-control entry in one `icacls <path>` output.
+ *
+ * The first line carries the path before the first entry and the rest are indented continuations,
+ * so the path is stripped by prefix rather than by splitting on whitespace: a Windows path holds
+ * spaces routinely and an account name may hold them too (`MACHINE\\Some User`), which is why the
+ * entry is matched from the **right** — the rights blob is the anchor, and everything before the
+ * final colon is the principal.
+ */
+export function parseAclEntries(stdout: string, path: string): AclEntry[] {
+  const entries: AclEntry[] = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    let line = raw;
+    if (line.startsWith(path)) {
+      line = line.slice(path.length);
+    }
+    line = line.trim();
+    if (line === "") {
+      // A blank line ends the entry block: what follows is the trailer, or nothing.
+      if (entries.length > 0) {
+        break;
+      }
+      continue;
+    }
+    if (ICACLS_TRAILER.test(line)) {
+      break;
+    }
+    const match = /^(.+):((?:\([^()]*\))+)$/.exec(line);
+    if (match === null) {
+      continue;
+    }
+    const account = match[1] ?? "";
+    const rights = match[2] ?? "";
+    entries.push({ account: account.trim(), rights, inherited: rights.includes("(I)") });
+  }
+  return entries;
+}
+
+/** Whether an `icacls` principal names this account, with or without its machine or domain. */
+export function aclEntryIsAccount(entry: AclEntry, account: string): boolean {
+  const spelled = entry.account.toLowerCase();
+  const wanted = account.toLowerCase();
+  return spelled === wanted || spelled.endsWith(`\\${wanted}`);
+}
+
+/**
+ * Read one `icacls <path>` back and say whether the file still carries only this account.
+ *
+ * The rule is exact rather than lenient because {@link restrictToOwnerCommand} is exact:
+ * `/inheritance:r /grant:r` leaves **one** entry on the file, so a second principal — `BUILTIN\\Users`,
+ * `NT AUTHORITY\\SYSTEM`, anything — is something that arrived afterwards, and an `(I)` flag is
+ * inheritance having been switched back on. Both are `widened`, and both name what they found.
+ */
+export function readAclVerdict(
+  path: string,
+  answer: AclProbeResult,
+  account?: string,
+  platform: string = process.platform,
+): AclVerdict {
+  // The account is resolved **after** the platform check rather than in the parameter list: off
+  // Windows there is no entry to compare anything against, and `userInfo()` is a syscall that
+  // throws outright on a machine whose uid has no passwd entry — a container, which is where this
+  // package's Linux suites run.
+  if (platform !== "win32") {
+    return {
+      state: "not-applicable",
+      detail: `${path} is protected by its mode on this platform, and carries no access-control entry to re-verify`,
+      entries: [],
+    };
+  }
+  if (!answer.started) {
+    return {
+      state: "unknown",
+      detail: `icacls could not be run, so the entry on ${path} was not re-verified`,
+      entries: [],
+    };
+  }
+  const who = account ?? aclAccount();
+  const entries = parseAclEntries(answer.stdout, path);
+  if (answer.status !== 0 || entries.length === 0) {
+    const said = `${answer.stdout}${answer.stderr}`.trim().split(/\r?\n/)[0] ?? "";
+    return {
+      state: "unknown",
+      detail: `icacls ${path} exited ${String(answer.status)} and named no access-control entry${said === "" ? "" : `: ${said}`}`,
+      entries,
+    };
+  }
+  const inherited = entries.filter((entry) => entry.inherited);
+  const foreign = entries.filter((entry) => !aclEntryIsAccount(entry, who));
+  if (inherited.length > 0 || foreign.length > 0) {
+    const spelled = entries.map((entry) => `${entry.account}:${entry.rights}`).join(", ");
+    return {
+      state: "widened",
+      detail:
+        `${path} is no longer owner-only: ${spelled}. ` +
+        (inherited.length > 0
+          ? "Inheritance has been restored underneath it. "
+          : "An entry for another account has been added. ") +
+        `Narrow it again with \`icacls ${path} /inheritance:r /grant:r "${who}:${ACL_FILE_RIGHTS}"\``,
+      entries,
+    };
+  }
+  return {
+    state: "owner-only",
+    detail: `${path} carries one access-control entry, ${entries[0]?.account ?? who}, and no inherited entry`,
+    entries,
+  };
+}

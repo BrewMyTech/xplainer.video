@@ -120,6 +120,8 @@ describe("readDaemonState", () => {
       contract_version: null,
       token_file: null,
       socket_path: null,
+      token_origin: null,
+      token_rotation: null,
       directory_flush: null,
       supervisor_kind: null,
       supervisor_artefact: null,
@@ -206,6 +208,7 @@ describe("readDaemonState", () => {
         supervisor_kind: "upstart",
         program_source: "curl-bash",
         linger_enabled_by_us: "yes",
+        token_origin: "trusted",
         launch_spec: { executable: "/bin/node", argv: ["serve"], cwd: "/state" },
       }),
     );
@@ -216,6 +219,17 @@ describe("readDaemonState", () => {
     expect(state.program_source).toBeNull();
     expect(state.linger_enabled_by_us).toBeNull();
     expect(state.launch_spec).toBeNull();
+    // ADR 0020 §Security R-SEC-9 is decided against this field, and every uncertainty about it has
+    // to fall towards the answer that refuses a remote bind. A word nobody defined is `null`, and
+    // `daemon/tls.ts` treats anything that is not `operator` as the daemon's own mint.
+    expect(state.token_origin).toBeNull();
+  });
+
+  it.each(["minted", "operator"] as const)("reads back a token_origin of %s", (origin) => {
+    const stateDir = stateDirectory();
+    writeFileSync(stateDirLayout(stateDir).daemonState, JSON.stringify({ token_origin: origin }));
+
+    expect(readDaemonState(stateDir).token_origin).toBe(origin);
   });
 
   it("refuses to guess about a file it cannot parse, with the exit code that names the condition", () => {

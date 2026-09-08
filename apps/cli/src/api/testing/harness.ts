@@ -98,7 +98,10 @@ export async function startApiHarness(options: ApiHarnessOptions = {}): Promise<
     port: 0,
     ...(socketPath === null ? {} : { ipc: { path: socketPath } }),
     ...(options.guard === true
-      ? { guard: (port: number) => createLoopbackGuard({ token: HARNESS_TOKEN, port: () => port }) }
+      ? {
+          guard: (port: number) =>
+            createLoopbackGuard({ tokens: () => [HARNESS_TOKEN], port: () => port }),
+        }
       : {}),
     ...(options.withoutApi === true
       ? {}

@@ -435,7 +435,7 @@ async function serveGuarded(): Promise<RunningServer> {
   running = await startServer({
     backend: localBackend(),
     port: 0,
-    guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+    guard: (port) => createLoopbackGuard({ tokens: () => [TEST_TOKEN], port: () => port }),
   });
   return running;
 }
@@ -625,7 +625,7 @@ describe("the drain route", () => {
       backend: localBackend(),
       port: 0,
       ipc: { path: socketPath },
-      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+      guard: (port) => createLoopbackGuard({ tokens: () => [TEST_TOKEN], port: () => port }),
       ...(seam === undefined ? {} : { drain: seam }),
     });
     return Object.assign(running, { socketPath });
@@ -743,7 +743,7 @@ describe("the drain route", () => {
       port: 0,
       ipc: { path: socketPath },
       drain: drain.seam,
-      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+      guard: (port) => createLoopbackGuard({ tokens: () => [TEST_TOKEN], port: () => port }),
     });
 
     try {
@@ -822,7 +822,7 @@ describe("the drain route", () => {
       port: 0,
       ipc: { path: socketPath },
       drain: drain.seam,
-      guard: (port) => createLoopbackGuard({ token: TEST_TOKEN, port: () => port }),
+      guard: (port) => createLoopbackGuard({ tokens: () => [TEST_TOKEN], port: () => port }),
       api: { library: createWorkspaceLibrary({ root: workspaceRoot }), pollIntervalMs: 20 },
     });
     const port = running.port;

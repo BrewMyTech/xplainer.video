@@ -11,8 +11,11 @@
  * bind is not a decision about which interface to expose — it is the absence of one, and it is the
  * exact shape of the CVE that section cites.
  *
- * TLS does not exist in this phase, so an acknowledged non-loopback bind is refused a second time
- * by reality rather than by this function; what it does here is refuse to be reached by accident.
+ * This function owns the two preconditions the address alone decides — the wildcards, and the
+ * acknowledgement — and nothing else. The other three (`--tls-cert` and `--tls-key`, at least one
+ * `--allow-host`, and a token this daemon did not mint) are `daemon/tls.ts`'s, because a certificate
+ * has to be read and a token's provenance has to be looked up, and this file does no I/O.
+ * `commands/serve.ts` asks both, in that order, before it takes the state directory.
  *
  * **The port (ADR 0020 §Port and discovery).** The precedence is
  * **configured URL → `daemon.json`'s recorded port → `DEFAULT_PORT`**, and it is a pure function so
@@ -77,7 +80,8 @@ export function resolveBindAddress(request: BindRequest = {}): BindDecision {
       message:
         `xplainer serve: --bind ${requested} is not a loopback address, and this daemon serves ` +
         `loopback only unless ${REMOTE_EXPOSURE_FLAG} is also given. Remote exposure is outside ` +
-        "the supported configuration: it needs TLS and a non-default token as well " +
+        "the supported configuration, and the acknowledgement is only the second of five things " +
+        "it needs: TLS, an operator Host allowlist and a non-default token are the others " +
         "(ADR 0020 §Security R-SEC-9).",
     };
   }

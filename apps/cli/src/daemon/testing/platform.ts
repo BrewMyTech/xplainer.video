@@ -1,5 +1,5 @@
 /**
- * The two facts a suite has to state differently on Windows, stated once.
+ * The facts a suite has to read off the machine it is running on, read once.
  *
  * Both of them are places where the property under test is real on every platform and the *evidence
  * for it* is not:
@@ -18,6 +18,11 @@
  *   codes `<tmp>/x.sock` gets `listen EACCES` on Windows, which is what `windows-latest` answered
  *   for eleven cases across `server.test.ts` and `commands/serve.test.ts` on 2026-09-08.
  *
+ * {@link lanAddress} is the third, and it is not a Windows question: R-SEC-9's whole subject is a
+ * bind that is **not** loopback, and no platform lets a test invent one — `127.0.0.2` is bindable
+ * on Linux and answers `EADDRNOTAVAIL` on macOS, and a loopback alias needs root everywhere. So the
+ * suite uses an address this machine really has.
+ *
  * Nothing here asserts. Each returns a fact, so the failure a suite reports names the value this
  * machine actually had rather than "false".
  */
@@ -26,7 +31,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { connect } from "node:net";
-import { userInfo } from "node:os";
+import { networkInterfaces, userInfo } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { isNamedPipe, WINDOWS_PIPE_PREFIX } from "../ipc.js";
@@ -167,4 +172,33 @@ export function endpointGone(socketPath: string): Promise<boolean> {
 function isThisAccount(principal: string): boolean {
   const account = (principal.split("\\").pop() ?? "").toLowerCase();
   return account === userInfo().username.toLowerCase();
+}
+
+/**
+ * A non-loopback IPv4 address this machine really has.
+ *
+ * The one input a test of ADR 0020 §Security R-SEC-9 cannot fabricate. Every alternative was
+ * measured and rejected: `127.0.0.2` binds on Linux and answers `EADDRNOTAVAIL` on macOS (this
+ * machine, 2026-09-08); a loopback alias is `ifconfig lo0 alias` and needs root; and a name that
+ * resolves to `127.0.0.1` and is not `localhost` differs per platform and per resolver. Every CI
+ * runner and every container this project uses has an address here — `eth0` on the Linux runners
+ * and in Docker, `en0` on macOS — so this is a fact about the machine rather than a dependency on
+ * the internet.
+ *
+ * @throws when the machine has only loopback interfaces, which is an honest environment failure
+ * rather than a skipped test: what cannot be asserted here is exactly what R-SEC-9 is about.
+ */
+export function lanAddress(): string {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal) {
+        return address.address;
+      }
+    }
+  }
+  throw new Error(
+    "this suite needs one non-loopback IPv4 address and this machine has only loopback " +
+      "interfaces; R-SEC-9 is about a bind that is not loopback, so there is nothing to assert " +
+      "against here",
+  );
 }

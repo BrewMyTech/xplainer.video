@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { updateDaemonState } from "../daemon/daemon-state.js";
+import { previousTokenPath, rotateToken } from "../daemon/token.js";
 import { launcherPath } from "./launcher.js";
 import type { ProbeResult, ProbeRunner } from "./preflight.js";
 import { stagedRuntimeRoot } from "./stage.js";
@@ -121,6 +122,33 @@ describe("the token", () => {
     expect(existsSync(tokenFile)).toBe(false);
     // Nothing was written in its place: deletion, not rotation.
     expect(existsSync(join(stateDir, "token"))).toBe(false);
+  });
+
+  /**
+   * The other half of the same rule, now that `xplainer token rotate` exists.
+   *
+   * A rotation writes **two** live values — the new token and the retired one inside its window —
+   * so an uninstall that rotated would leave a machine with two working credentials where P2-9
+   * asks for none. Neither file survives here, and the grace file goes even when a rotation put one
+   * there minutes before the uninstall.
+   */
+  it("leaves no grace file behind from an earlier rotation", () => {
+    const home = scratchDirectory();
+    const environment: SupervisorEnvironment = { home, account: "tester" };
+    const { stateDir, tokenFile } = installedState({
+      platform: "darwin",
+      environment,
+      artefact: join(home, "Library", "LaunchAgents", "video.xplainer.daemon.plist"),
+    });
+    rotateToken({ path: tokenFile, graceMs: 600_000 });
+    expect(existsSync(previousTokenPath(tokenFile))).toBe(true);
+    const { run } = recorder();
+
+    const outcome = uninstallDaemon({ stateDir, platform: "darwin", environment, run, uid: 501 });
+
+    expect(outcome.token.deleted).toBe(true);
+    expect(existsSync(tokenFile)).toBe(false);
+    expect(existsSync(previousTokenPath(tokenFile))).toBe(false);
   });
 });
 
