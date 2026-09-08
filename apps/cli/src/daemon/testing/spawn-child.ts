@@ -109,6 +109,37 @@ export async function killAndWait(child: ChildProcess, timeoutMs = 10_000): Prom
 }
 
 /**
+ * One exit as a single comparable string: `signal SIGKILL`, `code 1`, `code 0`.
+ *
+ * A pair of `{ code, signal }` compared field by field makes a platform difference two assertions
+ * that have to agree; one string makes it one, and the failure prints what this machine actually
+ * reported rather than `expected null to be 'SIGKILL'`.
+ */
+export function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null }): string {
+  return exit.signal !== null ? `signal ${exit.signal}` : `code ${String(exit.code)}`;
+}
+
+/**
+ * What an abrupt, unhandled kill looks like to whoever is watching, on this platform.
+ *
+ * POSIX delivers a signal and the waiter is told which. **Windows has no signals**: `uv_kill` turns
+ * `SIGKILL` into `TerminateProcess(handle, 1)` — "killed processes normally return 1", libuv's own
+ * comment — so a watcher is told a code and no signal. The one exception is a watcher that *asked*
+ * for the kill through `child.kill()`: libuv records the signal on the process handle before it
+ * terminates and reports it back, which `windows-latest` confirmed on 2026-09-08 (the assertion on
+ * a parent-initiated kill passed there; the one on a child that killed itself did not).
+ *
+ * @param by who asked for it — `itself` for a process that called `process.kill(process.pid, …)`,
+ * `the watcher` for one this process killed with `child.kill()`.
+ */
+export function abruptKill(by: "itself" | "the watcher"): string {
+  if (process.platform !== "win32" || by === "the watcher") {
+    return "signal SIGKILL";
+  }
+  return "code 1";
+}
+
+/**
  * Remove a scratch tree, retrying the way Windows needs.
  *
  * `rm(2)` on POSIX detaches a name from an inode a process may still hold open and returns; Windows

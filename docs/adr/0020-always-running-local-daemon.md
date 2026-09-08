@@ -649,3 +649,43 @@ foreground-process invariant above on its own, because systemd's notification pr
 service to move its main PID (`MAINPID=`, `NotifyAccess=all`). "`serve` stays a foreground process"
 and "never add `serve --detach`" remain properties this project maintains deliberately, whichever
 unit type is chosen.
+
+## Note, 2026-09-08: the Windows halves of R-SEC-5, one closed and one still open
+
+R-SEC-5 above states the gap and names the remedy — "the requirement is an explicit ACL applied at
+creation — `icacls <path> /inheritance:r /grant:r "%USERNAME%:(R,W)"`, which needs no
+administrator — and `xplainer daemon status` re-verifies it and warns if inheritance has been
+restored". Phase 2 has now done the first half and not the other two, and the split matters enough
+to write down rather than leave to be inferred from the code.
+
+**Done: the token, and the state directory it is minted in.** `daemon/windows-acl.ts` runs that
+exact command on `win32` and nowhere else — on the file, at the mint, and on the directory, at the
+`mkdir` that creates it. `/inheritance:r` is the half that does the work: a file created under
+`%LOCALAPPDATA%` inherits its parent's entries, which on a machine with a second account routinely
+include `BUILTIN\Users`, and granting the owner changes nothing while those are still there. A
+failure is **reported and never fatal** — `serve`'s one line about the token says which of a mode
+and an ACL this platform got, and names the `icacls` that did not run — because a daemon that
+refused to start over a missing `icacls` would trade a weaker file for no service at all, on a
+platform where the file was already weaker before.
+
+**Not done, and deliberately: the named pipe.** Node's `net.Server.listen({ path })` offers no way
+to pass a security descriptor, and a native addon is exactly what this phase's single-file packaging
+cannot carry — the same reason this record refused DPAPI. So the IPC transport on Windows is not
+narrowed the way the token is, and "filesystem permissions are the authentication" is a claim about
+POSIX that Windows does not yet make good on. What the pipe does have is a name derived from the
+state directory, which keeps two accounts and two runs off one another's endpoint.
+
+**Not done: the re-verification.** Nothing re-reads the entry, so inheritance restored underneath a
+running daemon is not noticed and `daemon status` says nothing about it.
+
+**Measured while doing it, because it cost a full CI round to find.** The Task Scheduler document
+`supervisors/schtasks.ts` renders declares `encoding="UTF-16"` while the file on disk is UTF-8, and
+that is not an inconsistency to tidy away. `Register-ScheduledTask -Xml` takes a **string**, which
+is UTF-16 by construction, so a document declaring `UTF-8` is refused by MSXML with
+`(1,40)::ERROR: unable to switch the encoding`; the service reports `SCHED_E_MALFORMEDXML`
+(`0x8004131a`) and the cmdlet says "The task XML is malformed". On 2026-09-08 that took out every
+registration this project attempts on `windows-latest` — the install under the S4U principal and
+the restart, breaker and identity proofs — while the same runner registered an otherwise identical
+document whose only difference was a `UTF-16` declaration. It is also what `Export-ScheduledTask`
+emits. The bytes stay UTF-8 so the mirror is readable text, and the registration command names the
+encoding it decodes with.

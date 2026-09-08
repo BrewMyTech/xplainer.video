@@ -21,10 +21,14 @@
  * boundary — a web page can reach `127.0.0.1` and cannot read `~/.local/state` — and the other
  * local user on a shared machine. Against same-uid malware it is worth nothing.
  *
- * **Windows is an honest gap**, also from R-SEC-5: Node documents that only the write permission is
- * settable there and that the owner/group/other distinction is not implemented, so a `0600` token
- * file is readable by every account on the box. The explicit ACL that fixes it belongs to
- * `xplainer daemon install`, which is phase 2; nothing here pretends otherwise.
+ * **Windows needs an explicit ACL, because a mode there is not protection**, also from R-SEC-5:
+ * Node documents that only the write permission is settable and that the owner/group/other
+ * distinction is not implemented, so a `0600` token file is readable by every account on the box.
+ * The mint therefore runs `windows-acl.ts` on the file it has just created — the "explicit ACL
+ * applied at creation" R-SEC-5 names, `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"` — and
+ * reports what that did in `DaemonToken.acl`. What is still not done is the other half of the same
+ * requirement, `daemon status` re-verifying the entry and warning when inheritance has been
+ * restored underneath it; nothing here pretends otherwise.
  */
 
 import { randomBytes } from "node:crypto";
@@ -34,6 +38,7 @@ import process from "node:process";
 import { ensureStateDirectory, flushDirectory } from "./durable-write.js";
 import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { type SettingDecision, STATE_FILE_MODE, settingFlag } from "./state-dir.js";
+import { type AclResult, restrictToOwner } from "./windows-acl.js";
 
 /** The environment variable the supervisor sets, carrying a *path* and never a value (R-SEC-6). */
 export const TOKEN_FILE_ENV = "XPLAINER_TOKEN_FILE";
@@ -62,6 +67,14 @@ export type DaemonToken = {
   path: string;
   /** `true` only on the run that created the file, so a start-up log can say so once. */
   minted: boolean;
+  /**
+   * What the explicit Windows ACL did, on the run that minted the file.
+   *
+   * `not-applicable` everywhere but `win32`, where the mode is not the protection and
+   * `daemon/windows-acl.ts` is. It is reported rather than thrown, so `serve`'s one line about the
+   * token says which of the two protections this platform actually got.
+   */
+  acl: AclResult;
 };
 
 /**
@@ -147,6 +160,23 @@ function readToken(path: string): string | null {
 }
 
 /**
+ * How the file this daemon just minted is protected, as the phrase `serve` prints.
+ *
+ * One phrase rather than two branches at the call site, because the three answers are three
+ * different security claims and the weakest of them — a `win32` machine whose `icacls` did not run,
+ * whose token every local account can therefore read — is the one that must not be silent.
+ */
+export function tokenProtection(acl: AclResult): string {
+  if (acl.outcome === "applied") {
+    return "owner-only ACL";
+  }
+  if (acl.outcome === "failed") {
+    return `WITHOUT an owner-only ACL, readable by every local account: ${acl.command} ${acl.reason}`;
+  }
+  return `mode ${STATE_FILE_MODE.toString(8).padStart(4, "0")}`;
+}
+
+/**
  * Read the token, minting one if the file is not there.
  *
  * The create is `wx` — `O_CREAT | O_EXCL` — so two processes that reach this line together cannot
@@ -160,7 +190,7 @@ function readToken(path: string): string | null {
 export function loadOrMintToken(path: string, directory?: string): DaemonToken {
   const existing = readToken(path);
   if (existing !== null) {
-    return { value: existing, path, minted: false };
+    return { value: existing, path, minted: false, acl: { outcome: "not-applicable" } };
   }
 
   if (directory !== undefined) {
@@ -179,7 +209,7 @@ export function loadOrMintToken(path: string, directory?: string): DaemonToken {
       if (written === null) {
         throw new TokenUnreadableError(path, "it disappeared while being created");
       }
-      return { value: written, path, minted: false };
+      return { value: written, path, minted: false, acl: { outcome: "not-applicable" } };
     }
     throw new TokenUnreadableError(path, describe(error));
   }
@@ -190,5 +220,9 @@ export function loadOrMintToken(path: string, directory?: string): DaemonToken {
     closeSync(fd);
   }
   flushDirectory(dirname(path));
-  return { value, path, minted: true };
+  // After the write and before the token is handed to anybody: on `win32` the file was briefly
+  // readable by every account on the machine, and that window is as short as a create-then-narrow
+  // can make it. `open(path, "wx", 0o600)` closes the same window on the other two platforms.
+  const acl = restrictToOwner(path, "file");
+  return { value, path, minted: true, acl };
 }

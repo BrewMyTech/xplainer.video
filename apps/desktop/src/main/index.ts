@@ -44,6 +44,8 @@ import { connectAgent, startAtLogin } from "./controls";
 import {
   type Discovery,
   discover,
+  handOffToInstall,
+  mayStartDaemon,
   resolveCliProgram,
   type SpawnedDaemon,
   spawnDaemon,
@@ -141,10 +143,14 @@ async function reportPayload(): Promise<void> {
  * get a daemon at all. It never spawns over an `occupied` port — a second `serve` would refuse with
  * exit `10` having written nothing — and a `reattach` result means one was already there, so the
  * answer is to ask again rather than to try harder.
+ *
+ * `absent` alone is not that exception: {@link mayStartDaemon} is, because two of the conditions
+ * that land on `absent` are answers a `serve` of this app's own cannot improve — a latched breaker
+ * exits `0` without binding, and an installed daemon that is stopped belongs to its supervisor.
  */
 async function discoverDaemon(): Promise<DiscoveryMessage> {
   let discovery = await discover({ resourcesPath: process.resourcesPath, stateDir });
-  if (discovery.outcome === "absent" && spawned === null) {
+  if (mayStartDaemon(discovery) && spawned === null) {
     const started = await spawnDaemon({
       program: resolveCliProgram({ resourcesPath: process.resourcesPath, stateDir }),
     });
@@ -273,11 +279,21 @@ function registerBridgeHandlers(): void {
     return connectAgent(vendor, controlRequest());
   });
 
-  // `daemon install` writes the stable launcher, which is D10's second stage — so the state
-  // directory it reported is re-read afterwards by the window's next `discover()`.
+  // `daemon install` writes the stable launcher, which is D10's second stage — so the discovery
+  // after it is what repoints this app at the daemon the installer started, on the port and token
+  // file that install recorded. The daemon this app spawned goes *first*: it holds `serve`'s
+  // default port, which is the port `daemon install` probes, and an installer that finds it held
+  // refuses with exit `7` over a conflict this app is itself the whole of.
   ipcMain.handle(
     IPC_CHANNELS.install,
-    async (): Promise<ControlMessage> => startAtLogin(controlRequest()),
+    async (): Promise<ControlMessage> =>
+      handOffToInstall({
+        stopSpawned: stopSpawnedDaemon,
+        install: () => startAtLogin(controlRequest()),
+        rediscover: async () => {
+          await discoverDaemon();
+        },
+      }),
   );
 
   protocol.handle(MEDIA_SCHEME, async (request) => {

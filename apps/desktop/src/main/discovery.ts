@@ -439,12 +439,48 @@ export async function discover(options: DiscoverOptions): Promise<Discovery> {
  */
 function actionFor(outcome: DiscoveryOutcome, report: DaemonReport): string {
   if (outcome === "absent") {
-    const specific = CONDITION_ACTIONS[report.condition];
-    if (specific !== undefined && (report.condition !== "unreachable" || report.registered)) {
+    const specific = conditionAction(report);
+    if (specific !== null) {
       return specific;
     }
   }
   return OUTCOME_ACTIONS[outcome];
+}
+
+/**
+ * The remedy this report's condition carries, when it has one the outcome does not.
+ *
+ * `unreachable` from a machine that never registered anything is not "a daemon is installed and
+ * stopped" — it is the ordinary "nothing is there", so it keeps the outcome's own sentence.
+ */
+function conditionAction(report: DaemonReport): string | null {
+  const specific = CONDITION_ACTIONS[report.condition];
+  if (specific === undefined) {
+    return null;
+  }
+  return report.condition !== "unreachable" || report.registered ? specific : null;
+}
+
+/**
+ * Whether this app may start a daemon of its own in answer to this discovery.
+ *
+ * **`absent` is not by itself permission to spawn.** It means "nothing answered and nothing above
+ * identified why", and two conditions land on it that a `serve` of this app's own cannot repair —
+ * the same two {@link CONDITION_ACTIONS} names, and for the same reason:
+ *
+ * - `stalled` — the breaker is latched, so a `serve` started now exits `0` **without binding**.
+ *   Spawning would produce no daemon, no error a window could show, and a second discovery that
+ *   says exactly what the first one said.
+ * - `unreachable` on a machine that registered one — a daemon is installed and stopped, which is
+ *   its supervisor's to start. A duplicate over the same state directory is the exit `10` the
+ *   spawn-to-install handoff exists to avoid, and the user would be told this app failed when the
+ *   truth is that the service is switched off or was never started.
+ *
+ * This is the same decision as the sentence beside the outcome: an answer whose remedy is a command
+ * the user runs is not an answer this app acts on by itself.
+ */
+export function mayStartDaemon(discovery: Discovery): boolean {
+  return discovery.outcome === "absent" && conditionAction(discovery.report) === null;
 }
 
 /**
@@ -785,6 +821,41 @@ export function spawnDaemon(options: SpawnDaemonOptions): Promise<SpawnDaemonRes
       }
     });
   });
+}
+
+/**
+ * The three steps an install has to happen between, in the order it has to happen in.
+ *
+ * Injected rather than imported for one reason: `controls.ts` — which owns `daemon install` — is
+ * built on this module, so the orchestration cannot reach back for it without a cycle. What is
+ * left here is the *order*, which is the part that is a rule rather than an Electron call.
+ */
+export type InstallHandoff<T> = {
+  /** Stop the daemon this app spawned, if it started one — {@link SpawnedDaemon.stop}. */
+  stopSpawned: () => Promise<void>;
+  /** Run `daemon install`. Its answer is {@link handOffToInstall}'s answer. */
+  install: () => Promise<T>;
+  /** Ask again, so the app points at the daemon the install started rather than the one that went. */
+  rediscover: () => Promise<void>;
+};
+
+/**
+ * Install the daemon, having first got this app's own out of the way.
+ *
+ * **This is the spawn-to-install handoff**, and it is a rule about ordering rather than a
+ * convenience. A daemon this app spawned binds `serve`'s default port, which is `8787` — the same
+ * port `daemon install` records and probes before it writes anything. Installing beside it means
+ * the installer finds that port held, refuses with exit `7`, and reports a port conflict that this
+ * app is itself the whole of: the user is told the install failed by the process that made it fail.
+ * The same collision over the state directory is exit `10`. So the spawned daemon is stopped and
+ * *waited for* first, and the discovery afterwards is what repoints the app at the installed one —
+ * on its own port, under its own supervisor, with its own token file.
+ */
+export async function handOffToInstall<T>(handoff: InstallHandoff<T>): Promise<T> {
+  await handoff.stopSpawned();
+  const installed = await handoff.install();
+  await handoff.rediscover();
+  return installed;
 }
 
 /** The ready line's fields, or `null` while the daemon has not written one. */

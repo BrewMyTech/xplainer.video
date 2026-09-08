@@ -101,16 +101,23 @@ jobs:
       - name: Build every member
         run: pnpm turbo build
 
-      # The four files that are about the drain, not the whole suite. Windows is
-      # the reason this matters: `daemon/ipc.ts` gives that platform a **named
-      # pipe** rather than a unix socket, and every assertion here — the `202`
-      # over the socket, the `404` over TCP, the real spawned `serve` drained
-      # over its own endpoint — has only ever run against a socket.
+      # The files that are about the drain and about what protects the two files
+      # a daemon writes, not the whole suite. Windows is the reason this matters
+      # twice over: `daemon/ipc.ts` gives that platform a **named pipe** rather
+      # than a unix socket, and every assertion here — the `202` over the socket,
+      # the `404` over TCP, the real spawned `serve` drained over its own
+      # endpoint — has only ever run against a socket; and a mode there protects
+      # nothing, so `daemon/windows-acl.ts` applies ADR 0020 §R-SEC-5's explicit
+      # ACL at creation and `token.test.ts` is where a real `icacls` says whether
+      # it took. The last two are seconds each and run everywhere, so the POSIX
+      # halves of both claims stay asserted beside the Windows ones.
       - name: The drain route, the client, the drained process and the restart verb
         run: >
           pnpm --filter @xplainer/cli exec vitest run
           src/server.test.ts
           src/daemon/control.test.ts
+          src/daemon/token.test.ts
+          src/daemon/windows-acl.test.ts
           src/commands/serve.test.ts
           src/install/lifecycle.test.ts
 

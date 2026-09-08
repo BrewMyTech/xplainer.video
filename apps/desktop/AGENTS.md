@@ -137,14 +137,31 @@ copy — the local and human half of the proof. On Linux run it under `xvfb-run 
   browser origin allowed on the daemon, and R-SEC-7 forbids CORS middleware there for any value,
   ever. A `401` re-reads the token file once and retries only when the value has changed, which is
   how `token rotate` propagates without a restart.
+- **The bridge judges the resolved URL, never the string the renderer sent.** `open()` builds the
+  URL first and checks *that* — the origin against the daemon's, the pathname against `/healthz` and
+  `${API_PREFIX}/` — and hands the same object to the send. A `startsWith` over the raw path is a
+  check about a different request than the one that goes out: `new URL()` collapses `..`, `.` and
+  their percent-encoded spellings (`%2e%2e` is a double-dot segment by the URL standard), so
+  `/api/../mcp` and `/api/%2e%2e/mcp` pass the prefix and dial `/mcp` with the bearer attached.
+  `mediaPath()` in `src/shared/daemon-api.ts` already had the rule; the bridge now keeps it too.
 - **The bridge's transport is unpooled `node:http`, not `fetch`.** Node's `undici` calls
   `setTypeOfService()` on a resumed **pooled** socket and `node:net` throws the failed `setsockopt`
   from inside the socket's own handler, past every `try`/`catch` — the CLI moved its pollers off
   `fetch` for exactly that. Every request here gets its own connection.
 - **One daemon over one state directory, always.** A daemon this app spawned is supervised by
-  nothing else: it is stopped before an installed one starts (the spawn-to-install handoff) and
+  nothing else: it is stopped before an installed one starts (the spawn-to-install handoff,
+  `handOffToInstall` in `src/main/discovery.ts`, which the install channel is wired through) and
   before this process exits (`before-quit`). A `serve` that finds the state directory owned exits
   `10` having written nothing, and that is **reattachment** — ask again — not a failure to retry.
+  The handoff is not only about that exit: a spawned daemon binds `serve`'s default port, which is
+  the `8787` `daemon install` records and probes, so an install run beside it refuses with exit `7`
+  over a port conflict this app is itself the whole of.
+- **`absent` is not by itself permission to spawn.** Two conditions land on that outcome that a
+  `serve` of this app's own cannot repair, and `mayStartDaemon()` is what consults them: `stalled`
+  is a latched breaker, where a `serve` exits `0` without binding and the window would wait for a
+  daemon that never arrives; `unreachable` on a machine that registered one is an installed daemon
+  that is stopped, which is its supervisor's to start. Both already have a remedy sentence of their
+  own, and the sentence and the decision are the same decision.
 - **The architecture is compared before the interpreter is spawned.** `runtime build` copies the
   build host's `process.execPath`, so a payload runs only on the architecture it was built on. The
   Electron main process — already running on this machine's architecture — reads

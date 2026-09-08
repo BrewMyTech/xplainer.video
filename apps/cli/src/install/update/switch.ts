@@ -102,8 +102,10 @@ export function reloadCommands(target: RegistrationTarget): readonly Registratio
             program: POWERSHELL,
             argv: [
               ...POWERSHELL_ARGV,
-              `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw) ` +
-                `-TaskName ${quote(target.identity)} -Force`,
+              // `-Encoding UTF8` for `register.ts`'s reason: the file is UTF-8 and the document
+              // declares `UTF-16`, because the parser is handed the decoded string.
+              `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw ` +
+                `-Encoding UTF8) -TaskName ${quote(target.identity)} -Force`,
             ],
           },
         },

@@ -27,10 +27,22 @@
  * `AllowStartOnDemand` is `true` because `daemon start` (T12) is `schtasks /Run`, which is a
  * start on demand.
  *
- * **The declared encoding is `UTF-8` because of how the document is registered.** T11 registers it
- * as `Register-ScheduledTask -Xml (Get-Content $xml -Raw)` — a .NET string — and a string whose
- * declaration says `utf-16` is the classic "There is no Unicode byte order mark" parse failure.
- * Node writes UTF-8 bytes, PowerShell reads them, and the declaration agrees with both.
+ * **The declared encoding is `UTF-16`, and the bytes on disk are UTF-8, because the declaration
+ * describes the buffer the parser is handed rather than the file.** T11 registers the document as
+ * `Register-ScheduledTask -Xml (Get-Content <xml> -Raw -Encoding UTF8)`: PowerShell decodes the
+ * UTF-8 file into a .NET string and Task Scheduler parses **that string**, which is UTF-16 by
+ * construction. A declaration of `UTF-8` on a UTF-16 buffer is a parse failure, not a conversion —
+ * MSXML answers `(1,40)::ERROR: unable to switch the encoding`, the service turns it into
+ * `SCHED_E_MALFORMEDXML` (`0x8004131a`), and `Register-ScheduledTask` reports "The task XML is
+ * malformed". That is measured, not reasoned: it is what `windows-latest` did to every registration
+ * this project attempted on 2026-09-08 (T11's install, T13's, T14's and T17's proofs), while the
+ * same runner registered `daemon-windows.yml`'s inline probe document — identical but for a
+ * `UTF-16` declaration, passed as a PowerShell here-string — without a warning. It is also what
+ * `Export-ScheduledTask` emits, so the mirror and a Windows export carry the same header.
+ *
+ * The file itself stays UTF-8 so that every other reader of it — this repository's golden test, a
+ * `grep`, a person opening the mirror — reads text rather than UTF-16 code units, and the one
+ * consumer that parses it is told which encoding to decode with at the point it reads.
  *
  * **What this file cannot settle.** Golden text validates values, not schema ordering and not
  * registration; the element order below is the order Windows' own exports use, and
@@ -150,7 +162,9 @@ export function renderScheduledTask(
   );
   const argumentLine = escapeXml(windowsArgumentLine(spec.argv));
   const lines = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
+    // UTF-16, on a file this module writes as UTF-8: the declaration describes the string
+    // `Register-ScheduledTask -Xml` parses, not the bytes. See the note at the top of this file.
+    '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
     "  <RegistrationInfo>",
     "    <Description>xplainer local daemon</Description>",

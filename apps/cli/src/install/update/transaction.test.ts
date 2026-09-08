@@ -44,10 +44,17 @@ import {
   OWNERSHIP_REFUSED_EXIT_CODE,
   PRECONDITION_UNMET_EXIT_CODE,
 } from "../../daemon/exit-codes.js";
-import { CHILD_CLI, spawnEntry, untilGone } from "../../daemon/testing/spawn-child.js";
+import {
+  CHILD_CLI,
+  killAndWait,
+  removeTree,
+  spawnEntry,
+  untilGone,
+} from "../../daemon/testing/spawn-child.js";
 import { isAlive } from "../../daemon/worker-identity.js";
 import { verifyWorkspacePayload } from "../../runtime/verify.js";
 import { installDaemon } from "../install.js";
+import { launcherPath } from "../launcher.js";
 import { stagedRuntimeRoot } from "../stage.js";
 import { buildFixturePayload, type FixturePayload } from "../testing/payload.js";
 import { writeToolchainMarker } from "../testing/toolchain.js";
@@ -190,16 +197,18 @@ beforeAll(() => {
 }, 180_000);
 
 afterAll(() => {
-  rmSync(suiteScratch, { recursive: true, force: true });
+  removeTree(suiteScratch);
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const harness of harnesses.splice(0)) {
     harness.stopAll();
   }
-  for (const child of children.splice(0)) {
-    child.kill("SIGKILL");
-  }
+  // Killed **and waited for** before anything below removes what they were writing into: a
+  // signalled process still holds every handle it had, and Windows refuses to unlink a file with an
+  // open handle. `windows-latest` answered `EPERM ... \\?\\C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\
+  // xplainer-update-…` here on 2026-09-08.
+  await Promise.all(children.splice(0).map((child) => killAndWait(child, 5_000)));
   for (const stateDir of stateDirs.splice(0)) {
     const orphan = readRuntimeState(stateDir)?.pid;
     if (typeof orphan === "number" && isAlive(orphan)) {
@@ -214,7 +223,7 @@ afterEach(() => {
     rmSync(path, { force: true });
   }
   for (const directory of scratch.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+    removeTree(directory);
   }
 });
 
@@ -245,7 +254,21 @@ function machine(
     pins: options.pins ?? PINS,
     ...(options.resolved === undefined ? {} : { resolved: options.resolved }),
   });
-  return { root, stateDir, home, workspaceRoot, environment: fixtureEnvironment(home) };
+  return {
+    root,
+    stateDir,
+    home,
+    workspaceRoot,
+    // **The same object the interrupted updater builds for itself.** `interruptEnvironment()` hands
+    // the child the scratch *root* on `win32`, because that is the tree `windowsFixtureEnvironment`
+    // hangs `Users/tester` and `AppData` off — so a recovery running in *this* process with
+    // `fixtureEnvironment(home)` would render its artefact at a second path entirely and leave the
+    // registered one saying whatever the interrupted switch had written there. `windows-latest`
+    // reported exactly that on 2026-09-08: after a recovery the mirror still named the incoming
+    // runtime, at three of the five boundaries.
+    environment:
+      process.platform === "win32" ? windowsFixtureEnvironment(root) : fixtureEnvironment(home),
+  };
 }
 
 /** One machine, as {@link machine} builds it. */
@@ -402,7 +425,7 @@ describe("daemon update — the transaction", () => {
       expect(readFileSync(outcome.supervisor.artefact, "utf8")).toContain(
         outcome.incoming.runtime_dir,
       );
-      expect(readFileSync(join(where.stateDir, "bin", "xplainer"), "utf8")).toContain(
+      expect(readFileSync(launcherPath(where.stateDir), "utf8")).toContain(
         outcome.incoming.runtime_dir,
       );
 
@@ -451,9 +474,7 @@ describe("daemon update — the transaction", () => {
         expect(call.transition).toBe("drained");
       }
       const start = updateCalls.find((call) =>
-        process.platform === "darwin"
-          ? call.command.includes("kickstart")
-          : call.command.includes("--user start"),
+        call.command.includes(startCommandWord(process.platform)),
       );
       expect(start?.transition).toBe("switched");
     },
@@ -499,9 +520,7 @@ describe("daemon update — the transaction", () => {
       // state directory and the rollback would be the one that loses.
       const rollbackCalls = harness.calls.slice(untilInstall).map((call) => call.command);
       const stoppedAt = rollbackCalls.findIndex((command) =>
-        process.platform === "darwin"
-          ? command.includes("launchctl kill")
-          : command.includes("--user stop"),
+        command.includes(stopCommandWord(process.platform)),
       );
       let rolledBackAt = -1;
       for (const [index, command] of rollbackCalls.entries()) {
@@ -601,7 +620,7 @@ describe("daemon update — the pre-drain precondition (D9)", () => {
       expect(refusal.message).toContain(
         `${gamma.interpreter} ${gamma.entry} daemon install --runtime ${gamma.outDir}`,
       );
-      expect(refusal.message).not.toContain(join(where.stateDir, "bin", "xplainer"));
+      expect(refusal.message).not.toContain(launcherPath(where.stateDir));
 
       // Nothing staged, nothing drained, no journal.
       const slots = stagedSlots(where.stateDir);
@@ -1077,7 +1096,23 @@ describe("daemon update — the updater's own death, at every durable boundary",
         // `KeepAlive{SuccessfulExit:false}` — T15's stated cost, asserted rather than glossed.
         const answering = await askHealth(where.stateDir);
         if (boundary === "staged") {
-          expect(answering?.version).toBe(PREVIOUS_VERSION);
+          // The daemon the updater had not yet drained is still running, and answering on the port
+          // `runtime.json` records — so the record, the process and the answer are asserted
+          // together. They are one object because when this fails there is no host here to re-run
+          // it on: `windows-latest` reported `undefined` for the version on 2026-09-08 and the
+          // three candidate causes — the record gone, the process gone with the parent it was
+          // spawned from, or a live daemon that stopped answering — are indistinguishable from a
+          // single `undefined`.
+          const record = readRuntimeState(where.stateDir);
+          expect({
+            version: answering?.version,
+            recorded: record === null ? "no runtime.json" : { pid: record.pid, port: record.port },
+            alive: typeof record?.pid === "number" && isAlive(record.pid),
+          }).toEqual({
+            version: PREVIOUS_VERSION,
+            recorded: { pid: expect.any(Number), port: expect.any(Number) },
+            alive: true,
+          });
         } else {
           expect(answering).toBeNull();
         }

@@ -128,9 +128,13 @@ export function registerCommands(target: RegistrationTarget): readonly Registrat
       return [
         {
           title: "register the task from its XML document, replacing any task of the same name",
+          // `-Encoding UTF8` names the bytes `supervisors/schtasks.ts` wrote. Windows PowerShell
+          // decodes a file with no byte order mark as the active ANSI code page otherwise, which
+          // turns every non-ASCII character of a profile path into two — and the document's own
+          // declaration is `UTF-16` because what Task Scheduler parses is the decoded string.
           command: powershellCommand(
-            `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw) ` +
-              `-TaskName ${quote(target.identity)} -Force`,
+            `Register-ScheduledTask -Xml (Get-Content -Path ${quote(target.artefact)} -Raw ` +
+              `-Encoding UTF8) -TaskName ${quote(target.identity)} -Force`,
           ),
         },
         {

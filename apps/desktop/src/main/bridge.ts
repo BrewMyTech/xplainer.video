@@ -177,8 +177,10 @@ export class DaemonBridge {
    * answer rather than a loop.
    */
   async open(request: BridgeRequest): Promise<BridgeResponse> {
-    assertAllowedPath(request.path);
-    const first = await this.#send(request, this.#authorise());
+    // Resolved once, here, and carried into both sends: the URL that is checked has to be the URL
+    // that is dialled, or the check is about a different string than the request.
+    const target = resolveAllowedUrl(request.path, this.#target.url);
+    const first = await this.#send(request, this.#authorise(), target);
     if (first.status !== 401) {
       return first;
     }
@@ -190,7 +192,7 @@ export class DaemonBridge {
     // The old answer is dropped rather than left dangling: an unread response body keeps its
     // socket alive until the daemon times it out.
     first.body.destroy();
-    return this.#send(request, after);
+    return this.#send(request, after, target);
   }
 
   /** One request, read to the end and parsed as JSON. The shape every `/api/*` route answers in. */
@@ -336,9 +338,8 @@ export class DaemonBridge {
     return this.#token;
   }
 
-  /** One request, with the token attached if there is one. */
-  #send(request: BridgeRequest, token: string | null): Promise<BridgeResponse> {
-    const target = new URL(request.path, this.#target.url);
+  /** One request, with the token attached if there is one, at the URL {@link open} resolved. */
+  #send(request: BridgeRequest, token: string | null, target: URL): Promise<BridgeResponse> {
     const secure = target.protocol === "https:";
     const trust = this.#target.trust ?? {};
     const headers: Record<string, string> = { ...(request.headers ?? {}) };
@@ -408,20 +409,49 @@ export class DaemonBridge {
 }
 
 /**
- * Refuse a path that is not this daemon's client surface.
+ * Resolve one request against this daemon, and refuse anything that is not its client surface.
  *
  * The renderer names the path, so this is where "the renderer may ask for anything" stops. `/mcp`
  * is not on the list deliberately: the tool endpoint is an agent's, and a window that could reach
  * it could run every tool with the daemon's own authority.
+ *
+ * **The check is on the resolved URL, never on the string that arrived.** A prefix test over the
+ * raw path answers about a different request than the one that is sent: `new URL()` collapses
+ * `..`, `.` and their percent-encoded spellings (`%2e%2e` is a double-dot segment by the URL
+ * standard), so `/api/../mcp`, `/api/videos/../../mcp`, `/api/%2e%2e/mcp` and `/api/./../mcp` all
+ * pass a `startsWith("/api/")` and then dial `/mcp` — with this process's bearer token attached.
+ * Normalising first is what `mediaPath()` in `src/shared/daemon-api.ts` already does for the media
+ * scheme, and it is the same rule: parse, then judge what the parse produced.
+ *
+ * The origin is judged too, because a path is not the only thing `new URL()` accepts: an absolute
+ * `http://elsewhere/api/x`, or a protocol-relative `//elsewhere/api/x`, resolves to another host
+ * entirely, and this bridge sends its token to one daemon and no other.
  */
-function assertAllowedPath(path: string): void {
-  if (path === "/healthz" || path.startsWith(`${API_PREFIX}/`)) {
-    return;
+function resolveAllowedUrl(path: string, base: string): URL {
+  const daemon = new URL(base);
+  let target: URL;
+  try {
+    target = new URL(path, daemon);
+  } catch {
+    throw new BridgeRefusal(
+      "path-refused",
+      `${JSON.stringify(path)} is not a path this bridge can resolve against ${daemon.origin}.`,
+    );
+  }
+  if (target.protocol !== daemon.protocol || target.host !== daemon.host) {
+    throw new BridgeRefusal(
+      "path-refused",
+      `${JSON.stringify(path)} resolves to ${target.origin}, which is not the daemon this bridge ` +
+        `talks to (${daemon.origin}); the token goes to one daemon and no other.`,
+    );
+  }
+  if (target.pathname === "/healthz" || target.pathname.startsWith(`${API_PREFIX}/`)) {
+    return target;
   }
   throw new BridgeRefusal(
     "path-refused",
-    `${JSON.stringify(path)} is not part of this daemon's client surface; the bridge sends ` +
-      `${API_PREFIX}/… and /healthz and nothing else.`,
+    `${JSON.stringify(path)} asks for ${target.pathname}, which is not part of this daemon's ` +
+      `client surface; the bridge sends ${API_PREFIX}/… and /healthz and nothing else.`,
   );
 }
 

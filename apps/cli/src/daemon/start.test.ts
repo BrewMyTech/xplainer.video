@@ -31,8 +31,10 @@ import { describeReconciliation, type StartedDaemon, startDaemon } from "./start
 import { stateDirLayout } from "./state-dir.js";
 import { fakeWorkerRegistry } from "./testing/fake-worker.js";
 import {
+  abruptKill,
   CHILD_DAEMON,
   CHILD_SERVE,
+  describeExit,
   type SpawnedChild,
   spawnEntry,
   untilGone,
@@ -182,7 +184,10 @@ describe("a daemon killed the instant a job is enqueued", () => {
     const jobId = (JSON.parse(announced) as { job_id: number }).job_id;
     const exit = await child.waitForExit();
 
-    expect(exit.signal).toBe("SIGKILL");
+    // The child killed itself, so this process is a watcher that did not ask for the kill: a
+    // signal on POSIX, and on Windows the code `TerminateProcess` leaves behind, because there is
+    // no signal to report. Either way it died where it stood, having run nothing after `enqueue()`.
+    expect(describeExit(exit)).toBe(abruptKill("itself"));
     // The claim under test: whatever `enqueue()` returned an id for is on disk, with no daemon left
     // to have written it afterwards.
     expect(createJobStore(stateDir).read(jobId)?.job_id).toBe(jobId);
@@ -217,13 +222,21 @@ describe("a daemon killed while a job is running", () => {
     strays.push(workerPid);
 
     child.process.kill("SIGKILL");
-    expect((await child.waitForExit()).signal).toBe("SIGKILL");
-    expect(isAlive(workerPid)).toBe(true);
+    expect(describeExit(await child.waitForExit())).toBe(abruptKill("the watcher"));
+
+    // **Whether the worker outlives the daemon is a platform fact, and it is asserted as one.** On
+    // POSIX it does: the worker is a detached process-group leader and nothing signalled it, which
+    // is precisely the orphan boot reconciliation exists for. On Windows there are no process
+    // groups, so `process-group.ts` puts the worker in a kill-on-close Job Object held by a keeper
+    // the daemon started — and `windows-latest` measured the worker already gone the instant the
+    // daemon was, on 2026-09-08. Everything after this line is asserted identically on both.
+    const orphaned = isAlive(workerPid);
+    expect(orphaned).toBe(process.platform !== "win32");
     const abandoned = createJobStore(stateDir).read(jobId);
     expect(abandoned?.status).toBe("running");
     const announcedGrandchild = abandoned?.log.find((line) => line.startsWith("grandchild "));
     const grandchild = Number((announcedGrandchild ?? "").replace("grandchild ", ""));
-    expect(isAlive(grandchild)).toBe(true);
+    expect(isAlive(grandchild)).toBe(orphaned);
 
     const outcome = await startDaemon({
       stateDir,
@@ -236,7 +249,9 @@ describe("a daemon killed while a job is running", () => {
       const { runner, reconciliation } = outcome.daemon;
 
       expect(reconciliation.reconciled).toEqual([jobId]);
-      expect(reconciliation.killed).toEqual([workerPid]);
+      // A worker the reconciler found already dead is not one it killed, and saying it killed one
+      // it did not would be the record claiming a teardown that never happened.
+      expect(reconciliation.killed).toEqual(orphaned ? [workerPid] : []);
       expect(await untilGone(workerPid)).toBe(true);
       // The group, not the leader: the browser and the encoder a render starts are the expensive
       // half, and this stands in for them.

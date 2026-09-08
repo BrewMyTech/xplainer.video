@@ -442,6 +442,16 @@ describe("the supervisor", () => {
 
     expect(preflight.supervisor).toMatchObject({ usable: true, refusal: null });
     expect(preflight.supervisor.identity).toBe("\\xplainer\\tester-daemon");
+    // **The directory is the artefact's own, in the grammar the artefact was composed in.** The
+    // Task Scheduler renderer answers with a `win32.join`ed path, which on macOS and Linux carries
+    // no `/` at all — so the host's `dirname` answers `"."`, and every caller of
+    // `preflightWriteLocations` is then told an install may write to the current working
+    // directory. `install.test.ts` hashes each of those either side of a refusal, so it was
+    // hashing this checkout.
+    expect(preflight.supervisor.artefactDir).toBe(
+      "C:\\Users\\tester\\AppData\\Local\\xplainer\\service",
+    );
+    expect(preflightWriteLocations(preflight)).not.toContain(".");
   });
 
   it("refuses 6 on macOS when launchd has no GUI domain for this user", async () => {

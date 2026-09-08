@@ -26,12 +26,13 @@ import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 import { describeStatus } from "../../commands/daemon.js";
 import { readDaemonState, readRuntimeState, updateDaemonState } from "../../daemon/daemon-state.js";
 import { waitForReadyLine } from "../../daemon/ready.js";
+import { testIpcEndpoint } from "../../daemon/testing/platform.js";
 import {
   CHILD_SERVE,
   type SpawnedChild,
@@ -89,10 +90,15 @@ function answered(stdout: string): ProbeResult {
 }
 
 /** A launch spec pointing into `runtimeDir`, of the shape `buildLaunchSpec` emits. */
-function specFor(runtimeDir: string, stateDir: string, socket: string): LaunchSpec {
-  const executable = join(runtimeDir, "bin", "node");
-  const entry = join(runtimeDir, "lib", "node_modules", "@xplainer", "cli", "dist", "bin.js");
-  const tokenFile = join(stateDir, TOKEN_FILE);
+function specFor(
+  runtimeDir: string,
+  stateDir: string,
+  socket: string,
+  joinPath: (...parts: string[]) => string = join,
+): LaunchSpec {
+  const executable = joinPath(runtimeDir, "bin", "node");
+  const entry = joinPath(runtimeDir, "lib", "node_modules", "@xplainer", "cli", "dist", "bin.js");
+  const tokenFile = joinPath(stateDir, TOKEN_FILE);
   return {
     executable,
     argv: [
@@ -371,7 +377,11 @@ describe("row 2, the loaded configuration", () => {
     // point: what row 1 emits and what row 2 displays are now the same document.
     const expected = expectedLoaded(
       "systemd",
-      specFor("/rt/1.2.3-aaaa", "/home/xplainer/state with space", "/run/x.sock"),
+      // `posix.join`, because this spec describes the machine the **fixture** came from — a Linux
+      // one — rather than the machine running the test. The host separator would compose
+      // `\\home\\xplainer\\state with space\\token` on Windows and report a mismatch against a unit
+      // that says `/home/...`, which is what `windows-latest` did on 2026-09-08.
+      specFor("/rt/1.2.3-aaaa", "/home/xplainer/state with space", "/run/x.sock", posix.join),
     );
     expect(expected.environment).toBe(loaded.environment);
   });
@@ -405,7 +415,7 @@ describe("row 3, from a daemon that is actually answering", () => {
     async () => {
       const stateDir = join(scratchDirectory(), "s");
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-      const socket = join(scratchDirectory("xp-sock-"), "d.sock");
+      const socket = testIpcEndpoint(scratchDirectory("xp-sock-"), "d.sock");
       const tokenFile = join(stateDir, TOKEN_FILE);
       // The subject here is row 3, and a daemon whose toolchain is absent answers `/healthz` with
       // `degraded` (T19) — correct, and a different assertion. Recording one keeps `ok` meaning
@@ -444,7 +454,7 @@ describe("row 3, from a daemon that is actually answering", () => {
     async () => {
       const stateDir = join(scratchDirectory(), "s");
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-      const socket = join(scratchDirectory("xp-sock-"), "d.sock");
+      const socket = testIpcEndpoint(scratchDirectory("xp-sock-"), "d.sock");
       const tokenFile = join(stateDir, TOKEN_FILE);
 
       // A recorded launch spec that is **already** there, and is not the launch that is about to
@@ -503,19 +513,28 @@ describe("row 3, from a daemon that is actually answering", () => {
       const socketDir = scratchDirectory("xp-sock-");
       const tokenFile = join(stateDir, TOKEN_FILE);
 
-      const first = await serveWith(stateDir, { tokenFile, socket: join(socketDir, "a.sock") });
+      const first = await serveWith(stateDir, {
+        tokenFile,
+        socket: testIpcEndpoint(socketDir, "a.sock"),
+      });
       const one = await getHealthz(first.port, first.token);
       first.child.process.kill("SIGTERM");
       await untilGone(first.child.process.pid ?? 0, 30_000);
 
-      const second = await serveWith(stateDir, { tokenFile, socket: join(socketDir, "a.sock") });
+      const second = await serveWith(stateDir, {
+        tokenFile,
+        socket: testIpcEndpoint(socketDir, "a.sock"),
+      });
       const two = await getHealthz(second.port, second.token);
       expect(two.runtime_digest).toBe(one.runtime_digest);
       expect(two.run_id).not.toBe(one.run_id);
       second.child.process.kill("SIGTERM");
       await untilGone(second.child.process.pid ?? 0, 30_000);
 
-      const third = await serveWith(stateDir, { tokenFile, socket: join(socketDir, "b.sock") });
+      const third = await serveWith(stateDir, {
+        tokenFile,
+        socket: testIpcEndpoint(socketDir, "b.sock"),
+      });
       const three = await getHealthz(third.port, third.token);
       expect(three.runtime_digest).not.toBe(one.runtime_digest);
     },

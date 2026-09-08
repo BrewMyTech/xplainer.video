@@ -22,9 +22,16 @@ import {
   type LaunchSettings,
   type LaunchSpec,
 } from "../../runtime/launch-spec.js";
+import { registerCommands } from "../register.js";
 import { buildFixturePayload } from "../testing/payload.js";
 import { SupervisorArtefactError, type SupervisorEnvironment } from "./artefact.js";
-import { renderScheduledTask, TASK_XML_MODE, taskName, taskXmlPath } from "./schtasks.js";
+import {
+  renderScheduledTask,
+  TASK_SCHEDULER_KIND,
+  TASK_XML_MODE,
+  taskName,
+  taskXmlPath,
+} from "./schtasks.js";
 
 let scratch = "";
 let stateDir = "";
@@ -91,7 +98,7 @@ describe("the Task Scheduler document", () => {
     const argumentLine = spec.argv.join(" ");
 
     expect(artefact.contents).toBe(
-      `<?xml version="1.0" encoding="UTF-8"?>
+      `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>xplainer local daemon</Description>
@@ -191,6 +198,36 @@ describe("the Task Scheduler document", () => {
     );
     expect(contents).not.toContain("<Duration>");
     expect(contents).not.toContain("StopAtDurationEnd");
+  });
+
+  /**
+   * The declaration and the read that consumes it, together, because either alone is wrong.
+   *
+   * `Register-ScheduledTask -Xml` takes a .NET string — UTF-16 by construction — so a document
+   * declaring `UTF-8` is refused with `unable to switch the encoding` and reported as
+   * `SCHED_E_MALFORMEDXML`; that is what every registration on `windows-latest` answered on
+   * 2026-09-08. The bytes stay UTF-8 so the mirror is readable text, which is why the registration
+   * command has to name the encoding it decodes with. The two live in different modules, so they
+   * are asserted against each other here rather than trusted to stay in step.
+   */
+  it("declares the encoding of the string a registration parses, and is read back as UTF-8", () => {
+    const contents = renderScheduledTask(spec, environment).contents;
+
+    expect(contents.startsWith('<?xml version="1.0" encoding="UTF-16"?>\n')).toBe(true);
+    expect(contents).not.toContain('encoding="UTF-8"');
+    // The bytes are UTF-8: every code point in the document is one this encoding round-trips, and
+    // the mirror is a text file rather than UTF-16 code units.
+    expect(Buffer.from(contents, "utf8").toString("utf8")).toBe(contents);
+
+    const register = registerCommands({
+      kind: TASK_SCHEDULER_KIND,
+      identity: taskName(environment),
+      artefact: taskXmlPath(environment),
+      uid: 0,
+    })[0];
+    const script = (register?.command.argv ?? []).join(" ");
+    expect(script).toContain("Register-ScheduledTask -Xml (Get-Content -Path ");
+    expect(script).toContain("-Raw -Encoding UTF8)");
   });
 
   it("carries the six settings values the drain and the breaker depend on", () => {

@@ -38,11 +38,17 @@ import process from "node:process";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { REMOTE_EXPOSURE_FLAG } from "../daemon/binding.js";
-import { IPC_DIR, IPC_SOCKET_FILE } from "../daemon/ipc.js";
+import { IPC_DIR, IPC_SOCKET_FILE, isNamedPipe, resolveIpcPath } from "../daemon/ipc.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { parseReadyLine, type ReadyAnnouncement, waitForReadyLine } from "../daemon/ready.js";
 import { DEFAULT_DRAIN_TIMEOUT_MS } from "../daemon/runner.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE, stateDirLayout } from "../daemon/state-dir.js";
+import {
+  endpointGone,
+  ownerOnly,
+  protectionOf,
+  testIpcEndpoint,
+} from "../daemon/testing/platform.js";
 import {
   CHILD_SERVE,
   CHILD_SERVE_JOB,
@@ -79,13 +85,23 @@ function run(entry: string, args: readonly string[], env: Record<string, string>
   return child;
 }
 
-/** The permission bits, as the four octal digits a person would write. */
-function mode(path: string): string {
-  return (statSync(path).mode % 0o1000).toString(8).padStart(4, "0");
-}
-
-function octal(value: number): string {
-  return value.toString(8).padStart(4, "0");
+/**
+ * Ask a daemon to stop the way a supervisor on this platform asks.
+ *
+ * `SIGTERM` on POSIX, which is what `systemctl --user stop` and `launchctl bootout` send and what
+ * ADR 0024's drain is written against. **Windows has no such signal**: `child.kill("SIGTERM")` is
+ * `TerminateProcess`, no handler runs, the daemon dies mid-write and `runtime.json` is left behind
+ * — so the planned stop there is `POST /api/daemon/drain` over the pipe, which is what ADR 0025
+ * makes the restart route and what `daemon restart` sends. The six steps that follow are the same
+ * on all three, which is why every assertion after this call is.
+ */
+async function beginPlannedShutdown(child: SpawnedChild, socketPath: string): Promise<void> {
+  if (process.platform === "win32") {
+    const acknowledgement = await postDrain(socketPath);
+    expect(acknowledgement.status).toBe(202);
+    return;
+  }
+  child.process.kill("SIGTERM");
 }
 
 /**
@@ -194,14 +210,22 @@ afterEach(() => {
 });
 
 describe("the bearer token a daemon mints on its first start", () => {
-  it("is 32 bytes, 0600, inside a 0700 state directory, and is required by /healthz", async () => {
+  it("is 32 bytes, reachable only by this account, and is required by /healthz", async () => {
     const stateDir = stateDirectory();
 
     const { child, ready, token } = await serveUntilReady(CHILD_SERVE, stateDir);
 
     expect(Buffer.from(token, "base64url")).toHaveLength(32);
-    expect(mode(join(stateDir, TOKEN_FILE))).toBe(octal(STATE_FILE_MODE));
-    expect(mode(stateDir)).toBe(octal(STATE_DIR_MODE));
+    // `0600` inside a `0700` directory on POSIX. On Windows `stat` reports `0666` for both — Node
+    // documents that the owner/group/other distinction is not implemented there — and the protection
+    // is the explicit ACL of ADR 0020 §R-SEC-5, which `daemon/windows-acl.ts` applies at creation.
+    expect(protectionOf(join(stateDir, TOKEN_FILE))).toBe(ownerOnly(STATE_FILE_MODE));
+    // The directory **this daemon** made, not the one `mkdtemp` handed the test: `mkdtemp` creates
+    // `0700` on POSIX and an inheriting directory on Windows, so the state directory itself would
+    // have asserted the temporary-file API on one platform and nothing at all on the other. Both
+    // platforms narrow at creation and leave a directory that was already there as they found it,
+    // so `<state>/jobs` is where that rule is observable.
+    expect(protectionOf(stateDirLayout(stateDir).jobs)).toBe(ownerOnly(STATE_DIR_MODE));
     expect(child.stderr()).toContain("wrote a new bearer token");
 
     const url = `http://127.0.0.1:${ready.port}/healthz`;
@@ -226,7 +250,7 @@ describe("the bearer token a daemon mints on its first start", () => {
     });
 
     expect(readdirSync(stateDir)).not.toContain(TOKEN_FILE);
-    expect(mode(elsewhere)).toBe(octal(STATE_FILE_MODE));
+    expect(protectionOf(elsewhere)).toBe(ownerOnly(STATE_FILE_MODE));
     const response = await fetch(`http://127.0.0.1:${ready.port}/healthz`, {
       headers: { authorization: `Bearer ${token}` },
     });
@@ -307,7 +331,7 @@ describe("the three settings options", () => {
     const decoyStateDir = stateDirectory();
     const decoyToken = join(stateDirectory(), "decoy-token");
     const tokenFile = join(stateDir, "delivered-token");
-    const socket = join(stateDir, "run", "x.sock");
+    const socket = testIpcEndpoint(join(stateDir, "run"));
 
     const child = run(
       CHILD_SERVE,
@@ -330,14 +354,19 @@ describe("the three settings options", () => {
     const overSocket = await getHealthz({ socketPath: socket });
     expect(overSocket.status).toBe(200);
 
-    // The token is a file at the given path, `0600`, and it is the token the TCP guard accepts.
-    expect(mode(tokenFile)).toBe(octal(STATE_FILE_MODE));
+    // The token is a file at the given path that only this account can read, and it is the token
+    // the TCP guard accepts.
+    expect(protectionOf(tokenFile)).toBe(ownerOnly(STATE_FILE_MODE));
     const token = readFileSync(tokenFile, "utf8").trim();
     const overTcp = await getHealthz({ port: ready.port }, { authorization: `Bearer ${token}` });
     expect(overTcp.status).toBe(200);
 
-    // The `0700` rule followed the path: it is the socket's own directory that is narrowed.
-    expect(mode(dirname(socket))).toBe(octal(STATE_DIR_MODE));
+    // The `0700` rule followed the path: it is the socket's own directory that is narrowed. A
+    // named pipe has no directory to narrow, and `prepareIpcSocket` makes nothing for it — the
+    // assertion there is that `--socket` moved the endpoint at all, which the two above are.
+    if (!isNamedPipe(socket)) {
+      expect(protectionOf(dirname(socket))).toBe(ownerOnly(STATE_DIR_MODE));
+    }
 
     // The state directory is the flag's, and `daemon.json` records what this process used.
     const daemonState = JSON.parse(
@@ -460,8 +489,10 @@ describe("the ready line", () => {
     expect(ready.contract_version).toBe(MCP_CONTRACT_VERSION);
     // The second listener, named: a parent reading this line learns the socket path without a
     // request, which is the whole point of announcing rather than being polled.
-    expect(ready.socket).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
-    expect(existsSync(ready.socket ?? "")).toBe(true);
+    expect(ready.socket).toBe(resolveIpcPath(stateDir));
+    // Bound, rather than present: on Windows the endpoint is a named pipe and there is no file to
+    // find. One authenticated-by-the-filesystem `GET` is the fact on both.
+    expect((await getHealthz({ socketPath: ready.socket ?? "" })).status).toBe(200);
 
     const runtime = JSON.parse(
       readFileSync(stateDirLayout(stateDir).runtimeState, "utf8"),
@@ -519,13 +550,30 @@ describe("the IPC listener", () => {
     });
   }, 30_000);
 
-  it("puts the socket in a 0700 directory, which is what that authentication is", async () => {
+  /**
+   * **The Windows half is a different claim, and a weaker one, stated rather than implied.** A
+   * named pipe is not a filesystem entry: there is no directory to narrow and no mode to set, and
+   * `net.Server.listen({ path })` offers no way to pass a security descriptor, so the pipe carries
+   * Windows' default one. What this case can assert there is the property `ipc.ts` does provide —
+   * the name is derived from the state directory, so two accounts and two runs never collide on one
+   * pipe — and that the endpoint answers. The access-control half of ADR 0020 §R-SEC-5 is closed
+   * for the **token** (`windows-acl.ts`) and is still open for the pipe.
+   */
+  it("puts the socket where only this account can reach it, which is what that authentication is", async () => {
     const stateDir = stateDirectory();
     const { ready } = await serveUntilReady(CHILD_SERVE, stateDir);
     const socketPath = ready.socket ?? "";
 
+    expect(socketPath).toBe(resolveIpcPath(stateDir));
+    if (isNamedPipe(socketPath)) {
+      expect(socketPath).toBe(resolveIpcPath(stateDir, "win32"));
+      expect(socketPath).not.toBe(resolveIpcPath(stateDirectory(), "win32"));
+      expect(existsSync(socketPath)).toBe(false);
+      expect((await getHealthz({ socketPath })).status).toBe(200);
+      return;
+    }
     expect(socketPath).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
-    expect(mode(dirname(socketPath))).toBe(octal(STATE_DIR_MODE));
+    expect(protectionOf(dirname(socketPath))).toBe(ownerOnly(STATE_DIR_MODE));
     expect(statSync(socketPath).isSocket()).toBe(true);
   }, 30_000);
 
@@ -534,29 +582,40 @@ describe("the IPC listener", () => {
    * socket half is why: a socket file that outlives its daemon is a path `mcp --attach` dials and
    * finds nothing behind — a `ECONNREFUSED` where an honest `ENOENT` would have said "no daemon".
    */
-  it("unlinks the socket on a clean shutdown, along with runtime.json", async () => {
+  it("leaves nothing answering on the socket after a clean shutdown, along with runtime.json", async () => {
     const stateDir = stateDirectory();
     const { child, ready } = await serveUntilReady(CHILD_SERVE, stateDir);
     const socketPath = ready.socket ?? "";
-    expect(existsSync(socketPath)).toBe(true);
+    expect((await getHealthz({ socketPath })).status).toBe(200);
 
-    child.process.kill("SIGTERM");
+    await beginPlannedShutdown(child, socketPath);
     const exit = await child.waitForExit();
 
     expect(exit.code).toBe(0);
-    expect(existsSync(socketPath)).toBe(false);
-    // The directory stays: it is `0700` and the next start binds into it again.
-    expect(existsSync(dirname(socketPath))).toBe(true);
+    expect(await endpointGone(socketPath)).toBe(true);
+    if (!isNamedPipe(socketPath)) {
+      // The directory stays: it is `0700` and the next start binds into it again. A named pipe has
+      // no directory, which is why `prepareIpcSocket` reports `removeOnShutdown: false` for one.
+      expect(existsSync(dirname(socketPath))).toBe(true);
+    }
     expect(readdirSync(stateDir)).not.toContain("runtime.json");
   }, 30_000);
 });
 
-describe("SIGTERM", () => {
+/**
+ * A supervisor's planned stop, whichever form this platform's supervisor has.
+ *
+ * `SIGTERM` on the two platforms that have one. Windows does not: `TerminateProcess` runs no
+ * handler, so the same six steps are asked for over the pipe, which is the route ADR 0025 gives
+ * `daemon restart` and the only graceful stop that platform has. What follows the ask is identical
+ * on all three, and is asserted identically.
+ */
+describe("a planned stop", () => {
   it(
     "drains the running job, stops its process group, removes runtime.json and exits 0",
     async () => {
       const stateDir = stateDirectory();
-      const { child } = await serveUntilReady(CHILD_SERVE_JOB, stateDir, {
+      const { child, ready } = await serveUntilReady(CHILD_SERVE_JOB, stateDir, {
         XPLAINER_TEST_WORKER: JSON.stringify({ lines: 3, lifeMs: 60_000, grandchild: true }),
       });
       const announced = await child.waitForLine('"event":"job"');
@@ -577,7 +636,7 @@ describe("SIGTERM", () => {
       expect(isAlive(grandchild)).toBe(true);
 
       const sentAt = Date.now();
-      child.process.kill("SIGTERM");
+      await beginPlannedShutdown(child, ready.socket ?? "");
       const exit = await child.waitForExit();
       const elapsed = Date.now() - sentAt;
 
@@ -650,7 +709,7 @@ describe("POST /api/daemon/drain over the socket", () => {
 
       // Steps 3 to 6, exactly as the signal produces them.
       expect(await untilGone(workerPid)).toBe(true);
-      expect(existsSync(socketPath)).toBe(false);
+      expect(await endpointGone(socketPath)).toBe(true);
       expect(readdirSync(stateDir)).not.toContain("runtime.json");
       const drained = createJobStore(stateDir).read(jobId);
       expect(drained?.status).toBe("error");

@@ -20,7 +20,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
@@ -40,11 +40,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type DaemonStart, readDaemonState, updateDaemonState } from "../daemon/daemon-state.js";
 import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveIpcPath } from "../daemon/ipc.js";
+import { treeKillCommand } from "../daemon/process-group.js";
 import {
   CHILD_SERVE,
   killAndWait,
   removeTree,
   TS_SOURCE_HOOK,
+  untilGone,
 } from "../daemon/testing/spawn-child.js";
 import { isAlive } from "../daemon/worker-identity.js";
 import { installDaemon } from "./install.js";
@@ -168,8 +170,11 @@ type LifecycleHarness = {
   run: ProbeRunner;
   /** Every command, in order, as `program arg arg`. */
   commands: string[];
-  /** Stop the daemon this harness started, as the supervisor's stop command would. */
-  stop(): void;
+  /**
+   * Stop the daemon this harness started, as the supervisor's stop command would, and answer with
+   * the pid it stopped so a caller can wait for the machine to agree it has gone.
+   */
+  stop(): number | null;
   /**
    * Kill the daemon outright and wait for it to be gone.
    *
@@ -211,9 +216,27 @@ function lifecycleHarness(options: { stateDir: string; lingerMarker?: string }):
     children.push(daemon);
   };
 
-  const stop = (): void => {
-    daemon?.kill("SIGTERM");
+  const stop = (): number | null => {
+    const child = daemon;
     daemon = null;
+    const pid = child?.pid ?? null;
+    if (child === null) {
+      return null;
+    }
+    if (process.platform === "win32" && pid !== null) {
+      // `Stop-ScheduledTask` ends a task by terminating its **process tree** — the shipped document
+      // sets `AllowHardTerminate` — and Windows has no signal a console process can run a drain
+      // from, so there is nothing here for `SIGTERM` to mean. `taskkill /PID <pid> /T /F` is the
+      // command `process-group.ts` already uses for that job; if it cannot be run at all, the
+      // terminate Node does for `kill()` is still better than leaving a daemon behind.
+      const { program, argv } = treeKillCommand(pid);
+      const answer = spawnSync(program, argv, { windowsHide: true, timeout: 10_000 });
+      if (answer.error === undefined && answer.status === 0) {
+        return pid;
+      }
+    }
+    child.kill("SIGTERM");
+    return pid;
   };
 
   const kill = async (): Promise<void> => {
@@ -321,7 +344,7 @@ function lifecycleHarness(options: { stateDir: string; lingerMarker?: string }):
   };
 }
 
-/** A macOS account and directories, built inside a scratch tree so nothing real is touched. */
+/** An account and its directories, built inside a scratch tree so nothing real is touched. */
 function fixtureEnvironment(root: string): SupervisorEnvironment {
   // The two Linux system directories are filled whatever platform the case addresses, because they
   // are what keeps the *host* out of the answer: `probeLinger()` composes `<lingerDir>/<account>`
@@ -333,9 +356,35 @@ function fixtureEnvironment(root: string): SupervisorEnvironment {
   return {
     home: join(root, "home"),
     account: "tester",
+    // The Windows pair, for the same reason and with the same effect: the task document is
+    // mirrored under `localAppData` and the install preflight hashes `<systemRoot>\\System32\\Tasks`,
+    // and a `windows-latest` runner executing this file would otherwise reach its own.
+    localAppData: join(root, "AppData", "Local"),
+    systemRoot: join(root, "Windows"),
     lingerDir: join(root, "linger"),
     systemdBooted,
   };
+}
+
+/**
+ * Wait until the daemon a supervisor's stop was aimed at has really gone.
+ *
+ * The evidence differs because the stop does. On POSIX it is `SIGTERM`, which runs the shipped
+ * drain, and step 6 of that drain removes `runtime.json` — so the file's absence is the strongest
+ * fact available: the process is gone *and* it went down its own shutdown path. Windows has no such
+ * signal; a stopped Scheduled Task is a terminated process tree, no handler runs, and `runtime.json`
+ * is left behind exactly as a `SIGKILL` leaves it. The fact there is the **pid**, which is also what
+ * the report these cases ask for is about to be classified from.
+ */
+async function waitUntilStopped(stateDir: string, pid: number | null): Promise<void> {
+  if (process.platform !== "win32") {
+    await waitUntil(() => !existsSync(join(stateDir, "runtime.json")));
+    return;
+  }
+  if (pid === null) {
+    throw new Error("the harness was asked to stop a daemon it had never started");
+  }
+  expect(await untilGone(pid, 30_000)).toBe(true);
 }
 
 /** Hold a port with a listener that is emphatically not an xplainer daemon. */
@@ -425,12 +474,22 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
       const stateDir = installableState();
       const environment = fixtureEnvironment(root);
       const harness = lifecycleHarness({ stateDir });
+      // **The one case that addresses the host's own platform, and only where it has to.** The
+      // holder of the port is a real listener in this process, named by whatever port prober this
+      // machine has — and which prober is asked is decided by the `platform` this report is taken
+      // for. `lsof` and `ss` are absent on Windows, so a Windows run addressed as `darwin` would
+      // report "a process this preflight could not name" and the pid in ADR 0020's first sentence
+      // would be a fact about the simulation rather than about the machine. macOS and Linux keep
+      // the launchd vocabulary they have always exercised: the sentence is the same on all three,
+      // and the tool it names is the one that answered.
+      const platform = process.platform === "win32" ? "win32" : "darwin";
+      const prober = platform === "win32" ? "netstat -ano" : "lsof";
 
       await installDaemon({
         stateDir,
         payloadDir,
         port: 0,
-        platform: "darwin",
+        platform,
         environment,
         run: harness.run,
         uid: 501,
@@ -440,14 +499,14 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
       expect(port).toBeGreaterThan(0);
 
       // Stop the daemon the way a supervisor would, then put something else on its port.
-      harness.stop();
-      await waitUntil(() => !existsSync(join(stateDir, "runtime.json")));
+      const stoppedPid = harness.stop();
+      await waitUntilStopped(stateDir, stoppedPid);
       await holdPort(port);
       latchStall(stateDir);
 
       const report = await daemonStatus({
         stateDir,
-        platform: "darwin",
+        platform,
         environment,
         run: harness.run,
         uid: 501,
@@ -456,6 +515,11 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
       expect(report.condition).toBe("stalled");
       expect(report.exit_code).toBe(DAEMON_UNHEALTHY_EXIT_CODE);
       expect(report.probe.holder_pid).toBe(process.pid);
+      // Which prober answered, named against the two spellings this project runs rather than
+      // against whatever the report happened to say. The ADR's sentence does not carry it — a
+      // known pid replaces the detail clause entirely — so this is the assertion that the pid above
+      // came from the tool this platform actually has.
+      expect(report.probe.holder_detail ?? "").toContain(`\`${prober}\``);
       const [stopped] = adrSentences();
       const expected = (stopped ?? "")
         .replace("port 8787", `port ${String(port)}`)
@@ -491,8 +555,8 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
         uid: 501,
         healthTimeoutMs: HEALTH_MS,
       });
-      harness.stop();
-      await waitUntil(() => !existsSync(join(stateDir, "runtime.json")));
+      const stoppedPid = harness.stop();
+      await waitUntilStopped(stateDir, stoppedPid);
       harness.switchOff("video.xplainer.daemon");
 
       const report = await daemonStatus({

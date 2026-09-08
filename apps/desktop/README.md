@@ -50,10 +50,20 @@ and turns the condition code it answers into one of seven outcomes:
 | `disabled` | the supervisor says the service is switched off | switch it back on |
 | `absent` | nothing answered, and nothing above explained why | start one, or install it |
 
-Only `absent` leads to a daemon of this app's own, and a daemon this app spawned
-is stopped before an installed one starts and before the app exits — one daemon
-over one state directory, always. A `serve` that finds the state directory owned
-exits `10` having written nothing, which the app reads as *reattach*: ask again.
+Only `absent` leads to a daemon of this app's own — and not every `absent` does.
+Two conditions land on that outcome whose remedy is a command the user runs
+rather than a daemon this app starts: `stalled`, where the breaker is latched and
+a `serve` exits `0` without binding, and `unreachable` on a machine that has one
+registered, where an installed daemon is stopped and its supervisor owns starting
+it. The app consults the condition, not just the outcome.
+
+A daemon this app spawned is stopped before an installed one starts and before
+the app exits — one daemon over one state directory, always. A `serve` that finds
+the state directory owned exits `10` having written nothing, which the app reads
+as *reattach*: ask again. The **Start at login** button runs that handoff in
+order — stop the spawned daemon, install, discover again — because a spawned
+daemon holds `serve`'s default port, which is the port `daemon install` probes,
+and an install beside it refuses with exit `7` over this app's own listener.
 
 Which program those commands run is **decision D10**, and it has two stages: the
 packaged payload's own interpreter until `daemon install` has written

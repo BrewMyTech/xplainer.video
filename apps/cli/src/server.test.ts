@@ -45,6 +45,7 @@ import { createLoopbackGuard } from "./daemon/guard.js";
 import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner, type JobRunner, type WorkerRegistry } from "./daemon/runner.js";
 import { fakeWorkerRegistry } from "./daemon/testing/fake-worker.js";
+import { testIpcEndpoint } from "./daemon/testing/platform.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import {
   DRAIN_PATH,
@@ -619,7 +620,7 @@ describe("the drain route", () => {
 
   /** The two listeners a daemon binds, with the guard on the TCP one, as `serve` binds them. */
   async function serveWithDrain(seam?: DrainSeam): Promise<RunningServer & { socketPath: string }> {
-    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    const socketPath = testIpcEndpoint(temporaryDirectory("xplainer-drain-ipc-"));
     running = await startServer({
       backend: localBackend(),
       port: 0,
@@ -731,7 +732,7 @@ describe("the drain route", () => {
         reject(new Error("the test released the held tool call"));
       };
     });
-    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    const socketPath = testIpcEndpoint(temporaryDirectory("xplainer-drain-ipc-"));
     let closed: Promise<void> | null = null;
     const drain = recordingDrain(() => {
       closed = running?.close() ?? Promise.resolve();
@@ -808,7 +809,7 @@ describe("the drain route", () => {
    * daemon has begun, rather than one that has merely never been consumed.
    */
   it("answers in full and still closes, with an SSE stream and a media body in flight", async () => {
-    const socketPath = join(temporaryDirectory("xplainer-drain-ipc-"), "x.sock");
+    const socketPath = testIpcEndpoint(temporaryDirectory("xplainer-drain-ipc-"));
     let closed: Promise<void> | null = null;
     const drain = recordingDrain(() => {
       closed = running?.close() ?? Promise.resolve();

@@ -8,13 +8,14 @@
  * you can only produce with a real file.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
+import { ownerOnly, protectionOf } from "./testing/platform.js";
 import {
   loadOrMintToken,
   resolveTokenPath,
@@ -23,6 +24,7 @@ import {
   TOKEN_FILE,
   TOKEN_FILE_ENV,
   TokenUnreadableError,
+  tokenProtection,
 } from "./token.js";
 
 const scratch: string[] = [];
@@ -33,10 +35,13 @@ function stateDirectory(): string {
   return dir;
 }
 
-/** The permission bits, without the file-type bits `stat` returns alongside them. */
-function mode(path: string): string {
-  return (statSync(path).mode % 0o1000).toString(8).padStart(4, "0");
-}
+/**
+ * What keeps another local account out, whichever mechanism this platform has.
+ *
+ * On POSIX it is the mode, read off `stat`. On Windows `stat` reports `0666` for the file this mint
+ * created and the DACL is the protection, so `protectionOf` reads that instead — the entry
+ * `windows-acl.ts` applies at creation, which is the second half of what this case is about.
+ */
 
 afterEach(() => {
   for (const dir of scratch.splice(0)) {
@@ -98,7 +103,7 @@ describe("resolveTokenPathSetting", () => {
 });
 
 describe("loadOrMintToken", () => {
-  it("mints 32 random bytes 0600 inside a 0700 directory, and says it minted them", () => {
+  it("mints 32 random bytes only this account can read, and says it minted them", () => {
     const stateDir = join(stateDirectory(), "nested");
     const path = join(stateDir, TOKEN_FILE);
 
@@ -107,8 +112,36 @@ describe("loadOrMintToken", () => {
     expect(token.minted).toBe(true);
     expect(token.path).toBe(path);
     expect(Buffer.from(token.value, "base64url")).toHaveLength(TOKEN_BYTES);
-    expect(mode(path)).toBe(STATE_FILE_MODE.toString(8).padStart(4, "0"));
-    expect(mode(stateDir)).toBe(STATE_DIR_MODE.toString(8).padStart(4, "0"));
+    // `0600` inside a `0700` directory on POSIX; on Windows the two explicit ACLs that replace
+    // them, because a mode there is not protection (ADR 0020 §R-SEC-5).
+    expect(protectionOf(path)).toBe(ownerOnly(STATE_FILE_MODE));
+    expect(protectionOf(stateDir)).toBe(ownerOnly(STATE_DIR_MODE));
+    // And the mint says which of the two it got, so `serve` can print it.
+    expect(token.acl.outcome).toBe(process.platform === "win32" ? "applied" : "not-applicable");
+  });
+
+  /**
+   * The sentence `serve` prints, in all three of its forms.
+   *
+   * The weakest of them is the one that matters: a `win32` machine whose `icacls` did not run has a
+   * token every local account can read, and that has to be a sentence a person can find in the log
+   * rather than something inferred from its absence.
+   */
+  it("says which of a mode and an ACL protected the file it minted", () => {
+    expect(tokenProtection({ outcome: "not-applicable" })).toBe("mode 0600");
+    expect(tokenProtection({ outcome: "applied", command: "icacls C:\\t /inheritance:r" })).toBe(
+      "owner-only ACL",
+    );
+
+    const failed = tokenProtection({
+      outcome: "failed",
+      command: "icacls C:\\t /inheritance:r /grant:r alice:(R,W)",
+      reason: "exited 5: Access is denied.",
+    });
+    expect(failed).toContain("WITHOUT an owner-only ACL");
+    expect(failed).toContain("readable by every local account");
+    expect(failed).toContain("icacls C:\\t");
+    expect(failed).toContain("exited 5: Access is denied.");
   });
 
   it("mints a different token every time", () => {

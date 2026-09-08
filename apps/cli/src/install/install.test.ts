@@ -685,6 +685,9 @@ describe("daemon install — Windows", () => {
       expect(refusal.message).toContain("267036");
       const scripts = harness.commands.filter((entry) => entry.startsWith("powershell.exe"));
       expect(scripts[0]).toContain("Register-ScheduledTask -Xml (Get-Content -Path ");
+      // The document is UTF-8 on disk and declares `UTF-16`, because what Task Scheduler parses is
+      // the string PowerShell decoded; the read has to say which encoding the bytes are in.
+      expect(scripts[0]).toContain("-Raw -Encoding UTF8)");
       expect(scripts[0]).toContain("-TaskName '\\xplainer\\tester-daemon' -Force");
       expect(scripts[1]).toContain("Start-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
       expect(scripts[2]).toContain("Get-ScheduledTaskInfo -TaskName '\\xplainer\\tester-daemon'");

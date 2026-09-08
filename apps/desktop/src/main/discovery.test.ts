@@ -13,13 +13,16 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   DiscoveryRefusal,
   discover,
+  handOffToInstall,
   launcherPath,
+  mayStartDaemon,
   parseDaemonReport,
   resolveCliProgram,
   spawnDaemon,
@@ -42,6 +45,27 @@ const CASE_TIMEOUT_MS = 60_000;
 afterAll(async () => {
   await cleanUpFixtures();
 }, CASE_TIMEOUT_MS);
+
+/**
+ * Whether `127.0.0.1:port` can be bound right now.
+ *
+ * The installer's preflight asks the same question of the same port with the same syscall, and
+ * answers exit `7` when it cannot — so this is the observable the handoff is about, not a proxy
+ * for it.
+ */
+async function bindable(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const server = createServer();
+    server.once("error", () => {
+      resolve(false);
+    });
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+  });
+}
 
 /** The environment a discovery runs its child with: this machine's, pointed at a test's own state. */
 function environmentFor(stateDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -114,6 +138,10 @@ describe("discover", () => {
       expect(discovery.report.probe.error).not.toBeNull();
       expect(discovery.action).toMatch(/Start one from this app/);
       expect(discovery.program.kind).toBe("payload");
+
+      // Nothing is installed and nothing explains the silence, so this is the one answer that is
+      // this app's to act on.
+      expect(mayStartDaemon(discovery)).toBe(true);
     },
     CASE_TIMEOUT_MS,
   );
@@ -304,6 +332,11 @@ describe("discover", () => {
       expect(installed.report.condition).toBe("unreachable");
       expect(installed.action).toMatch(/daemon start/);
 
+      // And it is not a daemon this app may start either: a second `serve` over a state directory
+      // an installed daemon owns is the exit `10` the handoff exists to avoid, and the remedy the
+      // sentence above names is the supervisor's, not this app's.
+      expect(mayStartDaemon(installed)).toBe(false);
+
       // Latched: a `serve` started now would exit 0 without binding, so the remedy is the command
       // that clears the breaker.
       amendDaemonState(stateDir, {
@@ -316,6 +349,11 @@ describe("discover", () => {
       });
       expect(latched.report.condition).toBe("stalled");
       expect(latched.action).toMatch(/daemon restart/);
+
+      // Same answer, same reason: the outcome is `absent`, and spawning here would produce no
+      // daemon at all — the sentence a window shows is the whole of what this app can do.
+      expect(latched.outcome).toBe("absent");
+      expect(mayStartDaemon(latched)).toBe(false);
     },
     CASE_TIMEOUT_MS,
   );
@@ -411,6 +449,52 @@ describe("spawnDaemon", () => {
       });
       expect(discovery.url).toBe(live.url);
       expect(discovery.report.probe.httpStatus).toBe(200);
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
+
+describe("handOffToInstall", () => {
+  it(
+    "gets this app's daemon off the install's port before the install looks at it",
+    async () => {
+      const resources = payloadResources();
+      const stateDir = temporaryDirectory();
+      const live = await startDaemon({ resources, stateDir });
+
+      // What `daemon install` does before it writes anything is bind the port it is about to
+      // record — `install/preflight.ts`'s row `7`. A daemon this app spawned holds `serve`'s
+      // default port, which is that port, so the installer's own probe is what the handoff has to
+      // satisfy. Here the probe is a real bind against the port this app's daemon really holds.
+      expect(await bindable(live.port)).toBe(false);
+
+      const order: string[] = [];
+      const free = await handOffToInstall({
+        stopSpawned: async () => {
+          order.push("stop");
+          await live.daemon.stop(15_000);
+        },
+        install: async () => {
+          order.push("install");
+          return bindable(live.port);
+        },
+        rediscover: async () => {
+          order.push("rediscover");
+          const again = await discover({
+            resourcesPath: resources,
+            stateDir,
+            env: environmentFor(stateDir),
+          });
+          // The app's own daemon is gone, so the answer the window gets afterwards is about the
+          // machine rather than about the process this app had just stopped.
+          expect(again.report.probe.httpStatus).toBeNull();
+        },
+      });
+
+      // The install's answer is the handoff's answer, and it is `true`: the port was free by the
+      // time the installer looked at it, which is exactly the exit `7` that does not happen.
+      expect(free).toBe(true);
+      expect(order).toEqual(["stop", "install", "rediscover"]);
     },
     CASE_TIMEOUT_MS,
   );

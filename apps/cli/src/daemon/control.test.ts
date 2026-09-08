@@ -30,6 +30,7 @@ import { DRAIN_PATH } from "../server.js";
 import { awaitStopped, clearStartLatch, requestDrain } from "./control.js";
 import { readDaemonState, updateDaemonState } from "./daemon-state.js";
 import { waitForReadyLine } from "./ready.js";
+import { endpointGone, testIpcEndpoint } from "./testing/platform.js";
 import { CHILD_SERVE, type SpawnedChild, spawnEntry, untilGone } from "./testing/spawn-child.js";
 
 const scratch: string[] = [];
@@ -94,11 +95,11 @@ describe("requestDrain", () => {
     expect(stopped.stopped).toBe(true);
     expect(stopped.runtimeRecordRemoved).toBe(true);
     expect((await daemon.child.waitForExit()).code).toBe(0);
-    expect(existsSync(daemon.socket)).toBe(false);
+    expect(await endpointGone(daemon.socket)).toBe(true);
   }, 40_000);
 
   it("reports a socket nothing is listening on as not-listening", async () => {
-    const socketPath = join(stateDirectory(), "nothing.sock");
+    const socketPath = testIpcEndpoint(stateDirectory(), "nothing.sock");
 
     const asked = await requestDrain({ socketPath });
 
@@ -107,7 +108,9 @@ describe("requestDrain", () => {
 
   /** A daemon from a release that predates the route: it answers, and it answers 404. */
   it("reports a listener with no such route as no-route, naming the supervisor as the way out", async () => {
-    const socketPath = join(stateDirectory(), "old.sock");
+    // A named pipe on Windows, where `listen` on a filesystem path is `EACCES`: what this case
+    // needs is a listener of the kind this platform's daemon binds, answering 404.
+    const socketPath = testIpcEndpoint(stateDirectory(), "old.sock");
     const listener = createServer((_request, response) => {
       response.writeHead(404, { "content-type": "text/plain" });
       response.end("404 Not Found");

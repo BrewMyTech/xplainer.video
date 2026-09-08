@@ -193,6 +193,46 @@ describe("DaemonBridge", () => {
     await expect(bridge.json({ path: "/mcp" })).rejects.toBeInstanceOf(BridgeRefusal);
     await expect(bridge.json({ path: "/etc/passwd" })).rejects.toThrow(/client surface/);
   });
+
+  it(
+    "refuses a path that is only under the prefix until it is parsed",
+    async () => {
+      const { bridge } = await daemonWithVideo("bridge-traversal");
+
+      // Every one of these passes a `startsWith("/api/")` as a *string* and asks for `/mcp` as a
+      // *URL*: `new URL()` collapses `..`, `.` and — per the URL standard's double-dot segment —
+      // `%2e%2e` alike. A check on the string that arrived is a check about a different request
+      // than the one that is sent, and the one that is sent carries this process's bearer token.
+      const traversals = [
+        "/api/../mcp",
+        "/api/videos/../../mcp",
+        "/api/%2e%2e/mcp",
+        "/api/./../mcp",
+      ];
+      for (const path of traversals) {
+        expect(path.startsWith(`${API_PREFIX}/`)).toBe(true);
+        expect(new URL(path, bridge.url).pathname).toBe("/mcp");
+
+        const refusal = await attempt(bridge.json({ path }));
+        expect(refusal).toBeInstanceOf(BridgeRefusal);
+        expect((refusal as BridgeRefusal).reason).toBe("path-refused");
+        expect((refusal as BridgeRefusal).message).toContain("/mcp");
+      }
+
+      // The same parse accepts a whole URL, and this bridge sends its token to one daemon and no
+      // other — an absolute origin and a protocol-relative one are both somewhere else.
+      for (const elsewhere of ["http://127.0.0.1:9/api/videos", "//127.0.0.1:9/api/videos"]) {
+        const refusal = await attempt(bridge.json({ path: elsewhere }));
+        expect(refusal).toBeInstanceOf(BridgeRefusal);
+        expect((refusal as BridgeRefusal).reason).toBe("path-refused");
+      }
+
+      // And the client surface itself is untouched by the check that guards it.
+      expect((await bridge.json({ path: VIDEOS_PATH })).status).toBe(200);
+      expect((await bridge.json({ path: "/healthz" })).status).toBe(200);
+    },
+    CASE_TIMEOUT_MS,
+  );
 });
 
 describe("mediaUrl", () => {
@@ -205,6 +245,16 @@ describe("mediaUrl", () => {
     expect(mediaPath("not a url")).toBeNull();
   });
 });
+
+/** What one request rejected with, or a failure saying it was answered rather than refused. */
+async function attempt(request: Promise<unknown>): Promise<unknown> {
+  return request.then(
+    (answer) => {
+      throw new Error(`the request was answered rather than refused: ${JSON.stringify(answer)}`);
+    },
+    (error: unknown) => error,
+  );
+}
 
 /** Read a media response's bytes. */
 async function collect(response: { body: NodeJS.ReadableStream }): Promise<Buffer> {

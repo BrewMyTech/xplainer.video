@@ -84,6 +84,7 @@ import { operationLockPath } from "../../install/update/lock.js";
 import { recoverUpdate } from "../../install/update/recover.js";
 import {
   fixtureEnvironment,
+  fixtureLingerMarker,
   PARKED_LINE,
   updateHarness,
 } from "../../install/update/testing/harness.js";
@@ -463,6 +464,13 @@ try {
 
     const harness = updateHarness({
       stateDir,
+      // The marker this environment names, not the machine's. `install.ts` runs
+      // `loginctl enable-linger` and then checks `existsSync(<lingerDir>/<account>)`, because the
+      // file is what systemd reads at boot and `loginctl` only reports what it was told — so a
+      // harness that answers the command without creating the file refuses with exit `5` on any
+      // Linux host, before the first case is reached. `interrupt-update.ts` wires it the same way
+      // for the five cases it drives; this is the sixth, which installs here.
+      lingerMarker: fixtureLingerMarker(environment),
       onSpawn: (child) => {
         spawned.push(child);
         // Drained and discarded: nothing here wants the daemon's own logging, and a pipe

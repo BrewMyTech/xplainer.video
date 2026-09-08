@@ -51,7 +51,7 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
 | `exit-codes.ts` | The start-up codes, quoting the table in `docs/ARCHITECTURE.md` §6 |
-| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness and the source hook |
+| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness, the source hook, and `platform.ts`: the facts a suite has to read differently on Windows |
 
 The state directory — `${XDG_STATE_HOME:-~/.local/state}/xplainer/` on Linux,
 `~/Library/Application Support/video.xplainer/` on macOS, `%LOCALAPPDATA%\xplainer\state\` on
@@ -606,8 +606,12 @@ Then the root procedure: `pnpm verify`.
   by nothing else. The state directory *above* it is left exactly as found — ADR 0020 and
   `state-dir.ts` own that one, and `ipc/` is the last directory on the path to the socket, so
   narrowing it is sufficient. Windows gets a named pipe named after a digest
-  of the state directory, which has no mode, no directory and nothing to unlink — ADR 0020 §Security
-  R-SEC-5 already records that gap as the installer's to close in phase 2.
+  of the state directory, which has no mode, no directory and nothing to unlink. Half of ADR 0020
+  §Security R-SEC-5's Windows gap is now closed and half is not, and the split is worth knowing:
+  the **token** gets the explicit ACL that record asks for (`daemon/windows-acl.ts`, applied at the
+  mint), and the **pipe** does not, because `net.Server.listen({ path })` offers no way to pass a
+  security descriptor and this package ships no native addon. What the pipe has instead is a name
+  no other state directory produces.
 - **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
   store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
   takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
@@ -772,7 +776,14 @@ Then the root procedure: `pnpm verify`.
   `daemon/token.ts` is the only reader of that file; the guard is handed a string. And it is not a
   sandbox: same-uid code reads a `0600` file trivially. It buys the browser boundary and the other
   local user on a shared box, and nothing else — a token documented as more than that is worse than
-  no token.
+  no token. **On Windows the mode buys neither**, because Node documents that only the write
+  permission is settable there and that the owner/group/other distinction is not implemented, so
+  the mint runs R-SEC-5's own remedy on the file it has just created —
+  `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"`, in `daemon/windows-acl.ts` — and `serve`
+  names in one line which of the two protections this platform got. A failure to apply it is
+  **reported, never fatal**: a daemon that refused to start over a missing `icacls` would trade a
+  weaker file for no service at all. What is still not built is R-SEC-5's other half, `daemon
+  status` re-verifying the entry and warning when inheritance has been restored underneath it.
 - **`SIGTERM` is six steps and ends in exit `0`** ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md)
   §Drain on planned restart): stop accepting, give the running job **20 s**, `SIGTERM` then
   `SIGKILL` its whole process group, mark anything still `running` *or* `queued` as `error` with

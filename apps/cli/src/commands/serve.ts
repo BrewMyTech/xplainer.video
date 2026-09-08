@@ -96,6 +96,7 @@ import {
   resolveTokenPathSetting,
   TOKEN_FILE_ENV,
   TokenUnreadableError,
+  tokenProtection,
 } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT, IpcBindError, startServer } from "../server.js";
@@ -260,7 +261,13 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         const minted = loadOrMintToken(tokenPath, stateDir);
         token = minted.value;
         if (minted.minted) {
-          io.writeErr(`xplainer serve: wrote a new bearer token to ${tokenPath} (mode 0600).\n`);
+          // What actually protects the file, named, because it differs by platform: a mode on the
+          // two that have one, and the explicit ACL of ADR 0020 R-SEC-5 on the one that does not.
+          // A `win32` machine whose `icacls` did not run has a token every local account can read,
+          // and that is a sentence a person must be able to find in the log rather than infer.
+          io.writeErr(
+            `xplainer serve: wrote a new bearer token to ${tokenPath} (${tokenProtection(minted.acl)}).\n`,
+          );
         }
       } catch (error) {
         await daemon.close();

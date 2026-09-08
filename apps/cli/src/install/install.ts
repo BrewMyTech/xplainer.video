@@ -344,8 +344,9 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
         `${entry.command.program} ${entry.command.argv.join(" ")} ` +
           `${answer.started ? `exited ${String(answer.status)}` : "could not be run"}: ` +
           `${firstNonEmptyLine([answer.stderr, answer.stdout]) || "it said nothing"}. The ` +
-          "supervisor is here and refused, which is a privilege or a policy and not a missing " +
-          "service manager. Everything this install had written has been undone.",
+          "supervisor is here and refused, so this is not a missing service manager — and the " +
+          "line it printed above is the reason, which this install is in no position to improve " +
+          "on. Everything it had written has been undone.",
       );
     }
     return answer;

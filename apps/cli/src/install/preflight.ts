@@ -457,6 +457,22 @@ export function preflightWriteLocations(preflight: InstallPreflight): readonly s
   return [...new Set(locations)];
 }
 
+/**
+ * The directory a rendered artefact lives in, in the path grammar the artefact was composed in.
+ *
+ * `dirname` from `node:path` is the **host's**, and the Task Scheduler renderer answers with a
+ * `win32.join`ed path: on macOS or Linux that string carries no `/` at all, so the host's `dirname`
+ * answers `"."` — the current working directory — and `preflightWriteLocations` then reports the
+ * checkout as a place an install writes to. `install.test.ts` hashes every one of those locations
+ * either side of a refusal, so it was hashing this repository, and under `turbo` — which writes
+ * `apps/cli/.turbo/turbo-*.log` while the suite runs — the two hashes differed and the case failed
+ * for a reason that had nothing to do with the install. The two POSIX renderers compose with the
+ * host's `join`, so the host's `dirname` is the right one for them.
+ */
+function artefactDirectory(platform: NodeJS.Platform, artefact: string): string {
+  return platform === "win32" ? win32.dirname(artefact) : dirname(artefact);
+}
+
 /** The setup marker: present, readable, complete, and still describing files that exist. */
 function probeToolchain(stateDir: string): ToolchainProbe {
   const path = toolchainMarkerPath(stateDir);
@@ -597,7 +613,7 @@ function probeSupervisor(
     usable: state.usable,
     detail: state.detail,
     artefact,
-    artefactDir: artefact === null ? null : dirname(artefact),
+    artefactDir: artefact === null ? null : artefactDirectory(platform, artefact),
     store: taskStorePath(kind, environment),
     logDir: kind === "launchd" ? attemptPath(() => dirname(launchAgentLogPath(environment))) : null,
     identity,
