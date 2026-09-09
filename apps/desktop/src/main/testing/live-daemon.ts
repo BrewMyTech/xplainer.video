@@ -323,8 +323,8 @@ export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
 
   if (process.platform === "win32") {
     const shim = scheduledTasksShim();
-    for (const [command, file] of Object.entries(SCHEDULED_TASKS_SHIM_FILES)) {
-      writeFileSync(join(bin, file), shim[command as keyof ScheduledTasksShim]);
+    for (const command of ["getScheduledTask", "getScheduledTaskInfo"] as const) {
+      writeFileSync(join(bin, SCHEDULED_TASKS_SHIM_FILES[command]), shim[command]);
     }
     const environment = { [inheritedVariableName("PATH")]: prependedPath(bin) };
     assertScheduledTasksShimAnswers(identity, environment);
