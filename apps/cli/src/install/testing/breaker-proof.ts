@@ -85,7 +85,6 @@ import {
   readDaemonState,
   readRuntimeState,
   STALL_AFTER_FAILED_STARTS,
-  startIsProvablyGone,
   updateDaemonState,
 } from "../../daemon/daemon-state.js";
 import { resolveIpcPath } from "../../daemon/ipc.js";
@@ -459,10 +458,23 @@ async function proveTheLatch(bed: Bed): Promise<void> {
     ),
   );
   // The tuple is not decoration: it is what lets a later start decide "provably gone" for a run
-  // that died before readiness and so wrote no `runtime.json` at all.
+  // that died before readiness and so wrote no `runtime.json` at all. What this proof is entitled
+  // to assert is that the *record* carries that tuple — pid, plus the start-time token and boot id
+  // the process-identity work added, the property that is the Windows-relevant one and is
+  // deterministic. It must NOT re-run the classifier against the live process table here, which is
+  // what `startIsProvablyGone` does: on a busy runner a recorded pid can be reused by a later
+  // process whose start-time clock tick (1/100 s on Linux) collides with the original, so the
+  // classifier reads the record back as "ours" and the assertion fails through no fault of the
+  // record. That is a race on OS pid non-reuse, not a property of the daemon, and it flaked the
+  // proof on daemon-breaker linux run 34345915285. The separate claim — that a full tuple LETS a
+  // later start decide `provably gone` — is the classifier's own property, and it is covered
+  // deterministically by `daemon/worker-identity.test.ts` describe("classifyWorker") over real
+  // processes (its `gone`, `stranger` and `ours` cases). The proof depends on the record, the unit
+  // test depends on the classifier; neither depends on live pid non-reuse.
   check(
-    "and each carries an identity tuple a later start can decide `provably gone` from",
-    history.length > 0 && history.every((s) => s.pid > 0 && startIsProvablyGone(s)),
+    "and each carries the identity tuple a later start decides `provably gone` from",
+    history.length > 0 &&
+      history.every((s) => s.pid > 0 && s.start_time !== null && s.boot_id !== null),
   );
 
   say("\n2. the latch, and the exit 0 that stops the loop:");

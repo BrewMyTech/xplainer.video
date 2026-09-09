@@ -96,10 +96,28 @@ function objectIdentifier(dotted: string): Buffer {
   return tlv(OBJECT_IDENTIFIER, Buffer.from(bytes));
 }
 
-/** A positive INTEGER: a leading zero byte whenever the top bit would make it negative. */
-function positiveInteger(value: Buffer): Buffer {
-  const leading = value[0] ?? 0;
-  return tlv(INTEGER, (leading & 0x80) === 0 ? value : Buffer.concat([Buffer.from([0]), value]));
+/**
+ * A non-negative INTEGER in **minimal** two's-complement form, which is what DER requires and what
+ * OpenSSL enforces: redundant leading `0x00` bytes are stripped (a leading `0x00` is redundant
+ * whenever the next byte's high bit is already clear), a single `0x00` is kept only when the first
+ * significant byte has its high bit set — so a positive value is never read as negative — and the
+ * value zero encodes as a single `0x00`.
+ *
+ * The serial number is `randomBytes(8)`, so roughly one draw in 512 begins `0x00` followed by a
+ * high-bit-clear byte. The earlier encoder passed such a buffer through untouched, producing a BER
+ * INTEGER with a redundant leading zero; OpenSSL rejects the whole certificate as
+ * `illegal padding`. See {@link ./self-signed.test.ts} for the adversarial cases.
+ */
+export function minimalInteger(value: Buffer): Buffer {
+  let start = 0;
+  while (start < value.length - 1 && value[start] === 0) {
+    start += 1;
+  }
+  let body = value.subarray(start);
+  if (((body[0] ?? 0) & 0x80) !== 0) {
+    body = Buffer.concat([Buffer.from([0]), body]);
+  }
+  return tlv(INTEGER, body);
 }
 
 /** A BIT STRING with no unused trailing bits, which is every one this file writes. */
@@ -184,7 +202,7 @@ export function selfSignedCertificate(request: SelfSignedRequest): SelfSignedCer
 
   const tbs = sequence(
     explicit(0, tlv(INTEGER, Buffer.from([2]))),
-    positiveInteger(randomBytes(8)),
+    minimalInteger(randomBytes(8)),
     algorithm,
     subject,
     sequence(utcTime(notBefore), utcTime(notAfter)),
