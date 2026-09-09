@@ -79,6 +79,12 @@ RUN corepack install && pnpm install --frozen-lockfile
 # failure. It goes here, above the sources, because it lands in
 # `node_modules/.remotion` and depends on nothing but the install above — below
 # them, every edit to a single source file paid for the download again.
+#
+# `render.mjs` links this cache into the workspace `xplainer setup` materialises,
+# and that link is the only thing it still borrows from the checkout. The browser
+# `setup` itself acquires is a second copy of the same artefact, fetched at run
+# time into the scratch state directory, because the toolchain gate checks that
+# recorded path exists and Remotion is never told about it.
 RUN pnpm exec remotion browser ensure
 
 COPY . .

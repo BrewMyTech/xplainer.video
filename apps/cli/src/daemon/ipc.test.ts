@@ -29,6 +29,8 @@ import {
   MAX_UNIX_SOCKET_PATH,
   prepareIpcSocket,
   resolveIpcPath,
+  resolveIpcSocket,
+  secureIpcEndpoint,
   WINDOWS_PIPE_PREFIX,
 } from "./ipc.js";
 import { STATE_DIR_MODE } from "./state-dir.js";
@@ -79,7 +81,7 @@ describe("the socket path", () => {
   it("has nothing to prepare or remove for a named pipe", () => {
     const stateDir = stateDirectory();
 
-    const prepared = prepareIpcSocket(stateDir, "win32");
+    const prepared = prepareIpcSocket({ stateDir: stateDir, platform: "win32" });
 
     expect(isNamedPipe(prepared.path)).toBe(true);
     expect(prepared.removeOnShutdown).toBe(false);
@@ -87,11 +89,42 @@ describe("the socket path", () => {
   });
 });
 
+/**
+ * `--socket` is the only route: `ipc.ts` reads no environment variable, and that absence is the
+ * reason the launch contract puts all three settings in argv on every platform rather than only on
+ * Windows. Without it a rendered `RuntimeDirectory=xplainer` would create a directory nothing binds
+ * in, and `daemon.json`'s `socket_path` would be a field with a recorder and no setter.
+ */
+describe("resolveIpcSocket", () => {
+  it("takes --socket verbatim, over the path the state directory would have derived", () => {
+    expect(
+      resolveIpcSocket({
+        stateDir: "/state",
+        flag: "/run/user/1000/xplainer/xplainer.sock",
+        platform: "linux",
+      }),
+    ).toEqual({ path: "/run/user/1000/xplainer/xplainer.sock", source: "flag" });
+  });
+
+  it("derives it from the state directory when no flag is given, and says so", () => {
+    expect(resolveIpcSocket({ stateDir: "/state", platform: "linux" })).toEqual({
+      path: join("/state", IPC_DIR, IPC_SOCKET_FILE),
+      source: "default",
+    });
+  });
+
+  it("ignores a blank flag rather than binding on nothing", () => {
+    expect(resolveIpcSocket({ stateDir: "/state", flag: "  ", platform: "linux" }).source).toBe(
+      "default",
+    );
+  });
+});
+
 describe("preparing the socket directory", () => {
   it("creates it 0700, because filesystem permissions are this transport's authentication", () => {
     const stateDir = stateDirectory();
 
-    const prepared = prepareIpcSocket(stateDir, "darwin");
+    const prepared = prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
 
     expect(prepared.path).toBe(join(stateDir, IPC_DIR, IPC_SOCKET_FILE));
     expect(prepared.removeOnShutdown).toBe(true);
@@ -111,7 +144,7 @@ describe("preparing the socket directory", () => {
     mkdirSync(join(stateDir, IPC_DIR), { recursive: true });
     chmodSync(join(stateDir, IPC_DIR), 0o777);
 
-    prepareIpcSocket(stateDir, "darwin");
+    prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
 
     expect(mode(join(stateDir, IPC_DIR))).toBe("0700");
   });
@@ -126,7 +159,7 @@ describe("preparing the socket directory", () => {
     const stateDir = stateDirectory();
     chmodSync(stateDir, 0o755);
 
-    prepareIpcSocket(stateDir, "darwin");
+    prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
 
     expect(mode(stateDir)).toBe("0755");
     expect(mode(join(stateDir, IPC_DIR))).toBe("0700");
@@ -144,7 +177,7 @@ describe("preparing the socket directory", () => {
     const stale = join(stateDir, IPC_DIR, IPC_SOCKET_FILE);
     writeFileSync(stale, "not a socket, but in the way of one");
 
-    prepareIpcSocket(stateDir, "darwin");
+    prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
 
     expect(existsSync(stale)).toBe(false);
   });
@@ -152,10 +185,81 @@ describe("preparing the socket directory", () => {
   it("is idempotent, so a restart into the same directory prepares the same path", () => {
     const stateDir = stateDirectory();
 
-    const first = prepareIpcSocket(stateDir, "darwin");
-    const second = prepareIpcSocket(stateDir, "darwin");
+    const first = prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
+    const second = prepareIpcSocket({ stateDir: stateDir, platform: "darwin" });
 
     expect(second.path).toBe(first.path);
+  });
+
+  /**
+   * The whole point of `--socket`: the socket is somewhere else entirely, and the `0700` rule went
+   * with it. A rule that stayed pointed at `<state>/ipc` while the listener moved would be a rule
+   * about an empty directory, and the socket — which asks for no token at all — would be sitting in
+   * whatever mode its directory happened to have.
+   */
+  it("puts the socket where --socket says and makes that directory 0700", () => {
+    const stateDir = stateDirectory();
+    const elsewhere = join(stateDirectory(), "runtime", "xplainer");
+    const socket = join(elsewhere, "xplainer.sock");
+
+    const prepared = prepareIpcSocket({ stateDir, flag: socket, platform: "darwin" });
+
+    expect(prepared).toEqual({ path: socket, removeOnShutdown: true, source: "flag" });
+    expect(mode(elsewhere)).toBe("0700");
+    // And the directory the flag replaced is not created at all: a `<state>/ipc` nothing binds in
+    // is exactly the empty directory this flag exists to stop.
+    expect(existsSync(join(stateDir, IPC_DIR))).toBe(false);
+  });
+
+  it("narrows a directory --socket named that was already open, on every start", () => {
+    const stateDir = stateDirectory();
+    const elsewhere = join(stateDirectory(), "runtime");
+    mkdirSync(elsewhere, { recursive: true });
+    chmodSync(elsewhere, 0o755);
+
+    prepareIpcSocket({ stateDir, flag: join(elsewhere, "xplainer.sock"), platform: "darwin" });
+
+    expect(mode(elsewhere)).toBe("0700");
+  });
+
+  it("clears a stale socket at the path --socket named, as it does at the derived one", () => {
+    const stateDir = stateDirectory();
+    const elsewhere = stateDirectory();
+    const socket = join(elsewhere, "xplainer.sock");
+    writeFileSync(socket, "not a socket, but in the way of one");
+
+    prepareIpcSocket({ stateDir, flag: socket, platform: "darwin" });
+
+    expect(existsSync(socket)).toBe(false);
+  });
+
+  /**
+   * A named pipe given by flag is still a named pipe: nothing to make, nothing to unlink. This is
+   * the shape the Windows task's `--socket` argument takes, and the branch that keeps `mkdir` from
+   * being asked for `\\.\pipe`.
+   */
+  it("treats a --socket that names a Windows pipe as a pipe", () => {
+    const stateDir = stateDirectory();
+    const pipe = `${WINDOWS_PIPE_PREFIX}xplainer-installed`;
+
+    const prepared = prepareIpcSocket({ stateDir, flag: pipe, platform: "win32" });
+
+    expect(prepared).toEqual({ path: pipe, removeOnShutdown: false, source: "flag" });
+  });
+
+  /** The remedy names the input that produced the path, not the one the caller never used. */
+  it("names --socket rather than XPLAINER_STATE_DIR when the flag is what is too long", () => {
+    const stateDir = stateDirectory();
+    const socket = join(stateDirectory(), "d".repeat(120), "xplainer.sock");
+
+    try {
+      prepareIpcSocket({ stateDir, flag: socket, platform: "darwin" });
+      expect.unreachable("the path is over the limit and must be refused");
+    } catch (error) {
+      expect(error).toBeInstanceOf(IpcPathTooLongError);
+      expect((error as Error).message).toContain("--socket");
+      expect((error as Error).message).not.toContain("XPLAINER_STATE_DIR");
+    }
   });
 
   /**
@@ -167,9 +271,11 @@ describe("preparing the socket directory", () => {
     const deep = join(stateDirectory(), "d".repeat(120));
     mkdirSync(deep, { recursive: true, mode: STATE_DIR_MODE });
 
-    expect(() => prepareIpcSocket(deep, "darwin")).toThrow(IpcPathTooLongError);
+    expect(() => prepareIpcSocket({ stateDir: deep, platform: "darwin" })).toThrow(
+      IpcPathTooLongError,
+    );
     try {
-      prepareIpcSocket(deep, "darwin");
+      prepareIpcSocket({ stateDir: deep, platform: "darwin" });
       expect.unreachable("the path is over the limit and must be refused");
     } catch (error) {
       expect((error as Error).message).toContain(String(MAX_UNIX_SOCKET_PATH));
@@ -178,5 +284,27 @@ describe("preparing the socket directory", () => {
     // Refused before anything was created: a directory left behind by a refusal is a directory the
     // next attempt has to reason about.
     expect(existsSync(join(deep, IPC_DIR))).toBe(false);
+  });
+});
+
+/**
+ * Which of the two protections each transport gets, decided by the path rather than by a flag.
+ *
+ * The `0700` directory is the unix socket's authentication and there is nothing to add to it; the
+ * named pipe has no directory and is born readable by every local account, so it is the one that
+ * gets an explicit descriptor (`daemon/pipe-acl.ts`). Asking the question by path is what keeps
+ * `--socket` from being able to choose the wrong answer.
+ */
+describe("secureIpcEndpoint", () => {
+  it("has nothing to add to a socket inside a 0700 directory", () => {
+    expect(secureIpcEndpoint("/tmp/xplainer/ipc/xplainer.sock", "win32")).toEqual({
+      outcome: "not-applicable",
+    });
+  });
+
+  it("sends a named pipe to the descriptor narrowing, which is a no-op off Windows", () => {
+    expect(secureIpcEndpoint(`${WINDOWS_PIPE_PREFIX}xplainer-abc`, "darwin")).toEqual({
+      outcome: "not-applicable",
+    });
   });
 });

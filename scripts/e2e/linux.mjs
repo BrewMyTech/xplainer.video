@@ -14,6 +14,16 @@
  * also generated and owned elsewhere; this proof stays out of them and uses plain `docker build`,
  * `docker run` and `docker network`.
  *
+ * WHAT THE CONTAINER REACHES BESIDES KOKORO. Since 2026-09-09 `render.mjs` runs a real
+ * `xplainer setup` inside the container — the batch-6 toolchain gate refuses `explainer_still` and
+ * `explainer_render` on a machine with no `<state>/toolchain.json`, and there is no honest way past
+ * it — so the run now fetches a ~100 MB headless shell and resolves the render workspace with
+ * `npm ci` from the public registry. The user-defined bridge below gives it that, exactly as it
+ * gives Kokoro its image; a machine that can build the image can run the proof. The image's own
+ * `remotion browser ensure` layer stays where it is and is now borrowed explicitly: `render.mjs`
+ * links `/repo/node_modules/.remotion` into the workspace `setup` materialised, so Remotion's own
+ * copy of the same browser is not fetched a second time inside the measured still job.
+ *
  * WHY ITS OWN NETWORK AND ITS OWN KOKORO. A developer machine very often already has a Kokoro
  * container answering on host port 8880, and this script must neither disturb it nor depend on it.
  * It starts its own on a user-defined bridge network, publishes no host port at all, and reaches

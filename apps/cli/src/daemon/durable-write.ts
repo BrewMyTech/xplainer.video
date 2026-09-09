@@ -31,6 +31,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
 import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
+import { restrictToOwner } from "./windows-acl.js";
 
 /**
  * What a directory flush did, as a string rather than an exception.
@@ -73,9 +74,30 @@ export function flushDirectory(directory: string): DirectoryFlush {
   }
 }
 
-/** Create a directory `0700` if it is not already there. */
+/**
+ * Create a directory `0700` if it is not already there, and narrow it on the platform where a mode
+ * is not protection.
+ *
+ * `mkdirSync` answers with the first path it created and with `undefined` when there was nothing to
+ * create, which is exactly the "at creation" the explicit ACL is applied at
+ * ([ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §R-SEC-5). A directory that
+ * was already there keeps the access control it has, for the reason its mode is not re-applied
+ * either: it may be a directory somebody chose for other reasons.
+ *
+ * The result of the `icacls` run is deliberately not returned. Every caller here creates a
+ * directory as a step towards writing a file, and it is the **file** whose access control the
+ * daemon reports on (`serve` says so when it mints the token); a second sentence about a directory
+ * on every one of these calls would say the same thing five times.
+ */
 export function ensureStateDirectory(directory: string): void {
-  mkdirSync(directory, { recursive: true, mode: STATE_DIR_MODE });
+  const created = mkdirSync(directory, { recursive: true, mode: STATE_DIR_MODE });
+  if (created !== undefined) {
+    // `directory`, not `created`: a recursive `mkdir` answers with the **topmost** path it made, and
+    // the ones below it were created inside their parent's original ACL before this line could
+    // narrow anything. It is the leaf the daemon writes into, so the leaf is what is narrowed, and
+    // `(OI)(CI)` is what carries the entry to the files it creates there afterwards.
+    restrictToOwner(directory, "directory");
+  }
 }
 
 /**

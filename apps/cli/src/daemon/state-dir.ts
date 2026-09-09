@@ -13,6 +13,16 @@
  * against a temporary directory, so a suite can `SIGKILL` a daemon without touching the developer's
  * own state. It is read here and nowhere else.
  *
+ * **`serve --state-dir` is the second override, and it is above the variable.** Task Scheduler's
+ * `<Exec>` action carries a command, a working directory and arguments and has **no per-action
+ * environment map**, so on Windows a supervisor cannot deliver `XPLAINER_STATE_DIR` at all — an
+ * installed daemon would take the platform default while `daemon.json` recorded something else.
+ * {@link resolveStateDirSetting} is therefore the whole precedence, **flag → variable → platform
+ * default**, in one place, and {@link resolveStateDir} is the same answer for the callers that have
+ * no flag to offer. The source travels back with the path because the daemon says on start-up which
+ * of the three decided it, and "the setting I meant was not the setting that arrived" is otherwise
+ * invisible until a render writes into the wrong directory.
+ *
  * The directory is created `0700` and the files inside it `0600`, which is ADR 0020's R-SEC-5 rule
  * for the token applied to the whole directory: on a shared Linux VM — the machine class ADR 0016
  * exists for — another local user can otherwise read a job record naming the paths on this user's
@@ -50,6 +60,58 @@ export const CORRUPT_DIR = "corrupt";
 /** The environment this module reads, narrowed to what it uses. */
 export type StateDirEnvironment = Readonly<Record<string, string | undefined>>;
 
+/**
+ * Which of the three precedence steps produced a setting.
+ *
+ * Shared by the state directory, the token file and the IPC socket, because all three are settled
+ * the same way and a reader of a start-up line should not have to learn three vocabularies.
+ * `"default"` covers both a platform default and a path derived from the state directory: what it
+ * means in every case is "nobody asked for this one".
+ */
+export type SettingSource = "flag" | "environment" | "default";
+
+/** A resolved path, and which precedence step produced it. */
+export type SettingDecision = {
+  path: string;
+  source: SettingSource;
+};
+
+/** A flag value that is present and is not blank, or `undefined`. */
+export function settingFlag(value: string | undefined): string | undefined {
+  return value !== undefined && value.trim() !== "" ? value : undefined;
+}
+
+/** What {@link resolveStateDirSetting} weighs, in precedence order. */
+export type StateDirRequest = {
+  /** `serve --state-dir`, which wins over the variable and the platform default. */
+  flag?: string | undefined;
+  env?: StateDirEnvironment;
+  platform?: string;
+  home?: string;
+};
+
+/**
+ * The whole precedence: `--state-dir` → `XPLAINER_STATE_DIR` → the platform default.
+ *
+ * A blank flag and a blank variable are both ignored rather than resolving to nothing, which is the
+ * rule an empty `Environment=XPLAINER_STATE_DIR=` in a hand-edited unit needs.
+ */
+export function resolveStateDirSetting(request: StateDirRequest = {}): SettingDecision {
+  const flag = settingFlag(request.flag);
+  if (flag !== undefined) {
+    return { path: flag, source: "flag" };
+  }
+  const env = request.env ?? process.env;
+  const override = settingFlag(env[STATE_DIR_ENV]);
+  if (override !== undefined) {
+    return { path: override, source: "environment" };
+  }
+  return {
+    path: platformStateDir(env, request.platform ?? process.platform, request.home ?? homedir()),
+    source: "default",
+  };
+}
+
 /** Every path `daemon/` writes, derived from one directory. */
 export type StateDirLayout = {
   /** The durable state directory itself. */
@@ -67,23 +129,14 @@ export type StateDirLayout = {
 };
 
 /**
- * The platform default from ADR 0020 §Port and discovery, with `XPLAINER_STATE_DIR` taking
- * precedence over all of it.
+ * The platform default from ADR 0020 §Port and discovery, and nothing above it.
  *
  * `env`, `platform` and `home` are parameters rather than reads of `process` so that the platform
  * rules are testable on one machine: the three defaults below are asserted from macOS in
  * `state-dir.test.ts`, which is the only way this repository can check the Linux and Windows
  * branches at all.
  */
-export function resolveStateDir(
-  env: StateDirEnvironment = process.env,
-  platform: string = process.platform,
-  home: string = homedir(),
-): string {
-  const override = env[STATE_DIR_ENV];
-  if (override !== undefined && override.trim() !== "") {
-    return override;
-  }
+function platformStateDir(env: StateDirEnvironment, platform: string, home: string): string {
   if (platform === "darwin") {
     return join(home, "Library", "Application Support", "video.xplainer");
   }
@@ -98,6 +151,22 @@ export function resolveStateDir(
   const xdg = env.XDG_STATE_HOME;
   const base = xdg !== undefined && xdg !== "" ? xdg : join(home, ".local", "state");
   return join(base, "xplainer");
+}
+
+/**
+ * The state directory for a caller with no flag to offer: `XPLAINER_STATE_DIR`, else the platform
+ * default.
+ *
+ * This is {@link resolveStateDirSetting} with the flag omitted, and it stays because most callers
+ * genuinely have no flag — `status`, `connect`, the in-process `mcp` server — and a request object
+ * with one field would say nothing they do not already say by calling this.
+ */
+export function resolveStateDir(
+  env: StateDirEnvironment = process.env,
+  platform: string = process.platform,
+  home: string = homedir(),
+): string {
+  return resolveStateDirSetting({ env, platform, home }).path;
 }
 
 /** Expand a resolved state directory into the five paths the daemon writes. */

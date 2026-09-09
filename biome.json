@@ -95,6 +95,14 @@
           }
         }
       }
+    },
+    {
+      "includes": ["apps/desktop/src/renderer/src/screens/Player.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": { "useMediaCaption": "off" }
+        }
+      }
     }
   ]
 }

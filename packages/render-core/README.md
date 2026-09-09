@@ -28,7 +28,8 @@ import { videoPaths, scaffoldVideo, narrate, assertRenderable, renderArgs } from
 
 Nothing here installs anything. `materialiseWorkspace()` copies the template files and creates
 the directories; `remotionBinary()` answers `null` for a workspace you have not run
-`npm install` in, so a caller can tell you that rather than failing inside `spawn`.
+`xplainer setup --workspace` for, so a caller can tell you that rather than failing
+inside `spawn`.
 
 The scaffold templates and the workspace template ship as readable, editable text on purpose:
 they land on your disk and you edit them. The exported surface is recorded in

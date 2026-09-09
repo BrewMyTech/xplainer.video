@@ -82,3 +82,46 @@ downloads land at roadmap phase 2.
   the same pinned Remotion line that `packages/render-core/template/package.json` fixes.
 - **Installers stay small enough to be worth signing and auto-updating** at phase 4, which
   would have been painful with a several-hundred-megabyte payload.
+
+## Note, 2026-09-08: the acquisition step now has three artefacts, and one of them has no route on Windows
+
+Added as a dated note rather than a rewrite. The decision is unchanged and phase 2 built exactly what
+it chose: a visible, explicit, resumable `xplainer setup` that acquires large third-party artefacts
+on first run instead of bundling them in installers. Three things happened underneath it.
+
+**There are three artefacts now, not two.** This record names Chrome Headless Shell and a
+Kokoro-FastAPI-compatible speech service. `setup` also materialises a third: the **render
+workspace**, the pinned Remotion tree a render needs, resolved from
+`packages/render-core/template/package.json` and its committed `package-lock.json` by an `npm ci`
+that runs the package manager shipped inside the runtime artefact. That is an *extension* of this
+record rather than a contradiction of it — the workspace is a large third-party tree acquired by the
+visible first-run step this record defines, for the same reason the other two are — and it is
+decided in [ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md), which also
+records why it is a second payload with a lifetime of its own rather than something an installer
+carries. This record's "**first run needs a network**" now covers all three.
+
+**The manifest's Chrome digest is an *expected* value captured at manifest-build time, and it is not
+a trust anchor.** This record makes "a version/checksum manifest" infrastructure and requires the
+download path to "verify the checksum before extracting", and that is what happens. What the check
+establishes is worth stating exactly, because it is less than the word *checksum* suggests: the URL
+`setup` fetches is the one the pinned Remotion line itself chooses for this platform, and the digest
+beside it is the digest of that artefact **as it was when the manifest was built**. So the check
+proves consistency with the manifest; it does not prove the bytes are the intended release, and it
+cannot, because pinning Remotion pins the *selection* and not the bytes.
+
+**Nothing is published to R2, so one of the three speech routes has nothing to fetch.** As of
+2026-09-08 no artefact of ours is published anywhere — see ADR 0027's dated context — which leaves
+`setup` with three speech routes and different coverage per platform: `--tts-url` records a
+Kokoro-FastAPI server the user already runs, the `docker` route pulls the pinned image by digest, and
+the `bundle` route has no published bundle to fetch. On macOS and Linux the first two are real. **On
+Windows none of the three is available**: nothing is published, a Windows host need not have a
+container engine that can pull a `linux/amd64` image, and `--tts-url` records a server somebody else
+runs rather than acquiring one here. So the roadmap's phase-2 speech criterion (`P2-4`) is **met on
+macOS and Linux and pending on Windows**, and `setup` says so in a sentence rather than leaving a
+reader to notice a hole. What closes it is the phase-4 milestone this record's own consequence
+anticipates: native speech bundles per platform, published with the manifest behind a connected
+custom domain.
+
+Nothing above is rewritten. Download-on-first-run is still the decision, the installer still stays
+small enough to be worth signing, and the two acquisition paths for one browser — local download at
+first run, hosted bake at build time — are still tied together by the same pinned Remotion line.

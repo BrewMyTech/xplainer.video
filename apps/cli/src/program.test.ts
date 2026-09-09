@@ -1,13 +1,12 @@
 /**
  * What the binary does, driven through the real commander program.
  *
- * The things asserted here — the version it prints, the commands it offers, the
- * verbs its one command group offers, and what a deferred command does — are
- * AC-14a, AC-14b and S2.4b's fifth test. All of them are observable only through
- * stdout, stderr and an exit code, so the program is built with a recording
- * `CliIo` (see `io.ts`) and everything else is real: the real command
- * registrations, the real help generation, the real exit codes commander and the
- * stubs choose.
+ * The things asserted here — the version it prints, the commands it offers, and
+ * the verbs each of its four groups offers — are AC-14a and AC-14b. All of them
+ * are observable only through stdout, stderr and an exit code, so the program is
+ * built with a recording `CliIo` (see `io.ts`) and everything else is real: the
+ * real command registrations, the real help generation, the real exit codes
+ * commander chooses.
  */
 
 import { readFileSync } from "node:fs";
@@ -133,7 +132,7 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly serve, status, mcp, setup, connect and daemon under --help", async () => {
+  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime and token under --help", async () => {
     const { stdout, exitCode } = await run(["--help"]);
 
     expect(listedCommands(stdout)).toEqual([
@@ -143,6 +142,8 @@ describe("xplainer", () => {
       "setup",
       "connect",
       "daemon",
+      "runtime",
+      "token",
     ]);
     expect(exitCode).toBe(0);
   });
@@ -154,18 +155,39 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly the seven lifecycle verbs under `daemon --help`", async () => {
+  it("lists exactly the nine lifecycle verbs under `daemon --help`", async () => {
     const { stdout, exitCode } = await run(["daemon", "--help"]);
 
     expect(listedCommands(stdout)).toEqual([
       "install",
       "uninstall",
+      "update",
+      "recover",
       "start",
       "stop",
       "restart",
       "status",
       "logs",
     ]);
+    expect(exitCode).toBe(0);
+  });
+
+  it("lists exactly build and verify under `runtime --help`", async () => {
+    const { stdout, exitCode } = await run(["runtime", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["build", "verify"]);
+    expect(exitCode).toBe(0);
+  });
+
+  /**
+   * One verb, and the listing is asserted with `toEqual` for the same reason every other group's
+   * is: ADR 0020 §Security R-SEC-8 names `token rotate` and nothing else, and a second verb under
+   * this group would be a second way to touch the credential.
+   */
+  it("lists exactly rotate under `token --help`", async () => {
+    const { stdout, exitCode } = await run(["token", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["rotate"]);
     expect(exitCode).toBe(0);
   });
 
@@ -185,9 +207,17 @@ describe("xplainer", () => {
     expect(exitCode).toBe(1);
   });
 
+  it("prints the runtime group's help on stderr and exits 1 when no verb is given", async () => {
+    const { stdout, stderr, exitCode } = await run(["runtime"]);
+
+    expect(stdout).toBe("");
+    expect(listedCommands(stderr)).toEqual(["build", "verify"]);
+    expect(exitCode).toBe(1);
+  });
+
   /**
-   * `mcp` left the deferred list below when it gained an implementation, and this is what keeps
-   * that visible here: it is registered with the one flag that chooses between running the tools in
+   * `mcp` was a deferred stub until it gained an implementation, and this is what keeps that
+   * visible here: it is registered with the one flag that chooses between running the tools in
    * this process and proxying them to the daemon's socket
    * ([ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not
    * TCP). What the two paths then *do* is asserted against real spawned processes in
@@ -206,25 +236,45 @@ describe("xplainer", () => {
     );
   });
 
-  it("registers every deferred command as a stub that names itself on stderr and exits 2", async () => {
-    const deferred = [
-      ["setup"],
-      ["daemon", "install"],
-      ["daemon", "uninstall"],
-      ["daemon", "start"],
-      ["daemon", "stop"],
-      ["daemon", "restart"],
-      ["daemon", "status"],
-      ["daemon", "logs"],
-    ];
+  /**
+   * `--spawn` is the leading remediation in ADR 0020's two no-supervisor degraded paths, so it has
+   * to be a flag that exists on both verbs rather than a sentence in a message. What it *writes* is
+   * asserted against real configuration files in `commands/connect.test.ts`; this is the surface,
+   * read off the commands for the same reason `mcp --attach` is above.
+   */
+  it("offers connect claude --spawn and connect codex --spawn, which two refusals print", () => {
+    const connect = createProgram().commands.find((command) => command.name() === "connect");
 
-    for (const argv of deferred) {
-      const { stdout, stderr, exitCode } = await run(argv);
-
-      // The whole path, not the leaf: `xplainer install` is not a command.
-      expect(stderr).toBe(`xplainer ${argv.join(" ")}: not implemented in this phase\n`);
-      expect(stdout).toBe("");
-      expect(exitCode).toBe(2);
+    for (const verb of ["claude", "codex"]) {
+      const command = connect?.commands.find((entry) => entry.name() === verb);
+      expect(command?.options.map((option) => option.long)).toContain("--spawn");
+      expect(command?.options.find((option) => option.long === "--spawn")?.description).toContain(
+        "no service manager",
+      );
     }
+  });
+
+  /**
+   * `setup` was the last deferred stub, and this is what replaced that assertion.
+   *
+   * The surface is asserted rather than the behaviour: what each flag *does* is
+   * `commands/setup.test.ts`'s subject, and what belongs here is that the options the rest of the
+   * phase's proofs and documents name — `--workspace` under a scrubbed `PATH`, `--skip-speech` on
+   * a platform with no speech route, `--tts-url` for a server somebody else runs, and
+   * `--state-dir` as `SETTING_FLAGS` spells it — are still on the command a user reaches. The
+   * listing is `toEqual` for the same reason every group's is: an option that appeared without
+   * anyone deciding about it would ship unnoticed.
+   */
+  it("offers setup's documented options exactly, now that it is no longer a stub", () => {
+    const setup = createProgram().commands.find((command) => command.name() === "setup");
+
+    expect(setup?.options.map((option) => option.long)).toEqual([
+      "--workspace",
+      "--skip-browser",
+      "--skip-speech",
+      "--tts-url",
+      "--state-dir",
+      "--manifest",
+    ]);
   });
 });

@@ -29,6 +29,7 @@ import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import { readJobRequest } from "./job-request.js";
+import { recordTestToolchain } from "./setup/testing/toolchain.js";
 
 /** `packages/protocol/schemas/`, from this file rather than from a hard-coded depth. */
 const SCHEMAS = fileURLToPath(new URL("../../../packages/protocol/schemas/", import.meta.url));
@@ -47,6 +48,7 @@ function schemaPattern(path: string, pointer: readonly string[]): string {
 
 const directories: string[] = [];
 let root = "";
+let stateDir = "";
 let backend: RenderBackend;
 let runner: JobRunner;
 
@@ -58,11 +60,12 @@ function temporaryDirectory(prefix: string): string {
 
 beforeEach(() => {
   root = temporaryDirectory("xplainer-backend-workspace-");
-  const store = createJobStore(temporaryDirectory("xplainer-backend-state-"));
+  stateDir = temporaryDirectory("xplainer-backend-state-");
+  const store = createJobStore(stateDir);
   // No worker registry: nothing in this file lets a job start, and a kind with no worker fails as
   // a job rather than as a tool call, which is the behaviour `runner.ts` documents.
   runner = createJobRunner({ store, owner: { ...selfIdentity(), run_id: "backend-test" } });
-  backend = createLocalBackend({ runner, root });
+  backend = createLocalBackend({ runner, root, stateDir });
 });
 
 afterEach(async () => {
@@ -72,7 +75,13 @@ afterEach(async () => {
   }
 });
 
-/** Give the workspace a Remotion CLI, so the two render tools stop refusing. */
+/**
+ * A machine where `xplainer setup` has run: a Remotion CLI in the workspace, and the marker.
+ *
+ * Both halves, because the two render tools now ask the same question the worker factory asks a
+ * moment later — a tool call that succeeded and a job that then failed on the toolchain is exactly
+ * the outcome an agent holding a `job_id` cannot act on.
+ */
 function pretendInstalled(): void {
   const bin = join(root, "node_modules", ".bin");
   mkdirSync(bin, { recursive: true });
@@ -80,6 +89,7 @@ function pretendInstalled(): void {
     join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion"),
     "#!/bin/sh\n",
   );
+  recordTestToolchain({ stateDir, workspaceRoot: root });
 }
 
 /** A narrated video, without running a narration: what `still` and `render` require on disk. */
@@ -327,7 +337,30 @@ describe("explainer_still and explainer_render", () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");
 
-    await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/npm install/);
+    await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
+      /xplainer setup --workspace/,
+    );
+  });
+
+  /**
+   * The gate the tool call and the worker factory now share.
+   *
+   * An installed workspace is not the whole answer: the browser every frame is drawn with comes
+   * from `xplainer setup` and nothing else on this machine records that it is here, so a machine
+   * with a workspace and no marker has to be refused at the call rather than inside a job.
+   */
+  it("refuse a machine where setup has never run, even with a workspace installed", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    const bin = join(root, "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion"),
+      "#!/bin/sh\n",
+    );
+
+    await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
+    await expect(backend.explainer_still({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
   });
 
   it("record the still's frame and scale, defaulted from the schema", async () => {

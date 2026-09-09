@@ -12,6 +12,246 @@ that changes this file is a change to the public surface.
 
 Entry point: `dist/index.d.ts`
 
+## `dist/api/errors.d.ts`
+
+```ts
+/**
+ * Which class of failure a client is looking at.
+ *
+ * The backend's own refusal codes pass through unchanged — a client that already understands
+ * `NO_SUCH_VIDEO` from a tool error reads the same word here — and the **seven** below them are the
+ * ones only an HTTP route can produce. `BACKEND_FAILED` is the last of the seven and the only one
+ * that is not a statement about the request: it is what a backend rejection that named no code of
+ * its own becomes, so that every refusal on this surface still carries one.
+ */
+export type ApiErrorCode = LocalBackendCode
+/** The `:id` in the path is not a job number. */
+ | "INVALID_JOB_ID"
+/** No job with that id: this daemon has no record of it. */
+ | "NO_SUCH_JOB"
+/** No such artefact for that video, or the file has since been removed. */
+ | "NO_SUCH_ARTEFACT"
+/** The request body is not the JSON object the route takes. */
+ | "INVALID_BODY"
+/** The daemon is draining and takes no more work (ADR 0024 §Drain on planned restart, step 1). */
+ | "SHUTTING_DOWN"
+/** The `Range` asked for bytes this artefact does not have. */
+ | "RANGE_NOT_SATISFIABLE"
+/** The backend failed for a reason it did not name. */
+ | "BACKEND_FAILED";
+
+/** What every refused request on this surface answers with. */
+export type ApiErrorBody = {
+    error: {
+        /** Branch on this. */
+        code: ApiErrorCode;
+        /** Show this. */
+        message: string;
+    };
+};
+
+/** A refusal, ready to be written: the status line and the body that explains it. */
+export type ApiRefusal = {
+    status: ContentfulStatusCode;
+    body: ApiErrorBody;
+};
+```
+
+## `dist/api/events.d.ts`
+
+```ts
+/** How often an open stream re-reads its job when nothing has told it to. */
+export declare const DEFAULT_JOB_POLL_INTERVAL_MS = 250;
+
+/** How long a stream may say nothing before it writes a comment line to prove it is still there. */
+export declare const DEFAULT_HEARTBEAT_MS = 15000;
+
+/** How long a client should wait before reconnecting, sent once as the stream's `retry` field. */
+export declare const RECONNECT_DELAY_MS = 1000;
+
+/** The event name every snapshot carries. */
+export declare const JOB_EVENT = "job";
+
+/** The event name the last frame carries, immediately before the stream closes. */
+export declare const END_EVENT = "end";
+
+/** What the last frame says: which job ended, and how. */
+export type JobStreamEnd = {
+    job_id: number;
+    status: JobState;
+};
+```
+
+## `dist/api/jobs.d.ts`
+
+```ts
+/**
+ * The acknowledgement the three enqueueing routes answer with.
+ *
+ * The first four fields are the tool's own output — `explainer_narrate`, `explainer_still` and
+ * `explainer_render` share it — and the last two are what an HTTP client needs and an agent does
+ * not: `poll` names the *tool call* that reports progress, which is the right answer for something
+ * holding an MCP session and useless to something holding a socket.
+ */
+export type ApiJobQueued = {
+    job_id: number;
+    status: JobState;
+    /** One line describing the queued work. */
+    what: string;
+    /** The exact tool call that reports progress, for a client that also speaks MCP. */
+    poll: string;
+    /** `GET` this for one snapshot. */
+    job: string;
+    /** `GET` this for the stream of them. */
+    events: string;
+};
+```
+
+## `dist/api/paths.d.ts`
+
+```ts
+/**
+ * Every path the `/api` surface answers on, written once.
+ *
+ * The desktop is a second program that has to build these URLs, and `apps/desktop` already depends
+ * on `@xplainer/cli` — so the routes are registered from these builders **and** exported through
+ * `src/index.ts`, rather than being spelled out here and spelled again in a renderer. A path that
+ * only one of the two sides changes is then a type error in the desktop's build instead of a `404`
+ * a user finds.
+ *
+ * The builders escape their arguments. A slug is `schemas/slug.json`'s pattern and could not need
+ * it, but an artefact name comes off this machine's disk, and a file called `frame 1.png` must
+ * produce a URL a player can actually fetch.
+ */
+/** Where the whole client surface is mounted, with no trailing slash. */
+export declare const API_PREFIX = "/api";
+
+/** `GET` — every video this machine holds, with its artefacts. */
+export declare function videosPath(): string;
+
+/** `GET` — one video, or `404` with `NO_SUCH_VIDEO`. */
+export declare function videoPath(slug: string): string;
+
+/** `GET` — one artefact's bytes, with `Range` support. */
+export declare function artefactPath(slug: string, name: string): string;
+
+/** `POST` — queue narration, a still, or a render for one video. */
+export declare function enqueuePath(slug: string, verb: "narrate" | "still" | "render"): string;
+
+/** `GET` — one job, in the same shape `explainer_job` answers with. */
+export declare function jobPath(jobId: number): string;
+
+/** `GET` — that job's progress as a `text/event-stream`. */
+export declare function jobEventsPath(jobId: number): string;
+```
+
+## `dist/api/routes.d.ts`
+
+```ts
+/**
+ * What the client surface needs that the tool contract does not carry.
+ *
+ * A seam rather than a workspace root, for the reason the guard is a parameter: `createServer()` is
+ * bound by a daemon that resolved a state directory from flags, environment and a recorded value,
+ * and by a container that has none of those. The daemon passes
+ * `createWorkspaceLibrary({ root: daemon.workspaceRoot })` — the root the runner's workers already
+ * write into — and a test passes one over a temporary directory.
+ */
+export type ApiSeam = {
+    /** Where this machine's artefacts are, and how to open one. */
+    library: VideoLibrary;
+    /** How often an open SSE stream re-reads its job. Defaults to the daemon's own interval. */
+    pollIntervalMs?: number | undefined;
+    /** How long an open SSE stream may be silent before it writes a keep-alive comment. */
+    heartbeatMs?: number | undefined;
+};
+```
+
+## `dist/api/videos.d.ts`
+
+```ts
+/**
+ * Which of a video's files this is.
+ *
+ * A closed set, ordered the way the desktop reads them: the finished film first, then the layout
+ * checks, then what narration produced. A file the workspace holds that is not one of these — a
+ * bundle cache, a half-written frame — is not an artefact and is not served.
+ */
+export type ArtefactKind = 
+/** `out/<slug>/explainer.mp4` — the finished render. */
+"video"
+/** `out/<slug>/frame-<n>.png` — one still, from a layout check. */
+ | "still"
+/** `public/<slug>/narration.wav` — the measured voiceover. */
+ | "narration"
+/** `public/<slug>/captions.json`. */
+ | "captions"
+/** `public/<slug>/timings.json` — where every scene length comes from. */
+ | "timings";
+
+/** One file a video has produced, and where to fetch it. */
+export type ApiArtefact = {
+    kind: ArtefactKind;
+    /** The file's own name, which is also the last segment of {@link url}. */
+    name: string;
+    /** The route that serves the bytes, `Range` included. */
+    url: string;
+    /** What the route sends as `Content-Type`. */
+    content_type: string;
+    /** Size in bytes, as of this listing. */
+    bytes: number;
+    /** Last modification, as an ISO-8601 timestamp with a timezone offset. */
+    modified_at: string;
+};
+
+/**
+ * One video, as a client sees it.
+ *
+ * The nullable fields are `null` rather than absent — `ExplainerListOutput` omits them, and an
+ * omitted field makes a reader tell "this video has no narration" apart from "this daemon is too
+ * old to say", which is a distinction no client wants to make. Same reasoning as `/healthz`'s
+ * identity fields.
+ */
+export type ApiVideo = {
+    slug: string;
+    has_narration: boolean;
+    rendered: boolean;
+    /** Narration length in seconds, or `null` when it has never been narrated. */
+    seconds: number | null;
+    /** MP4 size in megabytes, or `null` when nothing has been rendered. */
+    size_mb: number | null;
+    /** Every file this video has produced, newest listing at request time. */
+    artefacts: ApiArtefact[];
+};
+
+/** One artefact as a file, which is what the media route needs to answer a `Range`. */
+export type ArtefactFile = {
+    /** Absolute path on this machine. Never sent to a client. */
+    path: string;
+    /** Size in bytes, read in the same breath as the path was resolved. */
+    bytes: number;
+    contentType: string;
+    /** Last modification, for `Last-Modified`. */
+    modifiedAt: Date;
+};
+
+/** Where a video's files are, and how to open one. The routes know nothing else about a workspace. */
+export type VideoLibrary = {
+    /** Everything {@link videoArtefacts} would find for this slug, in a stable order. */
+    artefacts(slug: string): ApiArtefact[];
+    /** One artefact by exact name, or `null` when this video has no such file. */
+    open(slug: string, name: string): ArtefactFile | null;
+};
+
+/** What `createWorkspaceLibrary` needs: the root `resolveWorkspaceRoot()` produced. */
+export type WorkspaceLibraryOptions = {
+    root: string;
+};
+
+/** The local library: one workspace root, read at the moment it is asked. */
+export declare function createWorkspaceLibrary(options: WorkspaceLibraryOptions): VideoLibrary;
+```
+
 ## `dist/backend.d.ts`
 
 ```ts
@@ -63,6 +303,15 @@ export type CreateLocalBackendOptions = {
      * where the videos are.
      */
     root?: string;
+    /**
+     * The daemon's state directory, where `xplainer setup` wrote `toolchain.json`.
+     *
+     * Defaults to `state-dir.ts`'s resolution. `commands/serve.ts` passes the directory the daemon
+     * took ownership of, for the same reason it passes `root`: `serve --state-dir` moves it, and a
+     * backend reading the environment would gate a tool call on a marker in a directory this daemon
+     * is not using.
+     */
+    stateDir?: string;
 };
 
 /**
@@ -114,6 +363,60 @@ export declare const DEFAULT_PORT = 8787;
 /** The interface `xplainer serve` binds. Loopback only: this is a local daemon. */
 export declare const DEFAULT_HOSTNAME = "127.0.0.1";
 
+/**
+ * Where a planned restart asks for ADR 0024's six steps.
+ *
+ * Under `/api/` because it is the daemon's own control surface rather than part of the tool
+ * contract, and a `POST` because it changes the state of the machine. T21 mounts the rest of the
+ * `/api` surface beside it.
+ *
+ * The prefix is spelled without a trailing glob deliberately: `api-report.mjs` finds a
+ * declaration's docblock by scanning back to the nearest comment opener, and a slash immediately
+ * followed by an asterisk inside one **is** an opener — writing the glob here truncated this entry
+ * in the published report, and the report is the surface a consumer reads.
+ */
+export declare const DRAIN_PATH = "/api/daemon/drain";
+
+/**
+ * What {@link DRAIN_PATH} answers with, and the two numbers a caller sizes its own wait from.
+ *
+ * `pid` is what a caller watches disappear — the drain ends in `process.exit`, and an outside
+ * observer has no other way to see that happen — and `timeout_ms` is the daemon's own cap rather
+ * than a constant the caller compiled in, so a client and a daemon of different releases do not
+ * disagree about how long "draining" may last.
+ */
+export type DrainAcknowledgement = {
+    event: "draining";
+    /** The cap on steps 1–5, from the daemon that is about to run them. */
+    timeout_ms: number;
+    /** The process that will exit. */
+    pid: number;
+    /** Whether a drain was already running when this request arrived. */
+    already_draining: boolean;
+};
+
+/**
+ * The six steps, as the HTTP layer sees them: two facts to report and one thing to begin.
+ *
+ * A seam rather than an import, because `daemon/shutdown.ts` owns the sequence and this file must
+ * stay the plain HTTP application `services/media-service` can bind with no daemon underneath it.
+ * Omit it and {@link DRAIN_PATH} is not registered at all, which is the honest answer for a server
+ * that has no drain to run.
+ */
+export type DrainSeam = {
+    /** ADR 0024's cap on steps 1–5, reported in the acknowledgement. */
+    timeoutMs: number;
+    /** This process's pid, reported in the acknowledgement. */
+    pid: number;
+    /**
+     * Begin the six steps. Called once, and only after the acknowledgement has left the socket.
+     *
+     * `reason` is what the daemon's own shutdown log calls this stop, so a journal shows a drain
+     * asked for over the socket differently from a `SIGTERM`.
+     */
+    begin: (reason: string) => void;
+};
+
 /** Identity the server reports on `/healthz` and in the MCP handshake. */
 export type CreateServerOptions = {
     /** MCP server name. Defaults to the protocol manifest's name. */
@@ -133,13 +436,89 @@ export type CreateServerOptions = {
      * construction rather than by remembering to list them (R-SEC-2).
      */
     guard?: MiddlewareHandler;
+    /**
+     * Whether this request arrived on the IPC listener, answered by the binding that accepted it.
+     *
+     * `startServer()` passes a predicate over its own `WeakSet<Request>` and nothing else may: the
+     * set is keyed on the `Request` object the socket's adaptor constructed, so membership is a fact
+     * about which listener took the connection rather than anything a client can claim. A route that
+     * asked a header, a path or `remoteAddress` instead would be a bypass of the loopback guard.
+     *
+     * Absent — as it is for `services/media-service`, which binds no socket — every request is
+     * treated as not-over-IPC, so {@link DRAIN_PATH} answers `404` to all of them.
+     */
+    isOverIpc?: (request: Request) => boolean;
+    /**
+     * The drain {@link DRAIN_PATH} runs, or nothing and no such route.
+     *
+     * Only `commands/serve.ts` passes one, because only a daemon has ADR 0024's six steps to run.
+     */
+    drain?: DrainSeam;
+    /**
+     * Who is answering, as `/healthz` advertises it: the run id and the startup digest.
+     *
+     * The third row of ADR 0025's consistency check, and the only one on macOS — where no query
+     * exists for what `launchd` actually loaded (§1.3b D7), a plist rewritten and never reloaded is
+     * caught here or nowhere. It is **passed in** rather than computed here, because the value has to
+     * be the snapshot `daemon/start.ts` froze after ownership and before this server bound: a server
+     * that computed it at request time would answer for the process as it is now rather than for the
+     * process as it was launched.
+     *
+     * Absent for `services/media-service`, which takes no state directory and holds no ownership; the
+     * two fields are then `null`, so the body's shape is the same either way and a reader never has
+     * to tell "the field is missing" apart from "this release does not have it".
+     */
+    identity?: {
+        run_id: string;
+        runtime_digest: string;
+    };
+    /**
+     * Whether this machine's render toolchain is usable, asked at request time.
+     *
+     * [ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths requires a
+     * daemon whose toolchain is absent to *report* it rather than to answer `ok` and fail every
+     * render, and nothing produced that report before: `/healthz` said `ok` for a machine with no
+     * browser, no speech provider and no installed workspace. The seam is a function rather than a
+     * value because the condition changes **under a running daemon** — `xplainer setup` is a separate
+     * process, and a workspace can be deleted while the daemon is up — so a snapshot taken at bind
+     * would answer for a machine that no longer exists.
+     *
+     * A **parameter**, for the same reason the guard is one: `services/media-service` binds this same
+     * application in a container with no state directory and no toolchain to have an opinion about,
+     * and it passes none. Absent, `/healthz` answers `ok` with `reason: null`, so the body's shape is
+     * the same either way and a reader never has to tell "this release has no such field" apart from
+     * "this daemon is healthy".
+     */
+    toolchain?: () => {
+        ok: boolean;
+        reason: string | null;
+    };
+    /**
+     * The `/api` client surface, or nothing and no such routes.
+     *
+     * ADR 0016's REST and SSE under `/api` for GUI clients — the library, the artefact bytes, the
+     * three enqueueing calls, one job and its event stream — mounted from `src/api/`. It is a
+     * parameter rather than a fixture for the same reason the guard and the toolchain are: it needs a
+     * workspace root, and `services/media-service` binds this application in a container that has
+     * none. Absent, the surface does not exist at all; the routes are never registered, so a request
+     * for one gets the `404` a route this server does not have gives.
+     *
+     * `commands/serve.ts` passes `createWorkspaceLibrary({ root: daemon.workspaceRoot })` — the same
+     * root the job runner's workers write into, resolved once, after ownership.
+     */
+    api?: ApiSeam;
 };
 
 /** A bound server, and the handle that stops it. */
 export type RunningServer = {
     /** The port actually bound — resolved, so port `0` reports its real value. */
     port: number;
-    /** The origin the server answers on, with no trailing slash. */
+    /**
+     * The origin the server answers on, with no trailing slash.
+     *
+     * `https:` when {@link StartServerOptions.tls} was given and `http:` otherwise, so the value
+     * `serve` puts in `runtime.json`'s `addresses` and prints is one a client can use as it stands.
+     */
     url: string;
     /**
      * The IPC endpoint this server is also listening on, or `null` when it was not asked for one.
@@ -161,8 +540,14 @@ export type RunningServer = {
  */
 export type GuardFactory = (port: number) => MiddlewareHandler;
 
-/** What {@link startServer} needs to bind. */
-export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
+/**
+ * What {@link startServer} needs to bind.
+ *
+ * `guard` is replaced by a factory over the bound port, and `isOverIpc` is removed outright: the
+ * binder owns the `WeakSet` that answers it, so a caller passing its own would be claiming
+ * something about a listener it did not accept the connection on.
+ */
+export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"> & {
     /** The implementation the eight tools are served from. */
     backend: RenderBackend;
     /** Port to bind. `0` picks an ephemeral one. Defaults to {@link DEFAULT_PORT}. */
@@ -180,6 +565,22 @@ export type StartServerOptions = Omit<CreateServerOptions, "guard"> & {
      */
     ipc?: {
         path: string;
+    };
+    /**
+     * The operator's certificate and key, which turns this listener into an `https` one.
+     *
+     * Present only for the deliberately non-loopback bind of ADR 0020 §Security R-SEC-9, where TLS is
+     * one of the five preconditions; `daemon/tls.ts` reads and checks the pair, and `commands/serve.ts`
+     * refuses the bind before this function is called if it is missing. Omitted is plain `http`,
+     * which is what every loopback daemon and `services/media-service` behind its own terminator get.
+     *
+     * The values are the PEM text rather than paths: this function does no I/O, and a caller that
+     * passed a path would be asking the *listener* to decide what happens when the file cannot be
+     * read — a decision that belongs before the bind, next to the other four refusals.
+     */
+    tls?: {
+        cert: string;
+        key: string;
     };
 };
 

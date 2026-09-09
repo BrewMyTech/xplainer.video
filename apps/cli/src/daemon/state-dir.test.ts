@@ -14,6 +14,7 @@ import {
   OWNER_LOCK_FILE,
   RUNTIME_STATE_FILE,
   resolveStateDir,
+  resolveStateDirSetting,
   STATE_DIR_ENV,
   stateDirLayout,
 } from "./state-dir.js";
@@ -53,6 +54,55 @@ describe("resolveStateDir", () => {
     expect(resolveStateDir({ [STATE_DIR_ENV]: "  " }, "darwin", HOME)).toBe(
       join(HOME, "Library", "Application Support", "video.xplainer"),
     );
+  });
+});
+
+/**
+ * The flag exists because Task Scheduler's `<Exec>` action has **no per-action environment map**:
+ * on Windows an installed daemon that could only be told where its state lives through
+ * `XPLAINER_STATE_DIR` would silently take the platform default while `daemon.json` recorded
+ * something else. So the flag has to win, and the source has to travel, or "the setting I meant"
+ * and "the setting that arrived" are indistinguishable until a render writes somewhere unexpected.
+ */
+describe("resolveStateDirSetting", () => {
+  it("puts --state-dir above XPLAINER_STATE_DIR and above the platform default", () => {
+    expect(
+      resolveStateDirSetting({
+        flag: "/from/the/flag",
+        env: { [STATE_DIR_ENV]: "/from/the/environment" },
+        platform: "linux",
+        home: HOME,
+      }),
+    ).toEqual({ path: "/from/the/flag", source: "flag" });
+  });
+
+  it("falls back to the variable, and says so", () => {
+    expect(
+      resolveStateDirSetting({
+        env: { [STATE_DIR_ENV]: "/from/the/environment" },
+        platform: "linux",
+        home: HOME,
+      }),
+    ).toEqual({ path: "/from/the/environment", source: "environment" });
+  });
+
+  it("falls back to the platform default, and says so", () => {
+    expect(resolveStateDirSetting({ env: {}, platform: "darwin", home: HOME })).toEqual({
+      path: join(HOME, "Library", "Application Support", "video.xplainer"),
+      source: "default",
+    });
+  });
+
+  /** An `Environment=XPLAINER_STATE_DIR=` with nothing after it is a hand-edited unit's blank. */
+  it("ignores a blank flag exactly as it ignores a blank variable", () => {
+    expect(
+      resolveStateDirSetting({
+        flag: "   ",
+        env: { [STATE_DIR_ENV]: "/from/the/environment" },
+        platform: "linux",
+        home: HOME,
+      }),
+    ).toEqual({ path: "/from/the/environment", source: "environment" });
   });
 });
 

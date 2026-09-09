@@ -33,16 +33,18 @@ type Guarded = {
   lines: string[];
 };
 
-function guarded(options: { port?: number | null; hostnames?: readonly string[] } = {}): Guarded {
+function guarded(
+  options: { port?: number | null; allowHosts?: readonly string[]; tokens?: () => string[] } = {},
+): Guarded {
   const lines: string[] = [];
   const port = options.port === undefined ? PORT : options.port;
   const app = new Hono();
   app.use(
     "*",
     createLoopbackGuard({
-      token: TOKEN,
+      tokens: options.tokens ?? ((): string[] => [TOKEN]),
       port: () => port,
-      ...(options.hostnames === undefined ? {} : { hostnames: options.hostnames }),
+      ...(options.allowHosts === undefined ? {} : { allowHosts: options.allowHosts }),
       log: (line) => {
         lines.push(line);
       },
@@ -217,8 +219,8 @@ describe("the loopback guard", () => {
     expect(response.status).toBe(403);
   });
 
-  it("admits a deliberately widened bind's own authority, and still admits loopback", async () => {
-    const { app } = guarded({ hostnames: ["192.168.1.10"] });
+  it("admits an operator's --allow-host, and still admits loopback", async () => {
+    const { app } = guarded({ allowHosts: ["192.168.1.10"] });
 
     expect(
       (await send(app, "/healthz", { ...AUTHORIZED, host: `192.168.1.10:${PORT}` })).status,
@@ -226,10 +228,87 @@ describe("the loopback guard", () => {
     expect((await send(app, "/healthz", AUTHORIZED)).status).toBe(200);
   });
 
+  /**
+   * CVE-2026-65105 as a rule (R-SEC-9). Ollama's `Host` validation was conditional on a loopback
+   * bind, so widening the bind switched the whole defence off. Here the operator's list *adds*
+   * three things and subtracts none: an authority nobody named is still `403`, an `Origin` nobody
+   * named is still `403`, and the token is still asked for.
+   */
+  it("still refuses evil.com when the allowlist has been widened", async () => {
+    const { app, lines } = guarded({ allowHosts: ["daemon.internal", "192.168.1.10"] });
+
+    expect((await send(app, "/healthz", { ...AUTHORIZED, host: `evil.com:${PORT}` })).status).toBe(
+      403,
+    );
+    expect((await send(app, "/healthz", { ...AUTHORIZED, host: "evil.com" })).status).toBe(403);
+    expect(
+      (
+        await send(app, "/healthz", {
+          ...AUTHORIZED,
+          host: `daemon.internal:${PORT}`,
+          origin: "http://evil.com",
+        })
+      ).status,
+    ).toBe(403);
+    expect((await send(app, "/healthz", { host: `daemon.internal:${PORT}` })).status).toBe(401);
+    expect(lines.join("\n")).toContain(`403 invalid Host header: evil.com:${PORT}`);
+  });
+
+  /** The operator's names are spelled the same way loopback's are: the bound port, appended. */
+  it("gives an operator host the bound port and nothing else", () => {
+    expect(loopbackAuthorities(PORT, ["daemon.internal"])).toEqual([
+      "127.0.0.1:8787",
+      "localhost:8787",
+      "[::1]:8787",
+      "daemon.internal:8787",
+    ]);
+  });
+
   /** A guard that does not yet know the port fails closed rather than admitting anything. */
   it("refuses every request while the port is unknown", async () => {
     const { app } = guarded({ port: null });
 
     expect((await send(app, "/healthz", AUTHORIZED)).status).toBe(403);
+  });
+});
+
+/**
+ * R-SEC-8's grace window, at the layer that decides it.
+ *
+ * `daemon/token.ts` owns *what* is accepted and this file owns *that the guard asks*: the values
+ * come from a function called per request, so a rotation in another process reaches a daemon that
+ * is already running, and both values open it until the window closes. A guard that captured a
+ * string at construction would make every rotation a restart.
+ */
+describe("the guard's accepted set", () => {
+  const ROTATED = "a-second-token-of-thirty-two-ch!";
+
+  /** The `Host` this listener answers to, and one bearer value. */
+  function bearer(value: string): Record<string, string> {
+    return { host: `127.0.0.1:${PORT}`, authorization: `Bearer ${value}` };
+  }
+
+  it("accepts every value the ring offers, and refuses one it has dropped", async () => {
+    let accepted = [TOKEN];
+    const { app } = guarded({ tokens: () => accepted });
+
+    expect((await send(app, "/healthz", bearer(TOKEN))).status).toBe(200);
+
+    accepted = [ROTATED, TOKEN];
+    expect((await send(app, "/healthz", bearer(ROTATED))).status).toBe(200);
+    expect((await send(app, "/healthz", bearer(TOKEN))).status).toBe(200);
+
+    accepted = [ROTATED];
+    expect((await send(app, "/healthz", bearer(TOKEN))).status).toBe(401);
+    expect((await send(app, "/healthz", bearer(ROTATED))).status).toBe(200);
+  });
+
+  /** An empty set refuses everything: the guard fails closed, which is the only safe direction. */
+  it("refuses every request when the ring offers nothing", async () => {
+    const { app } = guarded({ tokens: () => [] });
+
+    const answer = await send(app, "/healthz", bearer(TOKEN));
+
+    expect(answer.status).toBe(401);
   });
 });

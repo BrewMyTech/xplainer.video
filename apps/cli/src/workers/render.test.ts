@@ -49,11 +49,9 @@ import { createJobStore } from "../daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "../daemon/runner.js";
 import { selfIdentity } from "../daemon/worker-identity.js";
 import { createWorkerRegistry } from "../daemon/workers.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import { TTS_FIXTURE_ENV } from "./speech.js";
 import { type NarrationFixture, writeNarrationFixture } from "./testing/narration-fixture.js";
-
-/** The only supported skip. CI does not set it. */
-const SKIPPED = process.env.XPLAINER_SKIP_RENDER_TEST === "1";
 
 /** A short script: two spoken segments around a silent beat, so there are two real boundaries. */
 const FIXTURES: readonly NarrationFixture[] = [
@@ -113,6 +111,7 @@ const CHANGED_LEVEL = 32;
 
 const directories: string[] = [];
 let root = "";
+let stateDir = "";
 let runner: JobRunner;
 let backend: RenderBackend;
 let timings: Timings;
@@ -215,7 +214,10 @@ function changedShare(a: Buffer, b: Buffer): number {
   return changed / MARKER_SIZE;
 }
 
-describe.skipIf(SKIPPED)("a real render", () => {
+// The only supported skip, and the condition is written here rather than behind a constant:
+// AGENTS.md allows a `skipIf` only with an inline `process.env`/`process.platform` test, so
+// that a reader — and AC-2c's grep — can see what is being waited for. CI does not set it.
+describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", () => {
   beforeAll(async () => {
     ffmpeg = resolveTool("ffmpeg", process.env.XPLAINER_FFMPEG);
     ffprobe = resolveTool("ffprobe", process.env.XPLAINER_FFPROBE);
@@ -236,13 +238,19 @@ describe.skipIf(SKIPPED)("a real render", () => {
     const narration = writeNarrationFixture(fixtureDir, FIXTURES);
     process.env[TTS_FIXTURE_ENV] = fixtureDir;
 
-    const store = createJobStore(temporaryDirectory("xplainer-render-state-"));
+    stateDir = temporaryDirectory("xplainer-render-state-");
+    // The gate `daemon/workers.ts` applies before a still or a render: a machine where
+    // `xplainer setup` has run. The workspace here is the checkout's own Remotion tree, borrowed
+    // deliberately (see above), so the manifest records the pins that tree stands in for — the
+    // subject of this suite is the MP4, and the acquisition of a browser is `setup`'s own tests'.
+    recordTestToolchain({ stateDir, workspaceRoot: root });
+    const store = createJobStore(stateDir);
     runner = createJobRunner({
       store,
       owner: { ...selfIdentity(), run_id: "render-test" },
-      workers: createWorkerRegistry({ root }),
+      workers: createWorkerRegistry({ root, stateDir }),
     });
-    backend = createLocalBackend({ runner, root });
+    backend = createLocalBackend({ runner, root, stateDir });
 
     await backend.explainer_create({ slug: "demo" });
     const narrated = await waitForJob(

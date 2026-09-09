@@ -49,6 +49,60 @@ export const PRECONDITION_UNMET_EXIT_CODE = 3;
 export const DAEMON_UNHEALTHY_EXIT_CODE = 4;
 
 /**
+ * The install needs an administrator, and this process is not one.
+ *
+ * [ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §Degraded paths measures the
+ * one place this happens: a Windows Scheduled Task registered for a standard user without the
+ * "Log on as a batch job" right registers and then will not launch —
+ * `SCHED_S_BATCH_LOGON_PROBLEM` (`0x0004131C`), "The task is registered, but may fail to start" —
+ * so `install` "verifies rather than assumes": register, start, poll `/healthz` for 15 s, and on
+ * failure "read `LastTaskResult`, name the missing right, unregister, and exit `5`". `--at-boot` is
+ * the second door onto the same code, because "Only a member of the Administrators group can create
+ * a task with a boot trigger".
+ *
+ * It is the *privilege* that is missing and never the supervisor, which is what separates it from
+ * {@link NO_SUPERVISOR_EXIT_CODE}: the machine has one, it answered, and it said no. Nothing is
+ * left registered — the unregister is part of the refusal, not a cleanup a user has to run.
+ */
+export const ADMIN_REQUIRED_EXIT_CODE = 5;
+
+/**
+ * This machine has none of the three supervisors, so there is nothing to install into.
+ *
+ * ADR 0020's whole design is "systemd user unit, LaunchAgent, or Windows Scheduled Task", and a
+ * machine with none of them — a Linux container with no per-user systemd, a distribution without
+ * `loginctl` lingering, an environment where `systemctl --user` cannot reach a manager — is a
+ * machine where an always-running daemon cannot be arranged by this command at all. That is a
+ * refusal and not an internal error: `install` writes nothing, and the remediation ADR 0020 §Degraded
+ * paths prints is the one that works without a supervisor — `xplainer connect claude --spawn`,
+ * which lets an agent start the daemon itself.
+ *
+ * Distinct from {@link ADMIN_REQUIRED_EXIT_CODE} on purpose. "There is no supervisor here" and "the
+ * supervisor here will not let *you* do that" have different next steps, and a caller that could not
+ * tell them apart would offer the wrong one.
+ */
+export const NO_SUPERVISOR_EXIT_CODE = 6;
+
+/**
+ * An install-time preflight found the port or the label it is about to record already taken.
+ *
+ * ADR 0020 words the row "port or label conflict", and the distinction from
+ * {@link OWNERSHIP_REFUSED_EXIT_CODE} is the one an agent will otherwise get wrong, so it is stated
+ * here and in `docs/ARCHITECTURE.md` §6 in the same words: **`7` is install-time** — "the port I am
+ * about to record is held", or a unit, label or task of this name belongs to something else —
+ * and **`10` is `serve`-time** — the state directory is owned, or the recorded port is taken, by a
+ * process that is running now. Same symptom, two lifecycles, two codes.
+ *
+ * They are two codes rather than one because they have different remediations and different
+ * blast radii. A `7` is a decision not yet made: `daemon.json` still records whatever it recorded
+ * before, nothing is registered, and the fix is to choose another port or remove the other
+ * installation. A `10` is a *running* conflict against an install that already exists, and the fix
+ * is to find the process. Recording a port at install and discovering at every start that it was
+ * never available is exactly the failure this preflight exists to make impossible.
+ */
+export const INSTALL_CONFLICT_EXIT_CODE = 7;
+
+/**
  * `xplainer mcp --attach` and the daemon do not speak compatible tool contracts.
  *
  * [ADR 0025](../../../../docs/adr/0025-daemon-updates-and-readiness.md) §Part two: "when it deems

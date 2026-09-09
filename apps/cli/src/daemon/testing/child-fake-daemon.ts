@@ -57,7 +57,7 @@ app.get("/healthz", (c) =>
 // Everything else is the shipped application, unchanged — `/mcp` included.
 app.all("*", (c) => shipped.fetch(c.req.raw));
 
-const ipc = prepareIpcSocket(stateDir);
+const ipc = prepareIpcSocket({ stateDir });
 const server = createAdaptorServer({ fetch: app.fetch, hostname: "xplainer.ipc" });
 server.listen(ipc.path, () => {
   process.stdout.write(`${JSON.stringify({ event: "fake-daemon", socket: ipc.path })}\n`);

@@ -6,9 +6,9 @@
 #    runner does not already have. `desktop.yml` builds this app on
 #    ubuntu-latest, macos-latest and windows-latest with no `apt-get`, no
 #    `brew install` and no toolchain setup step, so the target list is limited
-#    to AppImage + deb (x64) on Linux, NSIS (x64) on Windows and dmg + zip on
-#    macOS. Targets such as snap (needs snapcraft), rpm (needs rpmbuild) and
-#    pacman are deliberately absent.
+#    to AppImage + deb (x64) on Linux, NSIS (x64) on Windows and dmg + zip
+#    (arm64 only — see the `mac:` block) on macOS. Targets such as snap (needs
+#    snapcraft), rpm (needs rpmbuild) and pacman are deliberately absent.
 #
 # 2. Nothing here may need a signing identity. `publish: null` below and
 #    `--publish never` in the `package` script keep electron-builder from
@@ -28,12 +28,52 @@ directories:
 
 # The three electron-vite bundles plus the manifest. Production dependencies
 # (@xplainer/cli, electron-updater) are added by electron-builder itself; they
-# are hard-copied into apps/desktop/node_modules by pnpm's
-# injectWorkspacePackages setting rather than symlinked, which is what makes
-# them packable at all (see pnpm-workspace.yaml).
+# are hard-copied rather than symlinked by pnpm's injectWorkspacePackages
+# setting, which is what makes them packable at all (see pnpm-workspace.yaml).
+# The copy lands in the WORKSPACE ROOT's node_modules, not in
+# apps/desktop/node_modules: `nodeLinker: hoisted` hoists an injected package
+# like any other (measured, pnpm 11.25.0), and electron-builder finds it there
+# by walking up. `scripts/check-packaged-payload.mjs` asserts the shape at
+# whichever of those directories Node resolves.
+#
+# Nothing in this archive is ever SPAWNED — see the extraResources block below.
 files:
   - out/**/*
   - package.json
+
+# The runtime payload — `xplainer runtime build --out` (payload 1), placed
+# OUTSIDE the asar archive.
+#
+# Why extraResources and not `files`. The payload carries an interpreter, and an
+# interpreter is executed. Electron patches `fs` so a child process can *read*
+# app.asar, but nothing can `execve` a path that exists only inside the archive
+# (ADR 0004, ADR 0005). `extraResources` copies the directory to
+# `<resources>/xplainer-runtime`, which `src/main/paths.ts` resolves from
+# Electron's own `process.resourcesPath` on all three platforms.
+#
+# Why a payload at all, given `@xplainer/cli` is already a production dependency.
+# A payload defined as "the package directory" omits everything the runtime reads
+# around it — the interpreter, npm, the workspace packages — so the packed
+# `node_modules` copy cannot be run on a machine with no Node. The payload can.
+# It is what decision D10 spawns for `status --json`, `setup`, `daemon install`
+# and `connect`, before an install has written the stable launcher.
+#
+# `from:` must exist at pack time and nothing builds it implicitly: `desktop.yml`
+# runs `xplainer runtime build --out ../../.artefacts/xplainer-runtime` BEFORE
+# electron-builder, and `pnpm --filter @xplainer/desktop package` does not — a
+# local pack with no payload produces an app that reports `payload-absent` by
+# name rather than one that fails at spawn.
+extraResources:
+  - from: ../../.artefacts/xplainer-runtime
+    to: xplainer-runtime
+
+# asarUnpack: intentionally absent, and this comment is the rule rather than a
+# blank list. Anything that must be SPAWNED from `node_modules` has to be
+# unpacked here, because the archive has no path an operating system can execute.
+# Nothing in this app is: the only executable it starts is the payload's own
+# interpreter, which extraResources places outside the archive already. Add an
+# entry here the moment that stops being true — and prefer moving the file into
+# the payload, which is where every spawned thing in this design lives.
 
 # No native modules are in the dependency tree, so there is nothing to rebuild
 # against the Electron ABI. Turning the rebuild off removes the last reason a
@@ -43,6 +83,15 @@ npmRebuild: false
 # No release feed in this phase. Auto-update is scaffolded as a dependency only.
 publish: null
 
+# arm64 ONLY, and the x64 dmg/zip are dropped deliberately (plan §1.3d decision
+# B). `runtime build` copies the build host's own `process.execPath`, and
+# `macos-latest` is arm64, so an x64 installer built there would ship an arm64
+# interpreter inside an x64 application and fail to spawn on an Intel Mac. The
+# manifest records the interpreter's architecture and `src/main/spawn.ts`
+# compares it against `process.arch` before spawning, so the mismatch would be
+# named rather than silent — but naming it to every Intel user is not a product.
+# The follow-up is per-architecture payload builds wired to electron-builder's
+# per-arch extraResources, or an x64 runner building its own payload.
 mac:
   category: public.app-category.developer-tools
   identity: null
@@ -50,11 +99,9 @@ mac:
     - target: dmg
       arch:
         - arm64
-        - x64
     - target: zip
       arch:
         - arm64
-        - x64
 
 win:
   target:

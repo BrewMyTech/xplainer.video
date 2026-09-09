@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "xplainer.video — agent-driven explainer video monorepo",
+  "description": "xplainer.video \u2014 agent-driven explainer video monorepo",
   "license": "UNLICENSED",
   "packageManager": "pnpm@11.25.0",
   "engines": {
@@ -26,6 +26,11 @@
     "check:api-report": "node scripts/api-report.mjs --check",
     "check:docs-contract": "node scripts/check-docs-contract.mjs",
     "e2e:render": "node scripts/e2e/render.mjs",
+    "e2e:runtime": "node scripts/e2e/runtime.mjs",
+    "e2e:toolchain": "node scripts/e2e/toolchain.mjs",
+    "e2e:update": "node scripts/e2e/update.mjs",
+    "e2e:identity": "node scripts/e2e/identity.mjs",
+    "e2e:remote": "node scripts/e2e/remote.mjs",
     "e2e:render:linux": "node scripts/e2e/linux.mjs",
     "e2e:macos": "node scripts/e2e/render.mjs"
   },

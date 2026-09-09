@@ -14,36 +14,81 @@
  * §Consequences moves crash history to the durable directory alongside the job store, and this file
  * is where that move happens.
  *
- * **How a failed start is recognised without a corpse.** ADR 0020 words the breaker as "if the last
- * five runs all failed within 30 seconds of starting". A daemon that was `SIGKILL`ed writes no
- * epitaph, so neither the failure nor its timing can be read from the dead process. Both are
- * inferred from what *is* durable:
+ * **How a failed start is recognised, and how one that wrote no epitaph is treated.** ADR 0020
+ * words the breaker as "if the last five runs all failed within 30 seconds of starting". Phase 1
+ * inferred both halves: a run failed if its entry had no `ready_at`, and it failed *fast* if the
+ * **next** run started within {@link FAILED_START_WINDOW_MS} of it. The second inference is the
+ * defect this file no longer has. It measured the **supervisor's retry cadence** rather than the
+ * run's own life, so a supervisor that spaces its retries wider than the window could never trip
+ * the breaker at all — launchd's `ThrottleInterval` is 30 s, which sits exactly on the boundary,
+ * and Task Scheduler's `<RestartOnFailure>` has a one-minute schema minimum, which is outside it.
+ * What is recorded now is each run's **own** end:
  *
- * - a run **failed** if its entry has no `ready_at` — it never got as far as announcing itself, and
- *   {@link markDaemonReady} is called immediately after the listeners are bound;
- * - it failed **fast** if the next run started within {@link FAILED_START_WINDOW_MS} of it, which is
- *   what a supervisor restarting a crash loop looks like from here.
+ * - `ready_at` — stamped by {@link markDaemonReady} the moment the listeners are bound. A run that
+ *   has one did not fail to start, however it ended afterwards.
+ * - `outcome` and `ended_at` — written by {@link recordDaemonEnd} from the run's own orderly end,
+ *   which is `daemon/start.ts`'s `close()`: every refusal after ownership was taken and every drain
+ *   goes through it. `failed` is a run that ended without ever announcing itself; `stopped` is one
+ *   that had announced itself first.
+ * - **neither** — the run was `SIGKILL`ed, panicked, or the machine lost power, so it wrote no
+ *   epitaph at all. §1.3b D6 governs that case: such a start **counts as a failure only when the
+ *   next recorded start began within {@link FAILED_START_WINDOW_MS} of its own `started_at`**,
+ *   because the next start is the only sound upper bound on when it died, and it **resets the
+ *   streak otherwise**. The identity tuple {@link newDaemonStart} persists beside the record is
+ *   what lets a later start establish that the death was real; `runtime.json` cannot corroborate
+ *   it, because {@link writeRuntimeState} is reached only from `markReady` and this rule is only
+ *   ever about **pre-readiness** deaths.
  *
- * {@link isStalled} is a pure function over those entries so both halves are testable without
- * killing anything, and the daemon exits `0` when it trips — the portable "do not restart" signal
- * on all three supervisors.
+ * **Every interval is validated before it is used.** `started_at` is wall clock, so a backward NTP
+ * correction, a VM resume or an operator can invert or shrink a real one. A negative or non-finite
+ * interval is *timing uncertain* and **resets** the streak rather than counting it. The residual,
+ * said plainly rather than papered over: a backward adjustment that leaves a finite interval
+ * between zero and 30 seconds is indistinguishable from a genuine fast failure and may over-count.
+ * A monotonic clock would close that and is not this phase's; the spurious latch it could produce
+ * is cleared by `xplainer daemon restart`.
  *
- * Every write is a read-modify-write that **preserves keys this daemon does not know about**. Phase
- * 2's `xplainer daemon install` owns most of `daemon.json` — the socket path, the token file path,
- * the supervisor kind and artefact, the installing version — and a `serve` that rewrote the file
- * from its own narrow view would silently uninstall the daemon it is part of.
+ * {@link isStalled} is a function of the entries and one injected verdict, so every case above is
+ * testable without killing anything, and the daemon exits `0` when it trips — the portable "do not
+ * restart" signal on all three supervisors.
+ *
+ * **Two writers, one file, and the split is by field.** `serve` owns what a *run* establishes — the
+ * port it bound, the socket it bound, the contract version it speaks, the token file it read, the
+ * flush verdict and the breaker's history. `xplainer daemon install` owns what an *installation*
+ * establishes — the supervisor kind and artefact, the runtime directory, the launch spec, the
+ * program source, whether this install enabled lingering, the log sink and the installing version.
+ * Every write here is a read-modify-write that **preserves keys it does not name**, which is what
+ * makes that split safe in both directions: a `serve` that rewrote the file from its own narrow
+ * view would silently uninstall the daemon it is part of, and an `install` that rewrote it would
+ * throw away the crash history the breaker counts.
+ *
+ * The installer's fields are typed and parsed here rather than merely preserved, because the
+ * alternative is `Record<string, unknown>` at every reader: `status --json` reports them, the
+ * consistency check compares them, and `uninstall` acts on `linger_enabled_by_us`. A field that is
+ * only preserved is a field nobody can read without casting.
  */
 
 import { readFileSync, unlinkSync } from "node:fs";
-import process from "node:process";
+import type { LaunchSpec } from "../runtime/launch-spec.js";
 import { flushDirectory, writeJsonDurably } from "./durable-write.js";
 import { STATE_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { stateDirLayout } from "./state-dir.js";
+import {
+  classifyWorker,
+  machineBootId,
+  type ProcessIdentity,
+  selfIdentity,
+} from "./worker-identity.js";
 
 /** The version this daemon writes into both files. */
 export const STATE_FORMAT_VERSION = 1;
 
-/** A run that never reached ready, and whose successor started within this, failed fast. */
+/**
+ * A run that ended this long after starting, without ever announcing itself, failed fast.
+ *
+ * The value and its meaning are ADR 0020's and unchanged: what changed is that the end it is
+ * measured against is now the run's **own**, and the next start's `started_at` is the bound only
+ * for a run that recorded no end at all.
+ */
 export const FAILED_START_WINDOW_MS = 30_000;
 
 /** How many consecutive fast failures trip the breaker (ADR 0020 §Restart on crash). */
@@ -51,6 +96,17 @@ export const STALL_AFTER_FAILED_STARTS = 5;
 
 /** How much start history is kept. Enough to decide, and short enough to read with `cat`. */
 export const RECENT_STARTS_KEPT = 10;
+
+/**
+ * How a run ended, as the run itself recorded it.
+ *
+ * Two values and not three: `unknown` is the **absence** of a record and not a word anything
+ * writes, because a run that can still write is a run that knows which of these two it was.
+ */
+export type StartOutcome = "failed" | "stopped";
+
+/** Every {@link StartOutcome}, for a caller validating one it read off disk. */
+export const START_OUTCOMES: readonly StartOutcome[] = ["failed", "stopped"];
 
 /** One entry in `recentStarts[]`. */
 export type DaemonStart = {
@@ -60,6 +116,26 @@ export type DaemonStart = {
   run_id: string;
   /** When the daemon announced itself, or `null` if it never did. */
   ready_at: string | null;
+  /**
+   * How this run ended, recorded by the run itself.
+   *
+   * `null` for a run that is still going — every daemon writes its own start record before it
+   * binds anything — and for one that died without the chance to say, which is the case §1.3b D6's
+   * rule exists for.
+   */
+  outcome: StartOutcome | null;
+  /** When it ended, by its own clock, or `null` in the same two cases. */
+  ended_at: string | null;
+  /**
+   * The second member of this run's identity tuple: its process start token.
+   *
+   * Persisted **with the start record** because the case that needs it — a death before readiness —
+   * is exactly the case that writes no `runtime.json` (§7.21). `pid` above is the first member and
+   * {@link DaemonStart.boot_id} is the third; {@link startIdentity} puts the three back together.
+   */
+  start_time: string | null;
+  /** The machine boot this run belonged to, or `null` on a platform that cannot say. */
+  boot_id: string | null;
 };
 
 /** The latched stall the breaker writes, in words a `status` command can print. */
@@ -67,6 +143,84 @@ export type StallRecord = {
   at: string;
   reason: string;
 };
+
+/**
+ * Which supervisor holds the daemon on this machine.
+ *
+ * The three names are the three renderers, and they are the same spellings `SettingsEmission` in
+ * `../runtime/launch-spec.ts` uses for the forms those supervisors accept, so a reader never has to
+ * map one vocabulary onto the other.
+ */
+export type SupervisorKind = "systemd" | "launchd" | "task-scheduler";
+
+/** Every {@link SupervisorKind}, for a caller validating one it read off disk. */
+export const SUPERVISOR_KINDS: readonly SupervisorKind[] = ["systemd", "launchd", "task-scheduler"];
+
+/**
+ * Where `install` got the program it registered.
+ *
+ * `runtime-dir` is the phase-2 default and the only one a machine with nothing published can reach
+ * by itself; `explicit` is `install --program`; `sea-binary` is accepted and unused this phase; and
+ * `package-manager` is the branch a publish adds, which changes this value and nothing else,
+ * because the assembler, the launch contract, the renderers and the update transaction never ask
+ * where the payload came from.
+ */
+export type ProgramSource = "runtime-dir" | "explicit" | "sea-binary" | "package-manager";
+
+/** Every {@link ProgramSource}, for a caller validating one it read off disk. */
+export const PROGRAM_SOURCES: readonly ProgramSource[] = [
+  "runtime-dir",
+  "explicit",
+  "sea-binary",
+  "package-manager",
+];
+
+/**
+ * Where the bearer token in {@link DaemonState.token_file} came from.
+ *
+ * This is the field ADR 0020 §Security R-SEC-9's "a non-default token" is decided against, and it
+ * exists because the *value* cannot answer the question: 32 random bytes an operator wrote and 32
+ * random bytes `daemon/token.ts` minted are indistinguishable, so provenance has to be recorded at
+ * the moment it is known rather than inferred later from the secret.
+ *
+ * `minted` is the daemon's own default — the value `loadOrMintToken()` generated so that the guard
+ * could be non-optional on a machine where nothing else had arranged one. `operator` is a token
+ * this daemon found rather than made, which is the only kind a non-loopback bind is allowed to be
+ * authenticated with.
+ */
+export type TokenOrigin = "minted" | "operator";
+
+/** Every {@link TokenOrigin}, for a caller validating one it read off disk. */
+export const TOKEN_ORIGINS: readonly TokenOrigin[] = ["minted", "operator"];
+
+/**
+ * What one `xplainer token rotate` left behind, as `daemon.json` records it.
+ *
+ * ADR 0020 §Security R-SEC-8 asks for "a new token with a grace window for the old one", and a
+ * window is only honest if somebody can see when it closes. Every field here is a timestamp or a
+ * path — the retired value lives in the file `previous_token_file` names, at the same `0600` and
+ * behind the same Windows entry as the token itself.
+ */
+export type TokenRotation = {
+  /** ISO 8601, when the rotation happened. */
+  rotated_at: string;
+  /** ISO 8601, when the retired value stops being accepted. Equal to `rotated_at` for `--grace 0`. */
+  grace_until: string;
+  /** Where the retired value is waiting, or `null` for a rotation that kept none. */
+  previous_token_file: string | null;
+};
+
+/**
+ * The launch contract `install` rendered into the supervisor artefact, exactly as it was written.
+ *
+ * It is `LaunchSpec` itself rather than a second declaration of the same four fields, so a field
+ * added to the contract is a field this file records without an edit and a field renamed there
+ * cannot quietly keep its old name here. Recorded rather than recomputed, because the question a
+ * consistency check asks is "is what the supervisor loaded still what we wrote", and a value
+ * derived at read time answers a different question — it would agree with itself after a settings
+ * change nobody ever delivered.
+ */
+export type RecordedLaunchSpec = LaunchSpec;
 
 /** The fields of `daemon.json` this daemon reads and writes. Others are preserved untouched. */
 export type DaemonState = {
@@ -81,15 +235,80 @@ export type DaemonState = {
    * ADR 0020 §Port and discovery lists the token file among `daemon.json`'s durable fields, and
    * R-SEC-6 is why it is a *path*: `/proc/<pid>/cmdline` is world-readable and
    * `systemctl --user show` prints `Environment=`, so the value never appears anywhere but the file.
+   *
+   * Written by `serve` in the **same call** as {@link DaemonState.token_origin}, at the moment the
+   * token is read or minted rather than at readiness: the origin is a fact about *this* file, so a
+   * record carrying one of the two without the other answers R-SEC-9 about a file it cannot name.
    */
   token_file: string | null;
+  /**
+   * The IPC socket this run bound — the unix socket, or the named pipe on Windows.
+   *
+   * Durable, unlike `runtime.json`'s `socket`, and for a different reader: this is the path a
+   * consumer needs when the daemon is *not* running, and the one `serve --socket` moved. `serve`
+   * writes it at the same moment it writes the port, so it always describes the process that
+   * actually bound rather than what an installer intended.
+   */
+  socket_path: string | null;
+  /**
+   * Whether the token in {@link DaemonState.token_file} is this daemon's own mint or the operator's.
+   *
+   * Written by `serve` on every start, from {@link TokenOrigin} and the file it actually read, so
+   * that R-SEC-9's "a non-default token" is a fact on disk rather than a guess about a secret, and
+   * always in the same call as {@link DaemonState.token_file} — see there for why the pair is
+   * indivisible. `null` is a state directory no release that records this has served yet.
+   */
+  token_origin: TokenOrigin | null;
+  /**
+   * The last `xplainer token rotate`, or `null` where none has run in this directory.
+   *
+   * Three timestamps and a **path**, and no value: R-SEC-6 keeps the secret out of every file but
+   * the token's own, and a grace record in `daemon.json` would put a live credential in the one
+   * document `status --json` prints. What this is for is the question a person asks after rotating
+   * — is the old token still open, and until when — which `daemon status` answers from here without
+   * reading either secret.
+   */
+  token_rotation: TokenRotation | null;
   /** What a directory flush did on this platform, recorded once rather than thrown. */
   directory_flush: string | null;
+  /** Which supervisor `install` registered the daemon with, or `null` on a machine with none. */
+  supervisor_kind: SupervisorKind | null;
+  /** The unit, plist or task XML `install` wrote, by path — the file `uninstall` removes. */
+  supervisor_artefact: string | null;
+  /** The staged payload-1 directory this daemon runs out of, `<state>/runtime/<version>-<digest>/`. */
+  runtime_dir: string | null;
+  /** The launch contract that was rendered into {@link DaemonState.supervisor_artefact}. */
+  launch_spec: RecordedLaunchSpec | null;
+  /** Where `install` got the program it registered. */
+  program_source: ProgramSource | null;
+  /**
+   * Whether **this install** created `/var/lib/systemd/linger/$USER`.
+   *
+   * Three-valued on purpose: `true` means uninstall must remove the marker, `false` means the
+   * marker was already there and is somebody else's, and `null` means nothing has decided —
+   * which is not the same as `false` and must not roll back a setting this daemon never made.
+   */
+  linger_enabled_by_us: boolean | null;
+  /**
+   * Whether **this install**'s `launchctl enable` created a record where the store held none.
+   *
+   * macOS only, and three-valued for the same reason {@link DaemonState.linger_enabled_by_us} is:
+   * `true` means the disable store gained an entry for our label because we put it there, `false`
+   * means an entry was already there, and `null` means nothing has decided — this is not macOS, or
+   * the store could not be read. `uninstall` reports it, because launchctl offers no verb that
+   * removes an entry from that store: `enable` and `disable` set its value and there is no third
+   * one, so what an uninstall can honestly say is which of the two states it left behind.
+   */
+  launchd_enable_record_created: boolean | null;
+  /** Where the supervisor sends this daemon's output: a log file's path, or `journald`. */
+  log_sink: string | null;
+  /** The release that wrote this record, so a skew between it and `/healthz` is readable. */
+  installed_version: string | null;
   recentStarts: DaemonStart[];
   stalled: StallRecord | null;
 };
 
-/** The fields of `runtime.json` this story writes. */
+/** The fields of `runtime.json` this daemon writes. */
 export type RuntimeState = {
   format_version: number;
   pid: number;
@@ -155,17 +374,39 @@ function readObject(path: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * The start history off disk, with every field a decision needs present on every entry.
+ *
+ * A record written by a release older than this one carries no `outcome`, no `ended_at` and no
+ * identity tuple, and filling those with `null` is what puts it under D6's unknown rule rather than
+ * under a `undefined` nothing dares branch on. Two fields are still required, because an entry
+ * without them cannot be placed in time at all.
+ */
 function asStarts(value: unknown): DaemonStart[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter((entry): entry is DaemonStart => {
+  const starts: DaemonStart[] = [];
+  for (const entry of value) {
     if (typeof entry !== "object" || entry === null) {
-      return false;
+      continue;
     }
     const candidate = entry as Partial<DaemonStart>;
-    return typeof candidate.started_at === "string" && typeof candidate.pid === "number";
-  });
+    if (typeof candidate.started_at !== "string" || typeof candidate.pid !== "number") {
+      continue;
+    }
+    starts.push({
+      started_at: candidate.started_at,
+      pid: candidate.pid,
+      run_id: typeof candidate.run_id === "string" ? candidate.run_id : "",
+      ready_at: asNullableString(candidate.ready_at),
+      outcome: asMember(candidate.outcome, START_OUTCOMES),
+      ended_at: asNullableString(candidate.ended_at),
+      start_time: asNullableString(candidate.start_time),
+      boot_id: asNullableString(candidate.boot_id),
+    });
+  }
+  return starts;
 }
 
 function asStall(value: unknown): StallRecord | null {
@@ -182,6 +423,77 @@ function asNullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function asNullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/** One of a closed set, or `null` — never a string this daemon would then branch on blindly. */
+function asMember<T extends string>(value: unknown, members: readonly T[]): T | null {
+  return typeof value === "string" && (members as readonly string[]).includes(value)
+    ? (value as T)
+    : null;
+}
+
+function asStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? [...(value as string[])]
+    : null;
+}
+
+/**
+ * A launch spec off disk, or `null` for anything that is not one.
+ *
+ * All four fields are required together, because a half-read spec is worse than none: a consistency
+ * check that compared a recorded `argv` against a loaded one while the settings were missing would
+ * report agreement it never established. `daemon.json` is a file a person can edit, so this is a
+ * parse and not a cast.
+ */
+function asLaunchSpec(value: unknown): RecordedLaunchSpec | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const argv = asStringArray(candidate.argv);
+  const executable = asNullableString(candidate.executable);
+  const cwd = asNullableString(candidate.cwd);
+  const settings = candidate.settings;
+  if (argv === null || executable === null || cwd === null) {
+    return null;
+  }
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+    return null;
+  }
+  const { stateDir, tokenFile, socket } = settings as Record<string, unknown>;
+  if (typeof stateDir !== "string" || typeof tokenFile !== "string" || typeof socket !== "string") {
+    return null;
+  }
+  return { executable, argv, settings: { stateDir, tokenFile, socket }, cwd };
+}
+
+/**
+ * The rotation record, or `null` for anything that is not one.
+ *
+ * Parsed rather than cast for the reason {@link asLaunchSpec} is: `daemon.json` is a file a person
+ * can edit, and a half-written record read back as a rotation would have `daemon status` reporting
+ * a grace window that nothing is honouring.
+ */
+function asTokenRotation(value: unknown): TokenRotation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const rotatedAt = candidate.rotated_at;
+  const graceUntil = candidate.grace_until;
+  if (typeof rotatedAt !== "string" || typeof graceUntil !== "string") {
+    return null;
+  }
+  return {
+    rotated_at: rotatedAt,
+    grace_until: graceUntil,
+    previous_token_file: asNullableString(candidate.previous_token_file),
+  };
+}
+
 /** Read `daemon.json`, filling in the defaults of a directory that has never held one. */
 export function readDaemonState(stateDir: string): DaemonState {
   const raw = readObject(stateDirLayout(stateDir).daemonState);
@@ -191,7 +503,19 @@ export function readDaemonState(stateDir: string): DaemonState {
     port: typeof raw.port === "number" ? raw.port : null,
     contract_version: asNullableString(raw.contract_version),
     token_file: asNullableString(raw.token_file),
+    socket_path: asNullableString(raw.socket_path),
+    token_origin: asMember(raw.token_origin, TOKEN_ORIGINS),
+    token_rotation: asTokenRotation(raw.token_rotation),
     directory_flush: asNullableString(raw.directory_flush),
+    supervisor_kind: asMember(raw.supervisor_kind, SUPERVISOR_KINDS),
+    supervisor_artefact: asNullableString(raw.supervisor_artefact),
+    runtime_dir: asNullableString(raw.runtime_dir),
+    launch_spec: asLaunchSpec(raw.launch_spec),
+    program_source: asMember(raw.program_source, PROGRAM_SOURCES),
+    linger_enabled_by_us: asNullableBoolean(raw.linger_enabled_by_us),
+    launchd_enable_record_created: asNullableBoolean(raw.launchd_enable_record_created),
+    log_sink: asNullableString(raw.log_sink),
+    installed_version: asNullableString(raw.installed_version),
     recentStarts: asStarts(raw.recentStarts),
     stalled: asStall(raw.stalled),
   };
@@ -211,14 +535,72 @@ export function updateDaemonState(stateDir: string, changes: Partial<DaemonState
   return readDaemonState(stateDir);
 }
 
+/** The three members of a recorded run's identity, back in the shape `worker-identity.ts` takes. */
+export function startIdentity(start: DaemonStart): ProcessIdentity {
+  return { pid: start.pid, start_time: start.start_time, boot_id: start.boot_id };
+}
+
+/**
+ * Is the process this record names **provably** not running any more?
+ *
+ * D6 applies its unknown-outcome rule only to a start whose process is provably gone, and this is
+ * that test. `gone` is the plain answer — nothing at that pid, or a different machine boot —  and
+ * `stranger` is the other one: the pid is alive and positively identified as somebody else, which
+ * establishes that the *recorded* run is not running just as firmly. `ours` and `uncertain` are
+ * both refusals to say, and a refusal resets the streak rather than counting it.
+ *
+ * In practice a previous run that is still alive cannot be reached from here at all — it would be
+ * holding `owner.lock`, and this start would have exited `10` long before the breaker was asked —
+ * but the rule is written to be true rather than to be unreachable.
+ *
+ * **What it costs, and where that sits.** Each call may read a process start token, which on macOS
+ * is a `ps` spawn at about 4.5 ms (ADR 0024's note of 2026-09-06 §Process identity). At most
+ * {@link STALL_AFTER_FAILED_STARTS} entries are ever asked, only entries that recorded no end at
+ * all are asked at all, and the whole thing happens once per start — which is the "once per
+ * acquisition or reconciliation, never per write" rule that note sets, not an exception to it.
+ */
+export function startIsProvablyGone(start: DaemonStart): boolean {
+  const verdict = classifyWorker(startIdentity(start), machineBootId());
+  return verdict === "gone" || verdict === "stranger";
+}
+
+/**
+ * Did a run that began at `startedMs` end by `endMs`, quickly, on a clock worth believing?
+ *
+ * The boundary is inclusive and measured rather than assumed: 30,000 ms is fast and 30,001 ms is
+ * not, which is why launchd's 30-second `ThrottleInterval` sits exactly on it. A negative or
+ * non-finite difference is *timing uncertain* — a backward clock step, an unparseable timestamp —
+ * and answers `false`, which resets the streak instead of counting a failure nobody can time.
+ */
+function failedFast(startedMs: number, endMs: number): boolean {
+  const interval = endMs - startedMs;
+  return Number.isFinite(interval) && interval >= 0 && interval <= FAILED_START_WINDOW_MS;
+}
+
 /**
  * Has this daemon failed to start {@link STALL_AFTER_FAILED_STARTS} times in a row, fast?
  *
- * `starts` is the history *including* the run being decided, which is why the newest entry's
- * failure window is measured against `nowMs`: a supervisor that has restarted the daemon five times
- * in the last two and a half minutes is a crash loop whether or not the sixth attempt has died yet.
+ * `starts` is the history *before* the run being decided is appended, so the newest entry's bound
+ * is `nowMs` — which is that next start's `started_at` and exactly the upper bound D6 names.
+ *
+ * Each entry is decided by what it recorded, in this order:
+ *
+ * 1. `ready_at` set — the run announced itself, so it did not fail to start. The streak resets
+ *    outright, however the run ended afterwards, which keeps a daemon that ran for a week and was
+ *    killed at the end of it out of the breaker's history.
+ * 2. `ended_at` set — the run recorded its own end, and the window is measured against **that**.
+ *    This is the whole of the fix: five starts a minute apart, each dying two seconds in, latch.
+ * 3. neither — D6's unknown case. It counts only if the process is provably gone **and** the next
+ *    start began inside the window; anything else resets.
+ *
+ * `provablyGone` is a parameter so the third case is testable without arranging a corpse; the
+ * default is the real probe over the identity tuple the record carries.
  */
-export function isStalled(starts: readonly DaemonStart[], nowMs: number): StallRecord | null {
+export function isStalled(
+  starts: readonly DaemonStart[],
+  nowMs: number,
+  provablyGone: (start: DaemonStart) => boolean = startIsProvablyGone,
+): StallRecord | null {
   if (starts.length < STALL_AFTER_FAILED_STARTS) {
     return null;
   }
@@ -227,12 +609,19 @@ export function isStalled(starts: readonly DaemonStart[], nowMs: number): StallR
     if (start.ready_at !== null) {
       return null;
     }
+    const startedMs = Date.parse(start.started_at);
+    if (start.ended_at !== null) {
+      if (!failedFast(startedMs, Date.parse(start.ended_at))) {
+        return null;
+      }
+      continue;
+    }
+    if (!provablyGone(start)) {
+      return null;
+    }
     const next = recent[index + 1];
-    const endedBy = next === undefined ? nowMs : Date.parse(next.started_at);
-    if (
-      !Number.isFinite(endedBy) ||
-      endedBy - Date.parse(start.started_at) > FAILED_START_WINDOW_MS
-    ) {
+    const bound = next === undefined ? nowMs : Date.parse(next.started_at);
+    if (!failedFast(startedMs, bound)) {
       return null;
     }
   }
@@ -241,7 +630,8 @@ export function isStalled(starts: readonly DaemonStart[], nowMs: number): StallR
     at: new Date(nowMs).toISOString(),
     reason:
       `the last ${STALL_AFTER_FAILED_STARTS} starts each failed before the daemon was ready, ` +
-      `and each within ${FAILED_START_WINDOW_MS / 1000} s of starting (first at ${first?.started_at ?? "unknown"}). ` +
+      `and each within ${FAILED_START_WINDOW_MS / 1000} s of its own start — the supervisor's ` +
+      `retry delays excluded (first at ${first?.started_at ?? "unknown"}). ` +
       "Exiting 0 so the supervisor stops restarting; `xplainer daemon restart` clears this.",
   };
 }
@@ -262,6 +652,28 @@ export function markDaemonReady(stateDir: string, runId: string, readyAt: string
   const recentStarts = readDaemonState(stateDir).recentStarts.map((entry) =>
     entry.run_id === runId ? { ...entry, ready_at: readyAt } : entry,
   );
+  return updateDaemonState(stateDir, { recentStarts });
+}
+
+/**
+ * Record this run's own end on its own entry: when it ended, and which way.
+ *
+ * The outcome is not a second thing to get wrong — it follows from whether this run ever announced
+ * itself, which is a fact the same entry already carries — but it is *recorded* rather than
+ * inferred later, and that is the difference the breaker needed: an end time written by the run
+ * that reached it is evidence, while the next start's timestamp is a guess about a supervisor.
+ *
+ * Only the run's **first** end is kept: `close()` is reachable twice on a path where a drain throws
+ * and the caller tears down again, and the first end is the one that happened.
+ */
+export function recordDaemonEnd(stateDir: string, runId: string, endedAt: string): DaemonState {
+  const recentStarts = readDaemonState(stateDir).recentStarts.map((entry) => {
+    if (entry.run_id !== runId || entry.ended_at !== null) {
+      return entry;
+    }
+    const outcome: StartOutcome = entry.ready_at === null ? "failed" : "stopped";
+    return { ...entry, ended_at: endedAt, outcome };
+  });
   return updateDaemonState(stateDir, { recentStarts });
 }
 
@@ -317,7 +729,29 @@ export function readRuntimeState(stateDir: string): Record<string, unknown> | nu
   return Object.keys(raw).length === 0 ? null : raw;
 }
 
-/** This process's own start entry, before it is known whether the start succeeded. */
+/**
+ * This process's own start entry, before it is known whether the start succeeded.
+ *
+ * It carries the run's **identity tuple** — pid, process start token, machine boot id — and not the
+ * pid alone, because the record has to outlive a process that never got as far as writing
+ * `runtime.json`: {@link writeRuntimeState} is called from `markReady` and nowhere else, so a death
+ * before readiness leaves this entry as the only durable description of the run. A later start
+ * needs the tuple to establish that the process really is gone rather than that its number is
+ * unused, which is ADR 0024 §A recorded PID is not an identity's whole point.
+ *
+ * `selfIdentity()` is memoised for the life of the process, so the `ps` spawn it costs on macOS is
+ * paid once per daemon rather than once per write.
+ */
 export function newDaemonStart(runId: string, startedAt: string): DaemonStart {
-  return { started_at: startedAt, pid: process.pid, run_id: runId, ready_at: null };
+  const identity = selfIdentity();
+  return {
+    started_at: startedAt,
+    pid: identity.pid,
+    run_id: runId,
+    ready_at: null,
+    outcome: null,
+    ended_at: null,
+    start_time: identity.start_time,
+    boot_id: identity.boot_id,
+  };
 }

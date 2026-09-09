@@ -8,20 +8,43 @@
  * you can only produce with a real file.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
-import { TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
+import { PRECONDITION_UNMET_EXIT_CODE, TOKEN_UNREADABLE_EXIT_CODE } from "./exit-codes.js";
 import { STATE_DIR_MODE, STATE_FILE_MODE } from "./state-dir.js";
+import { ownerOnly, protectionOf } from "./testing/platform.js";
 import {
+  createTokenRing,
+  DEFAULT_TOKEN_GRACE_MS,
+  defaultTokenPath,
+  discardExpiredGrace,
+  inspectTokenPresence,
   loadOrMintToken,
+  MAX_TOKEN_GRACE_MS,
+  previousTokenPath,
+  readGraceToken,
+  resolveTokenOrigin,
   resolveTokenPath,
+  resolveTokenPathSetting,
+  rotateToken,
   TOKEN_BYTES,
   TOKEN_FILE,
   TOKEN_FILE_ENV,
+  TOKEN_PREVIOUS_SUFFIX,
+  TokenMissingError,
   TokenUnreadableError,
+  tokenProtection,
 } from "./token.js";
 
 const scratch: string[] = [];
@@ -32,10 +55,13 @@ function stateDirectory(): string {
   return dir;
 }
 
-/** The permission bits, without the file-type bits `stat` returns alongside them. */
-function mode(path: string): string {
-  return (statSync(path).mode % 0o1000).toString(8).padStart(4, "0");
-}
+/**
+ * What keeps another local account out, whichever mechanism this platform has.
+ *
+ * On POSIX it is the mode, read off `stat`. On Windows `stat` reports `0666` for the file this mint
+ * created and the DACL is the protection, so `protectionOf` reads that instead — the entry
+ * `windows-acl.ts` applies at creation, which is the second half of what this case is about.
+ */
 
 afterEach(() => {
   for (const dir of scratch.splice(0)) {
@@ -62,8 +88,42 @@ describe("resolveTokenPath", () => {
   });
 });
 
+/**
+ * The flag is above the variable for the reason the state directory's is: `<Exec>` carries
+ * arguments and no environment. It is a **path** on both routes, which is what keeps R-SEC-6 true —
+ * `/proc/<pid>/cmdline` is world-readable and `Get-ScheduledTaskInfo` prints a task's arguments, so
+ * argv is exactly as safe as the environment was, and a `--token <value>` would have been neither.
+ */
+describe("resolveTokenPathSetting", () => {
+  it("puts --token-file above XPLAINER_TOKEN_FILE and above the default", () => {
+    expect(
+      resolveTokenPathSetting("/state", {
+        flag: "/run/user/1000/xplainer/token",
+        env: { [TOKEN_FILE_ENV]: "/from/the/environment" },
+      }),
+    ).toEqual({ path: "/run/user/1000/xplainer/token", source: "flag" });
+  });
+
+  it("falls back to the variable, then to the state directory, saying which", () => {
+    expect(
+      resolveTokenPathSetting("/state", { env: { [TOKEN_FILE_ENV]: "/from/the/environment" } }),
+    ).toEqual({ path: "/from/the/environment", source: "environment" });
+    expect(resolveTokenPathSetting("/state", { env: {} })).toEqual({
+      path: join("/state", TOKEN_FILE),
+      source: "default",
+    });
+  });
+
+  it("ignores a blank flag rather than resolving the token to nothing", () => {
+    expect(resolveTokenPathSetting("/state", { flag: "  ", env: {} })).toEqual({
+      path: join("/state", TOKEN_FILE),
+      source: "default",
+    });
+  });
+});
+
 describe("loadOrMintToken", () => {
-  it("mints 32 random bytes 0600 inside a 0700 directory, and says it minted them", () => {
+  it("mints 32 random bytes only this account can read, and says it minted them", () => {
     const stateDir = join(stateDirectory(), "nested");
     const path = join(stateDir, TOKEN_FILE);
 
@@ -72,8 +132,36 @@ describe("loadOrMintToken", () => {
     expect(token.minted).toBe(true);
     expect(token.path).toBe(path);
     expect(Buffer.from(token.value, "base64url")).toHaveLength(TOKEN_BYTES);
-    expect(mode(path)).toBe(STATE_FILE_MODE.toString(8).padStart(4, "0"));
-    expect(mode(stateDir)).toBe(STATE_DIR_MODE.toString(8).padStart(4, "0"));
+    // `0600` inside a `0700` directory on POSIX; on Windows the two explicit ACLs that replace
+    // them, because a mode there is not protection (ADR 0020 §R-SEC-5).
+    expect(protectionOf(path)).toBe(ownerOnly(STATE_FILE_MODE));
+    expect(protectionOf(stateDir)).toBe(ownerOnly(STATE_DIR_MODE));
+    // And the mint says which of the two it got, so `serve` can print it.
+    expect(token.acl.outcome).toBe(process.platform === "win32" ? "applied" : "not-applicable");
+  });
+
+  /**
+   * The sentence `serve` prints, in all three of its forms.
+   *
+   * The weakest of them is the one that matters: a `win32` machine whose `icacls` did not run has a
+   * token every local account can read, and that has to be a sentence a person can find in the log
+   * rather than something inferred from its absence.
+   */
+  it("says which of a mode and an ACL protected the file it minted", () => {
+    expect(tokenProtection({ outcome: "not-applicable" })).toBe("mode 0600");
+    expect(tokenProtection({ outcome: "applied", command: "icacls C:\\t /inheritance:r" })).toBe(
+      "owner-only ACL",
+    );
+
+    const failed = tokenProtection({
+      outcome: "failed",
+      command: "icacls C:\\t /inheritance:r /grant:r alice:(R,W)",
+      reason: "exited 5: Access is denied.",
+    });
+    expect(failed).toContain("WITHOUT an owner-only ACL");
+    expect(failed).toContain("readable by every local account");
+    expect(failed).toContain("icacls C:\\t");
+    expect(failed).toContain("exited 5: Access is denied.");
   });
 
   it("mints a different token every time", () => {
@@ -155,5 +243,422 @@ describe("loadOrMintToken", () => {
     const token = loadOrMintToken(path);
 
     expect(Object.values(process.env)).not.toContain(token.value);
+  });
+});
+
+/**
+ * R-SEC-9's "a non-default token", made decidable.
+ *
+ * The value cannot answer this — the mint is 32 random bytes and so is a good operator token — so
+ * the answer is provenance, and the ordering of these four cases is the whole rule. The one that
+ * matters most is the third: a state directory served by a release older than `token_origin`
+ * recorded the path it minted into, and reading that as the operator's would let an upgrade turn
+ * this daemon's own default into a credential a remote bind accepts.
+ */
+describe("resolveTokenOrigin", () => {
+  const path = "/state/token";
+  /** What a mint of `/state` would have written, which is `path` itself. */
+  const defaultPath = path;
+  /** A file only an operator can have put there: no mint of `/state` writes outside it. */
+  const operatorPath = "/etc/xplainer/operator-token";
+
+  it("calls the file this start created its own, whatever is recorded", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: true,
+        path,
+        defaultPath,
+        recordedOrigin: "operator",
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
+  });
+
+  it.each(["minted", "operator"] as const)("inherits a recorded origin of %s", (recorded) => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        defaultPath,
+        recordedOrigin: recorded,
+        recordedTokenFile: path,
+      }),
+    ).toBe(recorded);
+  });
+
+  it("treats a half-record at the path a mint would have written as this daemon's mint", () => {
+    // The shape a release that wrote the origin at mint time and the path at readiness left
+    // behind after a start that failed in between. Reading it as the operator's would pass
+    // R-SEC-9's fifth precondition on stale bookkeeping.
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        defaultPath,
+        recordedOrigin: "minted",
+        recordedTokenFile: null,
+      }),
+    ).toBe("minted");
+  });
+
+  /**
+   * The other half of the 2026-09-08 correction, and the ordering it turns on.
+   *
+   * The half-record rule used to answer **before** any path was compared, so a stale
+   * `token_origin: "minted"` with no `token_file` made every token this state directory was ever
+   * pointed at "the one this daemon minted for itself" — including one the operator wrote and named
+   * with `--token-file`, at a path no mint of this state directory can produce. The refusal was
+   * false, it stood until a loopback start replaced the record, and the remediation it offered was
+   * exactly what the operator had just done.
+   */
+  it("does not extend a half-record to a file a mint of this state directory could not have written", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path: operatorPath,
+        defaultPath,
+        recordedOrigin: "minted",
+        recordedTokenFile: null,
+      }),
+    ).toBe("operator");
+  });
+
+  it("reads an unrecorded origin at a path a previous run recorded as this daemon's mint", () => {
+    expect(
+      resolveTokenOrigin({
+        minted: false,
+        path,
+        defaultPath,
+        recordedOrigin: null,
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
+  });
+
+  it.each([
+    ["a directory nothing has recorded", null],
+    ["a path that is not the recorded one", "/state/other-token"],
+  ])(
+    "calls a file it did not make and cannot account for the operator's: %s",
+    (_case, recorded) => {
+      expect(
+        resolveTokenOrigin({
+          minted: false,
+          path,
+          defaultPath,
+          recordedOrigin: null,
+          recordedTokenFile: recorded,
+        }),
+      ).toBe("operator");
+    },
+  );
+
+  /**
+   * The correction of 2026-09-08. `token_origin` records whose the token in `token_file` is, and a
+   * record about `<state>/token` says nothing about the file `--token-file` has just named. Reading
+   * it as an answer about *this* path refused an operator's own token for ever — a state directory
+   * that had once minted could never be given one — and the refusal then said this daemon had
+   * minted a file it never wrote.
+   */
+  it.each(["minted", "operator"] as const)(
+    "does not carry a recorded %s origin over to a file it does not name",
+    (recorded) => {
+      expect(
+        resolveTokenOrigin({
+          minted: false,
+          path: operatorPath,
+          defaultPath,
+          recordedOrigin: recorded,
+          recordedTokenFile: path,
+        }),
+      ).toBe("operator");
+    },
+  );
+});
+
+/**
+ * The same rule, plus the answer R-SEC-9 has to have **before** the mint: there is no file at all.
+ *
+ * Every case here is a real file on disk rather than a fixture, because the question is what is at
+ * a path, and the whole point of asking it here is that nothing may be written by the asking.
+ */
+describe("inspectTokenPresence", () => {
+  it("says a path with nothing at it is absent, and writes nothing there", () => {
+    const stateDir = stateDirectory();
+    const path = defaultTokenPath(stateDir);
+
+    expect(
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: null,
+        recordedTokenFile: null,
+      }),
+    ).toBe("absent");
+    expect(existsSync(path)).toBe(false);
+    expect(readdirSync(stateDir)).toEqual([]);
+  });
+
+  it("calls this state directory's own recorded mint minted", () => {
+    const stateDir = stateDirectory();
+    const path = defaultTokenPath(stateDir);
+    loadOrMintToken(path, stateDir);
+
+    expect(
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: "minted",
+        recordedTokenFile: path,
+      }),
+    ).toBe("minted");
+  });
+
+  it("calls a token at a path this daemon never recorded the operator's", () => {
+    const stateDir = stateDirectory();
+    const elsewhere = join(stateDirectory(), "operator-token");
+    writeFileSync(elsewhere, `${"o".repeat(43)}\n`, { mode: 0o600 });
+
+    expect(
+      inspectTokenPresence({
+        path: elsewhere,
+        defaultPath: defaultTokenPath(stateDir),
+        recordedOrigin: "minted",
+        recordedTokenFile: defaultTokenPath(stateDir),
+      }),
+    ).toBe("operator");
+  });
+
+  /**
+   * The half-record, asked of two real files: the one a mint would have written and one it could
+   * not have. Before the 2026-09-08 ordering fix both answered `minted`, and R-SEC-9 then refused
+   * the operator's own token with a sentence saying this daemon had written it.
+   */
+  it("reads a half-record as this daemon's mint at its own default path and nowhere else", () => {
+    const stateDir = stateDirectory();
+    const mine = defaultTokenPath(stateDir);
+    loadOrMintToken(mine, stateDir);
+    const theirs = join(stateDirectory(), "operator-token");
+    writeFileSync(theirs, `${"o".repeat(43)}\n`, { mode: 0o600 });
+    const halfRecord = {
+      defaultPath: mine,
+      recordedOrigin: "minted",
+      recordedTokenFile: null,
+    } as const;
+
+    expect(inspectTokenPresence({ ...halfRecord, path: mine })).toBe("minted");
+    expect(inspectTokenPresence({ ...halfRecord, path: theirs })).toBe("operator");
+  });
+
+  /** A file that cannot be used is exit `12` here too: the mint would have said the same thing. */
+  it("refuses a token file that holds nothing, rather than calling it absent", () => {
+    const stateDir = stateDirectory();
+    const path = defaultTokenPath(stateDir);
+    writeFileSync(path, "   \n", { mode: 0o600 });
+
+    expect(() =>
+      inspectTokenPresence({
+        path,
+        defaultPath: path,
+        recordedOrigin: null,
+        recordedTokenFile: null,
+      }),
+    ).toThrow(TokenUnreadableError);
+  });
+});
+
+describe("rotateToken", () => {
+  /**
+   * The whole of R-SEC-8 in one case: a new value in the token file, the old one still on disk with
+   * a deadline, and neither of them anywhere a reader of `daemon.json` could find it.
+   */
+  it("writes a new token and keeps the old one for the window", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+
+    const rotated = rotateToken({ path, graceMs: 60_000, now: at });
+
+    const after = readFileSync(path, "utf8").trim();
+    expect(after).not.toBe(before.value);
+    expect(Buffer.from(after, "base64url")).toHaveLength(TOKEN_BYTES);
+    expect(rotated.previousPath).toBe(previousTokenPath(path));
+    expect(rotated.graceUntil.toISOString()).toBe("2026-09-08T10:01:00.000Z");
+    expect(readGraceToken(previousTokenPath(path), at)).toBe(before.value);
+  });
+
+  /** The grace file holds a live credential, so it is protected exactly as the token is. */
+  it("gives the retired value the same protection the token has", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+
+    rotateToken({ path, graceMs: 60_000 });
+
+    expect(protectionOf(previousTokenPath(path))).toBe(ownerOnly(STATE_FILE_MODE));
+    expect(protectionOf(path)).toBe(ownerOnly(STATE_FILE_MODE));
+  });
+
+  /**
+   * `--grace 0` is the answer to a leak, and it has to leave nothing behind: a grace file from an
+   * earlier rotation would keep a value alive that this rotation exists to kill.
+   */
+  it("removes an earlier grace file when the window is zero", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+    rotateToken({ path, graceMs: 60_000 });
+    expect(existsSync(previousTokenPath(path))).toBe(true);
+
+    const rotated = rotateToken({ path, graceMs: 0 });
+
+    expect(rotated.previousPath).toBeNull();
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+  });
+
+  /** Nothing to rotate is a precondition, not a failure: exit `3`, and nothing is written. */
+  it("refuses a token file that is not there, having written nothing", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+
+    let raised: unknown;
+    try {
+      rotateToken({ path });
+    } catch (error) {
+      raised = error;
+    }
+
+    expect(raised).toBeInstanceOf(TokenMissingError);
+    expect((raised as TokenMissingError).exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+  });
+
+  /** A window is a weakening with a deadline, so there is a longest one and it is checked here. */
+  it("refuses a window longer than a day, or a negative one", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const minted = loadOrMintToken(path, stateDir);
+
+    expect(() => rotateToken({ path, graceMs: MAX_TOKEN_GRACE_MS + 1 })).toThrow(RangeError);
+    expect(() => rotateToken({ path, graceMs: -1 })).toThrow(RangeError);
+    expect(readFileSync(path, "utf8").trim()).toBe(minted.value);
+  });
+
+  it("names the grace file beside the token, whatever --token-file put it", () => {
+    expect(previousTokenPath("/run/secrets/xplainer")).toBe(
+      `/run/secrets/xplainer${TOKEN_PREVIOUS_SUFFIX}`,
+    );
+  });
+});
+
+describe("readGraceToken", () => {
+  /** A closed window is decided on the clock, so the same file answers differently a minute later. */
+  it("stops answering once the window has closed", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    rotateToken({ path, graceMs: 60_000, now: at });
+
+    expect(readGraceToken(previousTokenPath(path), new Date(at.getTime() + 59_000))).toBe(
+      before.value,
+    );
+    expect(readGraceToken(previousTokenPath(path), new Date(at.getTime() + 60_000))).toBeNull();
+  });
+
+  /**
+   * The grace file is an addition to the token, never the authentication itself, so a corrupt one
+   * is `null` rather than an error. The token keeps its own strictness, which the case above this
+   * file's `loadOrMintToken` block asserts.
+   */
+  it("reads a corrupt record as no grace at all", () => {
+    const stateDir = stateDirectory();
+    const previous = join(stateDir, `${TOKEN_FILE}${TOKEN_PREVIOUS_SUFFIX}`);
+    writeFileSync(previous, "{not json", { mode: STATE_FILE_MODE });
+
+    expect(readGraceToken(previous)).toBeNull();
+
+    writeFileSync(previous, JSON.stringify({ token: "", grace_until: "2099-01-01T00:00:00.000Z" }));
+    expect(readGraceToken(previous)).toBeNull();
+  });
+});
+
+describe("discardExpiredGrace", () => {
+  it("removes a closed window's file and leaves an open one alone", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    rotateToken({ path, graceMs: 60_000, now: at });
+
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 30_000))).toBe(false);
+    expect(existsSync(previousTokenPath(path))).toBe(true);
+
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 61_000))).toBe(true);
+    expect(existsSync(previousTokenPath(path))).toBe(false);
+    expect(discardExpiredGrace(path, new Date(at.getTime() + 62_000))).toBe(false);
+  });
+});
+
+describe("createTokenRing", () => {
+  /**
+   * The property the whole rotation rests on: the daemon holds no string, so a file written by
+   * another process is picked up without a restart and both values open the daemon until the
+   * window closes.
+   */
+  it("accepts the new token and the retired one, then only the new one", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const at = new Date("2026-09-08T10:00:00.000Z");
+    let clock = at;
+    const ring = createTokenRing({ path, now: () => clock });
+
+    expect(ring.tokens()).toEqual([before.value]);
+
+    rotateToken({ path, graceMs: 60_000, now: at });
+    const after = readFileSync(path, "utf8").trim();
+
+    expect(ring.tokens()).toEqual([after, before.value]);
+
+    clock = new Date(at.getTime() + 61_000);
+    expect(ring.tokens()).toEqual([after]);
+  });
+
+  /** A rotation with no window locks the old holder out on the very next request. */
+  it("drops the old value at once when the rotation kept no window", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const before = loadOrMintToken(path, stateDir);
+    const ring = createTokenRing({ path });
+    expect(ring.tokens()).toEqual([before.value]);
+
+    rotateToken({ path, graceMs: 0 });
+
+    expect(ring.tokens()).not.toContain(before.value);
+    expect(ring.tokens()).toHaveLength(1);
+  });
+
+  /**
+   * A read that fails keeps the previous answer, because the one moment the token file is
+   * unreadable is the moment something is renaming over it — and a burst of `401`s is a worse
+   * answer to a rotation than a request served with the value this daemon last read.
+   */
+  it("keeps the values it has when the file cannot be read", () => {
+    const stateDir = stateDirectory();
+    const path = join(stateDir, TOKEN_FILE);
+    const minted = loadOrMintToken(path, stateDir);
+    const ring = createTokenRing({ path });
+    expect(ring.tokens()).toEqual([minted.value]);
+
+    writeFileSync(path, "   \n", { mode: STATE_FILE_MODE });
+
+    expect(ring.tokens()).toEqual([minted.value]);
+  });
+
+  it("defaults the window to five minutes", () => {
+    expect(DEFAULT_TOKEN_GRACE_MS).toBe(300_000);
   });
 });

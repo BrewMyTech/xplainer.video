@@ -17,12 +17,15 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "package": "electron-vite build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never",
+    "check:packaged": "node scripts/check-packaged-payload.mjs",
+    "check:launch": "node scripts/check-packaged-launch.mjs",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@xplainer/cli": "workspace:*",
+    "@xplainer/protocol": "workspace:*",
     "electron-updater": "6.8.9"
   },
   "devDependencies": {

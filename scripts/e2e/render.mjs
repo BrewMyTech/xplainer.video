@@ -4,7 +4,10 @@
  * This is roadmap **P1-1**, and the only place in the repository where every phase-1 piece is
  * exercised at once and against nothing fake:
  *
- * - a real `xplainer serve` in its own state directory, reached the way an agent reaches it —
+ * - a real `xplainer setup` in a scratch state directory — the headless shell from the reviewed
+ *   manifest this checkout commits, the Kokoro server recorded as the `--tts-url` speech route, and
+ *   the render workspace resolved from `template/package.json` with `npm ci`;
+ * - a real `xplainer serve` in that same state directory, reached the way an agent reaches it —
  *   `xplainer mcp --attach` over the daemon's unix socket, carrying no URL and no token;
  * - a real `@modelcontextprotocol/sdk` client driving `explainer_create → explainer_put_source →
  *   explainer_narrate → explainer_still → explainer_render`, polling `explainer_job` between them;
@@ -12,6 +15,32 @@
  *   estimated (**P1-2**);
  * - `ffprobe` on the finished MP4, and an `ffmpeg` frame extract compared against the same frame of
  *   a captions-disabled render, which is what makes "with burned captions" a measurement.
+ *
+ * **Why it pays for a whole `setup` on every run.** Batch 6 put a gate in front of
+ * `explainer_still` and `explainer_render`: the daemon reads `<state>/toolchain.json` at the moment
+ * a job leaves the queue and refuses by name when what `setup` recorded is not on the machine
+ * (`apps/cli/src/setup/toolchain.ts`). Until 2026-09-09 this script symlinked the checkout's own
+ * `node_modules` into the scratch workspace — a tree that renders perfectly well, and a machine the
+ * daemon now declines to render on, because the workspace half of that gate is judged from
+ * `workspace.manifest.json` and only `setup`'s own workspace route writes one. There is no honest
+ * shortcut past it: `recordTestToolchain` in `apps/cli/src/setup/testing/` is excluded from the
+ * build on purpose and must never ship, and writing a marker from here would be this gate asserting
+ * its own precondition. So the proof runs the command the product tells a user to run, and pays
+ * what a user pays. Measured on macOS arm64, 2026-09-09: **14.3 s**, all of it the 98 MB browser
+ * and `npm ci` resolving 247 packages.
+ *
+ * One thing is still borrowed, and it is not part of what is proved: Remotion's **browser cache**.
+ * Remotion resolves it from the render worker's cwd, so a freshly resolved workspace has none and
+ * would fetch its own copy of the same headless shell inside the measured still job;
+ * `infra/e2e/Dockerfile` fills the checkout's cache at build time to keep that download out of the
+ * measurement, and this script links it in where it exists. On a machine with no cache to borrow
+ * the link is skipped and Remotion fetches, exactly as it did before.
+ *
+ * **The browser `setup` acquires is not the browser the render uses**, and that is the product's
+ * own shape rather than something this script arranges: `toolchain.json`'s `chrome.path` is checked
+ * for existence by the gate and is never handed to Remotion, which fetches the same
+ * `chrome-headless-shell` 149.0.7790.0 into its own cache. Two copies of one artefact. Worth fixing
+ * in the product; not fixable from a proof.
  *
  * **Nothing in it is platform-specific.** It resolves `ffmpeg` and `ffprobe` from `PATH` and takes
  * every other coordinate from the environment: P1-1 is judged on macOS **and** on headless Linux,
@@ -76,6 +105,24 @@ const REPO = fileURLToPath(new URL("../../", import.meta.url));
 
 /** The built CLI. `pnpm turbo build` below is what guarantees it is this commit's. */
 const CLI = join(REPO, "apps", "cli", "dist", "bin.js");
+
+/**
+ * The reviewed manifest this checkout commits, which is what `setup --manifest` names.
+ *
+ * Named rather than left to the default, because in this phase nothing is published to the address
+ * `setup` would otherwise read (`docs/ROADMAP.md` §2.5), so a run without it refuses at the
+ * manifest instead of acquiring a browser. `scripts/e2e/toolchain.mjs` names the same file.
+ */
+const MANIFEST = join(REPO, "apps", "cli", "src", "setup", "toolchain.manifest.json");
+
+/**
+ * How long `setup` may take.
+ *
+ * Generous by two orders of magnitude on purpose: the 14.3 s measured here is a warm npm cache and
+ * a fast link, and the same command on a cold CI runner is a ~100 MB browser download plus a
+ * 247-package `npm ci` from the registry. What this bound is for is a hung download, not a slow one.
+ */
+const SETUP_TIMEOUT_MS = 1_800_000;
 
 /** Where the Kokoro container answers. */
 const TTS_URL = (process.env.XPLAINER_TTS_URL ?? "").trim() || "http://127.0.0.1:8880";
@@ -536,14 +583,31 @@ function startDaemon(env) {
   return { child, ready };
 }
 
-/** Call one tool and return its structured result, refusing a tool error. */
+/**
+ * Call one tool and return its structured result, refusing a tool error.
+ *
+ * The refusal is read **before** anything is parsed. A tool that fails answers with prose in
+ * `content[0].text` and no structured content at all, so parsing first turns the sentence that
+ * says what is wrong into a JSON syntax error about its first character. Measured: the toolchain
+ * gate's refusal opens with the marker's path, and this script reported it as `Unexpected token
+ * '/', "/tmp/xplai"... is not valid JSON` — a message about the letter that named nothing.
+ */
 async function callTool(client, name, args) {
   const result = await client.callTool({ name, arguments: args });
-  const structured = result.structuredContent ?? JSON.parse(result.content?.[0]?.text ?? "null");
+  const text = result.content?.[0]?.text ?? "";
   if (result.isError === true) {
-    throw new Error(`${name} refused: ${result.content?.[0]?.text ?? JSON.stringify(structured)}`);
+    throw new Error(`${name} refused: ${text === "" ? JSON.stringify(result) : text}`);
   }
-  return structured;
+  if (result.structuredContent !== undefined) {
+    return result.structuredContent;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `${name} answered with content this gate cannot read as JSON: ${text.slice(0, 400)}`,
+    );
+  }
 }
 
 /**
@@ -641,21 +705,12 @@ async function main() {
   section("kokoro");
   await requireKokoro();
 
-  section("workspace");
+  section("setup");
   scratch = mkdtempSync(join(tmpdir(), "xplainer-e2e-"));
   const stateDir = join(scratch, "state");
   const workspace = join(scratch, "workspace");
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
-  // A workspace is "installed" when `<root>/node_modules/.bin/remotion` resolves. Installing
-  // Remotion into a temporary directory on every run is a few hundred megabytes; this repository
-  // already has the pinned tree, and borrowing it produces exactly the shape an install produces.
-  //
-  // What it also borrows is this repository's *other* dependencies, hoisted into the same
-  // directory — so Remotion resolves the workspace's `zod` and prints a version-mismatch warning
-  // about it. That warning belongs to the borrowing, not to the product: a real `npm install` in a
-  // workspace built from `template/package.json` installs the pinned version and says nothing.
-  symlinkSync(join(REPO, "node_modules"), join(workspace, "node_modules"), "dir");
   say(`  state dir:   ${stateDir}`);
   say(`  workspace:   ${workspace}`);
 
@@ -665,6 +720,62 @@ async function main() {
     XPLAINER_VIDEOS_DIR: workspace,
     XPLAINER_TTS_URL: TTS_URL,
   };
+
+  // The product's own command, with the product's own flags: the reviewed manifest this checkout
+  // commits (nothing is published to the address `setup` would otherwise fetch it from, §2.5), and
+  // the Kokoro this proof already needs recorded as the `--tts-url` speech route — which is route 1
+  // of three, acquires nothing, and is the route `e2e-linux.yml`'s `services:` block gives a runner.
+  const setupStarted = Date.now();
+  const setupOutput = runLogged(
+    "setup",
+    process.execPath,
+    [CLI, "setup", "--state-dir", stateDir, "--manifest", MANIFEST, "--tts-url", TTS_URL],
+    { cwd: REPO, env, timeout: SETUP_TIMEOUT_MS },
+  );
+  say(`  setup took ${((Date.now() - setupStarted) / 1000).toFixed(1)}s`);
+  for (const line of setupOutput.trim().split("\n")) {
+    say(`  ${line}`);
+  }
+  check(
+    setupOutput.includes("workspace: resolve route"),
+    "the workspace came from `npm ci` over the template's own pins, which is the route a machine " +
+      "with no staged payload 2 takes",
+  );
+
+  const markerPath = join(stateDir, "toolchain.json");
+  check(existsSync(markerPath), `setup recorded ${markerPath}`);
+  const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+  check(
+    existsSync(marker.chrome.path),
+    `the browser it recorded is on this machine at ${marker.chrome.path}`,
+  );
+  check(
+    marker.speech.provider === "url" && existsSync(marker.speech.path),
+    `the speech route it recorded is the external server, receipted at ${marker.speech.path}`,
+  );
+  check(
+    existsSync(join(workspace, "workspace.manifest.json")),
+    "the workspace describes what it resolved, which is the half of the gate a borrowed " +
+      "node_modules can never satisfy",
+  );
+  check(
+    existsSync(join(workspace, "node_modules", ".bin", "remotion")),
+    "and node_modules/.bin/remotion resolves in it",
+  );
+
+  // Remotion's **browser cache**, and nothing else, is borrowed from the checkout. It resolves it
+  // from the worker's cwd — `<workspace>/node_modules/.remotion` — and a fresh workspace has none,
+  // so without this the still job pays for a second copy of the same headless shell inside the
+  // measurement. `infra/e2e/Dockerfile` fills the checkout's cache at build time for exactly that
+  // reason. Where there is none to borrow (a GitHub runner), the link is skipped and Remotion
+  // fetches its own, which is what happened there before this section existed.
+  const remotionCache = join(REPO, "node_modules", ".remotion");
+  if (existsSync(remotionCache)) {
+    symlinkSync(remotionCache, join(workspace, "node_modules", ".remotion"), "dir");
+    say(`  browser cache borrowed from ${remotionCache}`);
+  } else {
+    say(`  no browser cache at ${remotionCache}; Remotion will fetch its own inside the still job`);
+  }
 
   section("daemon");
   const daemon = startDaemon(env);
@@ -916,7 +1027,10 @@ async function main() {
 main().then(
   () => {
     if (scratch !== null) {
-      const link = join(scratch, "workspace", "node_modules");
+      // The borrowed Remotion browser cache, unlinked by hand before the tree it sits in goes.
+      // `rmSync` unlinks a symlink rather than following it, so this is belt and braces — and the
+      // braces are worth having when what is on the other end of it is inside the checkout.
+      const link = join(scratch, "workspace", "node_modules", ".remotion");
       if (existsSync(link) && lstatSync(link).isSymbolicLink()) {
         unlinkSync(link);
       }

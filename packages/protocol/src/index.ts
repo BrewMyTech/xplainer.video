@@ -46,5 +46,8 @@ export type {
   SourceFile,
   Timings,
   TimingsSegment,
+  Toolchain,
+  ToolchainComponent,
+  ToolchainWorkspace,
   VideoSummary,
 } from "./generated/types.js";

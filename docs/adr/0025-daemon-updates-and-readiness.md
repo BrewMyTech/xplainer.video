@@ -613,3 +613,200 @@ whole point of waiting for this line is to be able to manage what you started.
 **What was not reconsidered.** The `/healthz` half of §Note, 2026-09-06 §(a) stands unchanged: the
 shim reads `contract_version` there, not from the ready line, because `xplainer mcp --attach` is not
 the daemon's parent and has no pipe to read.
+
+## Note, 2026-09-08: P2-S4 settled — `Type=exec` stands, and the readiness wait is the caller's
+
+Spike **P2-S4** has reported. It answers the one mechanism §Part three left open — what a
+post-install hook restarting a *supervised* daemon waits on — and it changes nothing this record
+*decides*: readiness is still announced exactly once, after ownership, reconciliation and both
+binds, and every parent still waits for an announcement rather than sleeping. What follows is the
+mechanism under that decision, and the block above marked **Proposed mechanism, to be confirmed by
+spike P2-S4** is answered here rather than edited.
+
+**Decided: `Type=notify` is rejected. ADR 0020's `Type=exec` stands, with no `NotifyAccess=` line
+beside it, and the readiness wait belongs to the caller — an authenticated `GET /healthz` polled
+with a bounded timeout and a named failure.** So the open question in
+[ADR 0020](0020-always-running-local-daemon.md)'s note of 2026-09-06 closes on its second branch,
+and that record needs no amendment: the unit type it wrote down is the unit type that ships.
+
+The measurement is `apps/cli/spikes/p2-s4-readiness.mjs`, which exits `0` only when all 22 of its
+expectations hold and prints the transcript quoted below. It ran on 2026-09-08 against **systemd
+252 (252.39-1~deb12u2)** on `linux/arm64`, Node v24.20.0, inside `infra/e2e/Dockerfile.systemd` —
+a Debian bookworm image booting real systemd as PID 1, run `--privileged --cgroupns=host` on
+OrbStack 29.4.0 from macOS. **The container did host a `systemctl --user` instance**, so the
+escape clause in the story ("if a privileged container cannot host one, the runner is the
+evidence") did not fire; the whole measurement is against a per-user manager, which is the
+instance the shipped unit lives in. One thing that instance needs is not obvious and is recorded
+in the Dockerfile: without `libpam-systemd`, `user@<uid>.service` starts, fails to
+`dlopen(pam_systemd.so)` and dies with "`$XDG_RUNTIME_DIR` is not set".
+
+**Every unit that ran the daemon launched the B1 artefact**, not a checkout: `ExecStart` names
+`<payload>/bin/node` and `<payload>/lib/node_modules/@xplainer/cli/dist/bin.js` from a payload 1
+assembled by `xplainer runtime build` into a scratch directory (5791 files, 146.7 MB, 102
+packages), and the spike reads `systemctl --user show -p ExecStart -p Environment` back and
+requires that neither names the checkout. The one unit that does not run the daemon — the stand-in
+below for a process that binds nothing — still runs the payload's own interpreter. The spike
+therefore measures readiness and not packaging.
+
+### What the two candidates actually do
+
+Five starts of each, each on a fresh port and a fresh state directory whose bearer token was
+minted before the start, so that the probe issued the instant `systemctl --user start` returns is
+**authenticated** — a `401` proves a bind and nothing about readiness, which is why the token is
+part of the measurement. Every number below comes from one run of the spike; the millisecond
+figures move by a few ms between runs and the counts did not move at all across four.
+
+| | `Type=exec` | `Type=notify`, `NotifyAccess=all` |
+|---|---|---|
+| mean `systemctl --user start` | **4.5 ms** | **125.3 ms** |
+| authenticated `200` at that instant, no sleep, no retry | **0/5** (`ECONNREFUSED` every time) | **5/5** |
+| mean time to the first authenticated `200` | 129.8 ms, 6–7 polls at 20 ms | inside the start |
+| starts that succeeded | 5/5 | 5/5 |
+
+So both mechanisms work, and `Type=notify` is the one that makes `systemctl start` mean *ready*.
+It is rejected on what it costs, not on whether it functions.
+
+**1. Node cannot write `READY=1`, measured from inside the daemon.** The spike launches the daemon
+with an `--import` hook, so the three probes run in the daemon's own process with
+`$NOTIFY_SOCKET=/run/user/1000/systemd/notify` set:
+
+```
+dgram.createSocket("unix_dgram")   → ERR_SOCKET_BAD_TYPE: Bad socket type specified.
+                                     Valid types are: udp4, udp6
+dgram udp4 send to the socket path → ERR_SOCKET_BAD_PORT: Port should be > 0 and < 65536.
+                                     Received type number (0).
+net.connect(NOTIFY_SOCKET)         → EPROTOTYPE: connect EPROTOTYPE /run/user/1000/systemd/notify
+```
+
+`node:dgram` is UDP-only, `node:net` speaks `SOCK_STREAM` to a unix path and the notify socket is
+`SOCK_DGRAM`, and a `udp4` socket cannot be pointed at a filesystem path. **There is no
+native-free writer in Node — not "no convenient one".** Round 1's "about fifteen lines, no new
+dependency" is doubly wrong and is not recoverable by trying harder. Of the three routes this
+record listed, the native addon is out on the artefact's own terms: it would need either a
+toolchain on the machine the artefact is installed on — the spike found no `cc`, `gcc`, `c++`,
+`make` or `node-gyp` on the measured host, and the premise of payload 1 is a machine with no Node,
+let alone a compiler — or a prebuilt binary for every target, which payload 1 does not carry and
+`runtime.manifest.json` would have to start describing. What remains is `systemd-notify(1)` spawned
+as a **child**, and that one costs nothing in dependencies — `/usr/bin/systemd-notify` ships inside
+the `systemd` package itself, so any host with a unit to install already has it.
+
+**2. `NotifyAccess` follows from the choice, and getting it wrong is not a degradation.** Because
+the only writer is a child, `NotifyAccess=all` is not a preference — it is the setting the
+mechanism requires. Round 1 of the plan permitted the child and then rendered `NotifyAccess=main`.
+Measured, that combination does not silently under-report; it does not start at all:
+
+```
+systemctl --user start → rc=1 after 8234 ms, ActiveState=failed, Result=timeout
+journal: Got notification message from PID 293, but reception only permitted for main PID 285
+the sender's own view: systemd-notify exited 0
+```
+
+The manager names the refusal and drops the notification; `systemd-notify` reports success to the
+daemon regardless, so nothing on the sending side could detect it. A unit template that lets
+`Type=` and `NotifyAccess=` be chosen independently is therefore a template that can render a
+daemon which never starts, and **T9 renders neither**: `Type=exec`, no `NotifyAccess=`.
+
+**3. `Type=notify` does not preserve the foreground-process invariant.** This record already
+withdrew the round-2 claim that it does, on a reading of the protocol. It is now measured. A unit
+whose `ExecStart` is a wrapper that forks the daemon and then sends `READY=1` with
+`--pid=<its child>`:
+
+```
+the process systemd forked (the wrapper): 304
+the pid the wrapper handed over:          311
+the manager's MainPID afterwards:         311 → …/bin/node …/dist/bin.js serve --port 36157
+```
+
+The manager tracks as the service's main process one it never forked, and the start job succeeds.
+`NotifyAccess=all` accepts `READY=1` and `MAINPID=` from *any* process in the cgroup, so under
+`Type=notify` a future `serve --detach` would be a working configuration rather than a refused
+one. ADR 0020's invariant — `serve` stays a foreground process, never forks, and `serve --detach`
+is never added — is a property **this project keeps deliberately**. No unit type enforces it, and
+a later contributor must not read one as a guard it is not.
+
+**4. It is Linux-only.** macOS and Windows have no equivalent of the notification protocol, so the
+authenticated `/healthz` wait with a bounded timeout has to exist anyway for the other two
+platforms. Adopting `Type=notify` would add a *second* readiness mechanism on one of three
+platforms — and the platform-specific one is the one that rots, because two of three callers never
+exercise it.
+
+### What `Type=notify` buys, recorded rather than argued away
+
+`Type=exec` reports a unit active as soon as `execve` succeeds, and the spike measured what that
+means for a daemon that never becomes ready: a stand-in process that binds nothing left the unit
+at `ActiveState=active SubState=running` for the whole polling window while an authenticated probe
+got nothing. A caller-side wait catches that at install time, which is when the caller is
+watching; on a later boot nobody is. **That is a real gap and it is this decision's residual.**
+
+The spike also measured the route that closes it without the notification protocol: `Type=exec`
+with the same authenticated poll as `ExecStartPost=`. The start job then completes only after a
+`200` (measured: `rc=0` after 174.6 ms, immediate authenticated probe `200`), and a poll that
+never authenticates fails the unit and stops the daemon behind it rather than leaving it active
+(measured: `rc=1` after 3066 ms, `ActiveState=failed`, and a later probe `ECONNREFUSED`). It needs
+one unit line and one readiness-wait verb on the CLI, reusing exactly the code the post-install
+hook and the macOS and Windows callers already need.
+
+**It is measured and recorded here, and not adopted by this note.** No story in this phase renders
+that line or ships that verb, and adopting a mechanism nothing implements is how a record acquires
+a decision the code does not have. A later story that wants supervisor-side detection of a start
+that hangs before readiness has its measurement here and needs no second spike.
+
+### Two smaller confirmations
+
+- **The ready line goes to the journal**, which is the premise §Part three argues from rather than
+  measures. A supervised daemon's `{"event":"ready",…}` line was read back with
+  `journalctl --user -u`, so the post-install hook — not the daemon's parent — has no pipe to read
+  it from, whichever mechanism is chosen.
+- **`401` is not readiness.** On a daemon already answering, the same `/healthz` returned `401`
+  without the bearer token and `200` with it. A poller that accepted any response would be calling
+  a bound port readiness.
+
+## Note, 2026-09-08, later the same day: the update as built, and the one class of update it refuses
+
+Added as a dated note rather than a rewrite. The note above settles the readiness half — spike P2-S4
+reported, `Type=exec` stands with no `NotifyAccess=` beside it, the readiness wait belongs to the
+caller as an authenticated `GET /healthz` with a bounded timeout, and `NotifyAccess=all` is recorded
+there as a setting that **follows from** the rejected mechanism rather than as a preference, because a
+child writer with `NotifyAccess=main` does not under-report, it fails to start at all. Nothing in that
+half changed afterwards. This note is about the other half: §Part one's six-step sequence has now been
+built, and two things about it are worth having on this record.
+
+**The six steps survived, and two of the three gaps closed differently than the text anticipated.**
+Stage-beside-then-switch, drain, switch, restart, wait for readiness, and roll back to the retained
+previous copy if readiness does not arrive — all of that is what the transaction does, under an
+operation lock and a durable progress journal, with the updater killed at every boundary between two
+durable transitions and asserted twice: immediately after the kill, and again after the named recovery
+command. What differs is the surrounding machinery. Step 1's "install the new version through the
+package manager" has **no package manager to use this phase**, because nothing is published; the new
+version is a runtime artefact assembled locally, and where it comes from is one resolver's answer
+recorded in `daemon.json`. Step 4's "switch the executable the supervisor launches" is a **rewrite of
+the supervisor artefact** — one `temp → rename` in the target's own directory, the same operation as
+the stable launcher and the mirrored task XML — rather than a pointer flip. And **recovery is
+commanded, not automatic**: if the updater dies between the drain and the restart, on Linux and macOS
+nothing is running until a named command is run, because the daemon exited `0` and that is the
+portable "do not restart" signal on all three supervisors. All three are decided in
+[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md), which builds on this
+record and does not amend it.
+
+**One class of update is refused rather than performed, and it is a scope decision.** This record's
+sequence assumes a single artefact to stage, switch and roll back. Phase 2 has two: the runtime, and a
+**render workspace** with a different lifetime that an update deliberately does not replace. An update
+whose Remotion template **pins** differ from the installed workspace's would therefore succeed by
+every assertion in step 6 — readiness arrives, `/healthz` is green — and leave a daemon that cannot
+render; and rolling it back lands on the *previous* runtime, which is exactly what that workspace no
+longer satisfies. So `daemon update` checks the pins **before** the drain and, on mismatch, exits with
+a documented precondition code having staged nothing, drained nothing and left the daemon serving,
+naming the reinstall path from the new runtime's own program. The precondition is three-way —
+identical installed and incoming pins, and a workspace satisfying both — because comparing only the
+incoming runtime against the workspace passes in the one case that matters.
+
+**The paired stage-and-switch of the second payload is deferred and named, not omitted.** It is the
+right long-term shape and it doubles the transaction's state: a second retained tree, a second switch,
+a second rollback and a second recovery boundary. ADR 0027 records it as the successor's work, with
+the invariant that makes this phase's narrower promise checkable — within the supported class the
+installed workspace satisfies both the old runtime and the new one, which is what makes "the
+rolled-back daemon must **render**" a satisfiable assertion rather than a wish.
+
+Nothing above is rewritten. The package manager still updates the daemon when there is one, the daemon
+still never self-updates, readiness is still announced exactly once after ownership, reconciliation and
+both binds, and the `mcp --attach` shim still exits `8` rather than speaking a skewed contract.

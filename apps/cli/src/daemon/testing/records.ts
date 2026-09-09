@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { JOB_RECORD_FORMAT_VERSION, type JobRecord } from "../job-store.js";
 import { selfIdentity } from "../worker-identity.js";
+import { foreignStartToken } from "./platform.js";
 
 /** A `queued` record owned by this process, with every field the store requires. */
 export function makeJobRecord(overrides: Partial<JobRecord> = {}): JobRecord {
@@ -39,7 +40,7 @@ export function makeJobRecord(overrides: Partial<JobRecord> = {}): JobRecord {
 export function deadOwner(pid: number): JobRecord["owner"] {
   return {
     pid,
-    start_time: "Thu Jan  1 00:00:00 1970",
+    start_time: foreignStartToken(),
     boot_id: selfIdentity().boot_id,
     run_id: "a-previous-run",
   };

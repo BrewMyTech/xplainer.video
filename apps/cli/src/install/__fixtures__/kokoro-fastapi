@@ -1,0 +1,4 @@
+This file stands in for the speech synthesiser that `xplainer setup` acquires.
+
+It exists for the same reason as the Chrome stand-in beside it: the install preflight checks that
+the paths `toolchain.json` records still exist, and nothing here is ever executed.

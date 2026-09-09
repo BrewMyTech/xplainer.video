@@ -11,25 +11,35 @@ rendered anywhere but your machine.
 This repository is the whole local product: the `xplainer` CLI daemon, an optional Electron
 client, the render core, the MCP tool contract, and the agent skill that drives them.
 
-> ### Status: it renders
+> ### Status: it renders, and it installs itself
 >
-> **A video renders end to end, locally.** `xplainer serve` answers `/healthz`, serves the
-> eight MCP tools, owns its state directory, drains on `SIGTERM` and announces readiness, and
-> `xplainer status` reports whether it is up. The tools do real work against a shared Remotion
-> workspace on your machine: `explainer_create` scaffolds a video, `explainer_narrate`
-> measures the voiceover and writes the timings every scene length comes from, and
-> `explainer_still` and `explainer_render` drive the pinned Remotion CLI to a PNG and a
-> 1920×1080 MP4 with burnt-in captions. A test in `apps/cli` renders one on every run and
+> **A video renders end to end, locally, and the daemon that does it is installed rather than
+> started by hand.** `xplainer serve` answers `/healthz`, serves the eight MCP tools, owns its
+> state directory, drains on `SIGTERM` and announces readiness; `xplainer status` reports
+> whether it is up, in prose or as one JSON condition code. The tools do real work against a
+> shared Remotion workspace on your machine: `explainer_create` scaffolds a video,
+> `explainer_narrate` measures the voiceover and writes the timings every scene length comes
+> from, and `explainer_still` and `explainer_render` drive the pinned Remotion CLI to a PNG and
+> a 1920×1080 MP4 with burnt-in captions. A test in `apps/cli` renders one on every run and
 > checks it with `ffprobe`.
+>
+> `xplainer setup` acquires the browser and materialises the render workspace,
+> `xplainer runtime build` assembles the relocatable payload that carries its own interpreter,
+> and `xplainer daemon install` registers that payload with this machine's own supervisor — a
+> `systemd --user` unit, a LaunchAgent or a per-user Scheduled Task, never as root and never
+> needing an administrator. `daemon update` is a transaction: staged, journalled, and rolled
+> back if the replacement does not become ready. `docs/daemon.md` is that whole surface,
+> including what to do on a host with no user-scope supervisor at all.
 >
 > `xplainer mcp` serves those tools over stdio, `xplainer mcp --attach` proxies a session to a
 > running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
-> Still to come at roadmap phase 1: the Kokoro container as a supported install and the
-> first-run downloads. `setup` and `daemon` still print what they are and exit 2, and you
-> install the workspace's `node_modules` yourself — no tool call downloads hundreds of
-> megabytes behind your back. Nothing here is published to npm yet.
+> **What is not done, said plainly.** Nothing is published to npm, so `xplainer` is a payload
+> you build or a checkout you run. Speech has two working routes on macOS and Linux — a
+> Kokoro-FastAPI server you already run (`setup --tts-url`), or the pinned container — and
+> **none on Windows this phase**, which `setup` says rather than offering a route that fails.
+> Desktop installers are unsigned, and the macOS ones are **arm64 only** this phase.
 >
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) is what happens next, in order, with the criteria each
 > phase is judged by written down before it starts.
@@ -42,8 +52,10 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
   so a wrong version fails rather than warns.
 - **[uv](https://docs.astral.sh/uv/)** for the Python members; Python 3.13 is pinned in
   `.python-version`.
-- **Docker**, for the Kokoro text-to-speech container. From phase 2, `xplainer setup`
-  downloads a standalone TTS build instead and Docker becomes optional.
+- **Docker**, for the Kokoro text-to-speech container — or a Kokoro-FastAPI server you already
+  run, which `xplainer setup --tts-url <url>` records instead. A standalone per-platform speech
+  bundle, which is what makes Docker optional and gives Windows a route at all, is phase-4 work
+  and nothing is published for it yet.
 - **A Remotion licence, depending on who you are.** Remotion is free for individuals and for
   companies of up to three people. Above that, **you need your own Remotion licence** — see
   <https://remotion.pro/license>. `@xplainer/render-core` *declares* Remotion as a dependency
@@ -60,8 +72,9 @@ uv sync --all-packages            # Python members
 ```
 
 That is the whole bootstrap, on macOS, Linux and Windows. Nothing else is required, and CI
-proves it on all three operating systems on every push — as its own job, so a Windows-only
-install failure cannot hide behind a green Linux run.
+proves it on all three operating systems — as its own `workflow_dispatch` job, so a Windows-only
+install failure cannot hide behind a green Linux run, and so the three-runner cost is paid when
+the lockfiles or the version pins change rather than on every push.
 
 ### The one-command check
 
@@ -100,10 +113,21 @@ It runs anywhere Node runs, including a headless Linux VM with no desktop enviro
 is the constraint the whole local design was chosen against
 ([ADR 0016](docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)).
 
-From roadmap phase 2 the daemon is *installed* rather than started by hand — a `systemd --user`
-unit on Linux, a LaunchAgent on macOS, a Scheduled Task on Windows, none of them needing an
-administrator ([ADR 0020](docs/adr/0020-always-running-local-daemon.md)). The `xplainer daemon`
-command group is registered today and reports that it is deferred.
+**The daemon installs itself**, rather than being started by hand — a `systemd --user` unit on
+Linux, a LaunchAgent on macOS, a per-user Scheduled Task on Windows, none of them needing an
+administrator ([ADR 0020](docs/adr/0020-always-running-local-daemon.md)):
+
+```bash
+xplainer setup                          # browser + speech route + the render workspace
+xplainer runtime build --out <dir>      # the relocatable payload, carrying its own interpreter
+xplainer daemon install --runtime <dir> # register it with this machine's supervisor
+xplainer daemon status                  # installed? running? healthy?
+```
+
+[`docs/daemon.md`](docs/daemon.md) is that surface end to end — install, lifecycle, updates,
+exposing the daemon beyond this machine, and the self-supervision recipes for a host that has no
+user-scope supervisor (Docker `--restart unless-stopped`, OpenRC `supervise-daemon`), each with the
+caveats measured rather than assumed.
 
 **Text-to-speech runs in a container next to it**, on `http://localhost:8880`:
 
@@ -127,7 +151,11 @@ pnpm --filter @xplainer/desktop dev               # placeholder window titled "X
 pnpm --filter @xplainer/desktop package           # unsigned installer → apps/desktop/release/
 ```
 
-Installers are unsigned until roadmap phase 3; that is a deliberate deferral, not an oversight.
+Installers are unsigned until roadmap phase 3; that is a deliberate deferral, not an oversight. The
+macOS artefacts are **arm64 only** this phase: the payload inside them copies the build host's own
+interpreter, so an x64 artefact built on an Apple-silicon runner would ship an arm64 `node` and fail
+to start. Shipping a target that cannot run is worse than not shipping it, and an Intel Mac has no
+desktop installer here until a native x64 build joins the matrix.
 
 ## Layout
 
@@ -149,9 +177,11 @@ xplainer.video/
 │   ├── docker-compose.tts.yml   # the local speech container, and nothing else
 │   └── terraform/          # R2 bucket + cached custom domain for release artefacts
 ├── docs/adr/               # MADR decision records
+├── docs/ARCHITECTURE.md    # the workspace, the runtime, the exit codes
+├── docs/daemon.md          # installing, running, updating and exposing the daemon
 ├── docs/ROADMAP.md
 ├── docs/acceptance-criteria.md
-└── .github/workflows/      # ci.yml, desktop.yml
+└── .github/workflows/      # ci.yml, desktop.yml, and the workflow_dispatch proof workflows
 ```
 
 Nine workspace members: eight TypeScript, one Python-only (`services/tts-sidecar`), and
@@ -183,12 +213,11 @@ MADR format, including the ones that were rejected and why. Records are immutabl
 accepted: a changed decision is a new record, and a record that acknowledges something that
 happened underneath it gains a dated note rather than a rewrite.
 
-[ADR 0023](docs/adr/0023-split-the-repository.md) is the most recent and explains the shape of
-this repository: **a hosted tier was designed and is deferred pending a written answer from
-Remotion AG on whether a rendering service may accept user-authored code. It was relocated to
-a private repository, not cancelled.** The local product does not depend on that answer —
-you operate Remotion on your own machine — which is why it is the half that ships first and
-the half that is open source.
+[ADR 0023](docs/adr/0023-split-the-repository.md) explains the shape of this repository: **a
+hosted tier was designed and is deferred pending a written answer from Remotion AG on whether a
+rendering service may accept user-authored code. It was relocated to a private repository, not
+cancelled.** The local product does not depend on that answer — you operate Remotion on your own
+machine — which is why it is the half that ships first and the half that is open source.
 
 The phase-0 acceptance criteria that comments and CI step names cite by id (`AC-2c`, `AC-7b`,
 `AC-14b`) are in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).

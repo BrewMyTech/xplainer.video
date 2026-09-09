@@ -767,3 +767,283 @@ question about tool ordering, not about two processes, and it is left open here 
 badly. The `requests/` document is likewise still keyed by job id per store, so two stores can
 overwrite one another's; `agreedSlug()` turns that into a named, retryable failure rather than a
 wrong render, and moving those documents into the store that owns them is phase 2's to do.
+
+## Note, 2026-09-08: P2-S5 settled — one drain, three restart adapters, and `kickstart -k` measured
+
+Spike **P2-S5** has reported. It answers the mechanism §Drain on planned restart left open — "how
+each supervisor is persuaded to allow it" — and it changes nothing this record *decides*: the drain
+is still the same six steps, still capped at 20 s, and still ends in exit `0` as the portable "do
+not restart" signal. The block above marked **Proposed mechanism, to be confirmed by spikes P2-S4
+and P2-S5** is answered here rather than edited.
+
+**Decided: one application-level drain reached over the IPC listener, and three adapters that
+differ only in how the supervisor is asked to start again.** On Linux `KillMode=mixed` is required
+and its reason is now measured rather than argued; on macOS `launchctl kickstart -k` is **graceful**
+— it sends `SIGTERM` first and waits — so it is the counterpart of `systemctl --user restart` and
+not the kill this record called it; on Windows the route over the named pipe is the mechanism with
+no fallback beneath it.
+
+| | ask for the drain | response to exit `0` | restart command |
+|---|---|---|---|
+| Linux | `POST /api/daemon/drain` over the socket, or `SIGTERM` to the main process | `Restart=on-failure` does not restart | `systemctl --user start xplainer` |
+| macOS | the same route over the same socket | `KeepAlive{SuccessfulExit:false}` does not restart | `launchctl kickstart gui/$(id -u)/video.xplainer.daemon` |
+| Windows | the same route over the named pipe | the task ends | `schtasks /Run /TN "\xplainer\<user>-daemon"` |
+
+The measurement is `apps/cli/spikes/p2-s5-drain.mjs`, which exits `0` only when every expectation
+holds and prints the numbers quoted below. It ran on 2026-09-08 against **macOS 26.5** in
+`gui/501` (13/13) and against **systemd 252 (252.39-1~deb12u2)** on `linux/arm64` (11/11) inside
+`infra/e2e/Dockerfile.systemd` — the image spike P2-S4 already builds, reused rather than
+duplicated — booted `--privileged --cgroupns=host` on OrbStack 29.4.0, Node v24.20.0 throughout.
+Every figure below comes from one run of it; across three consecutive runs the millisecond figures
+moved by a few ms and the counts did not move at all.
+
+**The spike carries its own listener, and that is why it could run at all.** The route it asks for,
+`POST /api/daemon/drain`, is built by **T13, two batches later**. Measuring the supervisors through
+a route that does not exist yet would have meant either deferring the spike or measuring only Linux,
+which is the one platform with a signal fallback and therefore the one the question is least about.
+So the harness binds its own unix socket — a named pipe on Windows — with a fixture route that runs
+a **fake** drain: sleep, kill the child, exit `0`. Every question below is about the *supervisor*,
+and none of them needs the production route. The fixture is written into a scratch directory at run
+time and never ships. **T13 proves these same three adapters against the real route.**
+
+### Linux: `KillMode=mixed`, and what the default actually does
+
+The claim this record made without measuring it — that `KillMode=control-group` signals Chrome and
+ffmpeg at the same instant as the daemon — holds exactly. Two units differing in one key, each
+restarted with `systemctl --user restart` while the fixture held a child that records every signal
+it receives:
+
+```
+KillMode=mixed           daemon: bound → SIGTERM → drain → child killed → exit 0
+                         child:  started                      (no signal, ever)
+KillMode=control-group   daemon SIGTERM at 1788811452701
+                         child  SIGTERM at 1788811452701      (skew 0 ms)
+```
+
+So `mixed` is not a preference: under the default the drain is not a drain, because the processes it
+exists to shut down cleanly are already dying. The restart itself waited — 1213 ms against a 1200 ms
+drain — which is the other half of the claim, and the unit came back up behind the same command.
+
+Three more rows, each measured: **`Restart=on-failure` declines an exit `0`** — after the route
+drain the unit sat at `ActiveState=inactive Result=success MainPID=0 NRestarts=0` for a five-second
+window, well above `RestartSec=2` — while an exit `7` was restarted 2230 ms later with
+`NRestarts=1`, so the negative discriminates rather than describing a unit that never restarts
+anything. **`SIGTERM` to the main process reaches the same drain**, which is the Linux row's second
+half and exists on neither other platform. And **`TimeoutStopSec` supplies escalation, not a
+drain**: a 2 s budget against an 8 s drain returned in 2240 ms with `Result=timeout` and the drain
+unfinished, which is why the shipped `TimeoutStopSec=45s` has to exceed the 20 s cap rather than
+implement it.
+
+### macOS: `kickstart -k` is graceful, and `ExitTimeOut` is what bounds it
+
+This record wrote that `launchctl kickstart -k` "is documented only as kill-and-restart and its
+graceful behaviour is **unverified**". It is now verified, and the answer is the opposite of what the
+name suggests:
+
+```
+launchctl kickstart -k gui/501/<label>   returned after 1211 ms      (a 1200 ms drain)
+the old instance's record: bound → signal(SIGTERM) → drain_started → drain_completed → exit 0
+```
+
+It sends `SIGTERM`, the drain runs to completion, **and the command itself blocks until the process
+is gone** before starting the replacement. The grace is bounded by `ExitTimeOut`, measured by
+shortening it: with `ExitTimeOut=3` against an 8000 ms drain the command returned in 3012 ms and the
+old instance's record stops at `drain_started` — killed mid-drain. So the plist's **`ExitTimeOut=45`
+is the macOS counterpart of `TimeoutStopSec=45s`**, and it is what has to exceed this record's 20 s
+cap. `kickstart -k` is therefore a legitimate supervisor-initiated restart on macOS, the analogue of
+`systemctl --user restart`, and not merely a kill.
+
+`kickstart` **without** `-k` is a different command and both are needed: on a running job it
+returned `0` in 4 ms and did nothing at all — same pid, still serving — which is exactly what makes
+it the clean *start* half after a drain the daemon has already taken. `KeepAlive{SuccessfulExit:
+false}` does not restart an exit `0` (`state = not running, last exit code = 0`, observed for five
+seconds against a probe `ThrottleInterval` of 1), and does restart an exit `7` 1096 ms later.
+
+**Two smaller measurements that cost time to rediscover.** `launchctl bootout` returns **before** the
+job has exited: the spike's own case asserts it, and measured it returning in 5 ms with the label
+still in the domain, which left it 1205 ms later when the drain it had just triggered finished. A `bootstrap`
+issued in that gap fails with `Bootstrap failed: 5: Input/output error` — hit while building this
+spike, which reads like a malformed plist and is not one — so anything that replaces a loaded agent
+must wait for the label to leave the domain first; **T12's uninstall and reinstall paths are where
+that matters**. Separately, and also found the hard way rather than asserted: a unix socket path
+much over 100 bytes fails the bind with `EINVAL` on macOS, which is a constraint on where
+`--socket` (T7) may point and not merely on where this spike puts its own.
+
+### Windows: the design, and honestly not a measurement
+
+**No Windows host was reachable from the session that ran this spike, so the Task Scheduler row is
+not measured.** It is the `[runner]` half: the spike carries a Windows arm written from the
+`schtasks` documentation and this plan's adapter table, and `windows-latest` is where it becomes
+evidence. What it will assert is the same shape as the other two — the fixture route runs the drain
+over a **named pipe**, the task ends on exit `0` and nothing brings it back on its own, and
+`schtasks /Run /TN "\xplainer\<user>-daemon"` starts it again — plus the fact that gives Windows a
+drain at all: Node maps `SIGTERM` there to `TerminateProcess`, so the process dies with no handler
+run and no drain, and the route is the mechanism rather than a fallback. Until that job has run, the
+Windows row of the table above is a design and the other two are measurements, and this note says so
+rather than letting the table imply otherwise.
+
+### What this note does not decide
+
+The production drain route is **T13's**, and the six steps §Drain on planned restart lists are
+unchanged by anything here — this spike measured supervisors, not the drain's own behaviour, and its
+fixture is a sleep. `AllowHardTerminate`, the Job Object that closes `process-group.ts`'s
+grandchild gap, and the circuit breaker's measured boundary are their own stories (T14) and are not
+settled by this measurement.
+
+## Note, 2026-09-08, later the same day: the two things the P2-S5 note deferred
+
+The note above closes with a §What this note does not decide that names three things: the production
+drain route, "the Job Object that closes `process-group.ts`'s grandchild gap", and "the circuit
+breaker's measured boundary". The first is built and its three adapters are proved against the real
+route rather than the spike's fixture. The other two are settled here, because both belong beside
+the drain rather than in a record of their own, and because one of them corrects a number this record
+wrote as prose.
+
+**The Windows Job Object, and what it closes.** `process.kill(-pid)` is a POSIX idiom Node does not
+implement on `win32`: the pid alone is signalled and every grandchild is left, which on this project
+means an orphaned `chrome.exe` after each logoff. That was a documented gap while phase 1 did not
+target Windows. Windows' own answer to "these processes are one unit" is a **Job Object** with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: every process in the job dies when the last handle closes, and
+a process created by one already in the job joins it automatically. **Node cannot create one** — there
+is no Job Object API in the runtime and this project ships no native addon — so the handle is held by
+a keeper process, `powershell.exe -EncodedCommand`, which `Add-Type`s four `kernel32` entry points,
+creates the job, assigns the worker, sweeps `Win32_Process` for descendants that already existed
+(because `AssignProcessToJobObject` does not reach back to children made before the assignment, and
+the keeper takes a few hundred milliseconds to start), and then waits. Killing the keeper takes the
+tree; the keeper outliving a killed worker closes the job a moment later and takes the survivors.
+Two facts make it sound rather than lucky: jobs have been **nestable** since Windows 8 and Server
+2012, so a process a hosted runner or a Scheduled Task already put in a job can still be assigned to
+ours; and `-EncodedCommand` is used rather than `-Command` because the script is multi-line and
+quoted, and a command line assembled around that is a quoting bug waiting to be written. **This one
+is proven on a runner**: `process-group`'s own suite ran green on `windows-latest` in the proof round
+of 2026-09-08.
+
+**The breaker's boundary is 30,000 ms, inclusive, and it is measured against the run's own end.**
+This record's §Consequences moved crash history to the durable directory beside the job store, which
+is where `recentStarts[]` lives. What the note adds is the predicate over it. The boundary is
+**inclusive** — 30,000 ms is fast and 30,001 ms is not — which matters because launchd's
+`ThrottleInterval` is 30 s and therefore sits *exactly* on it, and because Task Scheduler's
+`<RestartOnFailure>` has a one-minute schema minimum and therefore sits outside it. Those two numbers
+are why the window must be measured against **each run's own recorded end** rather than against the
+next run's start: measuring the gap between starts measures the supervisor's retry cadence, and under
+two of the three supervisors that cadence is at or beyond the boundary, so the breaker could never
+latch at all. Five consecutive fast failures latch, and the daemon then exits `0` — the same portable
+"do not restart" signal the drain above ends with, which is why the two belong on one record.
+
+The rule for a start that recorded **no** end, the validation that makes a backward clock step reset
+the streak instead of counting it, and the residual that validation still leaves open are decided in
+[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) §D6, together with the
+identity tuple each start persists so that a later start can establish the death was real. Nothing in
+this record's own decision — durable job records, exclusive ownership, boot reconciliation, the
+`error_code` enum — is changed by any of it.
+
+**One honest correction to the note above.** Its §Windows section says the Task Scheduler row "is not
+measured" and is "a design". Part of it now is: the P2-S5 spike's Windows arm ran on `windows-latest`
+and exited `0`, so the drain over the named pipe and the task ending on exit `0` are measured. The
+Task Scheduler **restart adapter** proofs are a different job and were still red at the last dispatch,
+and GitHub Actions has since been billing-blocked for the organisation, so they stay honestly unmet.
+ADR 0027 §Runner evidence lists every leg either way.
+
+## Note, 2026-09-09: the Windows half of the identity tuple existed only from this change
+
+The note of 2026-09-06 §Process identity lists three platforms and prices two of them. Its Windows
+row reads, in full: "**Windows:** the process creation time — `Win32_Process.CreationDate`, or
+`Process.StartTime` — at 100 ns. Unmeasured." **Unmeasured turned out to mean unimplemented**, and
+this note records what that cost, what closes it, and what the close costs.
+
+**What was actually shipped.** `worker-identity.ts` read `/proc/<pid>/stat` on Linux and spawned
+`ps -o lstart=` on *every other platform*; Windows has no `ps`, so the spawn failed and the token
+was `null`. The boot id was read only on Linux and macOS and answered `null` elsewhere. So on
+Windows `selfIdentity()` was `(pid, null, null)`, and the decision this record makes — that the
+identity of a recorded process is the triple, and that only a positive match of it licenses a kill —
+was not implemented on the platform at all. Three consequences, each of them a rule in this record
+that could not fire:
+
+1. **Reconciliation could never take a positive decision.** `classifyWorker()`'s boot check needs
+   both ids and had neither; its token comparison needs a recorded token and an observed one and had
+   neither. Every live pid therefore reached the `uncertain` branch: no orphaned worker was ever
+   killed, no stranger was ever positively identified, and §What happens when identity cannot be
+   established's expensive answer — `workers_uncertain: true` and a quarantined output directory —
+   was the answer to *both* of the two cases it is meant to tell apart.
+2. **A stale `owner.lock` naming a reused pid blocked the daemon.** `lock.ts`'s scenario `[D]` — a
+   live pid whose token differs, take over — needs an observed token to differ from. With none, the
+   holder was always believed and the next `serve` exited `10` until somebody deleted the file.
+3. **`startIsProvablyGone()` was `false` for any recorded pid Windows had since handed out again**,
+   which is one half of ADR 0027 §D6's rule for a start that died before it could record its own
+   end.
+
+**How it surfaced, and why it took a while.** As a flake in T14's Windows leg, whose eleventh
+expectation is that each of five recorded starts "carries an identity tuple a later start can decide
+`provably gone` from". Whether that fails is decided by whether the machine happened to reuse one of
+those five pids: run `34319237168` was green and run `34333162332` was red, on the same code, the
+same day. The transcript of the red one prints `start_time <none>, boot <none>` against every
+recorded start, which is the whole defect in one column and had been printing all along.
+
+**What closes it.** Both halves are read from CIM in **one** `powershell.exe`:
+`Win32_Process.CreationDate` for the start token and `Win32_OperatingSystem.LastBootUpTime` for the
+boot id, each rendered by `ToFileTimeUtc()` — a 64-bit count of 100 ns intervals since 1601, which
+is an exact integer and not a formatted date, so neither a locale, a time zone nor an output
+formatter can make two readers of the same process disagree. The lines are written with
+`[Console]::Out.WriteLine`, past the formatter that wraps redirected output at 80 columns, and the
+reader accepts a value only when it is entirely digits. `wmic` is not used and is not a fallback: it
+is removed from current Windows images, so a probe built on it would answer `null` — "uncertain" —
+on exactly the machines this is for. A probe that cannot run answers `null`, which is `uncertain`,
+which is the same refusal every other platform makes when it cannot say.
+
+**What it costs, measured rather than assumed** — `windows-latest`, node v24.20.0, 2026-09-09, run
+`34339968171` job `102428197910`, from `daemon/testing/identity-cost.ts`:
+
+```text
+  platform: win32  node: v24.20.0  pid: 6464
+  selfIdentity() cold:      2870.6 ms      (one powershell.exe, both halves)
+    start_time: CreationDate=134334230704561090
+    boot_id:    LastBootUpTime=134334228835081440
+  selfIdentity() memoised:  0.012 ms
+  machineBootId() memoised: 0.006 ms
+  processStartToken(live pid), 5 readings: 332.6, 331.4, 342.3, 335.6, 326.4 ms
+    mean: 333.7 ms
+  distinct tokens across 5 further readings: 1
+  a bare powershell.exe that only prints, 5 readings: 177.1, 172.7, 171.7, 175.2, 169.8 ms
+    mean: 173.3 ms
+```
+
+Run `34338721332`, the first dispatch of the same job, read 2771.1 ms cold and a 318.1 ms mean over
+the same five readings, so the numbers reproduce.
+
+So **about 330 ms warm and 2.9 s cold**, against the 4.5 ms this record priced the macOS `ps` at —
+seventy times the number the cost discipline was written around. **The last line is why no cheaper
+query is worth looking for.** A `powershell.exe -NoProfile -NonInteractive` that does nothing but
+print one line costs 173 ms, so the spawn is already more than half of the 334 ms and the two CIM
+queries are the rest. `[System.Diagnostics.Process]::GetProcessById($pid).StartTime` would read the
+same clock out of pure .NET and skip WMI altogether, and at best it halves a number whose larger
+half it cannot touch — while answering `Access is denied` for a pid belonging to another account,
+which is precisely the pid-reuse case the token exists to decide. The only thing that would remove
+the spawn is a native addon, which [ADR 0020](0020-always-running-local-daemon.md) rules out for the
+same reason it rules out DPAPI.
+
+The discipline itself does not change; it becomes load-bearing rather than tidy. `selfIdentity()` is
+memoised and takes **both** halves out of the one invocation, which is the only reason it is one
+spawn and not two; `machineBootId()` is memoised from the same reading; and `classifyWorker()`
+reaches the probe only for a recorded pid that is still alive, because a dead one is decided by
+`isAlive` and a record from another boot by the boot id, neither of which spawns anything.
+
+**The steady-state effect on a daemon is one warm probe per start, and that was measured too**, on
+run `34338749290`, by comparing two Windows runs of the same suites: `commands/serve.test.ts`, 31
+cases each starting a real daemon, went from 84,494 ms to 93,965 ms (+305 ms per start);
+`install/lifecycle.test.ts`, 23 cases, from 20,124 ms to 27,406 ms (+317 ms per start). Both numbers
+are the measured probe, once, and nothing else. The **cold** 2.8 s is not additional to a daemon
+start in practice: `daemon/pipe-acl.ts` already spawns a `powershell.exe` at the bind, so before this
+change the first PowerShell of the process was that one and it paid the same cold start. What the
+change does is move which call pays it. The one place that was visible is a test: `server.test.ts`'s
+first case builds a backend, which calls `selfIdentity()`, which was the first PowerShell that
+worker had ever started — 15 s on a runner paging it in for the first time, against a 5 s per-case
+budget, reported as `answers GET /healthz` timing out. That file now warms the probe once in a
+`beforeAll` that says so.
+
+**What this note does not change.** Nothing in the decision above: the triple, the four verdicts,
+the opposite safe defaults for the lock and for a worker, and `workers_uncertain`'s two cases are
+all exactly as written. The residual that §Process identity names for macOS — a one-second token
+cannot exclude a pid recycled inside the same second — is narrower on Windows for the reason that
+row already gave: 100 ns is finer than a pid space can be traversed. And the sentence that has to be
+retired is the row's last word: the Windows token is no longer *unmeasured*, and no record in this
+repository may say that it is.

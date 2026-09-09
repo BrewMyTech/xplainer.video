@@ -1,0 +1,21 @@
+# Verbatim stdout of `launchctl print-disabled gui/$(id -u)`, captured 2026-09-08 on
+# macOS (Darwin 25.5.0, arm64) with launchctl's own exit status 0.
+#
+# It is here because the shape below is the whole point: this launchctl spells the
+# value of a record `disabled` or `enabled`, and NOT the `true`/`false` older
+# releases printed and `preflight.ts` used to match on. Everything from the first
+# non-comment line down is the command's output byte for byte, tabs included.
+
+	disabled services = {
+		"com.apple.ManagedClientAgent.enrollagent" => disabled
+		"com.ollama.ollama" => enabled
+		"com.apple.Siri.agent" => disabled
+		"video.xplainer.daemon" => enabled
+		"com.apple.weather.menu" => enabled
+		"com.spotify.client.startuphelper" => enabled
+		"video.xplainer.test" => enabled
+		"com.apple.FolderActionsDispatcher" => disabled
+		"ai.openclaw.gateway" => enabled
+		"com.apple.appleseed.seedusaged.postinstall" => disabled
+		"com.apple.ScriptMenuApp" => disabled
+	}

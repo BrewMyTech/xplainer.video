@@ -493,6 +493,11 @@ const MUST_SHIP_FILES = [
     path: "template/tailwind.css",
     why: "Style entrypoint the scaffolded scenes import.",
   },
+  {
+    package: "@xplainer/render-core",
+    path: "template/package-lock.json",
+    why: "Pinned dependency resolution consumed by setup through npm ci.",
+  },
 
   // --- Scaffold templates the agent reads, writes and then edits -----------
   //
@@ -588,7 +593,7 @@ const MUST_SHIP_TREES = [
     why:
       "The Remotion workspace copied onto the user's machine. A file added here has to ship " +
       "the day it is added or the scaffolded workspace is incomplete on a user's disk and " +
-      "renders nothing — and the four files named individually above could not catch a fifth.",
+      "renders nothing — and the five files named individually above could not catch a sixth.",
   },
 ];
 
@@ -600,8 +605,9 @@ const TREE_SKIP_DIRECTORIES = new Set(["node_modules", "dist", ".turbo", "__pyca
  *
  * It is not a rule in any of the three tables — it is one function,
  * {@link inspectMustShipFile} — but it fails in the same way a rule does and it
- * is the sole remaining guard on the four exempt paths (ADR 0022 says so in as
- * many words), so it is held to the same standard: show it firing.
+ * is the sole remaining guard on the files that must ship byte-identical (ADR
+ * 0022 says so in as many words), so it is held to the same standard: show it
+ * firing.
  */
 const MUST_SHIP_RULE_ID = "must-ship-file";
 
@@ -1062,7 +1068,7 @@ function ruleFires(kind, rule, sample) {
 }
 
 const describeSample = (sample) => {
-  const text = typeof sample === "string" ? JSON.stringify(sample) : JSON.stringify(sample);
+  const text = JSON.stringify(sample);
   return text.length > 160 ? `${text.slice(0, 157)}…` : text;
 };
 
@@ -1351,11 +1357,11 @@ async function main() {
     return 2;
   }
   if (!existsSync(join(root, NOTICE_FILE))) {
-    console.error(
+    process.stderr.write(
       `check-publish-contract: ${NOTICE_FILE} is missing from the repository root, so no ` +
-        `package can ship the attribution ${EXPECTED_LICENSE} section 4(d) requires.`,
+        `package can ship the attribution ${EXPECTED_LICENSE} section 4(d) requires.\n`,
     );
-    process.exit(2);
+    return 2;
   }
 
   if (!existsSync(join(root, LICENCE_FILE))) {

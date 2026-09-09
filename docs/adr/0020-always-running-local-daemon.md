@@ -649,3 +649,253 @@ foreground-process invariant above on its own, because systemd's notification pr
 service to move its main PID (`MAINPID=`, `NotifyAccess=all`). "`serve` stays a foreground process"
 and "never add `serve --detach`" remain properties this project maintains deliberately, whichever
 unit type is chosen.
+
+## Note, 2026-09-08: the Windows halves of R-SEC-5, one closed and one still open
+
+R-SEC-5 above states the gap and names the remedy — "the requirement is an explicit ACL applied at
+creation — `icacls <path> /inheritance:r /grant:r "%USERNAME%:(R,W)"`, which needs no
+administrator — and `xplainer daemon status` re-verifies it and warns if inheritance has been
+restored". Phase 2 has now done the first half and not the other two, and the split matters enough
+to write down rather than leave to be inferred from the code.
+
+**Done: the token, and the state directory it is minted in.** `daemon/windows-acl.ts` runs that
+exact command on `win32` and nowhere else — on the file, at the mint, and on the directory, at the
+`mkdir` that creates it. `/inheritance:r` is the half that does the work: a file created under
+`%LOCALAPPDATA%` inherits its parent's entries, which on a machine with a second account routinely
+include `BUILTIN\Users`, and granting the owner changes nothing while those are still there. A
+failure is **reported and never fatal** — `serve`'s one line about the token says which of a mode
+and an ACL this platform got, and names the `icacls` that did not run — because a daemon that
+refused to start over a missing `icacls` would trade a weaker file for no service at all, on a
+platform where the file was already weaker before.
+
+**Not done, and deliberately: the named pipe.** Node's `net.Server.listen({ path })` offers no way
+to pass a security descriptor, and a native addon is exactly what this phase's single-file packaging
+cannot carry — the same reason this record refused DPAPI. So the IPC transport on Windows is not
+narrowed the way the token is, and "filesystem permissions are the authentication" is a claim about
+POSIX that Windows does not yet make good on. What the pipe does have is a name derived from the
+state directory, which keeps two accounts and two runs off one another's endpoint.
+
+**Not done: the re-verification.** Nothing re-reads the entry, so inheritance restored underneath a
+running daemon is not noticed and `daemon status` says nothing about it.
+
+## Note, 2026-09-08, later the same day: both of those are now done, and R-SEC-8 with them
+
+The two paragraphs above are kept as written because they record what was true when the token half
+landed. Both gaps are closed by the same story, and how each was closed is worth having here.
+
+**The re-verification.** `daemon/windows-acl.ts` gained a **query** — `icacls <path>`, with no
+`/grant` and no `/inheritance`, so `daemon status` stays inside its own read-only rule — and a pure
+parser over what it prints. `/inheritance:r /grant:r` leaves exactly **one** entry on the file, so
+the rule is exact rather than lenient: a second principal is a grant somebody made, an `(I)` flag is
+inheritance having been switched back on, and either is a `WARNING —` line in `daemon status` naming
+what was found and the `icacls` that narrows it again. Off Windows there is no entry and the line
+says the mode is the protection rather than reporting a check that did not happen.
+
+**The pipe, and the sentence above that has to be corrected.** "Node offers no way to pass a
+security descriptor" is still true — `ListenOptions` has `readableAll` and `writableAll`, which
+*widen* a pipe through `uv_pipe_chmod`, and nothing that narrows one — but *creation* was never the
+only moment available. Microsoft documents what libuv's `NULL` gets: "The ACLs in the default
+security descriptor for a named pipe grant full control to the LocalSystem account, administrators,
+and the creator owner. **They also grant read access to members of the Everyone group and the
+anonymous account**"
+([CreateNamedPipeA](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)),
+and it documents the way to change one: "To change the security descriptor of a named pipe, call
+the **SetSecurityInfo** function"
+([Named Pipe Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)).
+So `daemon/pipe-acl.ts` opens a handle to the daemon's own pipe asking for `ChangePermissions` and
+`ReadPermissions` and **nothing else** — no read, no write, so the connection carries no data and
+cannot — and replaces the DACL with one protected entry for this account's own SID.
+
+Three things make that sound rather than a trick, and each is a documented fact rather than an
+observation of one machine:
+
+- **The descriptor belongs to the pipe, not to the instance.** "If a new named pipe is being
+  created, the access control list (ACL) from the security attributes parameter defines the
+  discretionary access control for the named pipe", and creating a further instance is *access
+  checked* against "the DACL in the named pipe's security descriptor". Libuv creates an instance per
+  accepted connection; every one of them is checked against what this writes.
+- **The entry is `FullControl` rather than read-and-write**, because `FILE_CREATE_PIPE_INSTANCE` is
+  part of it and a daemon that narrowed itself out of the right to accept a second connection would
+  have made itself unusable.
+- **The identity is the token's `User` SID**, not its owner: an elevated process's owner may be
+  `BUILTIN\Administrators`, and an entry for the administrators group is not "the creating user
+  only".
+
+**What it costs, stated rather than discovered.** The pipe exists with the default descriptor
+between `listen()` and this call — the same create-then-narrow window the token file has on this
+platform, and as short as one can be — and the narrowing occupies one pipe instance for the length
+of one call, which the daemon's own HTTP server sees as a connection that opens and closes without a
+request. A failure is **reported and never fatal**, for the reason the token's is: `serve`'s line
+about the IPC listener says which of the two protections this platform got, and refusing to serve
+over a missing `powershell.exe` would trade a wider pipe for no service at all.
+
+**R-SEC-8's rotation, in the same story.** `xplainer token rotate` writes a new 32-byte value and
+keeps the old one in a grace file beside the token — same `0600`, same explicit entry — with the
+instant it stops being accepted recorded next to it and in `daemon.json`'s new `token_rotation`
+(two timestamps and a **path**; the value stays in the file R-SEC-6 puts it in). The guard is handed
+a **function** rather than a string, so a daemon that stays installed picks the rotation up on its
+next request: no restart, no control route, and both values open it until the window closes. The
+default window is five minutes and the longest is a day, because a window is a weakening with a
+deadline. `daemon uninstall` still **deletes** rather than rotates, and now deletes the grace file
+too — a rotation leaves two working credentials, and taking one of them would leave behind exactly
+the live token P2-9 says must not survive.
+
+**Measured while doing it, because it cost a full CI round to find.** The Task Scheduler document
+`supervisors/schtasks.ts` renders declares `encoding="UTF-16"` while the file on disk is UTF-8, and
+that is not an inconsistency to tidy away. `Register-ScheduledTask -Xml` takes a **string**, which
+is UTF-16 by construction, so a document declaring `UTF-8` is refused by MSXML with
+`(1,40)::ERROR: unable to switch the encoding`; the service reports `SCHED_E_MALFORMEDXML`
+(`0x8004131a`) and the cmdlet says "The task XML is malformed". On 2026-09-08 that took out every
+registration this project attempts on `windows-latest` — the install under the S4U principal and
+the restart, breaker and identity proofs — while the same runner registered an otherwise identical
+document whose only difference was a `UTF-16` declaration. It is also what `Export-ScheduledTask`
+emits. The bytes stay UTF-8 so the mirror is readable text, and the registration command names the
+encoding it decodes with.
+
+## Note, 2026-09-08, third of the day: phase 2 built the install, and seven details are worth recording
+
+Added as a dated note rather than a rewrite. Nothing this record decides is changed: the daemon is
+still one supervised process per user, started by the operating system's own user-scope supervisor,
+never by root; the degraded paths still probe before writing; and the exit-code table is still the
+table. What follows is what building it settled, and one field it turned out to need. The
+distribution half — what the supervisor starts, where it comes from, and what happens when it is
+replaced — is [ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md), which
+builds on this record and does not amend it.
+
+**1. The degraded paths, as built.** §Degraded paths states the rule — "probe before writing; on
+refusal, write nothing, exit with the documented code, and print the one command that fixes it" — and
+that rule survived contact with three real supervisors intact. The preflight is **read-only**: it
+probes the setup marker, the supervisor, the resolved program's executability, the port, lingering,
+any stale `launchctl disable` record and the token file without writing anything, which is what makes
+"nothing was written" checkable by hashing the state directory, the LaunchAgents directory, the task
+store, the linger marker and the logs on either side of a refusal. Every no-supervisor refusal leads
+with `xplainer connect claude --spawn`, and that command now **exists** — it did not when this record
+printed it as the leading remediation — and it deliberately **bypasses its own daemon preflight**,
+because it is offered exactly when there is no daemon.
+
+**2. Exit `5`, `6` and `7`, and one distinction that had to be written down twice.** `5` is *the
+privilege is missing and the supervisor is not*: lingering that `loginctl` would not grant (checked by
+the **marker**, `/var/lib/systemd/linger/$USER`, not by `loginctl`'s exit status, because `loginctl` is
+a client reporting what it was told and the file is what systemd reads at boot), and a Windows task
+that registers and then will not launch for want of the batch-logon right. `6` is *there is no
+supervisor here at all*, including the Windows case where Task Scheduler is present and refuses the
+session outright. `7` is *install-time conflict*: the port about to be recorded is held, or a unit,
+label or task of this name belongs to something else.
+
+**`7` and `10` are the same symptom at two lifecycles**, and an agent will get it wrong unless it is
+stated: **`7` is install-time** — a decision not yet made, `daemon.json` still records what it
+recorded before, nothing is registered, and the fix is another port or removing the other
+installation — while **`10` is `serve`-time**, a running conflict against an install that already
+exists, whose fix is to find the process. Recording a port at install and discovering at every start
+that it was never available is exactly the failure the preflight exists to make impossible.
+
+**3. `ProcessType=Interactive`, and the argument was backwards.** This record's plist omitted the
+key. `man 5 launchd.plist`: "If left unspecified, the system will apply **light resource limits** to
+the job, throttling its CPU usage and I/O bandwidth", while `Interactive` jobs "run with the same
+resource limitations as apps, that is to say, none". For a daemon whose entire job is driving Chrome
+and ffmpeg, *unspecified* is the throttled case — so the key is present and its value is the
+unthrottled one, and the golden test asserts it. Two neighbours settled the same way: `Umask` is
+emitted as `<integer>63</integer>`, because launchd's `Umask` is decimal and `0o077` is `63`; and
+launchd expands no `~`, so a path that still carries one is refused by the renderer rather than
+written into a plist that would create a directory called `~`.
+
+**4. Enable before bootstrap, and boot out before re-bootstrapping.** A stale `launchctl disable`
+record makes `bootstrap` a silent no-op, and `bootstrap` does not refresh an already-loaded
+definition. So `install` runs `launchctl enable gui/<uid>/<label>` **before** it bootstraps, and a
+replacement boots the old label out first — and waits for the label to leave the domain, because
+`launchctl bootout` returns before the job has exited and a `bootstrap` issued in that gap fails with
+`Bootstrap failed: 5: Input/output error`, which reads like a malformed plist and is not one. The
+preflight distinguishes three answers rather than two, because `launchctl enable` **creates** an
+entry: "there is no record", "there is a record and it says enabled", and "there is a record and it
+says disabled" are different facts, and only the third means an install's `enable` will change
+anything.
+
+**5. The Windows task name is per user, and it supersedes the one in the table above.** §Decision
+Outcome's table names the task `\xplainer-daemon`, with its definition mirrored at
+`%LOCALAPPDATA%\xplainer\service\xplainer-daemon.xml`. As built the task is
+**`\xplainer\<user>-daemon`**, taking its last segment from the qualified `DOMAIN\user` account the
+daemon runs as, and refusing an account whose user part is blank or carries any of `\ / : * ? " < >
+|`. A single fixed name would mean two users on one machine could not both register one, which
+contradicts this record's own per-user premise. The mirrored document keeps its path. The design
+decision is recorded in ADR 0027; this note is where the superseded name resolves.
+
+**6. `uninstall` deletes the token, and never touches lingering.** §Uninstall is honoured with one
+value made exact: the token file is **deleted**, not rotated, because a rotation leaves two working
+credentials and taking only one of them would leave behind exactly the live token the acceptance
+criterion says must not survive — and the grace file an `xplainer token rotate` may have left goes
+with it. Lingering is the opposite: `/var/lib/systemd/linger/$USER` is **per user, not per service**,
+so `uninstall` leaves it exactly where it is even when this install is what enabled it, and *reports*
+the marker with the one command that would remove it rather than removing it by reflex. A user who
+let an install enable lingering may have other services depending on it now.
+
+**7. `recentStarts[]` needed a field this record did not give it, and the design for it is ADR
+0027's.** §Restart on crash words the breaker as "if the last five runs all failed within 30 seconds
+of starting", which is a predicate over facts a run must have recorded. The first implementation had
+to *infer* both halves — no `ready_at` meant failure, and the **next** run's start time meant "fast"
+— and the second inference measured **the supervisor's retry cadence rather than the run's own
+life**, so a supervisor spacing its retries wider than the window could never trip the breaker at
+all: launchd's `ThrottleInterval` is 30 s, exactly on the boundary, and Task Scheduler's
+`<RestartOnFailure>` has a one-minute schema minimum, outside it. The fix is a per-run **outcome**
+and **end time** in the durable record, plus a stated rule for the run that recorded neither because
+it was killed. Both are decided in **ADR 0027**, which is where the unknown-outcome policy, the
+clock-validation rule and the residual it leaves open are argued. This note records that the field
+was needed and points at the record that designs it, rather than carrying a design of its own.
+
+This record stays `accepted` and no line above is rewritten.
+## Note, 2026-09-09: the Windows restart policy, measured — one half of it does not happen, and the
+other half was not running at all
+
+§Decision Outcome's table gives Windows the restart policy "`RestartOnFailure` 3 × `PT1M`, plus an
+indefinite `PT5M` trigger repetition with `IgnoreNew`", and §Restart on crash builds on it: "on
+Windows the indefinite repetition trigger still restarts the process every five minutes, at which
+point it re-reads the stall flag and exits 0 again." Both sentences were written from the schema.
+They have now been measured on a real `windows-latest` machine — three throwaway tasks side by side,
+one action that exits `10`, `Get-ScheduledTaskInfo` polled every twenty seconds for eleven minutes
+(run `34317779107`, job `102357526877`) — and the measurement disagrees with each of them in a
+different way. Nothing above is rewritten; this note is what the record now says on the subject.
+
+**`<RestartOnFailure>` does not restart an action that exits non-zero.** The task in the measurement
+carried `<Count>3</Count>` and `<Interval>PT1M</Interval>`, registered and read back out of
+`Export-ScheduledTask`, and was started **by a trigger** rather than on demand. Its runs are five
+minutes apart, not one minute apart. A Win32 exit code of `10` produces a *completed* run that Task
+Scheduler records as `LastTaskResult 10`; the failure `<RestartOnFailure>` restarts is the task
+failing to **launch**. The element stays in the document — that is a real, different failure — but
+the "3 × `PT1M`" is not a retry cadence for a daemon that started and exited, and no proof or record
+in this repository may count it as one. The effective Windows cadence is the `PT5M` repetition
+alone.
+
+**A `<Repetition>` belongs to a trigger, and the shipped document's trigger was not firing.** This
+is the half that was a product defect rather than an overstated record. The document as first built
+carried the repetition on its `<LogonTrigger>`, and `daemon install` started the task with
+`Start-ScheduledTask` — which is an **on-demand** run: it starts the action and starts no trigger,
+so no repetition follows it. A logon trigger fires at an interactive logon, which a hosted runner
+never has and which a real machine has already had by the time a user runs `xplainer daemon install`
+in a terminal inside that session. So on Windows, between an install and the next logon, **nothing
+re-checked the daemon at all**: the daemon `install` started and then killed stayed dead. Measured
+three times identically before the fix — one run, and a `LastRunTime` frozen for thirty minutes
+(runs `34308488886`, `34311062150`, `34313848702`).
+
+**As amended, the document carries two triggers.** A `<RegistrationTrigger>` carrying the same
+indefinite `PT5M` `<Repetition>` sits beside the `<LogonTrigger>`, because **registering the task is
+itself the trigger event**: the run that registration produces is a triggered run, and its
+repetition then runs the task every five minutes for ever. The same measurement watched that
+document run three times, five minutes apart, started by nothing but its own registration. The two
+triggers are complementary and both are kept — registration covers this boot, the logon trigger
+covers the next one — and neither carries a `<Duration>`, which is what keeps the repetition
+indefinite.
+
+**`install`'s explicit `Start-ScheduledTask` stays, and `IgnoreNew` is why that is safe.** The third
+task in the measurement registered with a `<RegistrationTrigger>` and a four-minute action and was
+then asked for `Start-ScheduledTask` immediately; it recorded **one** start.
+`MultipleInstancesPolicy` `IgnoreNew` — already in the table — is what makes a trigger and an
+explicit start unable to produce two concurrent daemons. The explicit start is kept because `daemon
+start` (T12) is that same call and has to work on a task that is registered and not running.
+
+**What this changes downstream.** T14's Windows arm now waits out five repetitions — about twenty
+minutes — rather than three `PT1M` retries and a repetition, and `install/testing/breaker-proof.ts`
+and `daemon-breaker.yml` carry that number with the measurement written beside it. §Restart on
+crash's "cheap no-op" sentence is unchanged in substance: a latched daemon on Windows is still asked
+to run every five minutes, still re-reads the flag, and still exits `0`. What is corrected is *which
+element* asks it, and the fact that before this amendment nothing did.
+
+This record stays `accepted` and no line above is rewritten.

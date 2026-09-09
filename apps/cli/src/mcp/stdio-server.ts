@@ -98,9 +98,9 @@ export async function serveStdioMcp(options: StdioMcpOptions = {}): Promise<Stdi
     // `run_id` distinguishes two runs of one pid in a job record's owner. There is no acquisition
     // to take a `boot_nonce` from here, so the session mints its own.
     owner: { ...selfIdentity(), run_id: `mcp-${randomBytes(8).toString("hex")}` },
-    workers: createWorkerRegistry({ root: workspaceRoot }),
+    workers: createWorkerRegistry({ root: workspaceRoot, stateDir }),
   });
-  const backend = createLocalBackend({ runner, root: workspaceRoot });
+  const backend = createLocalBackend({ runner, root: workspaceRoot, stateDir });
   const server = createMcpServer(backend, { version: CLI_VERSION });
   const transport = new StdioServerTransport();
 

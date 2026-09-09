@@ -7,6 +7,7 @@
  * <root>/
  *   node_modules/          installed once, shared by every video
  *   package.json           the pinned Remotion versions, copied from this package's template/
+ *   package-lock.json      the resolution `npm ci` reproduces them from
  *   remotion.config.ts     Tailwind, JPEG frames, overwrite
  *   tailwind.css
  *   tsconfig.json
@@ -21,12 +22,20 @@
  * renders — silently, at `Root.tsx`'s `durationInFrames={300}` placeholder — so the two directories
  * are separate here and {@link videoPaths} is the only place that pairs them.
  *
- * **Nothing here installs anything.** {@link materialiseWorkspace} copies four template files and
+ * **Nothing here installs anything.** {@link materialiseWorkspace} copies the template files and
  * creates three directories; it never runs a package manager. Installing hundreds of megabytes is a
- * visible step a user takes, never something a tool call does behind an agent's back — so
- * {@link remotionBinary} answers `null` for a workspace that has never been installed and
- * {@link workspaceNotInstalledMessage} is the sentence a caller shows instead of failing later with
- * an `ENOENT` from `spawn`.
+ * visible step a user takes — `xplainer setup --workspace` — never something a tool call does
+ * behind an agent's back, so {@link remotionBinary} answers `null` for a workspace that has never
+ * been installed and {@link workspaceNotInstalledMessage} is the sentence a caller shows instead of
+ * failing later with an `ENOENT` from `spawn`.
+ *
+ * **`package-lock.json` is one of the copied files, and that is what makes the install possible.**
+ * `npm ci` is the command both ends of the pinned resolution run — build time for the staged
+ * payload, `setup --workspace` on a user's machine — and `npm ci` in a directory with no lockfile
+ * exits `EUSAGE` ("can only install packages when your package.json and package-lock.json ... are
+ * in sync"). Copying `package.json` without the lockfile beside it therefore produces a workspace
+ * that cannot be installed at all, which is why the two travel together here rather than being
+ * placed by whoever happens to run the installer.
  *
  * This module writes directories and copies files. It spawns nothing and renders nothing:
  * `render/args.ts` builds the argv, and the caller spawns it.
@@ -65,18 +74,20 @@ export const NARRATION_SPEC_FILE = "narration.json";
 /**
  * The workspace files copied verbatim out of this package's `template/`.
  *
- * `package.json` pins Remotion, React and Tailwind; `remotion.config.ts` enables Tailwind and JPEG
- * frames; `tailwind.css` is what a video's `index.ts` imports; `tsconfig.json` is for the editor.
- * They are copied rather than generated so the shipped template stays the only copy of these bytes.
+ * `package.json` pins Remotion, React and Tailwind; `package-lock.json` is the resolution `npm ci`
+ * reproduces those pins from; `remotion.config.ts` enables Tailwind and JPEG frames; `tailwind.css`
+ * is what a video's `index.ts` imports; `tsconfig.json` is for the editor. They are copied rather
+ * than generated so the shipped template stays the only copy of these bytes.
  */
 export const WORKSPACE_FILES = [
   "package.json",
+  "package-lock.json",
   "remotion.config.ts",
   "tailwind.css",
   "tsconfig.json",
 ] as const;
 
-/** One of the four workspace-level template files. */
+/** One of the workspace-level template files. */
 export type WorkspaceFile = (typeof WORKSPACE_FILES)[number];
 
 /**
@@ -141,7 +152,7 @@ export function stillOutput(paths: VideoPaths, frame: number): string {
 }
 
 /**
- * Create the workspace root and copy the four template files in, never overwriting one.
+ * Create the workspace root and copy the template files in, never overwriting one.
  *
  * Never overwriting matters more here than it looks: `package.json` is what a package manager
  * recorded `node_modules/` against, so rewriting it from the template on every `explainer_create`
@@ -172,7 +183,7 @@ export function materialiseWorkspace(root: string): WorkspaceResult {
  *
  * Walks the ancestors the way Node's own module resolution does, so a workspace installed in place
  * (`<root>/node_modules/.bin/remotion`) and one nested inside an already-installed tree both work.
- * `null` — rather than a guessed path — is what lets a caller say "run `npm install` in `<root>`"
+ * `null` — rather than a guessed path — is what lets a caller say "run `xplainer setup --workspace`"
  * instead of failing later inside `spawn`.
  *
  * Deliberately not `npx`: `REMOTION_BIN` in `render/args.ts` records why, and resolving the local
@@ -199,12 +210,19 @@ export function isWorkspaceInstalled(root: string): boolean {
   return remotionBinary(root) !== null;
 }
 
-/** The one sentence a caller shows for a workspace whose dependencies were never installed. */
+/**
+ * The one sentence a caller shows for a workspace whose dependencies were never installed.
+ *
+ * It names `xplainer setup --workspace` and not `npm install`, because the machine this runs on is
+ * not assumed to have a package manager at all: the CLI's own runtime payload carries the npm that
+ * resolves this tree, and `setup` is the visible step that runs it. A message telling a user to run
+ * `npm install` is a message they cannot follow on exactly the machine it is printed for.
+ */
 export function workspaceNotInstalledMessage(root: string): string {
   return (
     `the Remotion workspace at ${root} has no dependencies installed, so there is nothing to ` +
-    `render with. Run \`npm install\` in ${root} once — it is a few hundred megabytes and every ` +
-    "video shares it — and try again."
+    "render with. Run `xplainer setup --workspace` once — it is a few hundred megabytes and " +
+    "every video shares it — and try again."
   );
 }
 

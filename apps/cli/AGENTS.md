@@ -4,8 +4,9 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 ## What this package is
 
-**The local runtime.** The `xplainer` binary, the Hono application it serves — `GET /healthz` and
-the Streamable HTTP MCP endpoint at `/mcp` — the **eight tools** behind that endpoint
+**The local runtime.** The `xplainer` binary, the Hono application it serves — `GET /healthz`, the
+Streamable HTTP MCP endpoint at `/mcp`, and the `/api/*` REST and SSE surface a GUI client reads
+(`src/api/`) — the **eight tools** behind that endpoint
 (`src/backend.ts`, over a shared Remotion workspace on this machine), and the **durable job daemon**
 under `src/daemon/`:
 exclusive ownership of the state directory, one JSON file per job, boot reconciliation, and a runner
@@ -34,23 +35,26 @@ Each module is small and named for the one thing it owns, and each has a colocat
 |---|---|
 | `state-dir.ts` | Where the state directory is per platform, `XPLAINER_STATE_DIR`, and the names inside it |
 | `durable-write.ts` | temp → `fsync` → `rename` → `fsync` the directory; the flush that reports instead of throwing |
-| `worker-identity.ts` | The identity triple (pid, start token, machine boot id) and the four verdicts over it |
+| `worker-identity.ts` | The identity triple (pid, start token, machine boot id), the probe each platform needs for it — `/proc/<pid>/stat` on Linux, `ps -o lstart=` on macOS, one CIM query on Windows — and the four verdicts over it |
 | `lock.ts` | `owner.lock`: `O_EXCL` create, staleness by the tuple, takeover confirmed by read-back |
 | `job-store.ts` | One JSON file per job, the bounded log tail, corrupt quarantine, newer-format detection |
 | `reconciler.ts` | Boot reconciliation: terminal records, worker teardown, `workers_uncertain`, output quarantine |
-| `process-group.ts` | `SIGTERM` then `SIGKILL` to a worker's whole process group |
+| `process-group.ts` | `SIGTERM` then `SIGKILL` to a worker's whole process group, and the Windows Job Object that stands in for one |
 | `runner.ts` | `enqueue` / `get` / `tail` / `cancel` / `drain` over a serial queue of child-process workers |
-| `daemon-state.ts` | `daemon.json` and `runtime.json`, and the circuit breaker's `recentStarts[]`/`stalled` |
+| `daemon-state.ts` | `daemon.json` and `runtime.json`, the breaker over each run's own recorded outcome, and the installer's own fields |
 | `start.ts` | The ordering: ownership → reconciliation → the runner, handed to `commands/serve.ts` to bind |
 | `workers.ts` | The registry `start.ts` registers: one `WorkerSpec` per job kind, and the last gate before Chrome |
-| `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600` |
+| `token.ts` | The bearer token file: `XPLAINER_TOKEN_FILE` or the default, `O_EXCL` mint, `0600`, whose token it is, R-SEC-8's rotation and the ring the guard asks |
+| `windows-acl.ts` | The `icacls` entry a Windows file gets at creation, and the query `daemon status` re-verifies it with |
+| `pipe-acl.ts` | The security descriptor the Windows named pipe gets after its bind, granting the creating account and nobody else |
 | `guard.ts` | The four layers every TCP request passes: `Host`, `Origin`, the token, the redacted log |
-| `ipc.ts` | The socket path, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
+| `ipc.ts` | The socket path and `--socket`, its `0700` directory, the stale socket a `SIGKILL` left, the Windows pipe |
 | `binding.ts` | Which addresses `--bind` may take, and the port precedence — two pure functions, no I/O |
+| `tls.ts` | R-SEC-9's other three preconditions: the operator's certificate pair, the `--allow-host` allowlist, and a token this daemon did not mint |
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
 | `exit-codes.ts` | The start-up codes, quoting the table in `docs/ARCHITECTURE.md` §6 |
-| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness and the source hook |
+| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness, the source hook, `identity-cost.ts` (what one identity probe costs on the machine it runs on — a measurement, never a gate), and `platform.ts`: the facts a suite has to read differently on Windows |
 
 The state directory — `${XDG_STATE_HOME:-~/.local/state}/xplainer/` on Linux,
 `~/Library/Application Support/video.xplainer/` on macOS, `%LOCALAPPDATA%\xplainer\state\` on
@@ -59,12 +63,31 @@ Windows, or `XPLAINER_STATE_DIR` — holds:
 ```
 owner.lock          the ownership artefact: pid, start token, boot id, nonce (0600)
 token               DURABLE. 32 random bytes, base64url, 0600 — or wherever XPLAINER_TOKEN_FILE says
-daemon.json         DURABLE. port, contract version, token_file, directory_flush, recentStarts[], stalled
+token.previous      DURABLE while a rotation's grace window is open: the retired value and the
+                    instant it stops being accepted, at the same 0600 and behind the same Windows
+                    entry. Written by `xplainer token rotate`, ignored once expired, removed by the
+                    next start, by the next rotation and by `daemon uninstall`
+toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versions, resolved paths,
+                    sha256 and provider, and the workspace payload's platform and version. A
+                    checked contract (`packages/protocol/schemas/toolchain.json`), because `setup`
+                    writes it and the install preflight and `daemon update` both read it
+daemon.json         DURABLE. serve writes port, contract_version, token_file, token_origin,
+                    socket_path, directory_flush, recentStarts[], stalled; `token rotate` writes
+                    token_rotation (two timestamps and a path, never a value); install writes
+                    supervisor_kind,
+                    supervisor_artefact, runtime_dir, launch_spec, program_source,
+                    linger_enabled_by_us, launchd_enable_record_created, log_sink,
+                    installed_version
 runtime.json        EPHEMERAL. this run's pid, run id, boot id, bound port, addresses, socket
-ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown
+ipc/xplainer.sock   EPHEMERAL. the IPC listener, in a 0700 directory; unlinked on clean shutdown.
+                    `serve --socket` moves it, and the 0700 rule follows the path
 jobs/job-000001.json   one record per job, temp-then-rename, with a bounded log tail
 jobs/corrupt/          records that could not be parsed, moved aside rather than deleted
 mcp/session-XXXXXX/    one `xplainer mcp` stdio session's private job store, removed when it ends
+runtime/<version>-<digest>/   one staged payload-1 artefact per content, materialised by
+                    temp dir → rename so a half-copied runtime is never visible under its own name
+bin/xplainer[.cmd]  the generated two-line launcher: the one path a consumer may hold across an
+                    update, rewritten by the update transaction as another temp → rename
 ```
 
 **The two files have opposite lifetimes and that is the whole point** (ADR 0020 §Port and
@@ -72,6 +95,8 @@ discovery): `daemon.json` must survive a reboot, `runtime.json` is written at bi
 trusted without a liveness check. `recentStarts[]` and `stalled` are in the **durable** one —
 ADR 0020 first put them in `runtime.json`, and its own dated note records why that was wrong, since
 on Linux `runtime.json` lives in systemd's `RuntimeDirectory=` and is deleted on every clean stop.
+`socket_path` is durable for the same reason and `runtime.json`'s `socket` is not a duplicate of it:
+one is the path a consumer needs while the daemon is **down**, the other is what this run bound.
 
 ### `src/backend.ts` and `src/workers/` — the eight tools, and what carries them out
 
@@ -92,6 +117,62 @@ runner because they take tens of seconds
 | `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker, and the pinned Remotion CLI with render-core's argv |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
 | `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else `XPLAINER_TTS_URL`, else the tts-client's own resolution |
+
+### `src/api/` — the client surface a GUI talks to, and what it may never become
+
+[ADR 0016](../../docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md) promises
+"REST + SSE at `/api/*` for GUI clients" beside `/mcp`, and this directory is it. Every route is a
+**relay to the same `RenderBackend`** `/mcp` dispatches through — there is no second implementation
+of a tool here — plus one filesystem seam for the artefacts the tool contract deliberately does not
+describe. `apps/desktop` depends on this package and imports the shapes and the path builders from
+`src/index.ts`, so the daemon and the window cannot disagree about a URL.
+
+| Method | Path | Answers |
+|---|---|---|
+| `GET` | `/api/videos` | `{ videos: ApiVideo[] }` — the library, each entry with its artefacts |
+| `GET` | `/api/videos/:slug` | one `ApiVideo`; `404 NO_SUCH_VIDEO`, `400 INVALID_SLUG` |
+| `GET`/`HEAD` | `/api/videos/:slug/artefacts/:name` | the bytes, `Accept-Ranges: bytes`, `206` for a `Range`, `416` outside it, `Cache-Control: no-store` |
+| `POST` | `/api/videos/:slug/narrate` | `202` + `ApiJobQueued` — body is the tool's input minus the slug |
+| `POST` | `/api/videos/:slug/still` | `202` + `ApiJobQueued` — `{ frame, scale }` optional |
+| `POST` | `/api/videos/:slug/render` | `202` + `ApiJobQueued` — no arguments |
+| `GET` | `/api/jobs/:id` | `ExplainerJobOutput`, **unchanged** — what `explainer_job` answers |
+| `GET` | `/api/jobs/:id/events` | `text/event-stream`: `job` frames carrying that same document, one `end` frame, then closed |
+| `POST` | `/api/daemon/drain` | T13's control route, in `server.ts`, over the socket **only** |
+
+`ApiVideo` carries `slug`, `has_narration`, `rendered`, `seconds`, `size_mb` and `artefacts`; the
+two numbers are `null` rather than absent, so a client never has to tell "this video has no
+narration" from "this daemon is too old to say". It does **not** carry `ExplainerListOutput`'s
+`mp4`: that is a path on the machine that answered, and a player needs a URL. An `ApiArtefact` is
+one of five kinds — `video`, `still`, `narration`, `captions`, `timings` — with the `url` that
+serves it. Every refusal is `{ error: { code, message } }`, `code` being the backend's own refusal
+code (`NO_SUCH_VIDEO`, `NARRATION_MISSING`, `WORKSPACE_NOT_INSTALLED`, …) or one of this surface's
+**seven** (`INVALID_JOB_ID`, `NO_SUCH_JOB`, `NO_SUCH_ARTEFACT`, `INVALID_BODY`, `SHUTTING_DOWN`,
+`RANGE_NOT_SATISFIABLE`, `BACKEND_FAILED`). `BACKEND_FAILED` is the last of them and the one a
+client cannot branch on usefully: it is what a backend rejection that named nothing becomes.
+
+| Module | What it owns |
+|---|---|
+| `api/routes.ts` | The assembly and `ApiSeam`; the surface exists only when `createServer()` is given one |
+| `api/paths.ts` | Every path, built once and exported, so the desktop and the router agree |
+| `api/videos.ts` | `VideoLibrary` and the workspace implementation of it, the slug check, the two library routes |
+| `api/media.ts` | `Range` (RFC 9110 §14) and the artefact bytes |
+| `api/jobs.ts` | One job read, and the three enqueueing `POST`s |
+| `api/events.ts` | The SSE stream: poll, write on change, keep-alive comment, `end`, close |
+| `api/errors.ts` | Rejection → status, and the three error names it matches by |
+
+**Three rules, and they are the reason to read the directory before changing it.**
+
+- **The guard is never per route.** These routes are registered *after* the `*` middleware
+  `createServer()` mounts, so the bearer token, the `Host` allowlist and the `Origin` check cover
+  them by construction on TCP, and the IPC listener passes none. A route that authenticated itself
+  would be a route that can forget to (ADR 0020 §R-SEC-2), and `api/routes.test.ts` asserts a `401`
+  for **every** path in the table above.
+- **No CORS middleware, ever, for any value** (R-SEC-7). See the invariant below.
+- **`src/daemon/` is not imported from here.** `errors.ts` matches `JobNotFoundError` and
+  `NotAcceptingJobsError` by `name` rather than by `instanceof`, because `server.ts` is the
+  application `services/media-service` binds and a value import would put the job store, the
+  process-group keeper and the identity probe into its module graph. `api/errors.test.ts`
+  constructs the real classes and pins the names.
 
 ### `src/mcp/` — the two things `xplainer mcp` can be
 
@@ -128,15 +209,21 @@ here:
 ### `src/connect/` — the entry an agent is given, and who writes it
 
 `xplainer connect claude` and `xplainer connect codex` write **one stdio entry** —
-`xplainer mcp --attach`, or `npx -y @xplainer/cli mcp --attach` on a machine where the binary is not
-on `PATH` — into the agent's own configuration, and nothing else goes in it: no URL, no port and no
-token, because the transport is the daemon's unix socket and filesystem permissions are its
-authentication ([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is
-IPC, not TCP).
+`<state>/bin/xplainer mcp --attach` where an install wrote that launcher, else `xplainer mcp
+--attach` if the binary is on `PATH`, else `npx -y @xplainer/cli mcp --attach` — into the agent's own
+configuration, and nothing else goes in it: no URL, no port and no token, because the transport is
+the daemon's unix socket and filesystem permissions are its authentication
+([ADR 0020](../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not TCP).
+The launcher comes first because a runtime-directory install puts nothing on `PATH`, so without it
+an installed machine wrote the `npx` form and pointed an agent at a package this phase does not
+publish. **`--spawn` writes the other entry** — `mcp` without `--attach`, the tools inside the
+agent's session — and it is the one form that bypasses the daemon check, because it is what ADR 0020
+prints when there is no daemon and no supervisor to arrange one.
 
 | Module | What it owns |
 |---|---|
-| `entry.ts` | The command line itself: the real `PATH` lookup, and the two forms it chooses between |
+| `entry.ts` | The command line itself: the stable launcher, the real `PATH` lookup, and `npx` — in that order |
+| `spawn.ts` | `--spawn`'s entry: `mcp` without `--attach`, and the staged runtime as one more fallback |
 | `preflight.ts` | The check before any write: `daemon.json`'s recorded port, or a refusal and exit `3` |
 | `claude.ts` | `claude mcp add` when that CLI is on `PATH` — remove-then-add over a name it already holds — else `~/.claude.json`'s `mcpServers` |
 | `codex.ts` | `codex mcp add` when that CLI is on `PATH`, else the `[mcp_servers.xplainer]` table in `~/.codex/config.toml`, edited in place |
@@ -145,12 +232,211 @@ IPC, not TCP).
 | `atomic-write.ts` | temp → `rename` over somebody else's file, keeping the mode that file had |
 | `refusal.ts` | `ConnectRefusal`: one sentence and one exit code from the documented table |
 
+### `src/install/` — where the program comes from, and the one name that survives an update
+
+`src/runtime/` builds a relocatable payload; this directory is what happens to one afterwards. The
+phase-2 default install has nothing published to fetch, so the program is a **payload-1 artefact
+staged under the state directory**, and because that directory is named `<version>-<digest>` no
+consumer may hold its path — which is what the launcher is for.
+
+| Module | What it owns |
+|---|---|
+| `program.ts` | The four ordered sources — `explicit`, `sea-binary`, `package-manager`, `runtime-dir` — and the interpreter and entry each one resolves to |
+| `stage.ts` | `<state>/runtime/<version>-<digest>/`: the content-addressed name, the sibling temp dir, the one `rename`, and what is staged already |
+| `launcher.ts` | `<state>/bin/xplainer[.cmd]`: the generated two-line script, and its rewrite as one more small-file temp → rename |
+| `preflight.ts` | Every question an install asks before it writes: the setup marker, the supervisor, the program, the port, lingering, the disable record, the token file |
+| `supervisors/` | The three artefact renderers — the systemd unit, the LaunchAgent plist, the Task Scheduler document — behind one `SupervisorAdapter`, plus `identity.ts`: the three-row consistency check |
+| `testing/` | A real, small payload-1 artefact whose entry is a miniature daemon, so a launch can be proved by launching |
+
+Two of the four sources **refuse** this phase, by name: `sea-binary` is phase 4 and
+`package-manager` is what a publish adds. They are branches rather than absences because falling
+through to the default would record `runtime-dir` in the one field whose job is to say where the
+program came from. The launcher is the path `connect` writes, the desktop shells out to and
+`attach.ts` names in its skew message; nothing else is allowed to hold a version-scoped directory —
+with one stated exception, `connect --spawn` on a machine where the install was *refused* and so
+wrote no launcher.
+
+**The preflight is read-only, and that is the property to preserve when adding to it.** ADR 0020's
+rule for every degraded path is "probe before writing; on refusal, write nothing, exit with the
+documented code, and print the one command that fixes it", and `preflight.ts` is the probing half in
+full: it reads `test -e /var/lib/systemd/linger/$USER` and **never** attempts
+`loginctl enable-linger`, because creating that marker is a write inside the phase that must not
+make one. The three commands it runs — `systemctl --user is-system-running`,
+`launchctl print-disabled gui/<uid>`, `schtasks /Query` — are queries, and a command that cannot
+start is an answer rather than an error. systemd is detected by `/run/systemd/system`, which is what
+`sd_booted(3)` checks, and never by `command -v systemctl`, which reports a supervisor on exactly
+the Debian container that has none. Its refusals carry codes from the table and invent none: `3` for
+the setup marker and for a program that will not execute, `6` for no user manager and for a Task
+Scheduler that refuses a query, `7` for a held port. The two `5`s — lingering denied, no batch-logon
+right — are the writing phase's, because neither can be established without attempting it.
+
+**`supervisors/identity.ts` compares three rows, and the third one is advertised rather than
+read.** *Desired* is `daemon.json`'s launch spec, *loaded* is what the supervisor is actually
+holding, and *responding* is the `run_id` and `runtime_digest` the answering daemon puts in
+`/healthz`. Two rows cannot see the failure the check exists for: an artefact rewritten and never
+reloaded leaves the old definition running while every file this project owns says otherwise, and
+reading our own file back reports success. Measured on systemd 252 — `systemctl show` keeps
+answering from the manager's cached unit until `daemon-reload`, which is what makes row 2 worth
+asking for and why it is asked of the **manager** and not of the file. Row 3 is a snapshot
+`daemon/start.ts` freezes after ownership and before the binds, over the effective argv, the
+resolved settings, the working directory and the payload's content hash, and **never** from
+`daemon.json` — a digest read out of the record would agree with the record, which on macOS (where
+there is no row 2 at all) would leave nothing to detect a failed switch with. `daemon status` names
+which detector fired. Nothing here writes; `pnpm e2e:identity` is the real-supervisor proof.
+
+**The three renderers are pure, and every setting they emit travels in the argv.** Each takes a
+`LaunchSpec` and answers with a path, a mode, the name its own supervisor addresses the daemon by,
+and the exact bytes — nothing under `supervisors/` writes a file, which is what makes all three
+platforms verifiable on one machine. `Environment=` and `EnvironmentVariables` are kept for the
+state directory and the token file so a reader of a unit or a plist still sees them, but they are
+never the only emission: `<Exec>` has no environment map and **`--socket` has no variable at all**,
+so `ExecStart=`, `ProgramArguments` and `<Arguments>` carry `LaunchSpec.argv` verbatim and the
+renderers refuse a contract whose argv lost a flag its `settings` still name. The values are fixed
+by measurement rather than preference — `Type=exec` with no `NotifyAccess=` (ADR 0025's 2026-09-08
+note), `KillMode=mixed` with `TimeoutStopSec=45s`, and `ExitTimeOut=45` as its macOS counterpart
+(ADR 0024's) — and the golden tests assert the whole file, not a key at a time.
+
+### `src/setup/` — what the toolchain is allowed to be, and how it arrives
+
+[ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md) books "a CDN
+and a version/checksum manifest" as infrastructure and requires that "the download path has to
+verify the checksum before extracting". This directory is that manifest, that download, and the
+archive reader between them.
+
+| Module | What it owns |
+|---|---|
+| `manifest.ts` | The manifest's address, its shape, and the mirror of the pinned Remotion line's own Chrome URL selector |
+| `source.ts` | Which of the three manifest sources answered — `--manifest`, the published address, this checkout's committed copy |
+| `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, and the staging-then-`rename` commit |
+| `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, and every unsafe entry refused |
+| `providers/chrome.ts` | The headless shell the pinned selector names, admitted on the manifest's **expected** digest |
+| `providers/speech.ts` | The three speech routes, their precedence, and the refusal that names all three |
+| `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
+| `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
+| `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
+| `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
+| `toolchain.manifest.json` | The reviewed document itself — per-platform expected digests, captured at manifest-build time |
+| `testing/` | The loopback artefact server with one route per failure, the writer for archives no archiver produces, and a real marker for the suites downstream |
+
+**`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
+run to themselves; `--skip-*` flags trim the default; both together give the union. So
+`setup --workspace` is the workspace and nothing else — the form the D8 proof runs under a scrubbed
+`PATH`, which must not drag a browser download or a Docker pull in behind it — while
+`setup --skip-speech` is the browser and the workspace, which is the only form Windows has this
+phase. A partial run **exits `0`** and names what is still to acquire: `toolchain.json` records all
+three components or it is not a valid document, so an incomplete run merges into what the last one
+recorded and writes nothing until the set is complete.
+
+**`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8), composed with
+`path.delimiter`.** npm runs lifecycle scripts through `sh -c` and third-party scripts call bare
+`node` — `esbuild`'s `postinstall`, reached through the Remotion tree's 268 packages — so an install
+from a payload under a scrubbed `PATH` exits `127` and leaves no workspace at all. This does **not**
+reopen D1: D1 refused `PATH` injection for *render workers* because it leaks an interpreter onto the
+`PATH` of everything they spawn, Chrome and ffmpeg included, and the installer spawns neither.
+`npm ci`, never `npm install`, and never `--ignore-scripts` — which also exits `0` today and makes
+the workspace's completeness depend on no package in that tree ever needing its install script.
+
+**The daemon never starts a speech container.** `setup` pulls the pinned image, the user or the
+supervisor runs it, and the daemon reports its absence with the command that starts it
+(`speechContainerCommand()`). What `toolchain.json` records for that route is a **receipt** — a
+pulled image is not a path, and the marker's `path` is checked for existence by the install
+preflight — so `setup` re-asks `docker image inspect` on every run rather than trusting the file it
+wrote.
+
+**The gate is the one that owns a provider's lifetime, and it is not the daemon.** `setup` pulls;
+`scripts/e2e/toolchain.mjs` then needs something to narrate *against* for its one live step, and its
+precedence is written down rather than improvised: `XPLAINER_TTS_URL` if an operator or a workflow
+`services:` block already provides one, else a container the gate starts **from the digest in the
+receipt `setup` wrote** on a port the OS chose and stops in a `finally`, else the narration leg is
+skipped with its reason printed. Owning a container for the length of one gate run is not the daemon
+owning one. On Windows the third branch is the only one there is (§2.5, P2-4), and the render half
+still runs — from `XPLAINER_TTS_FIXTURE`, after the browser-and-workspace-only
+`setup --skip-speech --workspace` — so the skip is a skip and never a pass.
+
+**`setup/testing/rollback-render.ts` is T16's sixth assertion, and it lives here because only this
+batch has a browser.** B5's boundary suite and its failure proof end every rollback with *readiness*
+— the installed workspace satisfies the pins of the runtime that came back — and a daemon that
+answers `/healthz` and cannot render is the failure class the precondition exists for. So this entry
+reruns every case that ends in a rollback (the five durable boundaries and the replacement that never
+becomes ready), against a payload the shipped assembler produced, the workspace `setup` materialised
+and the browser it acquired, and asserts a **PNG** out of the daemon each recovery put back. It is
+`pnpm e2e:toolchain`'s last phase and is spawned by it; it is never part of `pnpm verify`.
+
+**The manifest is fetched from `cdn.<zone_name>` and never from `r2.dev`.** `infra/terraform`
+provisions exactly one hostname — `main.tf`'s `local.cdn_hostname`, a **proxied** CNAME onto the
+bucket — and its own comment gives the reason: the bucket's `r2.dev` URL "is explicitly not cached
+by Cloudflare, so serving a ~110 MB CLI binary or a several-hundred-megabyte voice pack from it
+would pay origin egress on every single download". `toolchainManifestUrl()` refuses an `r2.dev`
+zone rather than trusting nobody will type one, and a **speech** entry served from any other host
+is refused when the manifest is parsed. Chrome's host is not checked that way, deliberately: its
+URL is chosen by the selector, not by the document.
+
+**Nothing is published to that hostname in this phase, and the refusal says so.** `terraform`
+creates the bucket and the record; connecting the bucket to the custom domain and adding its Cache
+Rule are manual steps it deliberately does not manage, neither is scheduled here, and no command in
+this repository uploads a manifest — so the published address answers nothing usable, deliberately.
+`deliveryPosition()` is the paragraph `ManifestUnreachable` carries, and it is **per platform**: on
+macOS and Linux it names the two speech routes that do work (`--tts-url`, and the `docker` image
+pinned by digest); on Windows it says there is **no working speech route at all** — nothing
+published for `bundle`, a linux/amd64 image `windows-latest` has no engine for, and a `--tts-url`
+that acquires nothing — and names phase 4 as the milestone rather than offering a route that will
+not work there. That asymmetry is roadmap
+P2-4's — met on macOS and Linux, pending on Windows — and `infra/README.md` §*The delivery position,
+phase 2* is where the infrastructure half is recorded.
+
+**The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
+`@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
+whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
+— and ADR 0020's "Alpine is blocked on rendering, not on init" is what a key ignoring the C library
+buys you. `manifest.ts` therefore **mirrors** that function, `manifest.test.ts` drives the real one
+over all 80 branch combinations and compares — putting the two predicates it stands in for **back**
+after each row, because the last case in that file asks this machine's own question of the
+unpatched module and a leaked stand-in made it disagree with the mirror on every glibc-2.35-or-newer
+linux-x64 host — and `selectChromeArtefact()` looks the URL up. Two
+consequences worth keeping: the manifest **cannot redirect a download**, because the URL fetched is
+the selector's rather than the document's; and a configuration with no recorded entry is a refusal
+naming the URL, never a download of unreviewed bytes.
+
+**Digests are expected, never recorded.** Nothing here writes a manifest, and no path takes a digest
+from the bytes that arrived — `sha256` is a required input to the download. A digest recorded on
+first acquisition cannot reject an incorrect-but-intact archive; it only detects later drift.
+
+**Verify, then extract, then commit — in that order.** The archive is checked against its expected
+digest, unpacked into a staging directory **beside** the destination, and committed with one
+`rename`, the same argument `install/stage.ts` makes for a payload. A digest checked after unpacking
+would already have written a hundred megabytes of somebody else's archive where a render will look.
+
+**Every failure is named, and the names are the ones ADR 0005 asks for**: `short-body` (resumable,
+the partial is kept), `checksum-mismatch` (the partial is deleted, so a wrong body is never resumed
+onto), `resume-not-honoured` (a `206` for a range nobody asked for — appending it would produce a
+right-length, wrong-content file), and `proxy-interception` (a `407`, an HTML filter page quoted
+back, or a TLS handshake that never reached the origin). That last one **is** the acceptance
+condition: "a download that fails behind a corporate proxy must say so, not produce a render that
+fails later with a missing-binary error."
+
+**It speaks `node:http`, and that is a measurement rather than a preference.** On Node 24 a `407`
+never reaches a `fetch` caller — undici turns it into a network error whose `cause` is an empty
+`Error` with no `code` — so the proxy branch would be unreachable code. The artefact URLs also
+redirect (the arm64 Linux build's CDN answers `307`), and the redirect policy is a pure function so
+the https-downgrade refusal is asserted rather than assumed.
+
+**The zip reader is written here rather than depended on.** A new *runtime* dependency of this
+package is a change to payload 1, to the publish contract and to every installer, which is a large
+blast radius for a fully specified format. It reads the central directory, never the local headers,
+and it refuses an entry that climbs out of the destination before anything is written.
+
 ## Public surface
 
 From `src/index.ts`: `createServer`, `startServer`, `DEFAULT_PORT`, `DEFAULT_HOSTNAME` and their
 option types — including `GuardFactory`, the middleware-over-the-bound-port seam a second binding
-uses, and `RunningServer.socket`, the IPC endpoint a `startServer({ ipc })` bound;
-`createLocalBackend`, `LocalBackendError` and `LocalBackendCode`; `resolveWorkspaceRoot`,
+uses, and `RunningServer.socket`, the IPC endpoint a `startServer({ ipc })` bound; the `/api/*`
+surface `apps/desktop` consumes — `ApiSeam`, `createWorkspaceLibrary` and `VideoLibrary`,
+`ApiVideo`, `ApiArtefact`, `ArtefactKind`, `ArtefactFile`, `ApiJobQueued`, `ApiErrorBody`,
+`ApiErrorCode`, `ApiRefusal`, `JobStreamEnd`, the event names `JOB_EVENT` and `END_EVENT`, the
+timings `DEFAULT_JOB_POLL_INTERVAL_MS`, `DEFAULT_HEARTBEAT_MS` and `RECONNECT_DELAY_MS`, and the
+path builders `API_PREFIX`, `videosPath`, `videoPath`, `artefactPath`, `enqueuePath`, `jobPath`
+and `jobEventsPath`; `createLocalBackend`, `LocalBackendError` and `LocalBackendCode`;
+`resolveWorkspaceRoot`,
 `VIDEOS_DIR_ENV` and `WORKSPACE_DIR_NAME`; `CLI_VERSION`; `NOT_IMPLEMENTED_EXIT_CODE` and the
 not-implemented helpers. `bin/` ships `dist/bin.js` as `xplainer`. Published, emits declarations,
 carries `api/cli.api.md`.
@@ -183,7 +469,21 @@ node apps/cli/dist/bin.js serve --port 8787 > "$XPLAINER_STATE_DIR/stdout" &
 head -n 1 "$XPLAINER_STATE_DIR/stdout"           # {"event":"ready","port":…,"socket":…,…}
 curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
 node apps/cli/dist/bin.js status                 # the two state files, confirmed by a real probe
+node apps/cli/dist/bin.js status --json | jq .   # the same facts, with a stable condition code
 kill %1 && wait %1                               # drains, removes runtime.json, exits 0
+
+# The three settings as a supervisor delivers them: flags, above the variables, all read back into
+# daemon.json. `--socket` names a directory this daemon makes 0700 on every start.
+SETTINGS=$(mktemp -d)
+node apps/cli/dist/bin.js serve --port 0 \
+  --state-dir "$SETTINGS" --token-file "$SETTINGS/token" --socket "$SETTINGS/run/x.sock"
+
+# R-SEC-8's rotation, against the daemon started above and without stopping it: the new value and
+# the retired one both open it until the window closes. No value is printed — the token stays in
+# the file R-SEC-6 puts it in — so the way to see it is to read that file.
+node apps/cli/dist/bin.js token rotate --grace 600
+curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz
+node apps/cli/dist/bin.js token rotate --grace 0   # the answer to a leak: no window, no grace file
 
 node apps/cli/spikes/p1-s1-ownership.mjs         # the ownership check ADR 0024's note quotes
 
@@ -198,6 +498,46 @@ FAKE_HOME=$(mktemp -d)
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex
 cat "$FAKE_HOME/.codex/config.toml"
 HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/direct.toml"
+
+# The entry for a machine with no service manager: `mcp` without --attach, and no daemon check.
+# It is what the install preflight's two exit-6 messages lead with, so it must work with no
+# daemon.json, no launch record and nothing staged.
+HOME=$FAKE_HOME XPLAINER_STATE_DIR=$(mktemp -d) node apps/cli/dist/bin.js connect claude --spawn
+
+# The update transaction under injected failure: the boundary suite — a real updater killed at
+# every durable transition, twice-asserted per boundary — and then a real payload assembled,
+# installed under this machine's own supervisor and rolled back. Not part of `pnpm verify`; on
+# macOS it registers a throwaway label and boots it out, and on Linux it installs the real unit in
+# this account's own config directory because that is the only place systemd looks.
+pnpm e2e:update
+
+# Desired, loaded and responding, compared. The suite runs all three platforms with the supervisor
+# and `/healthz` as seams — and a real `serve` for row 3 — and the proof then drives four drift
+# scenarios against this machine's own service manager, where the loaded row really does go stale.
+# Not part of `pnpm verify`, for the same reason `e2e:update` is not.
+pnpm e2e:identity
+
+# `setup` on a machine that behaves as though it has no Node, and then a picture. The artefact is
+# moved out of the checkout, `setup --workspace` proves D8 under `env -i PATH=/usr/bin:/bin`, the
+# marker is written over the offline copy route, `/healthz` is shown degrading, and then
+# narrate → still → render out of the **materialised** workspace with the MP4 read back by
+# `ffprobe` — followed by T16's rollback cases, rerun until each recovered daemon produces a PNG.
+# Not part of `pnpm verify` and it must not become part of it: ~147 MB of payload, a ~234 MB
+# workspace install, a ~100 MB browser, a render, and two more payloads staged six times over.
+pnpm e2e:toolchain
+XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm e2e:toolchain   # reuse a server you already run
+
+# The `[runner]` halves. The artefact gate — narration, then payload 2 and its D1/D2/D3
+# assertions — on ubuntu, macos and windows; the two platform spikes on the machines a
+# developer has none of, including the Task Scheduler half that runs nowhere else; and the update
+# transaction against real service managers; and the loaded-configuration row read from a real Task
+# Scheduler, which has never been asked anywhere. Every workflow is registered from the default branch,
+# so a new one has to reach `main` before the line resolves at all; `--ref` then chooses whose code
+# runs.
+gh workflow run e2e-runtime.yml --ref "$(git branch --show-current)"
+gh workflow run phase2-proofs.yml --ref "$(git branch --show-current)"
+gh workflow run daemon-update.yml --ref "$(git branch --show-current)"
+gh workflow run daemon-identity.yml --ref "$(git branch --show-current)"
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -208,14 +548,25 @@ Then the root procedure: `pnpm verify`.
   rejects self-daemonisation outright: the supervisor owns the process lifetime, and a foreground
   command that forks is invisible to it. The rule belongs in `src/commands/serve.ts`'s docblock and
   stays there.
+- **Never add CORS middleware, for any value** (R-SEC-7). Not `*`, not an allowlist, not "only for
+  the dev server", and least of all on the artefact route, which is the one that serves bytes a
+  page would want to read cross-origin. The desktop's renderer never talks to this daemon directly
+  — the main process holds the bearer token and proxies — so no browser origin needs allowing, and
+  one that was allowed would let any page a user visits read and drive this machine's daemon with
+  the browser's own credentials attached. `api/routes.test.ts` asserts that no answer, allowed or
+  refused, on either listener, carries an `access-control-*` header.
 - **The command surface is asserted with `toEqual`, never widened to `toContain`** (`AC-14b`). The
-  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, and it only holds
-  because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
+  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`, and
+  it only holds because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
-  second reports on the installed supervisor artefact and is still a phase-2 stub. `connect` and
-  `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the seven
-  lifecycle verbs — for the same reason and with the same implicit `help [command]` disabled.
+  second adds the installed supervisor — whether it is switched off, what it loaded, and whether
+  the daemon is boot-persistent — which is why it has a condition set of its own. `connect` and
+  `daemon` are **groups**, and each has its own `toEqual` listing — `claude`, `codex` and the nine
+  lifecycle verbs, `update` and `recover` among them — for the same reason and with the same
+  implicit `help [command]` disabled. So do `runtime` (`build`, `verify`) and `token`, whose one
+  verb is `rotate`: ADR 0020 §Security R-SEC-8 names that and nothing else, and a second verb under
+  that group would be a second way to touch the credential.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
   note ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive
   ownership). Reconciliation *rewrites other processes' records*, so a second `serve` has to be
@@ -230,11 +581,36 @@ Then the root procedure: `pnpm verify`.
 - **A recorded pid is never an identity.** Only a positive tuple match licenses a kill. A live pid
   whose token cannot be read is `uncertain`: it is left alone, the record carries
   `workers_uncertain: true`, and the job's output directory is quarantined so a retry writes
-  somewhere fresh. Reading the token is a `ps` spawn at about 4.5 ms, so it is read **once per
-  acquisition and once per worker at reconciliation**, and memoised for this process.
+  somewhere fresh. Reading the token is a `ps` spawn at about 4.5 ms on macOS, so it is read **once
+  per acquisition and once per worker at reconciliation**, and memoised for this process.
+- **All three platforms produce all three members of the tuple, and Windows only since 2026-09-09.**
+  Before that the start-token probe was `ps` on everything that is not Linux — and Windows has no
+  `ps` — while the boot id answered `null` outside Linux and macOS, so `selfIdentity()` there was
+  `(pid, null, null)`: every live pid was `uncertain`, reconciliation could never take a positive
+  kill decision, and `startIsProvablyGone` was `false` for any recorded pid the machine had since
+  reused. It surfaced as a T14 flake — run `34319237168` green, run `34333162332` red, same code,
+  according to whether five recorded pids had been handed out again. Windows now reads
+  `Win32_Process.CreationDate` and `Win32_OperatingSystem.LastBootUpTime` in **one**
+  `powershell.exe`, each as an exact `ToFileTimeUtc()` integer rather than a formatted date, and
+  `selfIdentity()` takes both halves out of that single spawn. Never `wmic`: it is removed from
+  current Windows images, so a probe built on it would answer `null` — "uncertain" — on exactly the
+  machines this is for. That spawn costs **about 330 ms warm and 2.9 s cold** against the macOS
+  `ps`'s 4.5 ms (`windows-latest`, runs `34338721332` and `34339968171`, 2026-09-09), which is why
+  `selfIdentity()` takes both halves out of one invocation and `classifyWorker` reaches the probe
+  only for a recorded pid that is still alive. A `powershell.exe` that only prints one line costs
+  173 ms of that, so no cheaper query reaches the larger half and none is worth looking for.
+  `daemon-windows.yml`'s `identity` job is where all of it is measured — by
+  `daemon/testing/identity-cost.ts` — and where the four suites that are about the tuple run on the
+  platform whose answer they never had. ADR 0024's note of 2026-09-09 carries the whole reading.
 - **Every worker runs in its own process group** (`detached: true`), and teardown signals the group
   (`process.kill(-pgid, …)`), because a render's expensive half is the browser and the encoder it
-  started, not the pid the daemon holds.
+  started, not the pid the daemon holds. **Windows has no process group, so the worker goes in a
+  Job Object with kill-on-close** — Node has no API for one and this package ships no native addon,
+  so `process-group.ts` starts a `powershell.exe` keeper that creates the job, assigns the worker
+  and any descendant it already had, and holds the handle for the life of the worker. Killing the
+  keeper closes the job and takes the tree with it. `taskkill /T` is the fallback where no keeper
+  could start, and it is weaker on purpose rather than by oversight: it walks the parent chain at
+  kill time, so a grandchild whose parent has already gone is out of its reach.
 - **Nothing installs the workspace's `node_modules`.** `materialiseWorkspace()` copies four files
   and creates three directories; it never runs a package manager, because installing hundreds of
   megabytes is a visible step a user takes and never something a tool call does behind an agent's
@@ -271,8 +647,23 @@ Then the root procedure: `pnpm verify`.
   by nothing else. The state directory *above* it is left exactly as found — ADR 0020 and
   `state-dir.ts` own that one, and `ipc/` is the last directory on the path to the socket, so
   narrowing it is sufficient. Windows gets a named pipe named after a digest
-  of the state directory, which has no mode, no directory and nothing to unlink — ADR 0020 §Security
-  R-SEC-5 already records that gap as the installer's to close in phase 2.
+  of the state directory, which has no mode, no directory and nothing to unlink — and a **security
+  descriptor of its own**, because a digest is not an access check. `net.Server.listen({ path })`
+  takes no descriptor (`readableAll`/`writableAll` only *widen* one) and this package ships no
+  native addon, so the pipe is born with the default Microsoft documents as granting "read access
+  to members of the Everyone group and the anonymous account" and `daemon/pipe-acl.ts` replaces it
+  immediately after the bind: one protected entry, `FullControl` — which is what leaves libuv the
+  `FILE_CREATE_PIPE_INSTANCE` it needs for the next accepted connection — for this token's own
+  `User` SID. The descriptor belongs to the *pipe* rather than to one instance, which is what makes
+  narrowing it once enough. Reported, never fatal, exactly as the token's entry is.
+  **The rights the narrower *opens* with are not the rights it grants**, and getting that wrong is
+  silent: `NamedPipeClientStream` derives the pipe direction from `desiredAccessRights` and throws
+  `ArgumentOutOfRangeException` for a value carrying neither `ReadData` nor `WriteData`, so the
+  first release's `ChangePermissions,ReadPermissions` opener could never open the pipe and every
+  Windows start reported `failed` on a mechanism nobody was reading. The opener asks `ReadData`
+  (the direction, never used), `ChangePermissions` (`WRITE_DAC`) and `ReadPermissions`
+  (`READ_CONTROL`); the whole emitted script is a committed fixture, because it runs on a platform
+  this suite cannot execute.
 - **`xplainer mcp` does not share the daemon's job store, and `--attach` is how you get it.** A job
   store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
   takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
@@ -359,28 +750,191 @@ Then the root procedure: `pnpm verify`.
   exists and cannot be read, **`12`** the token file exists and cannot be used, and **`70`**
   anything else. `EADDRINUSE` is deliberately `10` rather than `70`: a supervisor told `70`
   restarts a daemon whose port is held by something else, for ever.
-- **`src/daemon/testing/` never ships.** `tsconfig.build.json` excludes it, so the fake worker, the
-  spawned child entries and the TypeScript source hook are type-checked and linted but never
-  compiled into `dist/` and never reach a tarball. Test scaffolding that a consumer could import is
-  test scaffolding that becomes a supported surface.
+  **`5` and `6` are `daemon install`'s**, and `7` is still only named: `5` is a denied
+  `loginctl enable-linger` and a Windows principal without the "Log on as a batch job" right — both
+  established by *attempting* them, which is why they belong to the writing phase and not to the
+  read-only preflight — and `6` is no user service manager, which on Linux leads with
+  `sudo loginctl enable-linger` when lingering is the reason there is none. `7` and `10` are the
+  pair to keep straight: **`7` is
+  install-time preflight** ("the port I am about to record is held", nothing registered, nothing
+  recorded) and **`10` is `serve`-time ownership** ("the state directory or the recorded port is
+  taken" by a process running now). Same symptom, two lifecycles, two remediations, and
+  `daemon/exit-codes.test.ts` asserts that §6's rows still say which is which.
+- **No `testing/` directory ever ships.** `tsconfig.build.json` excludes `src/**/testing/**`, so
+  `daemon/testing/`'s fake worker, spawned child entries and TypeScript source hook, and
+  `install/testing/`'s fixture payload, are type-checked and linted but never compiled into `dist/`
+  and never reach a tarball. Test scaffolding that a consumer could import is test scaffolding that
+  becomes a supported surface.
 - **The guard is unconditional, and it is mounted before any route.**
   `createServer()` takes it as a *parameter*, so the TCP listener carries it, the IPC listener
   carries none — filesystem permissions are that transport's authentication — and
   `services/media-service` carries its own at phase 3. Three rules inside it are not negotiable
   (ADR 0020 §Security): the `Host` allowlist is **exact string equality** against
-  `{127.0.0.1, localhost, [::1]}:PORT` and never a parser, because `http://2130706433:8787` reaches
-  loopback too; a widened bind **adds** its authority and removes nothing, because a validation that
-  weakens when the bind widens is exactly CVE-2026-65105; and `/healthz` needs the token like
-  everything else. `Authorization` is redacted at the logger (`redactAuthorization`), request bodies
+  `{127.0.0.1, localhost, [::1]}:PORT` **plus one entry per `--allow-host`**, and never a parser,
+  because `http://2130706433:8787` reaches loopback too; the operator's hostnames are **added** and
+  nothing is removed, because a validation that weakens when the bind widens is exactly
+  CVE-2026-65105; and `/healthz` needs the token like everything else. There is no branch on the
+  bind address in `guard.ts` at all, which is what makes that a property rather than a promise. `Authorization` is redacted at the logger (`redactAuthorization`), request bodies
   are never logged at all, and every rejection *is* logged with its reason and the offending value.
   The allowlist is built **after** bind, from the port the OS gave us, which is why `startServer()`
   takes a `GuardFactory` and `--port 0` keeps working.
+- **Three settings, and each flag is above its variable.** `serve` takes `--state-dir`,
+  `--token-file` and `--socket`, spelled exactly as `src/runtime/launch-spec.ts`'s `SETTING_FLAGS`
+  emits them — a spelling that changed on one side only is a daemon that refuses the argv its own
+  installer wrote, which is why `serve.test.ts` compares the two rather than trusting them to stay
+  in step. The flags exist because **Task Scheduler's `<Exec>` action has no per-action environment
+  map**: a daemon told where its state lives only through `XPLAINER_STATE_DIR` would silently take
+  the platform default on Windows while `daemon.json` recorded something else. `--token-file` names
+  a **path and never a value**, so R-SEC-6 holds on the argv route exactly as it did on the
+  environment one; `--socket` has **no variable at all**, which is why all three travel in argv on
+  every platform rather than only where they must. All three are written into `daemon.json` at
+  readiness, so `status --json` reports what the process used and not what somebody intended, and
+  `serve` logs which of flag, variable and default decided each one. The `0700` rule follows
+  `--socket`: the directory narrowed is the one the socket is actually in, so point the flag at a
+  directory dedicated to the socket — `%t/xplainer`, not `$HOME`.
+- **`daemon status` may query a supervisor, and may never parse `launchctl print`.** The narrow
+  rule, and it is narrow deliberately: the blanket ban made one of ADR 0020's **own** required
+  sentences unobservable, because "you or a policy switched this off in Login Items & Extensions"
+  appears in no HTTP response and in no file this project owns. Three documented machine-readable
+  queries are allowed and no others — `launchctl print-disabled gui/$UID`,
+  `systemctl --user is-enabled xplainer.service` and `(Get-ScheduledTask …).State` for the
+  switched-off fact, and `systemctl --user show -p ExecStart -p Environment -p WorkingDirectory
+  --value` / `Get-ScheduledTask` for the loaded configuration, which **macOS does not have** (§1.3b
+  D7: the responding identity in `/healthz` is the detector there instead). `launchctl print` is
+  the one surface its own manual disowns — "This output is NOT API in any sense at all" — and
+  nothing in this package calls it. Everything else comes from `/healthz` and our own state files.
+- **The four sentences ADR 0020 requires `daemon status` to say are values, not prose.**
+  `install/lifecycle.ts` builds them and tags each with its state, and `lifecycle.test.ts` compares
+  them with the four quoted strings read **out of the ADR file itself**. Two of them name a
+  platform's own surface — Login Items & Extensions is macOS's word for a launchd disable record,
+  lingering is systemd's — so the ADR's exact sentence is what that platform produces and the other
+  two make the same claim about the surface their user actually has. Reword one and the suite fails.
+- **`status --json` answers with a condition code from a closed set**, never with prose: `ready`,
+  `stalled`, `unauthorized`, `token_absent`, `unhealthy`, `unreachable`, `absent`
+  (`STATUS_CONDITIONS`). `daemon status --json` answers from a superset — the same members plus
+  `disabled` (a supervisor query saw the service switched off) and `degraded` (it answered `200`
+  and the recorded toolchain is not on this machine) — classified in the same order, so a consumer
+  that handles one handles the other by adding two cases. It is what `apps/desktop`'s discovery shells out to instead of
+  reimplementing state-directory resolution, so a new member is added here and to that mapping
+  together. Two things are deliberately **not** conditions: contract compatibility, which is a
+  relation between a daemon and *the shim asking* and so is reported as the daemon's
+  `contract_version` for the caller's own `isContractCompatible()`; and "switched off in Login
+  Items", which is supervisor state that HTTP and our own files cannot see and that `daemon status`
+  reaches with the documented supervisor queries. The document is one object on one line and carries
+  no secret. The two refusals that happen before a report exists — a state file that cannot be read
+  (`11`) and a `--url` that is not an endpoint (`1`) — write a sentence to stderr and nothing to
+  stdout, so a caller tells them apart by exit code rather than by parsing an error object.
+- **A non-loopback bind costs all five of R-SEC-9's preconditions, and four of them are refused
+  before the state directory is taken.** An explicit `--bind`, `--i-understand-remote-exposure`,
+  `--tls-cert` **and** `--tls-key`, at least one `--allow-host`, and a bearer token this daemon did
+  not mint — which `daemon.json`'s `token_origin` is what makes decidable, because 32 random bytes
+  an operator wrote and 32 the mint generated are the same value. **That record answers for the
+  file `token_file` names and for no other**: a token at a path this state directory never wrote is
+  the operator's however often this daemon has minted one of its own, and a start that inherited the
+  recorded answer refused an operator's `--token-file` for ever in a sentence claiming this daemon
+  had minted a file it had never seen. **Because the record answers for a file, the two fields are
+  one write**: `serve` writes `token_origin` and `token_file` in the same `updateDaemonState` call,
+  at the moment the token is read or minted, and `markReady` writes neither. Writing them apart was
+  a hole rather than an untidiness — `token_origin` at the mint and `token_file` only at readiness
+  meant every ordinary failed start (a held port, an unloadable certificate pair, a socket path the
+  platform refuses) left `minted` on disk with no path beside it, and the next start read "the
+  record names no file of mine" and answered `operator` for the token this daemon had just minted,
+  meeting the fifth precondition by bookkeeping. `0.0.0.0`, `::`, `[::]` and `*`
+  are refused outright, acknowledgement or not. Everything argv decides is decided before ownership,
+  and the token's provenance **before the mint** — the three answers are `absent`, `minted` and
+  `operator`, and a check asked after `loadOrMintToken` created the credential it then refused — so
+  every refusal leaves the machine as it found it, with no token file and no `token_origin` it
+  wrote, and the message names **every** missing precondition at once rather than one per run.
+  `daemon/tls.ts` never generates a certificate: the operator supplies the pair, and TLS on a
+  *loopback* bind is refused because `status`, `daemon restart` and the desktop all reach a local
+  daemon over `http`.
 - **The bearer token travels as a path, never as a value** (R-SEC-6): `XPLAINER_TOKEN_FILE` names a
   file, `/proc/<pid>/cmdline` is world-readable and `systemctl --user show` prints `Environment=`.
   `daemon/token.ts` is the only reader of that file; the guard is handed a string. And it is not a
   sandbox: same-uid code reads a `0600` file trivially. It buys the browser boundary and the other
   local user on a shared box, and nothing else — a token documented as more than that is worse than
-  no token.
+  no token. **On Windows the mode buys neither**, because Node documents that only the write
+  permission is settable there and that the owner/group/other distinction is not implemented, so
+  the mint runs R-SEC-5's own remedy on the file it has just created —
+  `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"`, in `daemon/windows-acl.ts` — and `serve`
+  names in one line which of the two protections this platform got. **That command is the first of
+  up to three, because it removes only what was *inherited*.** `/inheritance:r` takes the inherited
+  ACEs off and `/grant:r` replaces the named account's explicit ones; a third principal's explicit
+  entry survives both, and `icacls` has no option meaning "and nobody else". Under `%LOCALAPPDATA%`
+  there is never such an entry, which is why the ADR spells the requirement as one command — but a
+  path whose parent carries no inheritable ACE gets its DACL from the creating token's *default*
+  one, and those entries are explicit. A scratch directory under GitHub's `windows-latest` runner
+  temp is exactly that (`NT AUTHORITY\SYSTEM:(F) BUILTIN\Administrators:(F)` on a file this process
+  had just created, 2026-09-09), so the entry is read back and whatever is not this account is
+  removed. A failure to apply any of it is
+  **reported, never fatal**: a daemon that refused to start over a missing `icacls` would trade a
+  weaker file for no service at all. R-SEC-5's other half is `daemon status`: it re-reads the entry
+  with a plain `icacls <path>` **query** and prints `WARNING —` when a second principal is on the
+  file or an `(I)` flag says inheritance has been restored, naming both what it found and the
+  command that narrows it again.
+- **Nothing this project parses may arrive through PowerShell's output formatter.** Every value a
+  `powershell.exe -Command` script emits is formatted on its way to stdout, and with stdout
+  redirected — which it always is here — that formatter **wraps at 80 columns**. Two answers this
+  package reads back are longer than that and were being read as truncated ones: the
+  loaded-configuration row (`Execute=`, `Arguments=` and `WorkingDirectory=` are absolute paths, so
+  a *correct* Task Scheduler install reported `command` and `cwd` as drifted) and `pipe-acl.ts`'s
+  success line (prefix, digest-length pipe name and a SID, read back as half a SID). Both now write
+  with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
+  pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
+  necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
+- **A `<Repetition>` belongs to a trigger that has fired, and `<RestartOnFailure>` is not a retry
+  policy for an action that exits non-zero.** Both measured on `windows-latest`, 2026-09-09 (run
+  `34317779107`, job `102357526877`), three tasks side by side for eleven minutes. The document
+  `supervisors/schtasks.ts` renders therefore carries the indefinite `PT5M` repetition on **two**
+  triggers: a `<RegistrationTrigger>`, because registering the task is itself a trigger event and so
+  the five-minute re-check exists from the moment `install` finishes, and the `<LogonTrigger>` for
+  the next boot. With the logon trigger alone the re-check did not exist at all between an install
+  and the next logon — `Start-ScheduledTask`, which is what `install` and `daemon start` call, is an
+  **on-demand** run that starts no trigger, and a logon trigger does not fire in a session the user
+  logged into before running `install`. `MultipleInstancesPolicy: IgnoreNew` is what makes the
+  trigger and the explicit start unable to produce two daemons, and that was measured too: a
+  registration trigger plus an immediate `Start-ScheduledTask` over a four-minute action recorded
+  one start. `<RestartOnFailure>` stays because a task failing to *launch* is a real and different
+  failure, but nothing here may count on it: a daemon that exits `10` is re-run by the repetition
+  and by nothing else, which is why T14's Windows arm waits about twenty minutes for five failed
+  starts. [ADR 0020](../../docs/adr/0020-always-running-local-daemon.md)'s note of 2026-09-09 is the
+  record.
+- **Address a scheduled task by folder *and* leaf, from one place.** `\xplainer\<user>-daemon` is a
+  path; `Register-ScheduledTask -TaskName` takes one because it is creating the name, and every
+  other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM query whose `TaskName`
+  is the **leaf** and whose `TaskPath` is the folder. Two of them are measured *refusing* a full
+  path on `windows-latest`, 2026-09-09, and both refuse quietly: `Get-ScheduledTask` writes a
+  non-terminating `ObjectNotFound` and exits `0` (T17 then read a correct install's loaded row back
+  as an empty command and reported drift on it), and `Unregister-ScheduledTask` reports success
+  having removed no task (T16's uninstall left the task it said it had deregistered). Two others —
+  `Start-ScheduledTask` and `Get-ScheduledTaskInfo` — are measured *accepting* one in the same batch
+  of runs (34310353206 and 34313848702). So the rule is not "a path never matches": it is that
+  **which** cmdlet tolerates one is undocumented and silent when it does not, so all of them are
+  addressed the documented way from `install/register.ts`'s `scheduledTaskSelector()` — the verbs in
+  `install/lifecycle.ts` and the proof helpers in `install/testing/` included. The one composed
+  command that does not come through it is the update's re-registration in `update/switch.ts`, and
+  that is correct: a `Register-` is creating the name and takes the whole path. The two queries also
+  carry `-ErrorAction Stop`, so a task that is not there is an honest "the query did not answer" — a
+  non-zero status and nothing on stdout — rather than a row of empty strings.
+- **A Windows deregistration is two commands, because unregistering does not stop.**
+  `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
+  job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance
+  running. `install/register.ts`'s `deregisterCommands` therefore emits `Stop-ScheduledTask` first
+  and tolerates its failure, or an uninstall leaves a daemon holding the state directory every file
+  naming it has just stopped naming — which is what an `EPERM` on removing that directory was
+  (`windows-latest`, 2026-09-09).
+- **The guard is handed a function, so a rotation reaches a daemon that is already running.**
+  ADR 0020 §Security R-SEC-8's `xplainer token rotate` writes a new value and keeps the old one in
+  `<token>.previous` for a grace window — five minutes by default, a day at most, `0` for a leak —
+  and `daemon/token.ts`'s ring re-reads both files whenever either changes, so **both** values open
+  the daemon until the window closes and neither a restart nor a control route is involved. Two
+  consequences to keep straight. The daemon **follows its own token file**, so a test that
+  simulates an intruder by overwriting it is simulating the wrong thing: what "something is on our
+  port that is not our daemon" looks like is a *second* state directory recording that port. And
+  `daemon uninstall` still **deletes** rather than rotates — and deletes the grace file too, because
+  a rotation leaves two working credentials and taking one of them leaves behind exactly the live
+  token P2-9 forbids. No value is ever printed by the command or written to `daemon.json`; what the
+  record carries is two instants and a path.
 - **`SIGTERM` is six steps and ends in exit `0`** ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md)
   §Drain on planned restart): stop accepting, give the running job **20 s**, `SIGTERM` then
   `SIGKILL` its whole process group, mark anything still `running` *or* `queued` as `error` with
@@ -422,7 +976,10 @@ Then the root procedure: `pnpm verify`.
 
 **A command:** add the module under `src/commands/` (one concept per file, kebab-case), register it
 in `src/program.ts`, and — until it does something — register it as a stub that names itself and
-exits `NOT_IMPLEMENTED_EXIT_CODE`. Update the `toEqual` surface assertion in the same commit.
+exits `NOT_IMPLEMENTED_EXIT_CODE`. Update the `toEqual` surface assertion in the same commit. A
+**group** carries its own `configureOutput()` and `exitOverride()` on the group *and* on every verb:
+commander's `addCommand()` copies neither, so a group that configures only itself leaves its verbs
+writing to the process streams and calling the real `process.exit`.
 
 **A route:** add it in `src/server.ts` and test it against a started server, not against the app
 object alone. Both listeners get it: the guard is mounted before every route, so a route that must

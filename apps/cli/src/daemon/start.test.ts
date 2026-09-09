@@ -24,14 +24,17 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
+import { readDaemonState, STALL_AFTER_FAILED_STARTS } from "./daemon-state.js";
 import { OWNERSHIP_REFUSED_EXIT_CODE } from "./exit-codes.js";
 import { createJobStore } from "./job-store.js";
 import { describeReconciliation, type StartedDaemon, startDaemon } from "./start.js";
 import { stateDirLayout } from "./state-dir.js";
 import { fakeWorkerRegistry } from "./testing/fake-worker.js";
 import {
+  abruptKill,
   CHILD_DAEMON,
   CHILD_SERVE,
+  describeExit,
   type SpawnedChild,
   spawnEntry,
   untilGone,
@@ -114,7 +117,14 @@ describe("a second xplainer serve", () => {
     // Byte for byte, the same directory: no reconciliation, no rewrite, no signal sent.
     expect(snapshot(stateDir)).toBe(before);
     expect(first.process.exitCode).toBeNull();
-  });
+    // The budget this case's own helpers assume. `waitForLine` gives a spawned daemon 20 s to
+    // announce itself and `waitForExit` another 10, and vitest's default of 5 s cannot pay for
+    // either: a case that starts **two** real `serve` processes and reads a ready line out of the
+    // first is not a five-second case anywhere, and on a `windows-latest` runner it timed out at
+    // exactly that (2026-09-09, run 34311062150). Every case in `commands/serve.test.ts` that
+    // spawns a daemon carries the same explicit number for the same reason; the assertions above
+    // are unchanged.
+  }, 30_000);
 
   it("records the port and the crash history in daemon.json, and the run in runtime.json", async () => {
     const stateDir = stateDirectory();
@@ -139,7 +149,8 @@ describe("a second xplainer serve", () => {
     expect(Object.keys(runtimeJson)).not.toContain("stalled");
     expect(runtimeJson.pid).toBe(serving.process.pid);
     expect(readdirSync(layout.jobs)).toEqual([]);
-  });
+    // Explicit for the reason the case above states: this one spawns a real `serve` too.
+  }, 30_000);
 
   it("exits 0 rather than restarting for ever once the circuit breaker is latched", async () => {
     const stateDir = stateDirectory();
@@ -156,7 +167,7 @@ describe("a second xplainer serve", () => {
 
     expect(exit.code).toBe(0);
     expect(serving.stderr()).toContain("stalled since");
-  });
+  }, 30_000);
 
   it("exits 11 when daemon.json cannot be read", async () => {
     const stateDir = stateDirectory();
@@ -167,7 +178,7 @@ describe("a second xplainer serve", () => {
 
     expect(exit.code).toBe(11);
     expect(serving.stderr()).toContain("cannot be read as JSON");
-  });
+  }, 30_000);
 });
 
 describe("a daemon killed the instant a job is enqueued", () => {
@@ -181,7 +192,10 @@ describe("a daemon killed the instant a job is enqueued", () => {
     const jobId = (JSON.parse(announced) as { job_id: number }).job_id;
     const exit = await child.waitForExit();
 
-    expect(exit.signal).toBe("SIGKILL");
+    // The child killed itself, so this process is a watcher that did not ask for the kill: a
+    // signal on POSIX, and on Windows the code `TerminateProcess` leaves behind, because there is
+    // no signal to report. Either way it died where it stood, having run nothing after `enqueue()`.
+    expect(describeExit(exit)).toBe(abruptKill("itself"));
     // The claim under test: whatever `enqueue()` returned an id for is on disk, with no daemon left
     // to have written it afterwards.
     expect(createJobStore(stateDir).read(jobId)?.job_id).toBe(jobId);
@@ -198,7 +212,7 @@ describe("a daemon killed the instant a job is enqueued", () => {
       expect(job.error_code).toBe("daemon_restarted");
       expect(job.finished_at).not.toBeNull();
     }
-  });
+  }, 30_000);
 });
 
 describe("a daemon killed while a job is running", () => {
@@ -216,13 +230,21 @@ describe("a daemon killed while a job is running", () => {
     strays.push(workerPid);
 
     child.process.kill("SIGKILL");
-    expect((await child.waitForExit()).signal).toBe("SIGKILL");
-    expect(isAlive(workerPid)).toBe(true);
+    expect(describeExit(await child.waitForExit())).toBe(abruptKill("the watcher"));
+
+    // **Whether the worker outlives the daemon is a platform fact, and it is asserted as one.** On
+    // POSIX it does: the worker is a detached process-group leader and nothing signalled it, which
+    // is precisely the orphan boot reconciliation exists for. On Windows there are no process
+    // groups, so `process-group.ts` puts the worker in a kill-on-close Job Object held by a keeper
+    // the daemon started — and `windows-latest` measured the worker already gone the instant the
+    // daemon was, on 2026-09-08. Everything after this line is asserted identically on both.
+    const orphaned = isAlive(workerPid);
+    expect(orphaned).toBe(process.platform !== "win32");
     const abandoned = createJobStore(stateDir).read(jobId);
     expect(abandoned?.status).toBe("running");
     const announcedGrandchild = abandoned?.log.find((line) => line.startsWith("grandchild "));
     const grandchild = Number((announcedGrandchild ?? "").replace("grandchild ", ""));
-    expect(isAlive(grandchild)).toBe(true);
+    expect(isAlive(grandchild)).toBe(orphaned);
 
     const outcome = await startDaemon({
       stateDir,
@@ -235,7 +257,9 @@ describe("a daemon killed while a job is running", () => {
       const { runner, reconciliation } = outcome.daemon;
 
       expect(reconciliation.reconciled).toEqual([jobId]);
-      expect(reconciliation.killed).toEqual([workerPid]);
+      // A worker the reconciler found already dead is not one it killed, and saying it killed one
+      // it did not would be the record claiming a teardown that never happened.
+      expect(reconciliation.killed).toEqual(orphaned ? [workerPid] : []);
       expect(await untilGone(workerPid)).toBe(true);
       // The group, not the leader: the browser and the encoder a render starts are the expensive
       // half, and this stands in for them.
@@ -255,6 +279,90 @@ describe("a daemon killed while a job is running", () => {
       expect(job.output.lines.join(" ")).toContain("reconciled at boot");
       expect(runner.get({ job_id: jobId, output_lines: 2 }).output.lines).toHaveLength(2);
     }
+  }, 30_000);
+});
+
+/**
+ * The breaker's evidence, written by the runs it is about.
+ *
+ * `close()` is the one path every orderly end goes through — an unreadable token file, a socket
+ * that cannot be prepared, a bind that fails, and the drain itself — so it is where a run records
+ * that it ended and which way. What that buys is the whole of T14: five starts spaced **two
+ * minutes** apart, each dying two seconds in, latch the breaker. Under the inference this replaced
+ * they could not, because the spacing was what was measured, and no supervisor in this project
+ * retries faster than 30 s on two of the three platforms.
+ */
+describe("a run recording its own end", () => {
+  const base = Date.parse("2026-09-08T00:00:00.000Z");
+
+  /** A clock that starts at `at` and is two seconds later on every call after the first. */
+  function clockFrom(at: number): () => Date {
+    let calls = 0;
+    return () => new Date(at + (calls++ === 0 ? 0 : 2_000));
+  }
+
+  it("latches after five slow retries that each failed fast, and exits 0 on the sixth", async () => {
+    const stateDir = stateDirectory();
+
+    for (let index = 0; index < STALL_AFTER_FAILED_STARTS; index += 1) {
+      const outcome = await startDaemon({
+        stateDir,
+        workers: fakeWorkerRegistry(),
+        now: clockFrom(base + index * 120_000),
+      });
+      expect(outcome.started).toBe(true);
+      if (outcome.started) {
+        // No `markReady`: this is a run that never got as far as announcing itself, which is what a
+        // failed bind leaves behind.
+        await outcome.daemon.close();
+      }
+    }
+
+    const history = readDaemonState(stateDir).recentStarts;
+    expect(history).toHaveLength(STALL_AFTER_FAILED_STARTS);
+    expect(history.map((entry) => entry.outcome)).toEqual(
+      Array.from({ length: STALL_AFTER_FAILED_STARTS }, () => "failed"),
+    );
+    expect(history[0]?.ended_at).toBe(new Date(base + 2_000).toISOString());
+
+    const sixth = await startDaemon({
+      stateDir,
+      workers: fakeWorkerRegistry(),
+      now: clockFrom(base + STALL_AFTER_FAILED_STARTS * 120_000),
+    });
+
+    expect(sixth.started).toBe(false);
+    if (!sixth.started) {
+      // Exit `0` is the portable "do not restart" signal on all three supervisors.
+      expect(sixth.exitCode).toBe(0);
+      expect(sixth.message).toContain("its own start");
+    }
+    expect(readDaemonState(stateDir).stalled).not.toBeNull();
+  });
+
+  it("calls a run that announced itself stopped, not failed", async () => {
+    const stateDir = stateDirectory();
+    const outcome = await startDaemon({
+      stateDir,
+      workers: fakeWorkerRegistry(),
+      now: clockFrom(base),
+    });
+
+    expect(outcome.started).toBe(true);
+    if (outcome.started) {
+      outcome.daemon.markReady({
+        port: 8787,
+        addresses: ["http://127.0.0.1:8787"],
+        socket: null,
+        contractVersion: "1",
+      });
+      await outcome.daemon.close();
+    }
+
+    const [entry] = readDaemonState(stateDir).recentStarts;
+    expect(entry?.ready_at).not.toBeNull();
+    expect(entry?.outcome).toBe("stopped");
+    expect(entry?.ended_at).not.toBeNull();
   });
 });
 

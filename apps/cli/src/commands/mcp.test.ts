@@ -21,15 +21,25 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { MCP_CONTRACT_VERSION, TOOL_NAMES } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTRACT_SKEW_EXIT_CODE } from "../daemon/exit-codes.js";
+import { resolveIpcPath } from "../daemon/ipc.js";
 import { waitForReadyLine } from "../daemon/ready.js";
 import {
   CHILD_CLI,
@@ -39,6 +49,7 @@ import {
   spawnEntry,
   TS_SOURCE_HOOK,
 } from "../daemon/testing/spawn-child.js";
+import { launcherPath } from "../install/launcher.js";
 import { MCP_SESSIONS_DIR } from "../mcp/stdio-server.js";
 import { CLI_VERSION } from "../version.js";
 
@@ -99,8 +110,8 @@ function run(entry: string, args: readonly string[], env: Record<string, string>
 }
 
 /** A real `xplainer serve` on a temporary state directory, up to and including its ready line. */
-async function daemonOn(stateDir: string): Promise<SpawnedChild> {
-  const child = run(CHILD_SERVE, ["--port", "0"], { XPLAINER_STATE_DIR: stateDir });
+async function daemonOn(stateDir: string, args: readonly string[] = []): Promise<SpawnedChild> {
+  const child = run(CHILD_SERVE, ["--port", "0", ...args], { XPLAINER_STATE_DIR: stateDir });
   await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   return child;
 }
@@ -210,12 +221,51 @@ describe("xplainer mcp --attach", () => {
   }, 60_000);
 
   /**
+   * The socket the daemon really bound, rather than the one this shim would derive.
+   *
+   * `serve --socket` is a shipped flag, the launch contract emits it on all three platforms, and an
+   * installed daemon runs with whatever the artefact was rendered with — so a shim that derives
+   * `<state>/ipc/xplainer.sock` and dials only that reports a daemon it could have reached as
+   * unreachable. The daemon here binds a socket in a directory the derived path is not even inside,
+   * and the assertion that it was reached is where it can only be true if it was: a video created
+   * through the shim appearing in the **daemon's** workspace, from a shim process that has no
+   * backend at all.
+   */
+  it("dials the socket daemon.json recorded, not the one derived from the state directory", async () => {
+    const stateDir = stateDirectory();
+    const elsewhere = stateDirectory();
+    const socket = join(elsewhere, "moved.sock");
+    await daemonOn(stateDir, ["--socket", socket]);
+
+    // The premise: the derived path holds nothing, so a shim that guessed it would find no daemon.
+    expect(existsSync(socket)).toBe(true);
+    expect(existsSync(resolveIpcPath(stateDir))).toBe(false);
+    expect(
+      JSON.parse(readFileSync(join(stateDir, "daemon.json"), "utf8")) as { socket_path: string },
+    ).toMatchObject({ socket_path: socket });
+
+    const client = await connectTo(["mcp", "--attach"], stateDir);
+    const created = await client.callTool({
+      name: "explainer_create",
+      arguments: { slug: "through-the-moved-socket" },
+    });
+
+    expect(created.isError).toBeFalsy();
+    expect(readdirSync(join(stateDir, "workspace", "videos"))).toEqual([
+      "through-the-moved-socket",
+    ]);
+  }, 60_000);
+
+  /**
    * ADR 0025 §Part two, exactly: an incompatible pair "exits with a new code **`8`** and a message
    * naming both versions and a command that fixes it". The command has to be one that exists *now*,
-   * which is why it names the release the daemon reported rather than a `daemon restart` verb that
-   * is still a phase-2 stub.
+   * and that is what changed in T10: it printed `npm i -g @xplainer/cli@<version>`, which no
+   * machine in this phase can run, because nothing is published and the phase-2 install runs the
+   * daemon out of a payload staged under the state directory. What it names instead is the stable
+   * launcher — here, absent, because this state directory holds no install — and the command that
+   * would create it.
    */
-  it("exits 8 naming both contract versions and a command that installs the daemon's release", async () => {
+  it("exits 8 naming both contract versions and a remediation this machine can run", async () => {
     const stateDir = stateDirectory();
     await fakeDaemonOn(stateDir, { version: "9.9.9-daemon", contract_version: "2" });
 
@@ -225,9 +275,35 @@ describe("xplainer mcp --attach", () => {
     expect(exit.code).toBe(CONTRACT_SKEW_EXIT_CODE);
     expect(shim.stderr()).toContain("tool contract 2");
     expect(shim.stderr()).toContain(`this shim speaks ${MCP_CONTRACT_VERSION}`);
-    expect(shim.stderr()).toContain("npm i -g @xplainer/cli@9.9.9-daemon");
+    expect(shim.stderr()).toContain("release 9.9.9-daemon");
+    expect(shim.stderr()).toContain(launcherPath(stateDir));
+    expect(shim.stderr()).toContain("xplainer daemon install");
+    expect(shim.stderr()).not.toContain("npm i -g");
     // Nothing was proxied: the refusal is a gate, and stdout is the JSON-RPC stream.
     expect(shim.stdout()).toBe("");
+  }, 60_000);
+
+  /**
+   * The other half of the same message: with an install's launcher present, the remediation is a
+   * path that exists, and running the session through it is the fix. That path is the one name a
+   * shim and a daemon share across an update, which is why it is what an agent's configuration
+   * holds.
+   */
+  it("names the installed launcher when there is one, as the shim to run instead", async () => {
+    const stateDir = stateDirectory();
+    await fakeDaemonOn(stateDir, { version: "9.9.9-daemon", contract_version: "2" });
+    const launcher = launcherPath(stateDir);
+    mkdirSync(dirname(launcher), { recursive: true });
+    writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
+    chmodSync(launcher, 0o700);
+
+    const shim = run(CHILD_CLI, ["mcp", "--attach"], { XPLAINER_STATE_DIR: stateDir });
+    const exit = await shim.waitForExit();
+
+    expect(exit.code).toBe(CONTRACT_SKEW_EXIT_CODE);
+    expect(shim.stderr()).toContain(`${launcher} mcp --attach`);
+    expect(shim.stderr()).toContain("xplainer daemon update");
+    expect(shim.stderr()).not.toContain("npm i -g");
   }, 60_000);
 
   /**

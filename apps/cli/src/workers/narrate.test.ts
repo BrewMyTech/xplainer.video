@@ -62,6 +62,7 @@ const FIXTURES: readonly NarrationFixture[] = [
 const directories: string[] = [];
 let root = "";
 let fixtureDir = "";
+let stateDir = "";
 let runner: JobRunner;
 let backend: RenderBackend;
 
@@ -91,13 +92,14 @@ async function waitForJob(jobId: number, timeoutMs = 60_000): Promise<ExplainerJ
 beforeEach(() => {
   root = temporaryDirectory("xplainer-narrate-workspace-");
   fixtureDir = temporaryDirectory("xplainer-narrate-fixture-");
-  const store = createJobStore(temporaryDirectory("xplainer-narrate-state-"));
+  stateDir = temporaryDirectory("xplainer-narrate-state-");
+  const store = createJobStore(stateDir);
   runner = createJobRunner({
     store,
     owner: { ...selfIdentity(), run_id: "narrate-test" },
-    workers: createWorkerRegistry({ root }),
+    workers: createWorkerRegistry({ root, stateDir }),
   });
-  backend = createLocalBackend({ runner, root });
+  backend = createLocalBackend({ runner, root, stateDir });
 });
 
 afterEach(async () => {

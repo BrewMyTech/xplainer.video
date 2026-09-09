@@ -122,13 +122,22 @@ Each one, and the thing that catches you:
 - **Never hand-edit anything under `generated/`.** It is overwritten on the next codegen.
   *Enforcement: the same diff.*
 - **A user-visible change to a published package needs a changeset.** `pnpm changeset`.
-  *Enforcement: review. There is no release workflow in this repository yet — `.github/workflows/`
-  holds `ci.yml` and `desktop.yml`, and neither reads `.changeset/` — so this is a convention until
-  one exists. Treat it as binding anyway: the changeset is the changelog entry, and it is written
-  while the reason for the change is still in front of you.*
+  *Enforcement: review. There is no release workflow in this repository yet — of the thirteen files
+  in `.github/workflows/`, not one reads `.changeset/` — so this is a convention until one exists.
+  Treat it as binding anyway: the changeset is the changelog entry, and it is written while the
+  reason for the change is still in front of you.*
 - **No `TODO`, `FIXME`, `.skip(` or `.only(` in committed source.** Not in a comment, not "just for
   now". *Enforcement: `AC-2c`, a CI grep over `apps/`, `packages/` and `services/` on a pristine
   tree.*
+- **`.skipIf(` is allowed, and only with the condition written at the call site.** It is the one
+  form of skip this repository uses on purpose — a live Kokoro server, a real render, a probe that
+  only `darwin` has — and the rule that keeps it honest is that the condition must **begin with
+  `process.env` or `process.platform` on the same line**. A `describe.skipIf(SKIPPED)` reads as an
+  unconditional skip to everyone but the author of the constant, and the gate cannot tell the two
+  apart; an inline `process.env.X === "1"` says what is being waited for and where to set it. There
+  is no `.skipIf` that is not gated on one of those two, and the five in the tree are
+  `preflight.test.ts`, `chrome.test.ts`, `workspace.test.ts`, `workers/render.test.ts` and
+  `tts-client/src/client.test.ts`. *Enforcement: `AC-2c`'s second grep, in the same CI step.*
 - **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
   `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the
   file-level `# ruff: noqa` and `# flake8: noqa` — no `# type: ignore` and no `# pyright: ignore`,
@@ -157,14 +166,29 @@ workspace-wide change.
 
 | Path | What it is | What checks it |
 |---|---|---|
-| `scripts/` | The bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`), and `e2e/render.mjs` with its Linux wrapper `e2e/linux.mjs` — a **proof** rather than a gate, deliberately outside `pnpm verify` for the reason `e2e/render.mjs`'s docblock gives. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
-| `.github/workflows/` | CI, the desktop packaging workflow, and `e2e-linux.yml` — `workflow_dispatch` only, because it renders a real video | `actionlint` (`AC-4a`) |
-| `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
+| `scripts/` | The four bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`, `check-no-suppressions.mjs`), and the **seven** end-to-end proofs in `scripts/e2e/` — each a proof rather than a gate, deliberately outside `pnpm verify` for the reason `e2e/render.mjs`'s docblock gives. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
+| `.github/workflows/` | CI, the desktop packaging workflow, and the **proof** workflows — `e2e-linux.yml`, `e2e-runtime.yml`, `e2e-toolchain.yml`, `phase2-proofs.yml` and the seven `daemon-*` files (`daemon-lifecycle`, `daemon-restart`, `daemon-breaker`, `daemon-update`, `daemon-identity`, `daemon-remote`, `daemon-windows`) — every one of them `workflow_dispatch` only, because each renders a real video, assembles a real artefact, drives a real supervisor or binds a real network address. `workflow_dispatch` registers from the **default branch**, so a new proof workflow is dispatchable only once it is on `main`, whatever `--ref` says. Each carries a boolean input for the operating systems it can actually run on, and nothing for the ones it cannot: **seven of the eleven** carry all three (`e2e-runtime`, `e2e-toolchain` and the five three-platform `daemon-*` files), `e2e-linux.yml` carries `linux` alone, `phase2-proofs.yml` carries `linux` and `windows`, `daemon-remote.yml` carries `linux` and `macos`, and `daemon-windows.yml` carries `windows` alone. Every input defaults to `false` except the one that names the workflow's home platform — `linux=true` in ten of them, `windows=true` in `daemon-windows.yml`, which has no Linux leg. An omitted input keeps its default, so a Windows-only iteration is `gh workflow run daemon-lifecycle.yml --ref phase-2 -f linux=false -f windows=true`, and an unselected platform is excluded from the matrix before a runner is allocated, so iterating on one platform never re-pays for the others | `actionlint` (`AC-4a`) |
+| `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `daemon.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
 | `infra/e2e/` | The Debian image `pnpm e2e:render:linux` builds to run that proof on Linux, and its own `Dockerfile.dockerignore`. Not a Compose file, and not reachable from one | The run itself; nothing else builds it |
 | `biome.json`, `ruff.toml` | Lint configuration for both languages | Changing either changes every member's `lint` |
 | `pnpm-workspace.yaml` | Member globs, the version catalog, and the install settings | `pnpm install --frozen-lockfile`; the normative script rule is written in its comments |
 | `packages/config/tsconfig/` | The presets every member extends | Every member's `typecheck` and `build` |
 | `turbo.json`, `lefthook.yml`, `.npmrc`, `pyproject.toml`, `uv.lock` | Task graph, git hooks, install settings, Python workspace | `pnpm verify` |
+
+**The seven end-to-end proofs in `scripts/e2e/`.** Each has a root script and names the batch it
+proves; none runs inside `pnpm verify`, because they render real video, assemble real artefacts,
+drive real supervisors or bind real network addresses. The last column is the workflow that runs the
+same proof on a hosted runner — every one `workflow_dispatch` only.
+
+| Script | Command | What it proves | The `[runner]` half |
+|---|---|---|---|
+| `e2e/render.mjs` | `pnpm e2e:render` | P1-1: one real video through the MCP tools — a real `xplainer setup` first, because batch 6's toolchain gate refuses `still` and `render` without one, then `create → put_source → narrate → still → render` over `mcp --attach`, real Kokoro speech, `ffprobe` on the MP4 and a frame diff against a captions-disabled render | `e2e-linux.yml` (the same render on a Linux VM) |
+| `e2e/linux.mjs` | `pnpm e2e:render:linux` | The Linux half of P1-1: `render.mjs` inside the `infra/e2e` Debian container, against a Kokoro container, both created and destroyed around it | none of its own: `e2e-linux.yml` is the hosted form of the same proof and runs `render.mjs` directly against a service container |
+| `e2e/runtime.mjs` | `pnpm e2e:runtime` | B1: `create → put_source → narrate` driven entirely out of a **relocated** payload 1, with no `node` on `PATH` and no checkout in any ancestor | `e2e-runtime.yml` (3-OS matrix) |
+| `e2e/toolchain.mjs` | `pnpm e2e:toolchain` | B6: `xplainer setup` acquires a browser, records a speech route and materialises the workspace on that same machine — and a picture comes out of `still → render` | `e2e-toolchain.yml` (3-OS matrix) |
+| `e2e/update.mjs` | `pnpm e2e:update` | B5: the update transaction killed at **every** durable transition, its two refusals, and six assertions per rollback — including that the rolled-back daemon renders | `daemon-update.yml` |
+| `e2e/identity.mjs` | `pnpm e2e:identity` | T17: desired / loaded / responding compared against a **real** service manager, which is the only way a switch that was written and never reloaded is visible | `daemon-identity.yml` |
+| `e2e/remote.mjs` | `pnpm e2e:remote` | P2-5: R-SEC-9 on a non-loopback address — five refusals decided *before* the bind, then `401`, `200` and a `403` on a foreign `Host` over real TLS. `docs/daemon.md` §5 | `daemon-remote.yml` |
 
 ## Before editing a member, read that member's `AGENTS.md`
 

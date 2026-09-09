@@ -19,9 +19,23 @@
  *
  * The release version in the same body is *not* compared — "Two releases that serve the same
  * contract must attach cleanly, or every patch release breaks every agent session that outlives
- * them" — but it is read, because it is what makes the remediation a command rather than an
- * instruction: the daemon says which release it is running, and the message names that exact
- * version to install.
+ * them" — but it is read, because it is what makes the remediation a sentence about *this* machine:
+ * the daemon says which release it is running, and the message says so while naming a command that
+ * can actually be run here.
+ *
+ * **The remediation names the stable launcher and the local update, and not npm.** It printed
+ * `npm i -g @xplainer/cli@<version>` until this story, and no machine in this phase can run that:
+ * nothing is published, and the phase-2 install runs the daemon out of a payload staged under the
+ * state directory. What is printed instead is `<state>/bin/xplainer mcp --attach` — the launcher
+ * `daemon install` writes, which is the one name that survives an update and the one the shim and
+ * the daemon share — and `xplainer daemon update`, for the case where it is the *daemon* that is
+ * behind. On a machine with no launcher the message says that, rather than naming a path that is
+ * not there.
+ *
+ * *Note, 2026-09-08:* the npm form returns as the remediation when `@xplainer/cli` is published.
+ * At that point a shim installed globally and a daemon installed from a runtime directory become
+ * two genuinely different installations, and "install the matching release" is again a command a
+ * user can run; until then it names a package that does not exist.
  *
  * **Step two: one session, pumped.** The stdio side is the SDK's `StdioServerTransport` and the
  * daemon side is its `StreamableHTTPClientTransport` over `socket-fetch.ts`, and messages are
@@ -41,7 +55,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage, RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { isContractCompatible, MCP_CONTRACT_VERSION } from "@xplainer/protocol";
+import { installedLauncher } from "../connect/entry.js";
 import { CONTRACT_SKEW_EXIT_CODE, DAEMON_UNHEALTHY_EXIT_CODE } from "../daemon/exit-codes.js";
+import { resolveStateDir } from "../daemon/state-dir.js";
+import { launcherPath } from "../install/launcher.js";
 import { createSocketFetch } from "./socket-fetch.js";
 
 /**
@@ -75,19 +92,48 @@ export class DaemonUnreachableError extends Error {
   }
 }
 
+/**
+ * The command that fixes a skew on **this** machine, in words.
+ *
+ * Two cases, and they are told apart by whether an install has written a launcher, because that is
+ * what decides whether there is a shim to point at. With one, the shim and the daemon come out of
+ * the same staged runtime and the fix is to run *that* shim rather than whichever copy the agent
+ * was configured with. Without one, no path can be named honestly, so the message says which
+ * command would create it instead of printing something that is not there.
+ */
+export function describeSkewRemediation(stateDir: string): string {
+  const launcher = installedLauncher(stateDir);
+  if (launcher !== null) {
+    return (
+      "This machine's daemon and its shim come out of the same installed runtime, so run the " +
+      "shim that install wrote:\n\n" +
+      `  ${launcher} mcp --attach\n\n` +
+      "That path is rewritten by every update, which is what makes it the one name an agent " +
+      "configuration may hold; `xplainer connect claude` writes it. If it is the daemon that is " +
+      "behind, move it instead, with `xplainer daemon update`."
+    );
+  }
+  return (
+    "No launcher has been written on this machine — `xplainer daemon install` creates " +
+    `${launcherPath(stateDir)}, the one name a shim and a daemon can share across an update — so ` +
+    "this session is being started from a copy of the CLI that is not the daemon's own. Install " +
+    "the daemon, then `xplainer connect claude` to rewrite the entry; or start the session from " +
+    "the same build the daemon is running."
+  );
+}
+
 /** The pair is incompatible, and this is ADR 0025's exit `8`. */
 export class ContractSkewError extends Error {
   readonly exitCode: number = CONTRACT_SKEW_EXIT_CODE;
   readonly daemonContractVersion: string;
   readonly shimContractVersion: string;
 
-  constructor(daemon: DaemonHealth, shim: string) {
+  constructor(daemon: DaemonHealth, shim: string, stateDir: string = resolveStateDir()) {
     super(
       `xplainer mcp --attach: this daemon speaks tool contract ${daemon.contractVersion} and ` +
         `this shim speaks ${shim}, and the two are not compatible, so nothing was proxied ` +
-        `(exit ${CONTRACT_SKEW_EXIT_CODE}). The daemon is running release ${daemon.version}; ` +
-        "install the matching shim and start the session again:\n\n" +
-        `  npm i -g @xplainer/cli@${daemon.version}\n`,
+        `(exit ${CONTRACT_SKEW_EXIT_CODE}). The daemon is running release ${daemon.version}. ` +
+        `${describeSkewRemediation(stateDir)}\n`,
     );
     this.name = "ContractSkewError";
     this.daemonContractVersion = daemon.contractVersion;
@@ -146,9 +192,10 @@ export async function probeDaemonHealth(socketPath: string): Promise<DaemonHealt
 export function assertContractCompatible(
   health: DaemonHealth,
   shim: string = MCP_CONTRACT_VERSION,
+  stateDir: string = resolveStateDir(),
 ): void {
   if (!isContractCompatible(health.contractVersion, shim)) {
-    throw new ContractSkewError(health, shim);
+    throw new ContractSkewError(health, shim, stateDir);
   }
 }
 

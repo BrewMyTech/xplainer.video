@@ -1,8 +1,8 @@
 # Architecture
 
-The document to read first. It describes the workspace as it is today — a scaffold, with the
-render, TTS and job machinery still ahead of it — and says explicitly which parts of that
-description a command can prove.
+The document to read first. It describes the workspace as it is today — a local runtime that
+renders, narrates, queues jobs and installs itself as a supervised per-user daemon — and says
+explicitly which parts of that description a command can prove.
 
 ## 1. What this is, and what checks it
 
@@ -20,7 +20,7 @@ Four documents, four jobs:
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Facts about the layout: who the members are, what depends on what, how a change propagates, what the conventions are and which of them are enforced. |
 | [`adr/README.md`](adr/README.md) | The index of decision records. One record per decision, MADR format. **Accepted records are immutable** — add a dated note or supersede with a new number. |
-| [`ROADMAP.md`](ROADMAP.md) | What is built and what is not, phase by phase, with the spikes (`P1-S1`, `P1-S3`, `P2-S4`, `P2-S5`) that still have to settle open mechanisms. |
+| [`ROADMAP.md`](ROADMAP.md) | What is built and what is not, phase by phase, with the spikes (`P1-S1`, `P1-S3`, `P2-S4`, `P2-S5`, `P2-S6`) that settle open mechanisms and what each of them reported. |
 | [`acceptance-criteria.md`](acceptance-criteria.md) | The numbered criteria — `AC-2c`, `AC-7b`, `AC-14d` — that comments, test names and CI step names in this repository cite by id. |
 
 `AGENTS.md` at the root and in each member is the fifth: invariants and recipes for editing that
@@ -42,8 +42,9 @@ nothing more. The runtime lives in the CLI, not in Electron
 supervised, always-running, per-user daemon rather than a foreground command
 ([ADR 0020](adr/0020-always-running-local-daemon.md)). Of that shape, the TCP listener — guarded,
 token-authenticated, draining on `SIGTERM` — `/healthz`, `/mcp`, the job runner, the IPC socket and
-both modes of `xplainer mcp` and both verbs of `xplainer connect` exist today; the supervisor lands
-at roadmap phase 2.
+both modes of `xplainer mcp` and both verbs of `xplainer connect` exist today, and so does the
+supervisor: `xplainer daemon install` registers the daemon with systemd, launchd or Task Scheduler,
+and [`daemon.md`](daemon.md) is the recipe for a host that has none.
 
 ## 3. Members
 
@@ -100,6 +101,7 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 | `apps/cli` | `@xplainer/render-core` | dependencies |
 | `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
+| `apps/desktop` | `@xplainer/protocol` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/tts-client` | dependencies |
@@ -133,12 +135,14 @@ An equality check that reads as a permission list is how a forbidden edge gets d
 legitimacy, so the two are stated apart on purpose.
 
 **Direction of travel.** `packages/protocol` is the sink — it depends on nothing in the workspace,
-and four members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
+and five members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
 `tts-client`: the tool registration, the contract, the workspace and scaffold, and the speech client
 its narration worker drives. `apps/desktop`
-depends only on `apps/cli`, and takes it as an **injected** production dependency
+depends on `apps/cli` and on `protocol`, and takes the first as an **injected** production dependency
 (`injectWorkspacePackages: true`, `dedupeInjectedDeps: false`) so that electron-builder packs a real
-directory rather than a symlink.
+directory rather than a symlink. The second is there for one reason: the desktop's discovery has to
+decide whether a daemon's advertised `contract_version` is one it can speak, and both halves of that
+comparison must come from the package that owns the contract rather than from a copy in a client.
 
 ## 5. The contract layer
 
@@ -182,8 +186,17 @@ half (`lint` → `lint:py`, and so on) and a single Turbo task exercises both la
 ## 6. The runtime
 
 **What exists today.** `apps/cli/src/server.ts` builds one Hono application — `GET /healthz`
-returning `{status, version, contract_version}`, `POST /mcp` speaking Streamable HTTP, and
+returning `{status, version, contract_version, run_id, runtime_digest}`, `POST /mcp` speaking
+Streamable HTTP, and
 `GET`/`DELETE /mcp` answering `405` — and `startServer()` binds it on `127.0.0.1:8787` by default.
+Beside them is the client surface ADR 0016 promises for GUI clients, mounted from `apps/cli/src/api/`
+when the server is given a library seam: `GET /api/videos` and `/api/videos/:slug` for the library
+and its artefacts, `GET`/`HEAD /api/videos/:slug/artefacts/:name` for the bytes with `Range`
+support, `POST /api/videos/:slug/{narrate,still,render}` answering `202` with a `job_id`,
+`GET /api/jobs/:id` answering exactly what `explainer_job` answers, and `GET /api/jobs/:id/events`
+streaming that same document as `text/event-stream`. Every one of them is behind the same guard on
+TCP and unguarded over the IPC socket, and **no CORS middleware is mounted, for any value**
+(R-SEC-7). `POST /api/daemon/drain` remains the socket-only control route.
 The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
 scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
 runner, which `explainer_job` then reports on
@@ -194,26 +207,55 @@ into an agent's own configuration — through that agent's own writer, `claude m
 `~/.codex/config.toml`'s `[mcp_servers.xplainer]` table, edited in place — after reading
 `daemon.json` to confirm a daemon has bound on this machine at all. Both verbs are re-runnable:
 `claude mcp add` refuses a name its scope already holds, so that refusal is answered with
-`claude mcp remove` and a second add. `setup` and `daemon` are registered stub commands that name
-themselves on stderr and exit `2`.
+`claude mcp remove` and a second add. What they name is the **stable launcher**
+`<state>/bin/xplainer` where an install has written one, then the binary on `PATH`, and only then
+`npx`: a runtime-directory install puts nothing on `PATH`, and a version-scoped runtime directory is
+the one path no agent configuration may hold. `--spawn` writes the other entry — `xplainer mcp`
+without `--attach`, the tools inside the agent's own session — and it is the only form that
+**bypasses** the daemon check, because it is the remediation ADR 0020 prints when there is no daemon
+to check for. `xplainer setup` acquires the toolchain — a browser, a speech route and, with
+`--workspace`, the Remotion workspace resolved from the template's pins by `npm ci` — and records
+what arrived in `toolchain.json` (a checked schema in `packages/protocol`); `xplainer runtime
+build` assembles the relocatable payloads that `install` and `update` then move around; and the
+`daemon` group is nine implemented verbs — `install`, `uninstall`, `update`, `recover`, `start`,
+`stop`, `restart`, `status`, `logs`. `daemon install`'s **read-only preflight** runs before any of
+them writes: the setup marker and whether its recorded paths still exist, the supervisor and
+whether *this user* has a manager, the resolved program's executability, the port, the linger
+marker, a stale `launchctl` disable record and the token file, all without writing anything,
+including the linger marker whose creation belongs to the writing phase.
 `serve` now acquires exclusive ownership of the state directory, reconciles the jobs a previous run
 left behind, and builds the job runner **before** it binds (`apps/cli/src/daemon/`), so `owner.lock`,
 `daemon.json`, `runtime.json` and `jobs/` are real. It also mints a `0600` bearer token in its
 `0700` state directory and puts the **guard middleware** in front of every TCP route — `Host`
 allowlist built from the bound port, `Origin` validation, and the token on `/healthz` as well as
 `/mcp` — handles `SIGTERM` by draining, removing `runtime.json` and exiting `0`, and announces
-readiness with one line of JSON on stdout. `xplainer status` reads the two state files and confirms
-them with an authenticated `GET /healthz`. The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
+readiness with one line of JSON on stdout. It takes its three settings — `--state-dir`,
+`--token-file` and `--socket` — from flags above their environment variables, because Task
+Scheduler's `<Exec>` action has no per-action environment map, and writes all three into
+`daemon.json` at readiness. `xplainer status` reads the two state files and confirms them with an
+authenticated `GET /healthz`, in prose or, with `--json`, as one object carrying a stable condition
+code from a closed set (`ready`, `stalled`, `unauthorized`, `token_absent`, `unhealthy`,
+`unreachable`, `absent`). The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
 `<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
 files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
 tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
-rather than failing inside `spawn`. There is still no supervisor.
-**Much of the rest of this section is phase 1 or phase 2**, and each paragraph says which.
+rather than failing inside `spawn`.
+**There is now a supervisor**, on all three platforms, and the paragraph below is what it is;
+`docs/daemon.md` is the file for a host that has none.
 
-**Process model (phase 2, [ADR 0020](adr/0020-always-running-local-daemon.md)).** `xplainer serve`
-becomes an installed, supervised, per-user daemon — systemd user unit, LaunchAgent, or Windows
-Scheduled Task — installed by `xplainer daemon {install,uninstall,start,stop,restart,status,logs}`,
-running as the user and never as root, and never needing an administrator at install.
+**Process model ([ADR 0020](adr/0020-always-running-local-daemon.md), built).** `xplainer serve` is
+an installed, supervised, per-user daemon — a `systemd --user` unit at
+`~/.config/systemd/user/xplainer.service`, a LaunchAgent at
+`~/Library/LaunchAgents/video.xplainer.daemon.plist`, or the per-user Scheduled Task
+`\xplainer\<user>-daemon` — registered by `xplainer daemon install`, running as the user and never
+as root, and never needing an administrator at install. `install` also writes the **stable
+launcher** `<state>/bin/xplainer`, the one name a consumer may hold across an update, and every
+refusal is taken by the preflight before anything is written. A machine with no user-scope
+supervisor gets exit `6` and the remediation that needs none (`xplainer connect claude --spawn`);
+**[`docs/daemon.md`](daemon.md)** carries the self-supervision recipes for one that wants a daemon
+anyway — Docker `--restart unless-stopped`, OpenRC `supervise-daemon`, the readiness wait each uses
+instead of sleeping, and the two caveats that are not about init at all (Alpine is blocked on
+rendering; WSL2's distribution lifetime belongs to Windows).
 
 **The two listeners.** One application, two bindings: the TCP loopback
 listener, and a unix domain socket (named pipe on Windows) inside a `0700` directory. `xplainer
@@ -225,13 +267,18 @@ bearer token — because it is the surface a web page can reach. That middleware
 `createServer()` takes it as a parameter rather than a mode, so the IPC listener can carry none and
 `services/media-service` can carry its own.
 
-**Two state files, opposite lifetimes (both written today; `install` owns most of `daemon.json`
-from phase 2).** `daemon.json` is **durable** and must survive reboot; it records the port, socket
-path, token file path, supervisor kind and artefact path, resolved program and interpreter,
-lingering, log sink and installing version. `serve` writes only the fields it knows — the port it
-bound, the contract version, the token file's path, the flush verdict and the circuit breaker's
-history — and preserves every key it does not, because a `serve` that rewrote the file from its own
-narrow view would silently uninstall the daemon it is part of. `runtime.json` is **ephemeral**,
+**Two state files, opposite lifetimes (both written today, and `install` fills its own half of
+`daemon.json`).** `daemon.json` is **durable** and must survive reboot, and its fields
+are typed in `apps/cli/src/daemon/daemon-state.ts`: `port`, `contract_version`, `token_file`,
+`socket_path`, `directory_flush`, `recentStarts[]` and `stalled`, plus the installer's
+`supervisor_kind`, `supervisor_artefact`, `runtime_dir`, `launch_spec`, `program_source`,
+`linger_enabled_by_us`, `log_sink` and `installed_version`. **Two writers, split by field:** `serve`
+owns what a run establishes — the port and socket it bound, the contract version it speaks, the
+token file it read, the flush verdict and the breaker's history — and `daemon install` owns what an
+installation establishes. Every write is a read-modify-write that preserves keys it does not name,
+which is what makes the split safe in both directions: a `serve` that rewrote the file from its own
+narrow view would silently uninstall the daemon it is part of, and an `install` that rewrote it
+would throw away the crash history the breaker counts. `runtime.json` is **ephemeral**,
 written by `serve` at bind, removed on clean shutdown, and never trusted without a liveness check.
 The port is decided once, at install, and the recorded port is a contract — `connect`, `status`,
 `logs` and the desktop client all read it rather than guessing.
@@ -243,16 +290,16 @@ owns it, never invented at the call site.
 |---:|---|---|---|
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
-| `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built** |
-| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`); `daemon install` phase 2 |
+| `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built**. Every registered command is now implemented, so the code survives in one place: `install/program.ts`'s two deferred **program sources** — `sea-binary`, which is phase-4 packaging, and `package-manager`, which needs a published `@xplainer/cli`. Each refuses with the route that does work today |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`; `xplainer token rotate` with no token file to rotate; the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed; and `daemon update`'s two pre-drain refusals — template pins that differ, and a workspace that does not satisfy **both** the incoming runtime and the rollback target — each taken before anything is staged or drained) |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
-| `5` | Administrator privileges required | ADR 0020 | phase 2 |
-| `6` | No supported supervisor | ADR 0020 | phase 2 |
-| `7` | Port or label conflict | ADR 0020 | phase 2 |
+| `5` | Administrator privileges required: the supervisor is here and refuses *this* user the right the daemon needs — Windows `SCHED_S_BATCH_LOGON_PROBLEM`, or `--at-boot` (`ADMIN_REQUIRED_EXIT_CODE`) | ADR 0020 | **built** in `daemon install`'s writing phase, where both of its conditions live because both can only be established by *attempting* the thing: lingering is asked for first and checked by `test -e /var/lib/systemd/linger/$USER` rather than by `loginctl`'s status, and the missing batch-logon right is read off `LastTaskResult` after the health check has already failed, named as a candidate and never as a diagnosis |
+| `6` | No supported supervisor on this machine, so there is nothing to install into — the remediation is the one that needs none, `xplainer connect claude --spawn` (`NO_SUPERVISOR_EXIT_CODE`) | ADR 0020 | **built** in the install preflight, in two conditions: no user service manager (`/run/systemd/system` absent, or `systemctl --user` reaching none), and a Task Scheduler that refuses a query. `--spawn` is built, so the remediation is runnable — except in the one case where it is not the leading one: systemd booted the machine and the manager is absent *because* `/var/lib/systemd/linger/$USER` is, where the message leads with `sudo loginctl enable-linger` |
+| `7` | **Install-time preflight**: the port `install` is about to record is held, or a unit, label or task of that name is somebody else's. Nothing is registered and nothing is recorded — as against `10`, which is the same symptom found at `serve` time (`INSTALL_CONFLICT_EXIT_CODE`) | ADR 0020 | **built** in the install preflight for the port, which is bound and released rather than assumed, and named in words — the holding pid from `lsof` or `ss` where one answers |
 | `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
-| `10` | Another process holds this machine's runtime: the recorded port is taken, or the state directory is owned | ADR 0020, ADR 0024 | **built** |
+| `10` | **`serve`-time ownership**: another process holds this machine's runtime — the state directory is owned, or the recorded port is taken — by something that is running now (`OWNERSHIP_REFUSED_EXIT_CODE`) | ADR 0020, ADR 0024 | **built** |
 | `11` | State file unreadable | ADR 0020 | **built** |
-| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built** |
+| `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built**, in `serve` and in `xplainer token rotate` |
 | `70` | Internal error | ADR 0020 | **built** |
 
 **Job lifecycle (phase 1, [ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)).** Five
@@ -286,9 +333,15 @@ gives in-flight jobs at most **20 s** to checkpoint, hard-stops Chrome and ffmpe
 marks anything still `running` *or* `queued` as `error` with `error_code: "daemon_shutdown"`,
 removes `runtime.json` and the socket, and exits `0` — the portable "do not restart" signal on all
 three supervisors. Twenty seconds plus teardown fits inside the 25-second budget.
-> *Proposed mechanism, to be confirmed by spikes P2-S4 and P2-S5:* how each supervisor is persuaded
-> to allow a daemon-controlled drain — systemd's `KillMode` and `TimeoutStopSec` are P2-S4's, the
-> per-platform restart adapters are P2-S5's. The drain's behaviour and its 20-second cap are decided.
+*Settled by spike P2-S5 on 2026-09-08 ([ADR 0024](adr/0024-durable-jobs-and-boot-reconciliation.md)
+§Note, 2026-09-08: P2-S5 settled).* One application-level drain, reached over the IPC listener, and
+three adapters that differ only in how the supervisor is asked to start again: Linux needs
+`KillMode=mixed` (the default signals Chrome and ffmpeg directly, measured) and answers exit `0` with
+`Restart=on-failure`; macOS's `launchctl kickstart -k` is **graceful** — it sends `SIGTERM`, waits for
+the drain and blocks until the process is gone — so it is the counterpart of `systemctl --user
+restart` rather than a kill; Windows takes the same route over the named pipe. `TimeoutStopSec=45s`
+and the plist's `ExitTimeOut=45` supply escalation, not the drain, which is why both exceed the
+20-second cap rather than implement it.
 
 **Upgrade boundary ([ADR 0025](adr/0025-daemon-updates-and-readiness.md)).** The package manager
 updates the daemon; the daemon never self-updates. The sequence is **stage → drain → switch →
@@ -310,6 +363,20 @@ side by side in that one body. `MCP_CONTRACT_VERSION` lives in `@xplainer/protoc
 exports `isContractCompatible(daemon, shim)`; the predicate is **major-compatible**, so an additive
 change attaches and only a removal refuses.
 
+**Identity, and why the release number is not it.** The same body carries `run_id` and
+`runtime_digest`, and they answer a different question from either version: *is the daemon that is
+answering the daemon this machine meant to install?* `run_id` is the ownership acquisition's
+`boot_nonce`, so two runs of the same configuration differ; `runtime_digest` is an immutable startup
+snapshot taken after ownership and before the binds, over the effective argv, the resolved settings,
+the working directory and the staged payload's content hash — never from `daemon.json`, because a
+value read from the record would agree with the record by construction. `daemon status` compares
+three rows: **desired** (`daemon.json`'s launch spec), **loaded** (`systemctl --user show -p ExecStart
+-p Environment -p WorkingDirectory --value` on Linux, `Get-ScheduledTask` for the registered task on
+Windows — and **nothing on macOS**, where `launchctl print`'s manual disclaims its own structure) and
+**responding** (these two fields). It names which detector found a difference, because on macOS the
+identity one is the only one there is. `apps/cli/src/install/supervisors/identity.ts` is the whole of
+it; `pnpm e2e:identity` is how it is proved against a real service manager.
+
 **Readiness ([ADR 0025](adr/0025-daemon-updates-and-readiness.md), built).** The daemon announces
 readiness exactly once — after ownership is acquired, reconciliation has finished and both listeners
 are bound — and parents wait for the announcement rather than sleeping. The primary mechanism on
@@ -321,9 +388,12 @@ goes to stderr, so it must never move behind a `--quiet` flag or a log-level fil
 spawned the daemon itself reads it from the pipe; a post-install hook restarting a *supervised* daemon
 cannot, because that stdout goes to the supervisor's log sink, so it waits on a supervisor-native
 report or an authenticated, bounded `GET /healthz` poll.
-> *Proposed mechanism, to be confirmed by spike P2-S4:* systemd `Type=notify`. `$NOTIFY_SOCKET` is
-> an `AF_UNIX` datagram socket and `node:dgram` is UDP-only, so `sd_notify` costs a dependency or a
-> native addon. ADR 0020's `Type=exec` is **not** amended until the spike settles.
+*Settled by spike P2-S4 on 2026-09-08 ([ADR 0025](adr/0025-daemon-updates-and-readiness.md) §Note,
+2026-09-08: P2-S4 settled).* `Type=notify` is **rejected** — `$NOTIFY_SOCKET` is an `AF_UNIX`
+datagram socket and `node:dgram` is UDP-only, so it would cost a dependency or a native addon — and
+ADR 0020's `Type=exec` ships unamended, with no `NotifyAccess=` beside it. The readiness wait is the
+caller's: the stdout line for a parent that spawned the daemon, and an authenticated, bounded
+`GET /healthz` poll for anything that did not. `docs/daemon.md` §6.1 is both waits as a recipe.
 
 ## 7. The public surface, and how it is pinned
 

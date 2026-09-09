@@ -69,6 +69,7 @@ The nine are `apps/cli`, `apps/desktop`, `packages/config`, `packages/mcp-server
 - **2b** `pnpm turbo run test --dry=json` lists a `test` task for all **twelve** members.
   - *Amended 2026-09-06 (ADR 0023):* **nine**.
 - **2c** `grep -rnE '\.(skip|only)\(|\bTODO\b|\bFIXME\b' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' apps packages services` returns no hits.
+  - *Amended 2026-09-08 (phase 2):* a second grep, in the same CI step, for the form the first one never matched. `.skipIf(` is **allowed** — it is how a live-server suite, a real render and a macOS-only probe stay out of `pnpm verify` on a machine that cannot run them — but only with the condition at the call site: `grep -rnE '\.skipIf\(' <the same paths> | grep -vE '\.skipIf\(\(?process\.(env|platform)\b'` returns no hits. A `describe.skipIf(SKIPPED)` reads as an unconditional skip to every reader but the author of the constant, and no grep can tell those apart; an inline `process.env.X === "1"` names the variable and where to set it. Added because the original pattern banned `.skip(` and `.only(` and matched neither `.skipIf(` nor anything else about it, so the exception the repository relied on was documented nowhere.
 - **2d** Each member's test asserts behaviour, not existence.
 - **2e** **The dual-language member runs both halves.** `pnpm --filter @xplainer/protocol test` output contains both a vitest summary and a pytest summary, and the same holds for `lint` and `typecheck`. `packages/protocol` is the only member with TypeScript and Python in one package, so it is the only place where a task can pass having exercised half of what it names.
 - **2f** **Every task reaches every member it should.** `pnpm turbo run lint --dry=json` and `pnpm turbo run typecheck --dry=json` each list all **twelve** members, mirroring 2b's assertion for `test`. Turbo skips an undeclared script silently, so a member that never declares `lint` produces a green run over unlinted code; only counting the tasks catches it.
@@ -227,8 +228,25 @@ reaps it; `4` — installed but not healthy — is the exit code that answer nee
 stub: one asks "is the daemon up, and where", the other asks "is it installed, and how". The
 `toEqual` list is amended to the six names for the same reason as above.
 
+*Amended 2026-09-08 (phase 2, [ADR 0027](adr/0027-relocatable-runtime-artefact-and-the-supervisor-switch.md)):*
+`--help` lists two more top-level commands, `runtime` and `token`, so the `toEqual` value is the
+eight names `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`, in that
+order. Both are surfaces phase 2 adds rather than new spellings of an old one. **`runtime`** builds
+and verifies the relocatable artefact this phase ships *instead of* the standalone binary P2-6 asks
+for — `build`, `verify` — and **`token`** carries the credential's one operation, `rotate`, which
+[ADR 0020](adr/0020-always-running-local-daemon.md) §Security R-SEC-8 names and beside which a
+second verb would be a second way to touch the credential. Two group listings change value with
+them: `daemon --help` is now nine verbs — `install`, `uninstall`, **`update`**, **`recover`**,
+`start`, `stop`, `restart`, `status`, `logs`, where `update` is
+[ADR 0025](adr/0025-daemon-updates-and-readiness.md)'s stage-drain-switch-restart transaction and
+`recover` is its **commanded** half, because recovery from an interrupted update is a decision a
+user takes rather than something the daemon does to itself — and the two new groups are pinned the
+same way, `toEqual` over `["build", "verify"]` and over `["rotate"]`. The shape is unchanged for the
+reason the first amendment gives: the value was never the number, it is that the surface is **fixed
+and asserted**.
+
 - **14a** `pnpm --filter @xplainer/cli build && node apps/cli/dist/bin.js --version` prints the version from `apps/cli/package.json`.
-- **14b** `node apps/cli/dist/bin.js --help` lists exactly `serve`, `mcp`, `setup` and `connect` (as amended above, plus `status` and `daemon`). **This only holds because commander's implicit help subcommand is disabled**, which is added automatically as soon as a program has subcommands; left on, the listing would also contain `help [command]` and the assertion could never pass.
+- **14b** `node apps/cli/dist/bin.js --help` lists exactly `serve`, `mcp`, `setup` and `connect` (as amended above, plus `status`, `daemon`, `runtime` and `token`). **This only holds because commander's implicit help subcommand is disabled**, which is added automatically as soon as a program has subcommands; left on, the listing would also contain `help [command]` and the assertion could never pass.
 - **14c** `node apps/cli/dist/bin.js serve --port 8787` then `curl -sf localhost:8787/healthz` returns 200.
   - *Amended 2026-09-06 (ADR 0020 §Security R-SEC-4):* that curl now returns **401**, and the criterion is met by
     `curl -sf -H "Authorization: Bearer $(cat "$XPLAINER_STATE_DIR/token")" localhost:8787/healthz`. The bearer token
@@ -243,6 +261,13 @@ stub: one asks "is the daemon up, and where", the other asks "is it installed, a
 - **14e** `apps/desktop/package.json` lists `@xplainer/cli` in `dependencies`.
 - **14f** **`apps/desktop` contains no render or TTS code**, asserted by grep rather than by reading: `grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' apps/desktop/src apps/desktop/*.ts apps/desktop/package.json` returns no hits. **It runs as its own CI step, beside AC-2c's and on the same pristine tree**, for AC-15e's reason: a criterion that only a human executes is advisory in everything but name.
 - **14g** `apps/cli/packaging/README.md` exists and states per-OS standalone-binary steps for the Node single-executable route, marked explicitly as not run in CI.
+  - *Note 2026-09-08 (phase 2, P2-6):* the recipe is still there and still runs nowhere, and phase 2
+    did **not** turn it into a built artefact — standalone binaries are deferred to phase 4 on
+    measurement, and this phase ships a **relocatable runtime artefact carrying its own
+    interpreter** instead, which is recorded as a substitution in [`ROADMAP.md`](ROADMAP.md)'s P2-6 rather than as
+    a pass. The file is now also the **record** half of spike P2-S6 (the measurements, with their
+    dates); `apps/cli/spikes/p2-s6-packaging.mjs` is the live half, and it exits `0`. 14g itself is
+    unchanged.
 
 ---
 
