@@ -35,7 +35,7 @@ Each module is small and named for the one thing it owns, and each has a colocat
 |---|---|
 | `state-dir.ts` | Where the state directory is per platform, `XPLAINER_STATE_DIR`, and the names inside it |
 | `durable-write.ts` | temp → `fsync` → `rename` → `fsync` the directory; the flush that reports instead of throwing |
-| `worker-identity.ts` | The identity triple (pid, start token, machine boot id) and the four verdicts over it |
+| `worker-identity.ts` | The identity triple (pid, start token, machine boot id), the probe each platform needs for it — `/proc/<pid>/stat` on Linux, `ps -o lstart=` on macOS, one CIM query on Windows — and the four verdicts over it |
 | `lock.ts` | `owner.lock`: `O_EXCL` create, staleness by the tuple, takeover confirmed by read-back |
 | `job-store.ts` | One JSON file per job, the bounded log tail, corrupt quarantine, newer-format detection |
 | `reconciler.ts` | Boot reconciliation: terminal records, worker teardown, `workers_uncertain`, output quarantine |
@@ -54,7 +54,7 @@ Each module is small and named for the one thing it owns, and each has a colocat
 | `ready.ts` | The one JSON line on stdout, and the wait a parent does instead of sleeping |
 | `shutdown.ts` | `SIGTERM`/`SIGINT` → drain → close the listeners → remove `runtime.json` → exit `0` |
 | `exit-codes.ts` | The start-up codes, quoting the table in `docs/ARCHITECTURE.md` §6 |
-| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness, the source hook, and `platform.ts`: the facts a suite has to read differently on Windows |
+| `testing/` | The fake worker, the child entries the tests spawn, the spawn harness, the source hook, `identity-cost.ts` (what one identity probe costs on the machine it runs on — a measurement, never a gate), and `platform.ts`: the facts a suite has to read differently on Windows |
 
 The state directory — `${XDG_STATE_HOME:-~/.local/state}/xplainer/` on Linux,
 `~/Library/Application Support/video.xplainer/` on macOS, `%LOCALAPPDATA%\xplainer\state\` on
@@ -581,8 +581,23 @@ Then the root procedure: `pnpm verify`.
 - **A recorded pid is never an identity.** Only a positive tuple match licenses a kill. A live pid
   whose token cannot be read is `uncertain`: it is left alone, the record carries
   `workers_uncertain: true`, and the job's output directory is quarantined so a retry writes
-  somewhere fresh. Reading the token is a `ps` spawn at about 4.5 ms, so it is read **once per
-  acquisition and once per worker at reconciliation**, and memoised for this process.
+  somewhere fresh. Reading the token is a `ps` spawn at about 4.5 ms on macOS, so it is read **once
+  per acquisition and once per worker at reconciliation**, and memoised for this process.
+- **All three platforms produce all three members of the tuple, and Windows only since 2026-09-09.**
+  Before that the start-token probe was `ps` on everything that is not Linux — and Windows has no
+  `ps` — while the boot id answered `null` outside Linux and macOS, so `selfIdentity()` there was
+  `(pid, null, null)`: every live pid was `uncertain`, reconciliation could never take a positive
+  kill decision, and `startIsProvablyGone` was `false` for any recorded pid the machine had since
+  reused. It surfaced as a T14 flake — run `34319237168` green, run `34333162332` red, same code,
+  according to whether five recorded pids had been handed out again. Windows now reads
+  `Win32_Process.CreationDate` and `Win32_OperatingSystem.LastBootUpTime` in **one**
+  `powershell.exe`, each as an exact `ToFileTimeUtc()` integer rather than a formatted date, and
+  `selfIdentity()` takes both halves out of that single spawn. Never `wmic`: it is removed from
+  current Windows images, so a probe built on it would answer `null` — "uncertain" — on exactly the
+  machines this is for. That spawn is far more expensive than the macOS `ps`, which is why
+  `classifyWorker` reaches it only for a recorded pid that is still alive; `daemon-windows.yml`'s
+  `identity` job measures it and runs the four suites that are about the tuple on the platform whose
+  answer they never had.
 - **Every worker runs in its own process group** (`detached: true`), and teardown signals the group
   (`process.kill(-pgid, …)`), because a render's expensive half is the browser and the encoder it
   started, not the pid the daemon holds. **Windows has no process group, so the worker goes in a

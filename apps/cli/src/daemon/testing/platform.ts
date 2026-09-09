@@ -18,7 +18,14 @@
  *   codes `<tmp>/x.sock` gets `listen EACCES` on Windows, which is what `windows-latest` answered
  *   for eleven cases across `server.test.ts` and `commands/serve.test.ts` on 2026-09-08.
  *
- * {@link lanAddress} is the third, and it is not a Windows question: R-SEC-9's whole subject is a
+ * - **What a start token that is not this machine's looks like.** Half of ADR 0024's identity rule
+ *   is a live pid whose token *differs*, and a suite arranges that by recording a token no process
+ *   here can have. The token's **shape** is per platform — a formatted date on macOS, clock ticks
+ *   on Linux, a file time on Windows — and a suite that hard-codes one platform's spelling is
+ *   asserting the right verdict from the wrong evidence everywhere else. {@link foreignStartToken}
+ *   is the shape this machine would really have produced, with a value it never will.
+ *
+ * {@link lanAddress} is the fourth, and it is not a Windows question: R-SEC-9's whole subject is a
  * bind that is **not** loopback, and no platform lets a test invent one — `127.0.0.2` is bindable
  * on Linux and answers `EADDRNOTAVAIL` on macOS, and a loopback alias needs root everywhere. So the
  * suite uses an address this machine really has.
@@ -169,6 +176,30 @@ export function endpointGone(socketPath: string): Promise<boolean> {
       resolve(true);
     });
   });
+}
+
+/**
+ * A start token in this platform's own spelling that no process on this machine can have.
+ *
+ * The verdict a suite is arranging with it is `stranger` — a live pid whose recorded token differs,
+ * which is ADR 0024's scenario `[D]` and the one case certain enough to leave a live process alone
+ * *without* setting `workers_uncertain`. Every platform's classifier compares the two tokens as
+ * strings, so any value that differs produces that verdict; what this function adds is that the
+ * value differs **for the right reason**. `Thu Jan  1 00:00:00 1970` is a `ps -o lstart=` date, and
+ * on Windows — where a token is a file time and became one only on 2026-09-09 — a case written with
+ * it would pass while proving nothing about the token this machine actually reads.
+ *
+ * The values are all the epoch as each platform counts it: tick zero on Linux, the Unix epoch on
+ * macOS, and file time `1` on Windows, which is 1601-01-01 plus 100 ns. No process has any of them.
+ */
+export function foreignStartToken(): string {
+  if (process.platform === "linux") {
+    return "starttime=0";
+  }
+  if (process.platform === "win32") {
+    return "CreationDate=1";
+  }
+  return "Thu Jan  1 00:00:00 1970";
 }
 
 /** Whether an `icacls` principal is the account this process is running as. */

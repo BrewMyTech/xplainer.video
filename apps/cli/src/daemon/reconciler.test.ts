@@ -6,6 +6,13 @@
  * is left alone *with certainty*, while a live pid whose token **cannot be read** is the uncertain
  * case that sets `workers_uncertain` and quarantines the output directory. Both branches are
  * asserted, because the record requires both and they differ only in what could be proven.
+ *
+ * Every case here runs on all three platforms and none of them is conditional, which was not true
+ * before 2026-09-09: `worker-identity.ts` read no start token on Windows, so a live pid there was
+ * always `uncertain` and the two cases below that turn on a token — the kill and the stranger —
+ * could not have passed. They were never run there to find out. `daemon-windows.yml` now runs this
+ * file on `windows-latest`, and the token a case records as "somebody else's" comes from
+ * {@link foreignStartToken} so that it is the shape this machine really produces.
  */
 
 import { spawn } from "node:child_process";
@@ -16,9 +23,20 @@ import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJobStore } from "./job-store.js";
 import { reconcileJobs } from "./reconciler.js";
+import { foreignStartToken } from "./testing/platform.js";
 import { deadOwner, exitedPid, makeJobRecord } from "./testing/records.js";
 import { untilGone } from "./testing/spawn-child.js";
 import { identify, isAlive, machineBootId, selfIdentity } from "./worker-identity.js";
+
+/**
+ * How long a case that records a real worker's identity is given.
+ *
+ * Vitest's default of 5 s is a macOS number: the identity probe there is a `ps` at about 4.5 ms.
+ * On Windows the same probe is a `powershell.exe` start, so a case that records one worker and then
+ * reconciles it pays two of them in seconds rather than milliseconds, and the default would fail it
+ * for the machine rather than for the code.
+ */
+const PROBE_BUDGET_MS = 30_000;
 
 const scratch: string[] = [];
 const strays: number[] = [];
@@ -103,65 +121,75 @@ describe("reconcileJobs", () => {
     expect(readFileSync(store.pathOf(2), "utf8")).toBe(before);
   });
 
-  it("leaves a running job alone while its owning daemon is demonstrably alive", async () => {
-    const store = createJobStore(stateDirectory());
-    const owner = { ...identify(orphanWorker().pid), run_id: "a-live-daemon" };
-    store.put(makeJobRecord({ job_id: 3, status: "running", owner }));
+  it(
+    "leaves a running job alone while its owning daemon is demonstrably alive",
+    async () => {
+      const store = createJobStore(stateDirectory());
+      const owner = { ...identify(orphanWorker().pid), run_id: "a-live-daemon" };
+      store.put(makeJobRecord({ job_id: 3, status: "running", owner }));
 
-    const outcome = await reconcileJobs(store);
+      const outcome = await reconcileJobs(store);
 
-    expect(outcome.left).toEqual([3]);
-    expect(store.read(3)?.status).toBe("running");
-  });
+      expect(outcome.left).toEqual([3]);
+      expect(store.read(3)?.status).toBe("running");
+    },
+    PROBE_BUDGET_MS,
+  );
 
-  it("kills a worker whose identity tuple matches the record", async () => {
-    const store = createJobStore(stateDirectory());
-    const worker = orphanWorker();
-    store.put(
-      makeJobRecord({
-        job_id: 5,
-        status: "running",
-        owner: deadOwner(exitedPid()),
-        workers: [{ ...identify(worker.pid), pgid: worker.pid }],
-      }),
-    );
+  it(
+    "kills a worker whose identity tuple matches the record",
+    async () => {
+      const store = createJobStore(stateDirectory());
+      const worker = orphanWorker();
+      store.put(
+        makeJobRecord({
+          job_id: 5,
+          status: "running",
+          owner: deadOwner(exitedPid()),
+          workers: [{ ...identify(worker.pid), pgid: worker.pid }],
+        }),
+      );
 
-    const outcome = await reconcileJobs(store, { killGraceMs: 200 });
+      const outcome = await reconcileJobs(store, { killGraceMs: 200 });
 
-    expect(outcome.killed).toEqual([worker.pid]);
-    expect(await untilGone(worker.pid)).toBe(true);
-    expect(store.read(5)?.workers_uncertain).toBe(false);
-    expect(store.read(5)?.log.join(" ")).toContain("its process group was stopped");
-  });
+      expect(outcome.killed).toEqual([worker.pid]);
+      expect(await untilGone(worker.pid)).toBe(true);
+      expect(store.read(5)?.workers_uncertain).toBe(false);
+      expect(store.read(5)?.log.join(" ")).toContain("its process group was stopped");
+    },
+    PROBE_BUDGET_MS,
+  );
 
-  it("leaves a stranger alone, with certainty, and does not quarantine anything", async () => {
-    const stateDir = stateDirectory();
-    const store = createJobStore(stateDir);
-    const worker = orphanWorker();
-    const outputDir = join(stateDir, "videos", "how-dns-works");
-    mkdirSync(outputDir, { recursive: true });
-    store.put(
-      makeJobRecord({
-        job_id: 6,
-        status: "running",
-        output_dir: outputDir,
-        owner: deadOwner(exitedPid()),
-        // The pid is alive, and the token says it is somebody else: pid reuse, positively decided.
-        workers: [
-          { ...identify(worker.pid), start_time: "Thu Jan  1 00:00:00 1970", pgid: worker.pid },
-        ],
-      }),
-    );
+  it(
+    "leaves a stranger alone, with certainty, and does not quarantine anything",
+    async () => {
+      const stateDir = stateDirectory();
+      const store = createJobStore(stateDir);
+      const worker = orphanWorker();
+      const outputDir = join(stateDir, "videos", "how-dns-works");
+      mkdirSync(outputDir, { recursive: true });
+      store.put(
+        makeJobRecord({
+          job_id: 6,
+          status: "running",
+          output_dir: outputDir,
+          owner: deadOwner(exitedPid()),
+          // The pid is alive, and the token says it is somebody else: pid reuse, positively decided.
+          workers: [{ ...identify(worker.pid), start_time: foreignStartToken(), pgid: worker.pid }],
+        }),
+      );
 
-    const outcome = await reconcileJobs(store);
+      const outcome = await reconcileJobs(store);
 
-    expect(outcome.killed).toEqual([]);
-    expect(outcome.quarantined).toEqual([]);
-    expect(isAlive(worker.pid)).toBe(true);
-    expect(store.read(6)?.workers_uncertain).toBe(false);
-    expect(store.read(6)?.log.join(" ")).toContain("the number was reused");
-    expect(existsSync(outputDir)).toBe(true);
-  });
+      expect(outcome.killed).toEqual([]);
+      expect(outcome.quarantined).toEqual([]);
+      expect(isAlive(worker.pid)).toBe(true);
+      expect(store.read(6)?.workers_uncertain).toBe(false);
+      expect(store.read(6)?.log.join(" ")).toContain("the number was reused");
+      expect(existsSync(outputDir)).toBe(true);
+    },
+    PROBE_BUDGET_MS,
+  );
 
   it("marks workers_uncertain and quarantines the output directory when identity cannot be read", async () => {
     const stateDir = stateDirectory();

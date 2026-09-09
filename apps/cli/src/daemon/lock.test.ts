@@ -6,6 +6,12 @@
  * classifications asserted against the module the daemon actually loads, so the product and the
  * spike cannot drift apart — and the child-process half, including "it wrote nothing", is in
  * `start.test.ts`, where a second `xplainer serve` is spawned for real.
+ *
+ * `[D]` is the case that could not have held on Windows before 2026-09-09 and was never run there
+ * to find out: `classifyHolder` takes over a lock only when the observed token *differs* from the
+ * recorded one, and `worker-identity.ts` read no token on that platform at all, so a live holder
+ * was always believed. `daemon-windows.yml` now runs this file on `windows-latest`, and the token
+ * `[D]` records comes from {@link foreignStartToken} so it is the shape this machine really reads.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,6 +28,7 @@ import {
   releaseOwnership,
 } from "./lock.js";
 import { OWNER_LOCK_FILE } from "./state-dir.js";
+import { foreignStartToken } from "./testing/platform.js";
 import { exitedPid } from "./testing/records.js";
 import { selfIdentity } from "./worker-identity.js";
 
@@ -87,7 +94,7 @@ describe("acquireOwnership", () => {
       JSON.stringify({
         format_version: 1,
         pid: process.pid,
-        start_time: "Thu Jan  1 00:00:00 1970",
+        start_time: foreignStartToken(),
         boot_nonce: "not-ours",
       }),
     );
