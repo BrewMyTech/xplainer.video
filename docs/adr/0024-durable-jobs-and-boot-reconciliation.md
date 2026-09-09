@@ -943,3 +943,93 @@ and exited `0`, so the drain over the named pipe and the task ending on exit `0`
 Task Scheduler **restart adapter** proofs are a different job and were still red at the last dispatch,
 and GitHub Actions has since been billing-blocked for the organisation, so they stay honestly unmet.
 ADR 0027 §Runner evidence lists every leg either way.
+
+## Note, 2026-09-09: the Windows half of the identity tuple existed only from this change
+
+The note of 2026-09-06 §Process identity lists three platforms and prices two of them. Its Windows
+row reads, in full: "**Windows:** the process creation time — `Win32_Process.CreationDate`, or
+`Process.StartTime` — at 100 ns. Unmeasured." **Unmeasured turned out to mean unimplemented**, and
+this note records what that cost, what closes it, and what the close costs.
+
+**What was actually shipped.** `worker-identity.ts` read `/proc/<pid>/stat` on Linux and spawned
+`ps -o lstart=` on *every other platform*; Windows has no `ps`, so the spawn failed and the token
+was `null`. The boot id was read only on Linux and macOS and answered `null` elsewhere. So on
+Windows `selfIdentity()` was `(pid, null, null)`, and the decision this record makes — that the
+identity of a recorded process is the triple, and that only a positive match of it licenses a kill —
+was not implemented on the platform at all. Three consequences, each of them a rule in this record
+that could not fire:
+
+1. **Reconciliation could never take a positive decision.** `classifyWorker()`'s boot check needs
+   both ids and had neither; its token comparison needs a recorded token and an observed one and had
+   neither. Every live pid therefore reached the `uncertain` branch: no orphaned worker was ever
+   killed, no stranger was ever positively identified, and §What happens when identity cannot be
+   established's expensive answer — `workers_uncertain: true` and a quarantined output directory —
+   was the answer to *both* of the two cases it is meant to tell apart.
+2. **A stale `owner.lock` naming a reused pid blocked the daemon.** `lock.ts`'s scenario `[D]` — a
+   live pid whose token differs, take over — needs an observed token to differ from. With none, the
+   holder was always believed and the next `serve` exited `10` until somebody deleted the file.
+3. **`startIsProvablyGone()` was `false` for any recorded pid Windows had since handed out again**,
+   which is one half of ADR 0027 §D6's rule for a start that died before it could record its own
+   end.
+
+**How it surfaced, and why it took a while.** As a flake in T14's Windows leg, whose eleventh
+expectation is that each of five recorded starts "carries an identity tuple a later start can decide
+`provably gone` from". Whether that fails is decided by whether the machine happened to reuse one of
+those five pids: run `34319237168` was green and run `34333162332` was red, on the same code, the
+same day. The transcript of the red one prints `start_time <none>, boot <none>` against every
+recorded start, which is the whole defect in one column and had been printing all along.
+
+**What closes it.** Both halves are read from CIM in **one** `powershell.exe`:
+`Win32_Process.CreationDate` for the start token and `Win32_OperatingSystem.LastBootUpTime` for the
+boot id, each rendered by `ToFileTimeUtc()` — a 64-bit count of 100 ns intervals since 1601, which
+is an exact integer and not a formatted date, so neither a locale, a time zone nor an output
+formatter can make two readers of the same process disagree. The lines are written with
+`[Console]::Out.WriteLine`, past the formatter that wraps redirected output at 80 columns, and the
+reader accepts a value only when it is entirely digits. `wmic` is not used and is not a fallback: it
+is removed from current Windows images, so a probe built on it would answer `null` — "uncertain" —
+on exactly the machines this is for. A probe that cannot run answers `null`, which is `uncertain`,
+which is the same refusal every other platform makes when it cannot say.
+
+**What it costs, measured rather than assumed** — `windows-latest`, node v24.20.0, 2026-09-09, run
+`34338721332` job `102424170713`, from `daemon/testing/identity-cost.ts`:
+
+```text
+  platform: win32  node: v24.20.0  pid: 7096
+  selfIdentity() cold:      2771.1 ms      (one powershell.exe, both halves)
+    start_time: CreationDate=134334222396555310
+    boot_id:    LastBootUpTime=134334209301179940
+  selfIdentity() memoised:  0.017 ms
+  machineBootId() memoised: 0.009 ms
+  processStartToken(live pid), 5 readings: 310.3, 322.1, 327.1, 313.7, 317.2 ms
+    mean: 318.1 ms
+  distinct tokens across 5 further readings: 1
+```
+
+So **318 ms warm and 2.8 s cold**, against the 4.5 ms this record priced the macOS `ps` at — seventy
+times the number the cost discipline was written around. The discipline itself does not change; it
+becomes load-bearing rather than tidy. `selfIdentity()` is memoised and takes **both** halves out of
+the one invocation, which is the only reason it is one spawn and not two; `machineBootId()` is
+memoised from the same reading; and `classifyWorker()` reaches the probe only for a recorded pid
+that is still alive, because a dead one is decided by `isAlive` and a record from another boot by
+the boot id, neither of which spawns anything.
+
+**The steady-state effect on a daemon is one warm probe per start, and that was measured too**, on
+run `34338749290`, by comparing two Windows runs of the same suites: `commands/serve.test.ts`, 31
+cases each starting a real daemon, went from 84,494 ms to 93,965 ms (+305 ms per start);
+`install/lifecycle.test.ts`, 23 cases, from 20,124 ms to 27,406 ms (+317 ms per start). Both numbers
+are the measured probe, once, and nothing else. The **cold** 2.8 s is not additional to a daemon
+start in practice: `daemon/pipe-acl.ts` already spawns a `powershell.exe` at the bind, so before this
+change the first PowerShell of the process was that one and it paid the same cold start. What the
+change does is move which call pays it. The one place that was visible is a test: `server.test.ts`'s
+first case builds a backend, which calls `selfIdentity()`, which was the first PowerShell that
+worker had ever started — 15 s on a runner paging it in for the first time, against a 5 s per-case
+budget, reported as `answers GET /healthz` timing out. That file now warms the probe once in a
+`beforeAll` that says so.
+
+**What this note does not change.** Nothing in the decision above: the triple, the four verdicts,
+the opposite safe defaults for the lock and for a worker, and `workers_uncertain`'s two cases are
+all exactly as written. The residual that §Process identity names for macOS — a one-second token
+cannot exclude a pid recycled inside the same second — is narrower on Windows for the reason that
+row already gave: 100 ns is finer than a pid space can be traversed. And the sentence that has to be
+retired is the row's last word: the Windows token is no longer *unmeasured*, and no record in this
+repository may say that it is.

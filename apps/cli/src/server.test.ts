@@ -37,7 +37,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { RenderBackend } from "@xplainer/mcp-server";
 import { ENGINE_OWNED_FILES, MCP_CONTRACT_VERSION, TOOL_NAMES } from "@xplainer/protocol";
 import { readScaffoldTemplate, videoPaths } from "@xplainer/render-core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { openBody, openSse } from "./api/testing/harness.js";
 import { createWorkspaceLibrary } from "./api/videos.js";
 import { createLocalBackend } from "./backend.js";
@@ -61,6 +61,24 @@ const temporaryDirectories: string[] = [];
 const runners: JobRunner[] = [];
 /** The workspace the backend under test writes into, so a test can read what a tool did. */
 let workspaceRoot = "";
+
+/**
+ * How long this worker's very first identity probe is given, once, before any case runs.
+ *
+ * `localBackend()` calls `selfIdentity()`, and on Windows — since 2026-09-09, when the platform
+ * got the other two members of ADR 0024's identity triple — that is a `powershell.exe` rather than
+ * a `ps`. Warm it costs 318 ms and cold it costs 2.8 s (`windows-latest`, run 34338721332), and
+ * the very first one a fresh runner starts, paged in and scanned on the way, cost 15 s: the first
+ * case in this file exceeded its own 5 s budget and reported that `answers GET /healthz` had timed
+ * out, which is a true sentence about the wrong thing. The probe is memoised for the life of the
+ * process, so paying it here costs every case after this one nothing, and the budget is written
+ * where it says what is being waited for.
+ */
+const IDENTITY_PROBE_BUDGET_MS = 60_000;
+
+beforeAll(() => {
+  selfIdentity();
+}, IDENTITY_PROBE_BUDGET_MS);
 
 afterEach(async () => {
   await running?.close();

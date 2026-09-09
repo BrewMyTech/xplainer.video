@@ -27,7 +27,9 @@
  * ```
  */
 
+import { spawnSync } from "node:child_process";
 import process from "node:process";
+import { POWERSHELL, POWERSHELL_ARGV } from "../../install/register.js";
 import { machineBootId, processStartToken, selfIdentity } from "../worker-identity.js";
 
 /** How many times the per-worker probe is timed. */
@@ -73,6 +75,44 @@ function main(): void {
   // measurement says whether it was rather than leaving that to the suite alone.
   const tokens = new Set([...Array(SAMPLES).keys()].map(() => processStartToken(process.pid)));
   say(`distinct tokens across ${String(SAMPLES)} further readings: ${String(tokens.size)}`);
+
+  measureTheSpawnItself();
+}
+
+/**
+ * How much of the Windows probe is the *spawn*, and how much is the query inside it.
+ *
+ * The design rests on the answer. If the query were the expensive half there would be a cheaper
+ * query to look for — `[System.Diagnostics.Process]::GetProcessById().StartTime` reads the same
+ * clock out of pure .NET and needs no WMI at all, at the price of `Access is denied` for a pid
+ * belonging to another account, which is exactly the pid-reuse case the token exists to decide. If
+ * the *spawn* is the expensive half then no query is cheaper, because every one of them costs a
+ * `powershell.exe` — and the only thing that would not is a native addon, which
+ * [ADR 0020](../../../../../docs/adr/0020-always-running-local-daemon.md) rules out for the same
+ * reason it rules out DPAPI. This prints both numbers so the choice is evidence rather than taste.
+ */
+function measureTheSpawnItself(): void {
+  if (process.platform !== "win32") {
+    say(`the bare-spawn comparison is a Windows question, and this is ${process.platform}`);
+    return;
+  }
+  const bare: number[] = [];
+  for (let sample = 0; sample < SAMPLES; sample += 1) {
+    bare.push(
+      timed(() =>
+        spawnSync(POWERSHELL, [...POWERSHELL_ARGV, "[Console]::Out.WriteLine('x')"], {
+          encoding: "utf8",
+          windowsHide: true,
+        }),
+      ),
+    );
+  }
+  const total = bare.reduce((sum, ms) => sum + ms, 0);
+  say(`a bare powershell.exe that only prints, ${String(SAMPLES)} readings:`);
+  for (const [index, ms] of bare.entries()) {
+    say(`  ${String(index + 1)}: ${ms.toFixed(1)} ms`);
+  }
+  say(`  mean: ${(total / bare.length).toFixed(1)} ms`);
 }
 
 main();

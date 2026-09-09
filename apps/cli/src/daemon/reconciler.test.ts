@@ -62,7 +62,13 @@ function orphanWorker(): { pid: number } {
 afterEach(() => {
   for (const pid of strays.splice(0)) {
     try {
-      process.kill(-pid, "SIGKILL");
+      // `process.kill(-pid)` is a POSIX process-group idiom Node does not implement on Windows —
+      // the same fact `process-group.ts` is built around. It throws there and leaves the sleeper
+      // running, so three of them outlived this suite on `windows-latest` on 2026-09-09 (run
+      // 34338721332): a leak on every run, which nothing had noticed because the file had never
+      // been run on that platform. There is no group to signal there, and the sleepers spawn no
+      // children of their own, so the pid is the whole tree.
+      process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
     } catch {
       // Already gone, which is what most of these tests are asserting.
     }

@@ -594,10 +594,12 @@ Then the root procedure: `pnpm verify`.
   `powershell.exe`, each as an exact `ToFileTimeUtc()` integer rather than a formatted date, and
   `selfIdentity()` takes both halves out of that single spawn. Never `wmic`: it is removed from
   current Windows images, so a probe built on it would answer `null` — "uncertain" — on exactly the
-  machines this is for. That spawn is far more expensive than the macOS `ps`, which is why
-  `classifyWorker` reaches it only for a recorded pid that is still alive; `daemon-windows.yml`'s
-  `identity` job measures it and runs the four suites that are about the tuple on the platform whose
-  answer they never had.
+  machines this is for. That spawn costs **318 ms warm and 2.8 s cold** against the macOS `ps`'s
+  4.5 ms (`windows-latest`, run `34338721332`, 2026-09-09), which is why `selfIdentity()` takes both
+  halves out of one invocation and `classifyWorker` reaches the probe only for a recorded pid that is
+  still alive. `daemon-windows.yml`'s `identity` job is where that is measured — by
+  `daemon/testing/identity-cost.ts` — and where the four suites that are about the tuple run on the
+  platform whose answer they never had. ADR 0024's note of 2026-09-09 carries the whole reading.
 - **Every worker runs in its own process group** (`detached: true`), and teardown signals the group
   (`process.kill(-pgid, …)`), because a render's expensive half is the browser and the encoder it
   started, not the pid the daemon holds. **Windows has no process group, so the worker goes in a
