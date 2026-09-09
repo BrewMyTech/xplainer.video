@@ -12,9 +12,8 @@
  *
  * - **Reading the start token is a process spawn and costs about 4.5 ms** on macOS — and about
  *   330 ms on Windows, where it is a `powershell.exe` (see below). An earlier revision of the spike
- *   called it
- *   once per record and made every storage-shape number 4.5 ms per record, hiding the thing being
- *   measured. So {@link selfIdentity} is memoised for the life of the process, and
+ *   called it once per record and made every storage-shape number 4.5 ms per record, hiding the
+ *   thing being measured. So {@link selfIdentity} is memoised for the life of the process, and
  *   {@link classifyWorker} is called once per worker at reconciliation — never per write.
  * - **An exited pid yields `isAlive=false` and `token=null`**, so a null token is indistinguishable
  *   from "gone" and must never on its own license a kill. That is why `null` maps to
@@ -56,15 +55,14 @@
  * whose whole reading is in ADR 0024's note of that date. A `powershell.exe` that only prints one
  * line costs 173 ms of it, so the spawn is more than half the number and no cheaper query can reach
  * the larger half; the only thing that would is a native addon, which ADR 0020 rules out. Seventy
- * times the number the cost discipline above was written around, so that discipline is
- * load-bearing here rather than tidy: {@link selfIdentity}
- * pays the spawn **once** for the life of the process and gets both halves out of the one
- * invocation, {@link machineBootId} is memoised from the same reading, and {@link classifyWorker}
- * reaches the probe only for a recorded pid that is still alive — a dead one is decided by
- * `isAlive` and a record from another boot by the boot id, both without spawning anything. A probe
- * that cannot run at all — no `powershell.exe`, a WMI service that will not answer, output that did
- * not survive whatever it was written through — answers `null`, which is `uncertain`, and never a
- * guess.
+ * times the number the cost discipline above was written around, so that discipline is load-bearing
+ * here rather than tidy: {@link selfIdentity} pays the spawn **once** for the life of the process
+ * and gets both halves out of the one invocation, {@link machineBootId} is memoised from the same
+ * reading, and {@link classifyWorker} reaches the probe only for a recorded pid that is still alive
+ * — a dead one is decided by `isAlive` and a record from another boot by the boot id, both without
+ * spawning anything. A probe that cannot run at all — no `powershell.exe`, a WMI service that will
+ * not answer, output that did not survive whatever it was written through — answers `null`, which
+ * is `uncertain`, and never a guess.
  */
 
 import { spawnSync } from "node:child_process";
