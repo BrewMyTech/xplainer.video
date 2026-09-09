@@ -85,7 +85,6 @@ import {
   readDaemonState,
   readRuntimeState,
   STALL_AFTER_FAILED_STARTS,
-  startIsProvablyGone,
   updateDaemonState,
 } from "../../daemon/daemon-state.js";
 import { resolveIpcPath } from "../../daemon/ipc.js";
@@ -434,9 +433,22 @@ async function proveTheLatch(bed: Bed): Promise<void> {
   }
 
   const budget = historyBudgetMs(process.platform);
+  // Wait for the starts to be present AND settled. A failed start is recorded in two writes — the
+  // identity tuple when it begins, the outcome and end time when it fails — so `recentStarts.length`
+  // reaches STALL_AFTER_FAILED_STARTS the instant the last start *begins*, and a read taken then
+  // sees its `outcome`/`ended_at` still null. The two checks below assert exactly those fields, so
+  // reading between the two writes flakes them (daemon-breaker windows run 34356788340). Once
+  // STALL_AFTER_FAILED_STARTS settled failures exist the breaker has latched and records no further
+  // start, so requiring every recorded start to be settled is both sufficient and terminating.
   const enough = await waitFor(
-    `${String(STALL_AFTER_FAILED_STARTS)} failed starts`,
-    () => readDaemonState(bed.stateDir).recentStarts.length >= STALL_AFTER_FAILED_STARTS,
+    `${String(STALL_AFTER_FAILED_STARTS)} settled failed starts`,
+    () => {
+      const starts = readDaemonState(bed.stateDir).recentStarts;
+      return (
+        starts.length >= STALL_AFTER_FAILED_STARTS &&
+        starts.every((s) => s.outcome !== null && s.ended_at !== null)
+      );
+    },
     budget,
   );
   const history = readDaemonState(bed.stateDir).recentStarts;
@@ -459,10 +471,23 @@ async function proveTheLatch(bed: Bed): Promise<void> {
     ),
   );
   // The tuple is not decoration: it is what lets a later start decide "provably gone" for a run
-  // that died before readiness and so wrote no `runtime.json` at all.
+  // that died before readiness and so wrote no `runtime.json` at all. What this proof is entitled
+  // to assert is that the *record* carries that tuple — pid, plus the start-time token and boot id
+  // the process-identity work added, the property that is the Windows-relevant one and is
+  // deterministic. It must NOT re-run the classifier against the live process table here, which is
+  // what `startIsProvablyGone` does: on a busy runner a recorded pid can be reused by a later
+  // process whose start-time clock tick (1/100 s on Linux) collides with the original, so the
+  // classifier reads the record back as "ours" and the assertion fails through no fault of the
+  // record. That is a race on OS pid non-reuse, not a property of the daemon, and it flaked the
+  // proof on daemon-breaker linux run 34345915285. The separate claim — that a full tuple LETS a
+  // later start decide `provably gone` — is the classifier's own property, and it is covered
+  // deterministically by `daemon/worker-identity.test.ts` describe("classifyWorker") over real
+  // processes (its `gone`, `stranger` and `ours` cases). The proof depends on the record, the unit
+  // test depends on the classifier; neither depends on live pid non-reuse.
   check(
-    "and each carries an identity tuple a later start can decide `provably gone` from",
-    history.length > 0 && history.every((s) => s.pid > 0 && startIsProvablyGone(s)),
+    "and each carries the identity tuple a later start decides `provably gone` from",
+    history.length > 0 &&
+      history.every((s) => s.pid > 0 && s.start_time !== null && s.boot_id !== null),
   );
 
   say("\n2. the latch, and the exit 0 that stops the loop:");
@@ -644,6 +669,13 @@ async function proveSystemd(squatter: Server): Promise<void> {
  * happen to accept a full path — it is measured doing so in run 34313848702 — but `Get-ScheduledTask`
  * does not, and there is no reading of the module's documentation that says which is which.
  */
+/**
+ * `LastTaskResult` while a run is in flight: HRESULT `SCHED_S_TASK_RUNNING`, 0x00041301. Task
+ * Scheduler reports it between a run starting and the action exiting, so a reader that wants the
+ * exit code has to wait past it.
+ */
+const SCHED_S_TASK_RUNNING = "267009";
+
 function taskInfo(): { lastRunTime: string; lastResult: string } {
   const answer = shell(POWERSHELL, [
     ...POWERSHELL_ARGV,
@@ -686,9 +718,21 @@ async function proveTaskScheduler(squatter: Server): Promise<void> {
 
     say("\n4. the PT5M repetition, re-reading the flag:");
     const startsBefore = readDaemonState(bed.stateDir).recentStarts.length;
+    // Wait for the repetition to start the task again AND for that run to settle. `LastRunTime`
+    // advances the instant the trigger fires, but `LastTaskResult` is `SCHED_S_TASK_RUNNING`
+    // (0x00041301 = 267009) for the tens of milliseconds the daemon lives — start, read the flag,
+    // exit — so reading the result the moment the run time moves catches it mid-run and reports
+    // 267009 rather than the exit code. That raced on daemon-breaker windows run 34353236088.
+    // Requiring a settled result is what makes "and that run exited 0" a claim about the exit code
+    // and not about when the poll landed; the assertion below then still checks the code is `0`.
     const again = await waitFor(
-      "the repetition to start the task again",
-      () => taskInfo().lastRunTime !== latchedAt.lastRunTime,
+      "the repetition to start the task again and settle",
+      () => {
+        const info = taskInfo();
+        return (
+          info.lastRunTime !== latchedAt.lastRunTime && info.lastResult !== SCHED_S_TASK_RUNNING
+        );
+      },
       420_000,
     );
     const repeated = taskInfo();
