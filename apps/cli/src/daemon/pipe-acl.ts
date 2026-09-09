@@ -178,7 +178,13 @@ export function restrictPipeToOwnerScript(
       "[System.IO.Pipes.PipeAccessRights]::FullControl, " +
       "[System.Security.AccessControl.AccessControlType]::Allow)))",
     "  $client.SetAccessControl($security)",
-    `  Write-Output ('${PIPE_ACL_APPLIED_PREFIX} ${name} for ' + $me.Value)`,
+    // `[Console]::Out.WriteLine` and not `Write-Output`: everything PowerShell emits as a value
+    // goes through its output formatter, and with stdout redirected — which it always is here —
+    // that formatter wraps at a default width of 80 rather than at a terminal's. This line is the
+    // prefix, a digest-length pipe name and a SID, which is comfortably past it, and a wrapped one
+    // hands {@link readPipeAclAccount} half a SID as the account it reports granting. Measured on
+    // `windows-latest`, 2026-09-09.
+    `  [Console]::Out.WriteLine('${PIPE_ACL_APPLIED_PREFIX} ${name} for ' + $me.Value)`,
     "} finally {",
     "  $client.Dispose()",
     "}",

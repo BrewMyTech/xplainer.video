@@ -36,6 +36,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { readDaemonState, readRuntimeState } from "../../daemon/daemon-state.js";
@@ -99,6 +100,18 @@ const HEALTH_MS = 20_000;
 
 /** How long a *deliberate* readiness failure waits before the transaction rolls back. */
 const DOOMED_HEALTH_MS = 1_500;
+
+/**
+ * The rollback's own budget where a case has made the previous runtime unstartable too.
+ *
+ * Deliberately **not** {@link DOOMED_HEALTH_MS}: the two are different numbers so that a refusal
+ * naming one of them says which budget the rollback actually spent, and the case below fails if the
+ * answer is ever the replacement's again.
+ */
+const ROLLBACK_HEALTH_MS = 4_000;
+
+/** How long the teardown waits for a daemon it signalled to actually be gone before removing its tree. */
+const ORPHAN_EXIT_MS = 10_000;
 
 /** The child entry that parks a half-finished transaction so the suite can kill it. */
 const INTERRUPT_UPDATE = fileURLToPath(new URL("./testing/interrupt-update.ts", import.meta.url));
@@ -216,6 +229,18 @@ afterEach(async () => {
         process.kill(orphan, "SIGKILL");
       } catch {
         // It exited between the liveness check and the signal, which is the outcome asked for.
+      }
+      // **And waited for**, for the same reason the spawned children above are. `process.kill`
+      // returns as soon as the signal is delivered, and a signalled process still holds every
+      // handle it had until it actually exits — so a `rmSync` issued inside that window answers
+      // `EPERM` over a daemon that is already on its way out. The children above go through
+      // `killAndWait` because a `ChildProcess` has an `exit` event; a daemon this suite only knows
+      // by the pid in `runtime.json` has none, so its exit is polled instead. Measured on
+      // `windows-latest`, run 34322304924, where the tree of a rolled-back daemon — which every
+      // successful rollback deliberately leaves running — could not be removed.
+      const deadline = Date.now() + ORPHAN_EXIT_MS;
+      while (isAlive(orphan) && Date.now() < deadline) {
+        await sleep(50);
       }
     }
   }
@@ -1248,6 +1273,12 @@ describe("daemon update — the updater's own death, at every durable boundary",
       await installed(where, alpha, harness);
       harness.refuseStartOf(stagedRuntimeRoot(where.stateDir));
 
+      // `rollbackHealthTimeoutMs`, and this is the one caller it exists for. The rollback's wait
+      // deliberately does **not** inherit a shortened `healthTimeoutMs` — the previous runtime is
+      // the one thing already known to work, and giving up on it after a second is how a machine
+      // ends up with no daemon at all. Here both runtimes are refused on purpose, so the ordinary
+      // minute would be a minute spent waiting for a start this case has made impossible; the
+      // override says so out loud rather than letting the shorter number leak in by accident.
       const stranded = await refusalFrom(() =>
         updateDaemon({
           stateDir: where.stateDir,
@@ -1256,6 +1287,7 @@ describe("daemon update — the updater's own death, at every durable boundary",
           run: harness.run,
           workspaceRoot: where.workspaceRoot,
           healthTimeoutMs: DOOMED_HEALTH_MS,
+          rollbackHealthTimeoutMs: ROLLBACK_HEALTH_MS,
         }),
       );
       expect(stranded.exitCode).toBe(DAEMON_UNHEALTHY_EXIT_CODE);
@@ -1282,6 +1314,47 @@ describe("daemon update — the updater's own death, at every durable boundary",
       expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
       expect(readUpdateStatus(where.stateDir).state).toBe("none");
       expectRenderReady(where);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "waits for the previous runtime on its own budget, not on the one that doomed the replacement",
+    async () => {
+      // The defect this pins: the rollback's wait read `healthTimeoutMs`, which is the caller's
+      // budget for the runtime being *installed*. A caller who shortened that — and every proof
+      // that dooms a replacement on purpose does — was also shortening the wait for the runtime
+      // being put back, so `daemon update` gave up on a comeback that was seconds away and left a
+      // journal and no daemon. Measured on `windows-latest`, 2026-09-09, run 34319281465.
+      //
+      // Both runtimes are refused so that the rollback's wait is the thing that expires, and the
+      // two budgets are given deliberately different values: the refusal names the one the rollback
+      // actually spent, and it must be the rollback's own.
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      harness.refuseStartOf(stagedRuntimeRoot(where.stateDir));
+
+      const stranded = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: beta.outDir,
+          environment: where.environment,
+          run: harness.run,
+          workspaceRoot: where.workspaceRoot,
+          healthTimeoutMs: DOOMED_HEALTH_MS,
+          rollbackHealthTimeoutMs: ROLLBACK_HEALTH_MS,
+        }),
+      );
+      // The refusal carries both sentences, nested: the forward wait's, which must still name the
+      // caller's own budget, and the rollback's, which must name the rollback's. So the message is
+      // split on the second one rather than searched whole — a `not.toContain` over the whole thing
+      // would fail on the forward half, which is correct where it is.
+      expect(stranded.message).toContain("did not answer either");
+      expect(stranded.message).toContain(`within ${String(DOOMED_HEALTH_MS / 1000)} s`);
+      const comeback = stranded.message.split("did not answer either:")[1] ?? "";
+      expect(comeback).toContain(`within ${String(ROLLBACK_HEALTH_MS / 1000)} s`);
+      expect(comeback).not.toContain(`within ${String(DOOMED_HEALTH_MS / 1000)} s`);
     },
     SPAWN_TIMEOUT_MS,
   );

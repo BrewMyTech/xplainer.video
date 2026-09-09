@@ -18,8 +18,43 @@
  * **`<Repetition>` with an `<Interval>` and no `<Duration>` is how a repetition becomes
  * indefinite** — a duration would bound it and stop the five-minute re-check that is this
  * platform's substitute for `Restart=on-failure` on a job that exited without failing.
- * `<RestartOnFailure>` is one minute because **one minute is the schema minimum**, which is the
- * measurement T14's circuit breaker is written against rather than a number chosen here.
+ *
+ * **A repetition belongs to a trigger, and a trigger that never fires has no repetition. That is
+ * why there are two triggers here and not one.** Measured on `windows-latest` on 2026-09-09 —
+ * three throwaway tasks side by side, one action that exits `10`, `Get-ScheduledTaskInfo` polled
+ * every twenty seconds for eleven minutes (run 34317779107, job 102357526877):
+ *
+ * | document | started by | runs in 11 minutes |
+ * |---|---|---|
+ * | `<LogonTrigger>` alone, with the `PT5M` repetition | `Start-ScheduledTask` | **1** — 06:08:47, and nothing after it |
+ * | the same, plus a `<RegistrationTrigger>` carrying the same repetition | nothing; registering it | **3** — 06:08:47, 06:13:47, 06:18:47 |
+ *
+ * `Start-ScheduledTask` is an **on-demand** run: it starts the action and starts no trigger, so
+ * nothing repeats afterwards. The `<LogonTrigger>` fires at an interactive logon — which a hosted
+ * runner never has, and which a real machine has already had by the time `daemon install` runs in
+ * a terminal inside that session. So the shipped document's five-minute re-check did not exist
+ * between the install and the next logon: a daemon started by `install` and then killed stayed
+ * dead. `<RegistrationTrigger>` closes exactly that window, because **registering the task is
+ * itself the trigger event** — the run that registration produces is a triggered run, and its
+ * repetition then runs the task every five minutes for ever. The two are complementary and both
+ * are needed: registration covers this boot, the logon trigger covers the next one.
+ *
+ * `MultipleInstancesPolicy` is what makes two triggers safe, and it was measured rather than
+ * assumed: a third task in the same run registered with a `<RegistrationTrigger>` and a
+ * four-minute action, and was then asked for `Start-ScheduledTask` immediately, recorded **one**
+ * start. So `register.ts`'s explicit start beside this trigger cannot produce a second concurrent
+ * daemon; it is kept because `daemon start` (T12) is that same call and has to work on a task that
+ * is registered and not running.
+ *
+ * **`<RestartOnFailure>` does not restart an action that exits non-zero, and the same measurement
+ * says so.** Its `PT1M` is the schema minimum, and the row above shows the second task's three
+ * runs five minutes apart rather than one minute apart — on a *triggered* run, with `<Count>3` and
+ * `<Interval>PT1M</Interval>` registered and read back out of `Export-ScheduledTask`. A Win32
+ * exit code of `10` is a **completed** run that Task Scheduler records as `LastTaskResult 10`; the
+ * failure `<RestartOnFailure>` is about is the task failing to *launch*. It is kept because that
+ * is a real, different failure and ADR 0020's table names it — but nothing in this project may
+ * count on it to re-run a daemon that started and exited. The retry cadence on this platform is
+ * the `PT5M` repetition, alone, and T14's circuit breaker is written against that.
  *
  * **`AllowHardTerminate` is `true` on purpose.** T13's control route is asked for the drain
  * *before* anything asks Task Scheduler to end the task, so a hard terminate is the escalation and
@@ -177,6 +212,16 @@ export function renderScheduledTask(
     "      <Enabled>true</Enabled>",
     `      <UserId>${account}</UserId>`,
     "    </LogonTrigger>",
+    // The trigger that fires at registration, carrying the same repetition, so that the
+    // five-minute re-check exists from the moment `install` finishes rather than from the next
+    // interactive logon. No `<UserId>`: a registration is not a per-user event, and Windows'
+    // own export of this document carries none. See the measurement at the top of this file.
+    "    <RegistrationTrigger>",
+    "      <Repetition>",
+    `        <Interval>${TASK_REPETITION_INTERVAL}</Interval>`,
+    "      </Repetition>",
+    "      <Enabled>true</Enabled>",
+    "    </RegistrationTrigger>",
     "  </Triggers>",
     "  <Principals>",
     '    <Principal id="Author">',

@@ -82,13 +82,17 @@ import { currentSupervisorEnvironment, type ProbeCommand, runProbe } from "../pr
 import {
   deregisterCommands,
   guiService,
+  POWERSHELL,
+  POWERSHELL_ARGV,
   type RegistrationTarget,
   registerCommands,
+  scheduledTaskSelector,
 } from "../register.js";
 import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
 import { renderScheduledTask } from "../supervisors/schtasks.js";
 import { renderSystemdUnit } from "../supervisors/systemd.js";
+import { removeScratchRoot } from "./scratch.js";
 
 /** The launchd label this proof registers under. Never the product's, and booted out in a `finally`. */
 export const THROWAWAY_LABEL = "video.xplainer.t13-proof";
@@ -263,9 +267,12 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
 
   let artefactPath: string;
   let identity: string;
+  /** What the shipped builders would address on this machine, and what has to be rewritten away. */
+  let productName = "";
   if (kind === "launchd") {
     const rendered = renderLaunchAgentPlist(spec, environment);
     identity = THROWAWAY_LABEL;
+    productName = rendered.identity;
     artefactPath = join(home, "Library", "LaunchAgents", `${THROWAWAY_LABEL}.plist`);
     writeFileSync(
       artefactPath,
@@ -278,12 +285,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   } else if (kind === "systemd") {
     const rendered = renderSystemdUnit(spec, environment);
     identity = THROWAWAY_UNIT;
+    productName = rendered.identity;
     artefactPath = join(process.env.HOME ?? home, ".config", "systemd", "user", THROWAWAY_UNIT);
     mkdirSync(join(artefactPath, ".."), { recursive: true });
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   } else {
     const rendered = renderScheduledTask(spec, environment);
     identity = THROWAWAY_TASK;
+    productName = rendered.identity;
     artefactPath = join(root, "task.xml");
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   }
@@ -300,12 +309,17 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   });
 
   const target: RegistrationTarget = { kind, identity, artefact: artefactPath, uid };
-  const product =
-    kind === "launchd"
-      ? "video.xplainer.daemon"
-      : kind === "systemd"
-        ? "xplainer.service"
-        : "\\xplainer\\";
+  // What each platform's word for "this daemon" is, and what this proof registered instead. On
+  // Windows it is the **leaf** of the task path rather than the whole of it: every cmdlet but
+  // `Register-` is addressed as `-TaskPath '\xplainer\' -TaskName '<leaf>'`, so the full path
+  // appears in one command out of six and the leaf appears in all of them. Rewriting `\xplainer\`
+  // to itself — which is what stood here — rewrote nothing at all, and `daemon restart` on Windows
+  // therefore asked Task Scheduler to start `\xplainer\runneradmin-daemon`, a task this proof never
+  // registered (`windows-latest`, 2026-09-09: "The system cannot find the file specified").
+  const [product, replacement] =
+    kind === "task-scheduler"
+      ? [taskLeaf(productName), taskLeaf(identity)]
+      : [productName, identity];
   return {
     root,
     stateDir,
@@ -317,11 +331,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
     run: (command) =>
       runProbe({
         ...command,
-        argv: command.argv.map((word) =>
-          word.replaceAll(product, kind === "task-scheduler" ? "\\xplainer\\" : identity),
-        ),
+        argv: command.argv.map((word) => word.replaceAll(product, replacement)),
       }),
   };
+}
+
+/** The name a `-TaskName` argument carries: everything after the last backslash of a task path. */
+function taskLeaf(identity: string): string {
+  return identity.slice(identity.lastIndexOf("\\") + 1);
 }
 
 /**
@@ -559,7 +576,7 @@ async function proveLaunchd(): Promise<void> {
       shell(step.command.program, [...step.command.argv]);
     }
     shell("launchctl", ["enable", service]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -602,7 +619,7 @@ async function proveSystemd(): Promise<void> {
     }
     rmSync(bed.target.artefact, { force: true });
     shell("systemctl", ["--user", "daemon-reload"]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -621,22 +638,43 @@ async function proveTaskScheduler(): Promise<void> {
   const bed = prepareBed("task-scheduler", 0);
   try {
     say(`\nTask Scheduler, ${THROWAWAY_TASK}, with the shipped XML under a throwaway name:`);
+    // macOS and Linux register and start the bed inside `proveSupervisorRestart`, because there the
+    // supervisor's own restart verb is the first thing worth measuring. Windows has no such verb —
+    // that absence is what this half is about — so the bed is brought up on its own here. Without
+    // this the two proofs below start against a task that was never registered, and each one waits
+    // out its full minute for a running job that nothing was ever asked to produce.
+    say("\n0. registering and starting the task, which is what the other two platforms get from");
+    say("   proving a supervisor restart first:");
+    await boot(bed);
     await proveRouteAndExitZero(bed, {
-      program: "powershell.exe",
-      argv: [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `Start-ScheduledTask -TaskName '${THROWAWAY_TASK}'`,
-      ],
+      program: POWERSHELL,
+      argv: [...POWERSHELL_ARGV, `Start-ScheduledTask ${scheduledTaskSelector(THROWAWAY_TASK)}`],
     });
     await proveShippedRestart(bed, 0, "win32");
   } finally {
+    // The daemon `daemon restart` brought back is holding a fake worker, and on Windows a
+    // directory cannot be removed while any process is running out of it — `Stop-ScheduledTask`
+    // ends the task's own process and leaves that worker's tree exactly where it was, which is an
+    // `EPERM` no amount of retrying gets past (`windows-latest`, 2026-09-09, run 34307686678). So
+    // the proof ends the way a planned stop does, over the route it has just finished proving:
+    // step 3 of the drain is what takes the whole process group with it.
+    say("\ndraining the daemon this proof left running:");
+    const last = await requestDrain({ socketPath: bed.socket });
+    if (last.ok) {
+      const gone = await awaitStopped({
+        stateDir: bed.stateDir,
+        pid: last.acknowledgement.pid,
+        timeoutMs: 40_000,
+      });
+      say(`  pid ${String(last.acknowledgement.pid)} gone after ${String(gone.elapsedMs)} ms`);
+    } else {
+      say(`  nothing answered the socket: ${last.reason}`);
+    }
     say("\nunregistering the throwaway task:");
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);
     }
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 

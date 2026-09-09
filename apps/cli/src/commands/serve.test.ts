@@ -1042,24 +1042,34 @@ describe("the IPC listener", () => {
   }, 30_000);
 
   /**
-   * **The Windows half is a different claim, and a weaker one, stated rather than implied.** A
-   * named pipe is not a filesystem entry: there is no directory to narrow and no mode to set, and
-   * `net.Server.listen({ path })` offers no way to pass a security descriptor, so the pipe carries
-   * Windows' default one. What this case can assert there is the property `ipc.ts` does provide —
-   * the name is derived from the state directory, so two accounts and two runs never collide on one
-   * pipe — and that the endpoint answers. The access-control half of ADR 0020 §R-SEC-5 is closed
-   * for the **token** (`windows-acl.ts`) and is still open for the pipe.
+   * **The Windows half makes the same claim about a different mechanism.** A named pipe is a
+   * machine-global name rather than a filesystem entry: there is no directory to narrow, no mode to
+   * set and nothing to unlink, so `<state>/ipc/` is never created there and the `0700` assertion
+   * below has nothing to be about. The access control is the **pipe's own security descriptor**,
+   * which `net.Server.listen({ path })` cannot be given and `daemon/pipe-acl.ts` therefore replaces
+   * immediately after the bind — and the sentence `serve` prints is where that outcome is legible,
+   * because a descriptor is not a file and there is no `stat` to read it off.
+   *
+   * `existsSync` is deliberately **not** asked here, in either direction. libuv implements
+   * `uv_fs_stat` on `\\.\pipe\<name>` by opening the pipe for its attributes, so the answer is
+   * `true` while a server instance is free and `false` while every instance is busy: a property of
+   * the connection pool rather than of the endpoint, which `endpointGone` in
+   * `daemon/testing/platform.ts` is why it dials the pipe instead.
    */
   it("puts the socket where only this account can reach it, which is what that authentication is", async () => {
     const stateDir = stateDirectory();
-    const { ready } = await serveUntilReady(CHILD_SERVE, stateDir);
+    const { child, ready } = await serveUntilReady(CHILD_SERVE, stateDir);
     const socketPath = ready.socket ?? "";
 
     expect(socketPath).toBe(resolveIpcPath(stateDir));
     if (isNamedPipe(socketPath)) {
       expect(socketPath).toBe(resolveIpcPath(stateDir, "win32"));
       expect(socketPath).not.toBe(resolveIpcPath(stateDirectory(), "win32"));
-      expect(existsSync(socketPath)).toBe(false);
+      expect(existsSync(join(stateDir, IPC_DIR))).toBe(false);
+      expect(child.stderr()).toContain(
+        `also listening on ${socketPath}, where a security descriptor granting`,
+      );
+      expect(child.stderr()).toContain("and nobody else is the authentication");
       expect((await getHealthz({ socketPath })).status).toBe(200);
       return;
     }

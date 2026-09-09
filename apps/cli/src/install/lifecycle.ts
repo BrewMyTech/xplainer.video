@@ -102,8 +102,8 @@ import {
   guiService,
   POWERSHELL,
   POWERSHELL_ARGV,
-  powerShellLiteral,
   type RegistrationTarget,
+  scheduledTaskSelector,
 } from "./register.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import {
@@ -538,7 +538,7 @@ export function disabledQuery(target: RegistrationTarget): ProbeCommand {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `(Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).State`,
+          `(Get-ScheduledTask ${scheduledTaskSelector(target.identity)} -ErrorAction Stop).State`,
         ],
       };
   }
@@ -574,19 +574,30 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         ],
       };
     case "task-scheduler":
-      // Three `Key=value` lines, composed by the script itself rather than by a formatter.
-      // `Format-List` wraps a value longer than the console width across lines, and an installed
-      // `Arguments` is two absolute paths and six flags long — so a formatted answer would arrive
-      // broken in the middle of a path and be compared as a mismatch that is really a line break.
+      // Three `Key=value` lines, composed by the script itself rather than by a formatter, and
+      // written with `[Console]::Out.WriteLine` rather than emitted as PowerShell objects.
+      //
+      // **Both halves of that are load-bearing.** `Format-List` wraps a value longer than the
+      // console width across lines, and an installed `Arguments` is two absolute paths and six
+      // flags long — so a formatted answer arrives broken in the middle of a path. Composing the
+      // lines by hand is not enough on its own, because *every* value PowerShell emits goes through
+      // the same output formatter on its way to stdout, and with stdout redirected — which it
+      // always is here — that formatter wraps at a default width rather than at a terminal's.
+      // `[Console]::Out` is the one documented way past it. Measured on `windows-latest` on
+      // 2026-09-09 (run 34304155063): a correct install reported `command` and `cwd` as drifted,
+      // and both values were the registered ones cut off mid-path.
+      //
       // String concatenation also turns an absent `WorkingDirectory` into an empty value on its own
       // line rather than into no line at all, which keeps the three keys always present.
       return {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `$action = @((Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).Actions)[0]; ` +
-            '"Execute=" + $action.Execute; "Arguments=" + $action.Arguments; ' +
-            '"WorkingDirectory=" + $action.WorkingDirectory',
+          `$action = @((Get-ScheduledTask ${scheduledTaskSelector(target.identity)} ` +
+            "-ErrorAction Stop).Actions)[0]; " +
+            "[Console]::Out.WriteLine('Execute=' + $action.Execute); " +
+            "[Console]::Out.WriteLine('Arguments=' + $action.Arguments); " +
+            "[Console]::Out.WriteLine('WorkingDirectory=' + $action.WorkingDirectory)",
         ],
       };
   }
@@ -605,8 +616,13 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
  *   the word is read and the status is not. `masked` is `off` too — a masked unit cannot be started
  *   at all — and `not-found` is `unregistered` rather than `off`.
  * - **Task Scheduler.** `State` is an enum whose members are `Unknown`, `Disabled`, `Queued`,
- *   `Ready` and `Running`; only `Disabled` is off, and a `Get-ScheduledTask` that could not find
- *   the task writes to stderr and prints nothing.
+ *   `Ready` and `Running`; only `Disabled` is off. A `Get-ScheduledTask` that could not find the
+ *   task writes to stderr, prints nothing, and — since {@link disabledQuery} carries
+ *   `-ErrorAction Stop`, which turns that cmdlet's non-terminating `ObjectNotFound` into a
+ *   terminating one — exits non-zero as well. Both halves land in the same `status !== 0 ||
+ *   word === ""` branch below, so the reading is the same either way; the `-ErrorAction Stop` is
+ *   there so that a query which found nothing cannot be mistaken for one that found a task with
+ *   an empty state.
  */
 export function readSwitch(
   kind: SupervisorKind,
@@ -891,10 +907,7 @@ export function startCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [
-          ...POWERSHELL_ARGV,
-          `Start-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
-        ],
+        argv: [...POWERSHELL_ARGV, `Start-ScheduledTask ${scheduledTaskSelector(target.identity)}`],
       };
   }
 }
@@ -921,10 +934,7 @@ export function stopCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [
-          ...POWERSHELL_ARGV,
-          `Stop-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
-        ],
+        argv: [...POWERSHELL_ARGV, `Stop-ScheduledTask ${scheduledTaskSelector(target.identity)}`],
       };
   }
 }
@@ -1479,7 +1489,7 @@ function enableCommand(target: RegistrationTarget): ProbeCommand {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `Enable-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+          `Enable-ScheduledTask ${scheduledTaskSelector(target.identity)}`,
         ],
       };
   }

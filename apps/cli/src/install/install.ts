@@ -589,10 +589,23 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
     if (kind === "task-scheduler") {
       // Read only now: `LastTaskResult` a second after `Start-ScheduledTask` is `267011`
       // (SCHED_S_TASK_HAS_NOT_RUN) on a perfectly healthy task, so it says nothing on its own.
-      const info = run({ ...taskInfoCommand(target), timeoutMs: REGISTRATION_TIMEOUT_MS });
+      // A second value is ordinary here and is not a diagnosis either: `0x80070420`
+      // (`2147946720`, "an instance of the service is already running") is what
+      // `Start-ScheduledTask` records when the document's `<RegistrationTrigger>` has already
+      // started the task and `MultipleInstancesPolicy: IgnoreNew` refused the second request —
+      // measured on `windows-latest`, 2026-09-09, on a *successful* install. It means the task
+      // is running and this daemon is not answering, which is what the sentence below already
+      // says; the code `0x0004131C` names is the only one this refusal interprets, and the whole
+      // of the query's output is printed rather than summarised for exactly this reason.
+      const probe = taskInfoCommand(target);
+      const info = run({ ...probe, timeoutMs: REGISTRATION_TIMEOUT_MS });
       commands.push({
         title: "ask Task Scheduler why the task did not answer",
-        command: `${taskInfoCommand(target).program} Get-ScheduledTaskInfo ${target.identity}`,
+        // The script `taskInfoCommand` built, rather than a second spelling of it written here: a
+        // task is addressed by folder and leaf (`register.ts`'s `scheduledTaskSelector`), and a
+        // transcript that showed `Get-ScheduledTaskInfo \xplainer\<user>-daemon` would be printing
+        // a command nothing ran and that would not have worked if anything had.
+        command: `${probe.program} ${probe.argv[probe.argv.length - 1] ?? ""}`,
         status: info.status,
         tolerated: false,
       });

@@ -146,10 +146,20 @@ describe("the script that replaces the descriptor", () => {
     expect(script).toContain("$ErrorActionPreference = 'Stop'");
   });
 
-  /** The caller reads an account out of the output, so an exit code alone is never "applied". */
-  it("prints the account it granted, and that line is what is read back", () => {
+  /**
+   * The caller reads an account out of the output, so an exit code alone is never "applied" — and
+   * the line has to arrive whole.
+   *
+   * `[Console]::Out.WriteLine` rather than `Write-Output`, because a value PowerShell emits goes
+   * through its output formatter and that formatter wraps at 80 columns when stdout is redirected,
+   * which it always is here. This line is the prefix, a digest-length pipe name and a SID — well
+   * past 80 — and the reader takes everything after the **last space**, so a wrapped one reports
+   * half a SID as the account that was granted.
+   */
+  it("prints the account it granted past the formatter, and that line is what is read back", () => {
     const script = restrictPipeToOwnerScript(PIPE);
-    expect(script).toContain(`Write-Output ('${PIPE_ACL_APPLIED_PREFIX}`);
+    expect(script).toContain(`[Console]::Out.WriteLine('${PIPE_ACL_APPLIED_PREFIX}`);
+    expect(script).not.toContain("Write-Output");
 
     expect(
       readPipeAclAccount(

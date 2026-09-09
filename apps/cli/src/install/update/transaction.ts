@@ -111,6 +111,36 @@ import { SwitchRefusal, switchRuntime } from "./switch.js";
 /** How long the replacement is given to answer an authenticated `/healthz` before it is rolled back. */
 export const REPLACEMENT_READY_TIMEOUT_MS = 60_000;
 
+/**
+ * How long the **rolled-back previous** runtime is given to answer, which is not the same question.
+ *
+ * {@link UpdateRequest.healthTimeoutMs} is a budget for the runtime being *installed* — "how long
+ * am I prepared to wait to find out this is not going to work" — and a caller is entitled to make
+ * it small. Spending that same number on the wait for the retained previous runtime is a different
+ * question with a much worse wrong answer: the machine has just been put back the way it was, and a
+ * rollback that gives up on its own comeback leaves a journal, a stopped daemon and a user who has
+ * to run `xplainer daemon recover` by hand. So the two are resolved separately, and the previous
+ * runtime — the one thing in the transaction already known to work — never gets *less* than the
+ * ordinary wait.
+ *
+ * Measured rather than reasoned: `windows-latest`, 2026-09-09, run 34319281465. T33's rollback
+ * cases pass `healthTimeoutMs: 1_500` to make a *deliberately* doomed replacement fail fast, and
+ * that 1.5 s then became the whole budget for the previous runtime's restart. `xplainer serve` on a
+ * hosted Windows runner had written two lines of its start-up log when the wait expired, and the
+ * case failed with "A is answering /healthz as release 0.0.0" over a daemon that was seconds from
+ * answering.
+ *
+ * {@link UpdateRequest.rollbackHealthTimeoutMs} overrides this, and exists for one kind of caller:
+ * a proof that has made **both** runtimes unstartable on purpose, where waiting the ordinary minute
+ * for a start that cannot happen measures nothing.
+ */
+function rollbackReadyTimeoutMs(request: UpdateRequest): number {
+  return (
+    request.rollbackHealthTimeoutMs ??
+    Math.max(request.healthTimeoutMs ?? REPLACEMENT_READY_TIMEOUT_MS, REPLACEMENT_READY_TIMEOUT_MS)
+  );
+}
+
 /** Which step of the transaction a refusal stopped in. */
 export type UpdatePhase =
   | "installed"
@@ -196,6 +226,14 @@ export type UpdateRequest = {
   uid?: number | undefined;
   /** How long the replacement is given to answer. Defaults to {@link REPLACEMENT_READY_TIMEOUT_MS}. */
   healthTimeoutMs?: number | undefined;
+  /**
+   * How long the **rolled-back previous** runtime is given to answer, which is a different budget.
+   *
+   * Defaults to `healthTimeoutMs` or {@link REPLACEMENT_READY_TIMEOUT_MS}, whichever is *larger*: a
+   * caller who shortened the wait for the incoming runtime has not thereby shortened the wait for
+   * the one being put back. `rollbackReadyTimeoutMs` is where that is decided and why.
+   */
+  rollbackHealthTimeoutMs?: number | undefined;
   /** How the readiness poll reaches the daemon. Defaults to a real loopback request. */
   health?: HealthTransport | undefined;
   /** The workspace root the precondition verifies. Defaults to `resolveWorkspaceRoot()`. */
@@ -425,7 +463,15 @@ async function rollBack(
 
   let health: HealthAnswer;
   try {
-    health = await awaitLaunched(context, journal.previous, rollingBackFrom, journal);
+    // `rollbackReadyTimeoutMs`: the caller's budget was for the runtime being installed, and the
+    // previous one — the one already known to work — is not given less than the ordinary wait.
+    health = await awaitLaunched(
+      context,
+      journal.previous,
+      rollingBackFrom,
+      journal,
+      rollbackReadyTimeoutMs(context.request),
+    );
   } catch (error) {
     throw new UpdateRefusal(
       "rollback",
@@ -625,8 +671,9 @@ async function awaitLaunched(
   side: JournalledRuntime,
   since: number,
   journal: UpdateJournal,
+  budgetMs?: number,
 ): Promise<HealthAnswer> {
-  const timeoutMs = context.request.healthTimeoutMs ?? REPLACEMENT_READY_TIMEOUT_MS;
+  const timeoutMs = budgetMs ?? context.request.healthTimeoutMs ?? REPLACEMENT_READY_TIMEOUT_MS;
   let health: HealthAnswer;
   try {
     health = await awaitHealthy({

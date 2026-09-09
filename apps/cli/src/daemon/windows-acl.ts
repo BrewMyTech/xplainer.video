@@ -15,6 +15,12 @@
  * `BUILTIN\\Users`. Granting the owner changes nothing while the inherited entries are still there;
  * removing inheritance and then granting is one `icacls` invocation and is the documented order.
  *
+ * **And it is only the half that is inherited.** A path whose parent carries no inheritable ACE at
+ * all gets its DACL from the creating token's default DACL instead, and those entries are
+ * *explicit*, so `/inheritance:r` has nothing to remove and `SYSTEM` and `Administrators` stay on
+ * the file. {@link removeForeignCommand} is the second run that answers for that case; its docblock
+ * carries the measurement.
+ *
  * **It is applied at creation and nowhere else**, which is exactly what the ADR asks for and no
  * more. A directory that already exists keeps whatever ACL it has — the same rule `mkdir`'s mode
  * follows. R-SEC-5's other half — "`xplainer daemon status` re-verifies it and warns if inheritance
@@ -98,7 +104,88 @@ export function restrictToOwnerCommand(
 }
 
 /**
+ * How `icacls` has to be handed a principal it printed.
+ *
+ * A resolved name goes back as it stands; an account that no longer exists prints as a bare SID,
+ * and `icacls <path> /remove S-1-5-21-…` reads that as a *name* and finds nothing. The `*` prefix
+ * is `icacls`'s own spelling for "this argument is a SID".
+ */
+export function aclPrincipalArgument(account: string): string {
+  return /^S-1-\d+(?:-\d+)*$/i.test(account) ? `*${account}` : account;
+}
+
+/**
+ * `icacls <path> /remove "<principal>" …`, for every principal in `entries` that is not `account`.
+ *
+ * **Why R-SEC-5's one command does not cover every path.** `/inheritance:r` removes the *inherited*
+ * ACEs and `/grant:r` replaces the *named* account's explicit ones; an explicit entry for a third
+ * principal survives both, and `icacls` offers no option that means "and nobody else". Under
+ * `%LOCALAPPDATA%` there is never such an entry — every ACE below a profile directory is inherited
+ * from it — which is why the ADR spells the requirement as a single command, and why that command
+ * is still the first thing {@link restrictToOwner} runs.
+ *
+ * The case it does not cover is a parent carrying **no inheritable ACE at all**. Windows then
+ * builds the new object's DACL from the creating token's *default DACL*, whose ACEs are explicit,
+ * so `/inheritance:r` finds nothing to remove and they stay. A scratch directory under GitHub's
+ * `windows-latest` runner temp is exactly that: a file this process had just created came back
+ * `NT AUTHORITY\\SYSTEM:(F) BUILTIN\\Administrators:(F) <machine>\\runneradmin:(R,W)`, and a
+ * directory the same three principals at `(OI)(CI)(F)` (measured 2026-09-09, run 34304148378).
+ * "Only this account can read it" has to hold there too, so what the first command could not take
+ * off is named and taken off.
+ *
+ * `null` when there is nothing to remove, which is every ordinary path under a profile directory.
+ */
+export function removeForeignCommand(
+  path: string,
+  entries: readonly AclEntry[],
+  account: string,
+): { program: string; argv: string[] } | null {
+  const foreign: string[] = [];
+  for (const entry of entries) {
+    if (!aclEntryIsAccount(entry, account) && !foreign.includes(entry.account)) {
+      foreign.push(entry.account);
+    }
+  }
+  if (foreign.length === 0) {
+    return null;
+  }
+  return {
+    program: "icacls",
+    argv: [path, ...foreign.flatMap((who) => ["/remove", aclPrincipalArgument(who)])],
+  };
+}
+
+/** One `icacls` invocation, with the timeout and the hidden window every call here wants. */
+function runIcacls(program: string, argv: readonly string[]): AclProbeResult {
+  const answer = spawnSync(program, [...argv], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  return {
+    started: answer.error === undefined,
+    status: answer.status,
+    stdout: answer.stdout ?? "",
+    stderr: answer.stderr ?? (answer.error === undefined ? "" : answer.error.message),
+  };
+}
+
+/** Why one `icacls` run is reported as a failure, in the sentence {@link AclResult} carries. */
+function icaclsFailure(answer: AclProbeResult): string {
+  if (!answer.started) {
+    return answer.stderr;
+  }
+  const said = `${answer.stdout}${answer.stderr}`.trim().split("\n")[0] ?? "";
+  return `exited ${String(answer.status)}${said === "" ? "" : `: ${said}`}`;
+}
+
+/**
  * Narrow `path` to the account this process is running as, on Windows only.
+ *
+ * Up to three `icacls` runs rather than one, for the reason {@link removeForeignCommand} states:
+ * R-SEC-5's own command, then the entry read back, and then — only when somebody else is still on
+ * it — the removal that makes owner-only true rather than merely intended. The read is what keeps
+ * the third run off every ordinary path.
  *
  * @returns what happened, for a caller that says so on stderr. It never throws for an `icacls` that
  * failed, for the reason at the top of this file.
@@ -113,8 +200,10 @@ export function restrictToOwner(
   }
   let program: string;
   let argv: string[];
+  let account: string;
   try {
-    ({ program, argv } = restrictToOwnerCommand(path, target));
+    account = aclAccount();
+    ({ program, argv } = restrictToOwnerCommand(path, target, account));
   } catch (error) {
     return {
       outcome: "failed",
@@ -123,23 +212,30 @@ export function restrictToOwner(
     };
   }
   const spelled = `${program} ${argv.join(" ")}`;
-  const answer = spawnSync(program, argv, {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 10_000,
-  });
-  if (answer.error !== undefined) {
-    return { outcome: "failed", command: spelled, reason: answer.error.message };
+  const narrowed = runIcacls(program, argv);
+  if (!narrowed.started || narrowed.status !== 0) {
+    return { outcome: "failed", command: spelled, reason: icaclsFailure(narrowed) };
   }
-  if (answer.status !== 0) {
-    const said = `${answer.stdout ?? ""}${answer.stderr ?? ""}`.trim().split("\n")[0] ?? "";
+
+  const query = aclQuery(path);
+  const read = runIcacls(query.program, query.argv);
+  if (!read.started || read.status !== 0) {
     return {
       outcome: "failed",
-      command: spelled,
-      reason: `exited ${String(answer.status)}${said === "" ? "" : `: ${said}`}`,
+      command: `${query.program} ${query.argv.join(" ")}`,
+      reason: icaclsFailure(read),
     };
   }
-  return { outcome: "applied", command: spelled };
+  const removal = removeForeignCommand(path, parseAclEntries(read.stdout, path), account);
+  if (removal === null) {
+    return { outcome: "applied", command: spelled };
+  }
+  const both = `${spelled} && ${removal.program} ${removal.argv.join(" ")}`;
+  const removed = runIcacls(removal.program, removal.argv);
+  if (!removed.started || removed.status !== 0) {
+    return { outcome: "failed", command: both, reason: icaclsFailure(removed) };
+  }
+  return { outcome: "applied", command: both };
 }
 
 // ── Re-verification: the second half of R-SEC-5 ─────────────────────────────────────────────────

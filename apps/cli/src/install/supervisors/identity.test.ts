@@ -312,7 +312,15 @@ describe("row 2, the loaded configuration", () => {
       uid: 0,
     });
     const spelled = `${windows?.program ?? ""} ${windows?.argv.join(" ") ?? ""}`;
-    expect(spelled).toContain("Get-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
+    // Folder and leaf, separately: a full task path in `-TaskName` matches nothing in the CIM
+    // query every `*-ScheduledTask` cmdlet but `Register-` is built on, and matches nothing
+    // *quietly* — see `install/register.ts`'s `scheduledTaskSelector`. `-ErrorAction Stop` is the
+    // other half: a task that is not there has to be a non-zero exit rather than three empty
+    // values, which is what `readLoaded` reads as "the query did not answer".
+    expect(spelled).toContain(
+      "Get-ScheduledTask -TaskPath '\\xplainer\\' -TaskName 'tester-daemon'",
+    );
+    expect(spelled).toContain("-ErrorAction Stop");
     expect(spelled).toContain("$action.WorkingDirectory");
     expect(spelled).toContain("$action.Execute");
     expect(spelled).toContain("$action.Arguments");

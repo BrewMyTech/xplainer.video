@@ -85,6 +85,7 @@ import { recoverUpdate } from "../../install/update/recover.js";
 import {
   fixtureEnvironment,
   fixtureLingerMarker,
+  HARNESS_LOG_FILE,
   PARKED_LINE,
   updateHarness,
 } from "../../install/update/testing/harness.js";
@@ -132,6 +133,26 @@ function require_(condition: boolean, what: string): void {
     throw new Error(`FAILED: ${what}`);
   }
   say(`  ok: ${what}`);
+}
+
+/** The last lines the harness's daemons wrote in this case, or one sentence saying there are none. */
+function harnessLogTail(stateDir: string, lines = 24): readonly string[] {
+  const sink = join(stateDir, HARNESS_LOG_FILE);
+  if (!existsSync(sink)) {
+    return [`there is no ${sink}: nothing this harness started ever wrote a line`];
+  }
+  const written = readFileSync(sink, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "");
+  return written.slice(-lines);
+}
+
+/** What a caught rollback said about itself, in one line, whatever kind of value it turned out to be. */
+function refusalMessage(thrown: unknown): string {
+  if (thrown instanceof Error) {
+    return thrown.message.split("\n").join(" / ");
+  }
+  return thrown === null ? "it did not refuse at all" : String(thrown);
 }
 
 /** One environment variable this entry cannot do anything without. */
@@ -480,6 +501,9 @@ try {
       },
     });
 
+    // What the transaction said about itself, kept for the diagnostic below: both arms produce a
+    // refusal and the sentence inside it is the only thing that says *which* half gave up.
+    let refused: unknown = null;
     if (current === DOOMED_CASE) {
       const install = await installDaemon({
         stateDir,
@@ -502,6 +526,7 @@ try {
         () => null,
         (thrown: unknown) => thrown,
       );
+      refused = refusal;
       require_(
         refusal instanceof UpdateRefusal && refusal.exitCode === DAEMON_UNHEALTHY_EXIT_CODE,
         `the update refused with ${String(DAEMON_UNHEALTHY_EXIT_CODE)} and rolled back to A`,
@@ -543,6 +568,7 @@ try {
         () => null,
         (thrown: unknown) => thrown,
       );
+      refused = recovered;
       require_(
         recovered instanceof UpdateRefusal && recovered.exitCode === DAEMON_UNHEALTHY_EXIT_CODE,
         `\`xplainer daemon recover\`'s engine rolled back and reported ${String(DAEMON_UNHEALTHY_EXIT_CODE)}`,
@@ -556,6 +582,22 @@ try {
       `daemon.json records A as the runtime the daemon runs out of (${String(installedRuntime)})`,
     );
     const health = await askHealth(stateDir);
+    if (health === null) {
+      // The one question this assertion cannot answer on its own: a daemon that is not answering
+      // said *why* somewhere, and the harness sends its output to a sink in the state directory
+      // precisely so that a proof running on a machine nobody can log into still has it. An exit
+      // `10` here is a predecessor that never went away; anything else is the rollback's own.
+      say(`  the recovered daemon is not answering. What it wrote, from ${HARNESS_LOG_FILE}:`);
+      for (const line of harnessLogTail(stateDir)) {
+        say(`    ${line}`);
+      }
+      // And what the rollback itself said, which is the half the log cannot give: a refusal whose
+      // sentence is "the previous runtime … did not answer either" is a rollback that gave up on
+      // its own comeback, and one saying "is installed and answering" is a rollback that succeeded
+      // and a daemon that stopped afterwards. Those are different bugs and the two were told apart
+      // by guesswork until this line existed (`windows-latest`, run 34319281465).
+      say(`  and what the rollback itself reported: ${refusalMessage(refused)}`);
+    }
     require_(
       health?.version === alphaVersion,
       `A is answering /healthz as release ${alphaVersion}`,

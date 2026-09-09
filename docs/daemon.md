@@ -117,6 +117,20 @@ supervisor stops. `xplainer daemon status` says it in words; `xplainer daemon re
 (and runs `systemctl --user reset-failed` where that applies). **§6's two self-supervision recipes
 do not honour that exit `0`** — measured, and stated where each recipe is.
 
+**Windows brings the daemon back every five minutes, and only that.** The registered task carries an
+indefinite `PT5M` repetition on **two** triggers: a `<RegistrationTrigger>`, so the re-check exists
+from the moment `install` finishes, and a `<LogonTrigger>`, so it exists again after a reboot. That
+matters because a repetition belongs to a trigger that has *fired*: `Start-ScheduledTask` — what
+`install` and `daemon start` call — is an on-demand run and starts no trigger, and a logon trigger
+does not fire in a session the user logged into before running `install`. Its neighbour
+`<RestartOnFailure>` (3 × `PT1M`) restarts a task that failed to **launch** and does **not** restart
+an action that exited non-zero, so a daemon that starts and exits `10` is re-run by the repetition
+and by nothing else. Both facts were measured on `windows-latest` on 2026-09-09 and the argument is
+in [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of that date. The practical shape: a
+Windows daemon that cannot bind its port takes about twenty minutes to reach five failed starts and
+latch, and a latched one goes on being asked to run every five minutes, re-reading the flag and
+exiting `0`.
+
 ## 4. Updating
 
 ```sh
@@ -427,6 +441,7 @@ an earlier, more specific wording ("when the last console closes") is corrected 
 | Alpine reports no runtime glibc and `setup` refuses the browser | measured, `node:24-alpine` v3.24 arm64, 2026-09-08 (§7.1) |
 | R-SEC-9's refusals and the `401`/`200`/`403` answers | `pnpm e2e:remote`, local, macOS, 2026-09-08 (§5) |
 | R-SEC-9 **on a hosted runner** | **not proven.** `daemon-remote.yml` has never been dispatched; Actions is billing-blocked for this organisation |
+| Task Scheduler re-runs the daemon on the `PT5M` repetition, and on nothing else | measured, `windows-latest`, 2026-09-09 (run `34317779107`): a `<RegistrationTrigger>` with that repetition ran three times five minutes apart; a `<LogonTrigger>` started on demand ran once; `<RestartOnFailure>` 3 × `PT1M` produced no retry for an action exiting `10` |
 | WSL2 | **not measured.** §7.2 |
 
 The supervisor-specific behaviour behind §1–§4 — real `systemctl --user`, real `launchctl`, real Task

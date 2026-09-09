@@ -838,12 +838,72 @@ Then the root procedure: `pnpm verify`.
   permission is settable there and that the owner/group/other distinction is not implemented, so
   the mint runs R-SEC-5's own remedy on the file it has just created —
   `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"`, in `daemon/windows-acl.ts` — and `serve`
-  names in one line which of the two protections this platform got. A failure to apply it is
+  names in one line which of the two protections this platform got. **That command is the first of
+  up to three, because it removes only what was *inherited*.** `/inheritance:r` takes the inherited
+  ACEs off and `/grant:r` replaces the named account's explicit ones; a third principal's explicit
+  entry survives both, and `icacls` has no option meaning "and nobody else". Under `%LOCALAPPDATA%`
+  there is never such an entry, which is why the ADR spells the requirement as one command — but a
+  path whose parent carries no inheritable ACE gets its DACL from the creating token's *default*
+  one, and those entries are explicit. A scratch directory under GitHub's `windows-latest` runner
+  temp is exactly that (`NT AUTHORITY\SYSTEM:(F) BUILTIN\Administrators:(F)` on a file this process
+  had just created, 2026-09-09), so the entry is read back and whatever is not this account is
+  removed. A failure to apply any of it is
   **reported, never fatal**: a daemon that refused to start over a missing `icacls` would trade a
   weaker file for no service at all. R-SEC-5's other half is `daemon status`: it re-reads the entry
   with a plain `icacls <path>` **query** and prints `WARNING —` when a second principal is on the
   file or an `(I)` flag says inheritance has been restored, naming both what it found and the
   command that narrows it again.
+- **Nothing this project parses may arrive through PowerShell's output formatter.** Every value a
+  `powershell.exe -Command` script emits is formatted on its way to stdout, and with stdout
+  redirected — which it always is here — that formatter **wraps at 80 columns**. Two answers this
+  package reads back are longer than that and were being read as truncated ones: the
+  loaded-configuration row (`Execute=`, `Arguments=` and `WorkingDirectory=` are absolute paths, so
+  a *correct* Task Scheduler install reported `command` and `cwd` as drifted) and `pipe-acl.ts`'s
+  success line (prefix, digest-length pipe name and a SID, read back as half a SID). Both now write
+  with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
+  pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
+  necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
+- **A `<Repetition>` belongs to a trigger that has fired, and `<RestartOnFailure>` is not a retry
+  policy for an action that exits non-zero.** Both measured on `windows-latest`, 2026-09-09 (run
+  `34317779107`, job `102357526877`), three tasks side by side for eleven minutes. The document
+  `supervisors/schtasks.ts` renders therefore carries the indefinite `PT5M` repetition on **two**
+  triggers: a `<RegistrationTrigger>`, because registering the task is itself a trigger event and so
+  the five-minute re-check exists from the moment `install` finishes, and the `<LogonTrigger>` for
+  the next boot. With the logon trigger alone the re-check did not exist at all between an install
+  and the next logon — `Start-ScheduledTask`, which is what `install` and `daemon start` call, is an
+  **on-demand** run that starts no trigger, and a logon trigger does not fire in a session the user
+  logged into before running `install`. `MultipleInstancesPolicy: IgnoreNew` is what makes the
+  trigger and the explicit start unable to produce two daemons, and that was measured too: a
+  registration trigger plus an immediate `Start-ScheduledTask` over a four-minute action recorded
+  one start. `<RestartOnFailure>` stays because a task failing to *launch* is a real and different
+  failure, but nothing here may count on it: a daemon that exits `10` is re-run by the repetition
+  and by nothing else, which is why T14's Windows arm waits about twenty minutes for five failed
+  starts. [ADR 0020](../../docs/adr/0020-always-running-local-daemon.md)'s note of 2026-09-09 is the
+  record.
+- **Address a scheduled task by folder *and* leaf, from one place.** `\xplainer\<user>-daemon` is a
+  path; `Register-ScheduledTask -TaskName` takes one because it is creating the name, and every
+  other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM query whose `TaskName`
+  is the **leaf** and whose `TaskPath` is the folder. Two of them are measured *refusing* a full
+  path on `windows-latest`, 2026-09-09, and both refuse quietly: `Get-ScheduledTask` writes a
+  non-terminating `ObjectNotFound` and exits `0` (T17 then read a correct install's loaded row back
+  as an empty command and reported drift on it), and `Unregister-ScheduledTask` reports success
+  having removed no task (T16's uninstall left the task it said it had deregistered). Two others —
+  `Start-ScheduledTask` and `Get-ScheduledTaskInfo` — are measured *accepting* one in the same batch
+  of runs (34310353206 and 34313848702). So the rule is not "a path never matches": it is that
+  **which** cmdlet tolerates one is undocumented and silent when it does not, so all of them are
+  addressed the documented way from `install/register.ts`'s `scheduledTaskSelector()` — the verbs in
+  `install/lifecycle.ts` and the proof helpers in `install/testing/` included. The one composed
+  command that does not come through it is the update's re-registration in `update/switch.ts`, and
+  that is correct: a `Register-` is creating the name and takes the whole path. The two queries also
+  carry `-ErrorAction Stop`, so a task that is not there is an honest "the query did not answer" — a
+  non-zero status and nothing on stdout — rather than a row of empty strings.
+- **A Windows deregistration is two commands, because unregistering does not stop.**
+  `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
+  job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance
+  running. `install/register.ts`'s `deregisterCommands` therefore emits `Stop-ScheduledTask` first
+  and tolerates its failure, or an uninstall leaves a daemon holding the state directory every file
+  naming it has just stopped naming — which is what an `EPERM` on removing that directory was
+  (`windows-latest`, 2026-09-09).
 - **The guard is handed a function, so a rotation reaches a daemon that is already running.**
   ADR 0020 §Security R-SEC-8's `xplainer token rotate` writes a new value and keeps the old one in
   `<token>.previous` for a grace window — five minutes by default, a day at most, `0` for a leak —

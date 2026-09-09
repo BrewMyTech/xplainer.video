@@ -6,11 +6,15 @@
 # this project's authors have:
 #
 #   * **T11**, criterion 11 — the create → narrate gate from T3, run against the
-#     **installed** daemon under the standard-user S4U principal, ending in a
-#     terminal `done`. Registering and starting a task proves registration; it
-#     does not prove that a job runs under a principal with no network
-#     credentials and no access to encrypted files, and that is exactly what
-#     `<LogonType>S4U</LogonType>` in `supervisors/schtasks.ts` asks for.
+#     **installed** daemon under an S4U principal, ending in a terminal `done`.
+#     Registering and starting a task proves registration; it does not prove that
+#     a job runs under a principal with no network credentials, no access to
+#     encrypted files and no interactive session, and that is exactly what
+#     `<LogonType>S4U</LogonType>` in `supervisors/schtasks.ts` asks for. The
+#     principal is this runner's own account rather than the throwaway standard
+#     user, because the measurement below settles that a token without elevation
+#     cannot register that logon type at all; the standard user's install is
+#     asserted for the refusal it is.
 #   * **T11**, criterion 12 — whether `Register-ScheduledTask` is in fact the
 #     only call that surfaces `SCHED_S_BATCH_LOGON_PROBLEM` (`0x0004131C`,
 #     267036). The plan records that claim as **unverified**, and `install.ts`'s
@@ -60,14 +64,33 @@
 # gate that runs on every push; this is a proof, and a proof is run when you want
 # it.
 #
-# WHY A LOCAL STANDARD ACCOUNT. A hosted `windows-latest` runner executes as
-# `runneradmin`, which is in the Administrators group, and registering an S4U
-# task from an elevated session for an administrator is a strictly easier case
-# than the one the product ships into. So both jobs create a **local standard
-# user** and register for that account: that is the principal ADR 0020's
-# degraded path is about, and the one whose missing "Log on as a batch job"
-# right produces `SCHED_S_BATCH_LOGON_PROBLEM`. The account, its profile and
-# every task registered for it are removed in an `always()` step.
+# WHY A LOCAL STANDARD ACCOUNT, AND WHAT IT TURNED OUT TO ESTABLISH. A hosted
+# `windows-latest` runner executes as `runneradmin`, which is in the
+# Administrators group, and registering an S4U task from an elevated session
+# looked like a strictly easier case than the one the product ships into. So
+# both jobs create a **local standard user**: that is the principal ADR 0020's
+# degraded path is about. The measurement below then answered a question nobody
+# had asked — a standard user cannot register an S4U task **at all**. Four
+# registrations, one throwaway task each, as `xplainer-t11` on 2026-09-09
+# (run 34306540942):
+#
+#   OK       InteractiveToken at \xplainer-probe-root
+#   OK       InteractiveToken at \xplainer-probe-folder\leaf
+#   REFUSED  S4U at \xplainer-probe-root            -> Access is denied.
+#   REFUSED  S4U at \xplainer-probe-folder\leaf     -> Access is denied.
+#
+# The folder is not the obstacle and neither is the root: `<LogonType>S4U</…>`
+# is, and it is refused whichever path it is registered at. `Register-` needs an
+# elevated token for that logon type, so an install run by a token without one
+# cannot get past it — including, on an ordinary Windows desktop, the first
+# account's own **filtered** token in a non-elevated shell.
+#
+# That is why criterion 11's create → narrate half is driven against an install
+# made by this runner's own administrator account, and the standard user's
+# attempt is asserted for what it is: a refusal that names the supervisor's own
+# words and undoes everything it had written. Both are facts about the shipped
+# installer and neither could be established anywhere else. The account, its
+# profile and every task registered for it are removed in an `always()` step.
 #
 # WHY ONE STEP IS A MEASUREMENT AND THE OTHER AN ASSERTION. Criterion 12 asks
 # *whether* a claim is true, so the job that answers it prints what each call
@@ -357,6 +380,74 @@ jobs:
             console.log('marker written');
           "
 
+      # A MEASUREMENT AND NOT AN ASSERTION, in the same spirit as criterion 12's
+      # own step: it prints what it found and exits `0` either way.
+      #
+      # `daemon install` registers `\xplainer\<user>-daemon`, which is two things
+      # at once — a task in a **subfolder** of the root task folder, and one
+      # whose principal is **S4U** — and the first run of this job answered
+      # `Register-ScheduledTask : Access is denied.` for the pair without saying
+      # which half it refused (2026-09-09, run 34304159108). A standard user
+      # registering in the root and a standard user creating a folder under it
+      # are different rights, and so is registering a logon type that stores no
+      # password, so the four combinations are registered as throwaway tasks and
+      # each answer is printed. `icacls` on the root task folder is printed
+      # beside them, because that folder's DACL is what decides the first half.
+      - name: What a standard user may register, and where
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = $env:XPLAINER_T11_ROOT
+          $probe = Join-Path $root 'register-probe.ps1'
+          $out = Join-Path $root 'register-probe.txt'
+          # The child script, line by line rather than as a here-string: a here-string's terminator
+          # has to sit in the first column, which nothing inside a YAML block scalar does. Nothing
+          # here is expanded by this session either, which is the other half of what matters —
+          # `Start-Process -Credential` hands the child *this* session's environment block, so the
+          # identity the child must ask for is `WindowsIdentity::GetCurrent()` and never `%USERNAME%`.
+          $lines = @(
+            '$ErrorActionPreference = ''Continue''',
+            '$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name',
+            'Write-Output "running as $me"',
+            'foreach ($name in @(''\xplainer-probe-root'', ''\xplainer-probe-folder\leaf'')) {',
+            '  foreach ($logon in @(''S4U'', ''InteractiveToken'')) {',
+            '    $xml = ''<?xml version="1.0" encoding="UTF-16"?>'' +',
+            '      ''<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'' +',
+            '      ''<Principals><Principal id="Author"><UserId>'' + $me + ''</UserId><LogonType>'' +',
+            '      $logon + ''</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>'' +',
+            '      ''<Settings><Enabled>true</Enabled><AllowStartOnDemand>true</AllowStartOnDemand></Settings>'' +',
+            '      ''<Actions Context="Author"><Exec><Command>cmd.exe</Command>'' +',
+            '      ''<Arguments>/c exit 0</Arguments></Exec></Actions></Task>''',
+            '    try {',
+            '      Register-ScheduledTask -Xml $xml -TaskName $name -Force -ErrorAction Stop | Out-Null',
+            '      Write-Output "OK       $logon at $name"',
+            '      Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue',
+            '    } catch {',
+            '      Write-Output "REFUSED  $logon at $name -> $($_.Exception.Message)"',
+            '    }',
+            '  }',
+            '}'
+          )
+          Set-Content -Path $probe -Value $lines -Encoding utf8
+          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
+          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
+          Set-LocalUser -Name $env:STANDARD_USER -Password $secret
+          $credential = New-Object System.Management.Automation.PSCredential(
+            "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+          Start-Process -FilePath 'powershell.exe' -Wait -Credential $credential `
+            -WorkingDirectory $root `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                            '-File', $probe) `
+            -RedirectStandardOutput $out -RedirectStandardError (Join-Path $root 'register-probe.err.txt')
+          Write-Host '--- what the standard user could register ---'
+          Get-Content $out -ErrorAction SilentlyContinue | Write-Host
+          Get-Content (Join-Path $root 'register-probe.err.txt') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- the root task folder DACL, which decides the folder half ---'
+          icacls C:\Windows\System32\Tasks | Write-Host
+          exit 0
+
       # The install, as the standard user. `Start-Process -Credential` is what
       # runs a process as another local account from an elevated session; the
       # exit code comes back through `-Wait -PassThru`, and both streams are
@@ -384,7 +475,16 @@ jobs:
       # directories go into the environment before the install is started, and
       # a throwaway logon creates that profile first, because a local account
       # that has never logged on has no `C:\Users\<user>` at all.
-      - name: Install as the standard user
+      #
+      # AND WHAT IT ASSERTS IS THE REFUSAL. The measurement two steps above
+      # settles that a standard user cannot register an S4U task at any path, so
+      # this install cannot succeed and a job that demanded it would be demanding
+      # something Windows does not offer. What it demands instead is the shipped
+      # behaviour on that refusal: a non-zero exit, a message that quotes the
+      # supervisor rather than guessing, and a rollback that leaves no task, no
+      # `daemon.json` and no mirrored artefact behind. The install that criterion
+      # 11's create → narrate half runs against is the next step's.
+      - name: A standard user's install is refused, and undoes everything it wrote
         shell: pwsh
         env:
           STANDARD_USER: ${{ inputs.standard_user }}
@@ -433,29 +533,76 @@ jobs:
               '--runtime', (Join-Path $root 'payload'), '--port', '18787') `
             -Credential $credential -WorkingDirectory $PWD `
             -RedirectStandardOutput $log -RedirectStandardError $err
-          Get-Content $log -ErrorAction SilentlyContinue | Write-Host
-          Get-Content $err -ErrorAction SilentlyContinue | Write-Host
-          if ($process.ExitCode -ne 0) { throw "daemon install exited $($process.ExitCode)" }
+          $said = (Get-Content $log -ErrorAction SilentlyContinue | Out-String) +
+            (Get-Content $err -ErrorAction SilentlyContinue | Out-String)
+          $said | Write-Host
+          # Exit `5` exactly, and not merely non-zero. P2-10 is "each degraded
+          # path in ADR 0020 exits with **its documented code**", and the two
+          # codes this refusal sits between are the ones a caller acts on
+          # differently: `5` (`ADMIN_REQUIRED_EXIT_CODE`) is "the supervisor is
+          # here and will not let *this* account register that logon type", and
+          # `6` (`NO_SUPERVISOR_EXIT_CODE`) is "there is no supervisor at all".
+          # A check that accepted any non-zero status is green over a
+          # regression that swapped one for the other, which is the whole of
+          # what this job is the judge of.
+          if ($process.ExitCode -ne 5) {
+            throw "a standard user's S4U install must exit 5 — ADR 0020's `"the supervisor is here and refused`" — and it exited $($process.ExitCode)"
+          }
+          Write-Host 'refused with exit 5, which is what it must do'
+          # It quotes the supervisor rather than guessing: the sentence carries
+          # `Register-ScheduledTask`'s own words, and the refusal says the
+          # supervisor is present and declined rather than absent.
+          if ($said -notmatch 'Access is denied') {
+            throw 'the refusal did not carry the supervisor own words'
+          }
+          if ($said -notmatch 'The supervisor is here and refused') {
+            throw 'the refusal did not say the supervisor was present'
+          }
+          # And it undid everything: no task under `\xplainer\`, no record, and
+          # no mirrored artefact under the standard user's own profile.
+          $left = @(Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue)
+          if ($left.Count -ne 0) {
+            $left | Format-List | Out-String | Write-Host
+            throw "the rollback left $($left.Count) task(s) registered"
+          }
+          $mirror = Join-Path $env:LOCALAPPDATA 'xplainer\service\xplainer-daemon.xml'
+          if (Test-Path $mirror) { throw "the rollback left the artefact at $mirror" }
+          if (Test-Path (Join-Path $root 'state\daemon.json')) {
+            throw 'the rollback left daemon.json behind'
+          }
+          Write-Host 'refused, and nothing of it is left'
+
+      # The install criterion 11 is actually asked of, made by the account whose
+      # token can register the logon type ADR 0020 chose. Everything else about
+      # it is the shipped command: the same payload, the same port, the same
+      # `<LogonType>S4U</LogonType>` principal — and no interactive session, which
+      # is the property that makes S4U worth having.
+      - name: Install as this runner's own account, whose token can register S4U
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:XPLAINER_T11_ROOT
+          $env:XPLAINER_STATE_DIR = Join-Path $root 'state'
+          & node apps\cli\dist\bin.js daemon install `
+            --runtime (Join-Path $root 'payload') --port 18787 | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "daemon install exited $LASTEXITCODE" }
           Get-ScheduledTask -TaskPath '\xplainer\' | Format-List | Out-String | Write-Host
-          Get-ScheduledTaskInfo -TaskName "\xplainer\$env:STANDARD_USER-daemon" |
+          Get-ScheduledTaskInfo -TaskPath '\xplainer\' -TaskName "$env:USERNAME-daemon" |
             Format-List | Out-String | Write-Host
-          # The mirrored artefact, under the standard user's own profile and
-          # nobody else's — which is the claim the environment above exists to
-          # make true, and the one whose failure ended the first run of this job.
-          # Its presence is asserted; printing it is best effort, because reading
-          # another account's profile file is a permission question of its own.
           $mirror = Join-Path $env:LOCALAPPDATA 'xplainer\service\xplainer-daemon.xml'
           if (-not (Test-Path $mirror)) { throw "the install mirrored no artefact at $mirror" }
           Write-Host "artefact: $mirror"
-          Get-Content $mirror -ErrorAction SilentlyContinue | Write-Host
+          Get-Content $mirror | Write-Host
+          if ((Get-Content $mirror -Raw) -notmatch '<LogonType>S4U</LogonType>') {
+            throw 'the registered principal is not S4U, which is the whole of criterion 11'
+          }
 
       # Criterion 11: T3's create → put_source → narrate gate against the
       # **installed** daemon. `mcp --attach` reads the socket out of the
       # `daemon.json` the install wrote, so the tools run inside the supervised
-      # process — the one whose principal is the standard user's S4U — rather
-      # than in a second copy of the server. The client itself runs as the
-      # runner's own account, which is the point: what is being established is
-      # that the *job* runs under that principal, not who asked for it.
+      # process — the one whose principal is S4U — rather than in a second copy
+      # of the server. What is being established is that the *job* runs under
+      # that principal, with no interactive session behind it.
       #
       # bash rather than pwsh, and a heredoc rather than a committed script:
       # this is a JSON-RPC pump and a WAV recorder, and both read as what they
@@ -465,64 +612,32 @@ jobs:
         run: |
           cat > gate.mjs <<'GATE'
           import { spawn } from "node:child_process";
-          import { mkdirSync, writeFileSync } from "node:fs";
-          import { join } from "node:path";
           import process from "node:process";
 
-          // The speech fixture, recorded on the spot: one sine WAV and its word
-          // spans per segment, which is what `XPLAINER_TTS_FIXTURE` names. The
-          // gate stops at narration, so nothing here needs a real synthesiser.
+          // **Speech is not what this gate establishes, and on Windows there is
+          // none to have.** `setup/manifest.ts`'s delivery position says so per
+          // platform: nothing is published for the `bundle` route, the pinned
+          // Kokoro image is linux/amd64 and `windows-latest` has no engine for
+          // it, and `--tts-url` acquires nothing. A recorded fixture could not
+          // reach the worker either: `XPLAINER_TTS_FIXTURE` is read in the
+          // process that runs the job, and that process is the **installed
+          // daemon**, which Task Scheduler started with the system environment
+          // — `<Exec>` has no environment map, which is the same fact
+          // `--state-dir` exists for.
+          //
+          // `dry_run` is the contract's own answer: silence of a plausible
+          // length, with real `timings.json` and real `captions.json`. Everything
+          // criterion 11 is about stays real — a job enqueued through
+          // `mcp --attach` over the daemon's own pipe, carried out by the
+          // supervised process under its S4U principal with no interactive
+          // session behind it, reaching a terminal `done`.
           const SEGMENTS = [
-            { id: "one", text: "The installed daemon answered.", seconds: 1.5, frequency: 440 },
-            { id: "two", text: "And it ran the job.", seconds: 1.2, frequency: 660 },
+            { id: "one", text: "The installed daemon answered." },
+            { id: "two", text: "And it ran the job." },
           ];
-          const sineWav = (seconds, frequency) => {
-            const rate = 24000;
-            const frames = Math.round(rate * seconds);
-            const data = Buffer.alloc(frames * 2);
-            for (let frame = 0; frame < frames; frame += 1) {
-              const value = Math.round(Math.sin((2 * Math.PI * frequency * frame) / rate) * 12000);
-              data.writeInt16LE(value, frame * 2);
-            }
-            const header = Buffer.alloc(44);
-            header.write("RIFF", 0);
-            header.writeUInt32LE(36 + data.length, 4);
-            header.write("WAVEfmt ", 8);
-            header.writeUInt32LE(16, 16);
-            header.writeUInt16LE(1, 20);
-            header.writeUInt16LE(1, 22);
-            header.writeUInt32LE(rate, 24);
-            header.writeUInt32LE(rate * 2, 28);
-            header.writeUInt16LE(2, 32);
-            header.writeUInt16LE(16, 34);
-            header.write("data", 36);
-            header.writeUInt32LE(data.length, 40);
-            return Buffer.concat([header, data]);
-          };
-          const fixtures = join(process.env.XPLAINER_T11_ROOT, "tts-fixtures");
-          mkdirSync(fixtures, { recursive: true });
-          const manifest = [];
-          for (const segment of SEGMENTS) {
-            writeFileSync(join(fixtures, `${segment.id}.wav`), sineWav(segment.seconds, segment.frequency));
-            const words = segment.text.split(/\s+/);
-            const step = segment.seconds / words.length;
-            writeFileSync(
-              join(fixtures, `${segment.id}-words.json`),
-              JSON.stringify(
-                words.map((word, index) => ({
-                  word,
-                  start_time: Number((index * step).toFixed(6)),
-                  end_time: Number(((index + 1) * step).toFixed(6)),
-                })),
-              ),
-            );
-            manifest.push({ text: segment.text, audio: `${segment.id}.wav`, words: `${segment.id}-words.json` });
-          }
-          writeFileSync(join(fixtures, "fixtures.json"), JSON.stringify(manifest));
 
           const child = spawn(process.execPath, ["apps/cli/dist/bin.js", "mcp", "--attach"], {
             stdio: ["pipe", "pipe", "inherit"],
-            env: { ...process.env, XPLAINER_TTS_FIXTURE: fixtures },
           });
           const replies = [];
           let buffered = "";
@@ -557,25 +672,48 @@ jobs:
           await waitFor(1);
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
+          // The two arguments each tool actually takes, which is what
+          // `packages/protocol/schemas/tools/` says and `scripts/e2e/render.mjs`
+          // drives: `explainer_put_source` writes **files** and nothing else, and
+          // the narration spec belongs to `explainer_narrate`. Handing the spec
+          // to `put_source` refused with "files is empty, so there is nothing to
+          // write" the first time this step was reached (2026-09-09).
+          //
+          // One agent-owned file is enough because this gate stops at narration:
+          // nothing here bundles a composition, and `Scenes.tsx` is the file the
+          // ownership boundary is about.
           console.log(JSON.stringify(await call(2, "explainer_create", { slug: "t11-windows" })));
           await call(3, "explainer_put_source", {
             slug: "t11-windows",
-            narration: { voice: "af_heart", speed: 1, fps: 30, segments: SEGMENTS.map(
-              (segment) => ({ id: segment.id, text: segment.text })) },
+            files: [
+              {
+                path: "Scenes.tsx",
+                content: "import type { SceneMap } from \"./Video\";\n" +
+                  "export const scenes: SceneMap = {};\n",
+              },
+            ],
           });
-          const enqueued = await call(4, "explainer_narrate", { slug: "t11-windows" });
+          const enqueued = await call(4, "explainer_narrate", {
+            slug: "t11-windows",
+            dry_run: true,
+            narration: { voice: "af_heart", speed: 1, fps: 30, segments: SEGMENTS },
+          });
           console.log(JSON.stringify(enqueued));
 
+          // `status`, which is what `explainer_job` answers with and what
+          // `explainer_job.output.json` names — the first run of this step polled
+          // a `state` field no record has, read `undefined` three hundred times
+          // and then failed a job that had reached `done` in 91 ms (2026-09-09).
           let job = null;
           for (let attempt = 0; attempt < 300; attempt += 1) {
             job = await call(100 + attempt, "explainer_job", { job_id: enqueued.job_id });
-            if (job?.state === "done" || job?.state === "error") break;
+            if (job?.status === "done" || job?.status === "error") break;
             await new Promise((done) => setTimeout(done, 1000));
           }
           console.log(JSON.stringify(job));
           child.kill();
-          if (job?.state !== "done") {
-            console.log(`FAIL: the job ended ${String(job?.state)}`);
+          if (job?.status !== "done") {
+            console.log(`FAIL: the job ended ${String(job?.status)}`);
             process.exitCode = 1;
           } else {
             console.log("check: the installed daemon, under the S4U principal, reached a terminal done");
@@ -583,40 +721,42 @@ jobs:
           GATE
           XPLAINER_STATE_DIR="$XPLAINER_T11_ROOT/state" node gate.mjs
 
-      - name: Uninstall as the standard user
+      # The uninstall is run by the account that made the install — this
+      # runner's own — because that is whose task and whose profile the artefact
+      # is under. It is `always()` so that the removal after it still runs when
+      # something earlier failed, and its two assertions are made only when
+      # nothing earlier did: uninstalling an install that never happened is not
+      # a regression, and `job.status` is what tells the two apart.
+      #
+      # The assertions are here because this is the only workflow that runs the
+      # shipped `daemon uninstall` against a real Task Scheduler, and the
+      # regression it guards is measured: `Unregister-ScheduledTask` given a
+      # task's full path in `-TaskName` removes nothing and reports success
+      # (`windows-latest`, run 34304152961), so an uninstall that only *printed*
+      # its status was green while leaving the task registered. The status and
+      # the emptiness of `\xplainer\` are two different claims and both are made.
+      - name: Uninstall
         if: always()
         shell: pwsh
         env:
-          STANDARD_USER: ${{ inputs.standard_user }}
+          NOTHING_FAILED_YET: ${{ job.status == 'success' }}
         run: |
           $ErrorActionPreference = 'Continue'
-          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
-          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
-          Set-LocalUser -Name $env:STANDARD_USER -Password $secret
-          $credential = New-Object System.Management.Automation.PSCredential(
-            "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
-          # The same environment the install was given, for the same reason: an
-          # uninstall reading runneradmin's profile would look for a task named
-          # after the wrong account and report having removed nothing. The
-          # profile exists by now, so this one needs no logon of its own.
-          $account = New-Object System.Security.Principal.NTAccount(
-            $env:COMPUTERNAME, $env:STANDARD_USER)
-          $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
-          $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
-          $profileDir = (Get-ItemProperty $profileKey -ErrorAction SilentlyContinue).ProfileImagePath
           $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T11_ROOT 'state'
-          if (-not [string]::IsNullOrWhiteSpace($profileDir)) {
-            $env:USER = $env:STANDARD_USER
-            $env:USERNAME = $env:STANDARD_USER
-            $env:USERDOMAIN = $env:COMPUTERNAME
-            $env:USERPROFILE = $profileDir
-            $env:LOCALAPPDATA = Join-Path $profileDir 'AppData\Local'
-            $env:APPDATA = Join-Path $profileDir 'AppData\Roaming'
+          & node apps\cli\dist\bin.js daemon uninstall | Write-Host
+          $code = $LASTEXITCODE
+          Write-Host "daemon uninstall exited $code"
+          $left = @(Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue)
+          $left | Format-List | Out-String | Write-Host
+          if ($env:NOTHING_FAILED_YET -ne 'true') {
+            Write-Host 'an earlier step failed, so neither is asserted here'
+            exit 0
           }
-          $removed = Start-Process -FilePath 'node' -Wait -PassThru `
-            -ArgumentList @('apps\cli\dist\bin.js', 'daemon', 'uninstall') `
-            -Credential $credential -WorkingDirectory $PWD
-          Write-Host "daemon uninstall exited $($removed.ExitCode)"
+          if ($code -ne 0) { throw "daemon uninstall exited $code" }
+          if ($left.Count -ne 0) {
+            throw "daemon uninstall reported success and left $($left.Count) task(s) under \xplainer\"
+          }
+          Write-Host 'uninstalled, and nothing is left registered'
 
       - name: Remove the throwaway account and every task it left
         if: always()
@@ -670,10 +810,23 @@ jobs:
           src/daemon/windows-acl.test.ts src/daemon/pipe-acl.test.ts
           src/daemon/token.test.ts src/commands/token.test.ts
 
-      # A real daemon mints a real token, and `icacls` is asked what is on it.
-      # `/inheritance:r /grant:r` leaves exactly one entry, so the assertion is
-      # an exact one: this account, and nothing else, and no `(I)`.
-      - name: A minted token carries one entry, for this account, not inherited
+      # ONE STEP, AND THAT IS A WINDOWS FACT RATHER THAN A STYLE. The runner puts
+      # each step's process tree into a job object and closes it when the step
+      # ends, so a daemon started with `Start-Process` in one step is **gone**
+      # before the next one begins. Measured here on 2026-09-09, run
+      # 34306540942: the step that minted the token passed, the next step's
+      # `daemon status` answered `condition: unreachable` with
+      # `ECONNREFUSED` on the port `runtime.json` still recorded, and the
+      # cleanup step's `taskkill` said "The process 8412 not found". Nothing was
+      # wrong with the daemon — `serve.log` ends with its ready lines and no
+      # error. So everything that needs this one alive happens below, in order:
+      # the entry it minted, the re-verification once inheritance is restored,
+      # and R-SEC-8's rotation against a daemon that was never restarted.
+      #
+      # The three proofs a Task Scheduler daemon makes elsewhere in this
+      # repository are unaffected: a task is started by the *service*, not by the
+      # step, and lives in no step's job object.
+      - name: A minted token's entry, its re-verification, and a rotation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -687,15 +840,36 @@ jobs:
           "XPLAINER_T26_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "XPLAINER_T26_PID=$($daemon.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          # **The ready line, not the token file.** The mint happens before the two binds, so a
+          # token on disk says only that the daemon got that far — and every question below is
+          # about a daemon that is *serving*: `daemon status` reads the port out of `daemon.json`
+          # and `runtime.json`, and both are written at readiness. Waiting on the token instead
+          # asked `daemon status` two seconds into a start that had not finished, and it answered
+          # `condition: absent` about a daemon that was seconds from listening (2026-09-09, run
+          # 34309285430). ADR 0025 §Part three makes that line the contract; this reads it.
+          $readyFile = Join-Path $root 'ready.json'
           $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
-          foreach ($attempt in 1..60) {
-            if (Test-Path $token) { break }
+          $ready = $null
+          foreach ($attempt in 1..120) {
+            # `Get-Content -Raw` answers `$null` for the zero-byte file `Start-Process` created,
+            # and `IsNullOrWhiteSpace` is what takes a null without throwing.
+            $line = if (Test-Path $readyFile) { Get-Content $readyFile -Raw } else { $null }
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+              $ready = $line | ConvertFrom-Json
+              break
+            }
+            if ($daemon.HasExited) { break }
             Start-Sleep -Milliseconds 500
           }
-          if (-not (Test-Path $token)) {
-            Get-Content (Join-Path $root 'serve.log') | Write-Host
-            throw "the daemon never minted a token"
+          Write-Host '--- serve.log ---'
+          Get-Content (Join-Path $root 'serve.log') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- end serve.log ---'
+          if ($null -eq $ready) {
+            $why = if ($daemon.HasExited) { "it exited $($daemon.ExitCode)" } else { 'it is still running' }
+            throw "the daemon never announced a ready line ($why)"
           }
+          Write-Host "ready on port $($ready.port), socket $($ready.socket)"
+          if (-not (Test-Path $token)) { throw "the daemon announced readiness and minted no token" }
 
           $acl = Get-Acl -Path $token
           $acl.AccessToString | Write-Host
@@ -713,17 +887,11 @@ jobs:
           }
           Write-Host "token ACL: one entry, $granted, not inherited"
 
-      # The second half of R-SEC-5, and the only place it can fire: inheritance
-      # is switched back on underneath a running daemon, and `daemon status` has
-      # to say so. Nothing else about the file changes — the mode is identical
-      # before and after — which is exactly why the re-verification exists.
-      - name: daemon status warns once inheritance is restored
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T26_ROOT 'state'
-          $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
-
+          # ── The second half of R-SEC-5, and the only place it can fire:
+          # inheritance is switched back on underneath a running daemon and
+          # `daemon status` has to say so. Nothing else about the file changes —
+          # the mode is identical before and after — which is exactly why the
+          # re-verification exists.
           $clean = & node apps\cli\dist\bin.js daemon status 2>&1 | Out-String
           $clean | Write-Host
           if ($clean -notmatch 'token file:\s+.*one access-control entry') {
@@ -742,23 +910,16 @@ jobs:
           }
           Write-Host 're-verification warned, and named the remedy'
 
-      # R-SEC-8 end to end, against the daemon started two steps above: it is
-      # still running, it was never restarted, and after the rotation both the
-      # new value and the retired one open it. The new files carry the same
-      # single entry the mint's did, because a grace file holds a live
-      # credential.
-      - name: token rotate, with the daemon still up, and both values accepted
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T26_ROOT 'state'
-          $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
+          # ── R-SEC-8 end to end, against the daemon started at the top of this
+          # step: it is still running, it was never restarted, and after the
+          # rotation both the new value and the retired one open it. The new
+          # files carry the same single entry the mint's did, because a grace
+          # file holds a live credential.
           $previous = "$token.previous"
-          # Undo the widening of the step above, so what is asserted below is
-          # the rotation's own doing.
+          # Undo the widening above, so what is asserted below is the rotation's
+          # own doing.
           icacls $token /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 
-          $ready = Get-Content (Join-Path $env:XPLAINER_T26_ROOT 'ready.json') -Raw | ConvertFrom-Json
           $port = $ready.port
           $before = (Get-Content $token -Raw).Trim()
           $healthz = "http://127.0.0.1:$port/healthz"
@@ -788,18 +949,31 @@ jobs:
           $third = (Get-Content $token -Raw).Trim()
           if (Test-Path $previous) { throw "--grace 0 left a grace file behind" }
           foreach ($value in @($before, $after)) {
+            $refused = $false
             try {
               Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $value" } -UseBasicParsing | Out-Null
+            } catch {
+              # Caught untyped and read by number: PowerShell 7 raises
+              # `HttpResponseException` where Windows PowerShell raised
+              # `WebException`, so a `catch [System.Net.WebException]` here would
+              # rethrow on the very host this step runs under. `.Response.StatusCode`
+              # is an enum on both, and `[int]` is the one reading that works on both.
+              $refused = ([int]$_.Exception.Response.StatusCode) -eq 401
+            }
+            if (-not $refused) {
               throw "a retired value still opened the daemon after --grace 0"
-            } catch [System.Net.WebException] {
-              if ($_.Exception.Response.StatusCode.value__ -ne 401) { throw }
             }
           }
           $last = Invoke-WebRequest -Uri $healthz -Headers @{ Authorization = "Bearer $third" } -UseBasicParsing
           if ($last.StatusCode -ne 200) { throw "the newest token was refused" }
           Write-Host 'closed: only the newest value is accepted'
 
-      - name: Stop the daemon
+      # The daemon is already gone by the time this runs — the step it was
+      # started in took it with it — so `taskkill` answering "not found" is the
+      # ordinary outcome and not a failure. What this step is *for* is printing
+      # `serve.log`, and `exit 0` is what stops a cleanup step from failing the
+      # job over a process it was asked to kill twice.
+      - name: What the daemon said, and anything of it that is left
         if: always()
         shell: pwsh
         run: |
@@ -811,6 +985,7 @@ jobs:
             Get-Content (Join-Path $env:XPLAINER_T26_ROOT 'serve.log') -ErrorAction SilentlyContinue |
               Write-Host
           }
+          exit 0
 
   # The gap neither ADR 0020 nor round 1 closed: `icacls` on the token says
   # nothing about the **named pipe**, which on Windows replaces the `0700`
@@ -856,11 +1031,24 @@ jobs:
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "created $env:COMPUTERNAME\$env:SECOND_USER (Users only)"
 
-      # The daemon binds its pipe and narrows it. The descriptor is read back in
-      # the step after this one, because "Everyone is gone" is the fact the
-      # two-account probe below is a consequence of.
-      - name: Start a daemon and note the pipe it bound
+      # ONE STEP, for the reason the T26 job above states in full: the runner
+      # closes a job object around each step's process tree when the step ends,
+      # so a daemon started here with `Start-Process` is gone before the next
+      # step begins. A named pipe with nothing listening on it cannot be asked
+      # anything, so the bind, the descriptor and the second account's refusal
+      # all happen while this one daemon is up.
+      #
+      # The descriptor read is still **Windows PowerShell**, the host
+      # `daemon/pipe-acl.ts` shells out to: `PipeSecurity`, `PipeAccessRule` and
+      # `PipeStream.GetAccessControl()` are instance members of the .NET
+      # Framework types, and in PowerShell 7 the same three live behind
+      # `System.IO.Pipes.AccessControl`'s extension methods and a static factory.
+      # It is reached by writing a script and running `powershell.exe -File` on
+      # it rather than by being a step with its own `shell:`.
+      - name: The pipe a daemon binds, its descriptor, and a second account refused
         shell: pwsh
+        env:
+          SECOND_USER: ${{ inputs.second_user }}
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'xplainer-t26-pipe'
@@ -876,71 +1064,90 @@ jobs:
           $readyFile = Join-Path $root 'ready.json'
           $ready = $null
           foreach ($attempt in 1..60) {
-            if ((Test-Path $readyFile) -and (Get-Content $readyFile -Raw).Trim() -ne '') {
-              $ready = Get-Content $readyFile -Raw | ConvertFrom-Json
+            # `Get-Content -Raw` on a zero-byte file answers `$null`, and `Start-Process
+            # -RedirectStandardOutput` creates that file the instant the child starts — so
+            # `.Trim()` on the first pass is a method call on `$null`, which under
+            # `$ErrorActionPreference = 'Stop'` ends the step before the daemon has had a
+            # millisecond. `IsNullOrWhiteSpace` takes a null and answers `$true`.
+            $line = if (Test-Path $readyFile) { Get-Content $readyFile -Raw } else { $null }
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+              $ready = $line | ConvertFrom-Json
               break
             }
+            # A daemon that exited says so faster than the loop can time out, and its reason is in
+            # `serve.log` rather than in anything this step can see.
+            if ($daemon.HasExited) { break }
             Start-Sleep -Milliseconds 500
           }
+          # Whatever happened, print what the daemon said: the step that redirected stderr to a file
+          # and showed none of it is why the first failure here reported nothing at all.
+          Write-Host '--- serve.log ---'
+          Get-Content (Join-Path $root 'serve.log') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- end serve.log ---'
           if ($null -eq $ready) {
-            Get-Content (Join-Path $root 'serve.log') | Write-Host
-            throw 'the daemon never announced a ready line'
+            $why = if ($daemon.HasExited) { "it exited $($daemon.ExitCode)" } else { 'it is still running' }
+            throw "the daemon never announced a ready line ($why)"
           }
-          Get-Content (Join-Path $root 'serve.log') | Write-Host
           $name = $ready.socket -replace '^\\\\[.?]\\pipe\\', ''
           "XPLAINER_T26_PIPE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "pipe: $($ready.socket)"
 
-      # `shell: powershell` — Windows PowerShell, deliberately, and the same host
-      # `daemon/pipe-acl.ts` shells out to. `PipeSecurity`, `PipeAccessRule` and
-      # `PipeStream.GetAccessControl()` are instance members of the .NET Framework
-      # types; in PowerShell 7 the same three live behind
-      # `System.IO.Pipes.AccessControl`'s extension methods and a static factory,
-      # so a step written for one host does not run on the other. One host, one
-      # spelling, on both sides of this proof.
-      - name: The pipe's descriptor names this account and not Everyone
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $name = $env:XPLAINER_T26_PIPE_NAME
-          # `ReadData` and not only `ReadPermissions`: this constructor derives the
-          # pipe's direction from the rights and throws ArgumentOutOfRangeException
-          # for a value carrying neither `ReadData` nor `WriteData`, so a
-          # permissions-only probe never opens the pipe it is asking about. The
-          # same rule is why `daemon/pipe-acl.ts`'s own opener asks for it.
-          $rights = [System.IO.Pipes.PipeAccessRights]'ReadData,ReadPermissions'
-          $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, $rights,
-            [System.IO.Pipes.PipeOptions]::None,
-            [System.Security.Principal.TokenImpersonationLevel]::None,
-            [System.IO.HandleInheritability]::None)
-          try {
-            $client.Connect(5000)
-            $security = $client.GetAccessControl()
-            $sddl = $security.GetSecurityDescriptorSddlForm('Access')
-            Write-Host "pipe DACL: $sddl"
-            $everyone = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
-            if ($sddl -match [regex]::Escape($everyone.Value)) {
-              throw "the pipe still grants Everyone: $sddl"
-            }
-            $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-            if ($sddl -notmatch [regex]::Escape($me.Value)) {
-              throw "the pipe does not grant this account: $sddl"
-            }
-          } finally {
-            $client.Dispose()
+          # ── The descriptor, read under Windows PowerShell. Written a line at a
+          # time for the reason the second account's probe below is: a
+          # here-string's terminator has to start its own line, and a line at
+          # column 0 inside a YAML block scalar ends the block.
+          $descriptor = Join-Path $root 'descriptor.ps1'
+          $descriptorLines = @(
+            'param([string]$Name)',
+            '$ErrorActionPreference = ''Stop''',
+            '# `ReadData` and not only `ReadPermissions`: this constructor derives the pipe''s',
+            '# direction from the rights and throws ArgumentOutOfRangeException for a value',
+            '# carrying neither `ReadData` nor `WriteData`, so a permissions-only probe never',
+            '# opens the pipe it is asking about. `daemon/pipe-acl.ts`''s own opener obeys the',
+            '# same rule.',
+            '$rights = [System.IO.Pipes.PipeAccessRights]''ReadData,ReadPermissions''',
+            '$client = New-Object System.IO.Pipes.NamedPipeClientStream(''.'', $Name, $rights,',
+            '  [System.IO.Pipes.PipeOptions]::None,',
+            '  [System.Security.Principal.TokenImpersonationLevel]::None,',
+            '  [System.IO.HandleInheritability]::None)',
+            'try {',
+            '  $client.Connect(5000)',
+            '  $security = $client.GetAccessControl()',
+            '  # Printed for the record, and compared as SIDs rather than as this string:',
+            '  # `GetSecurityDescriptorSddlForm` abbreviates a well-known account to its',
+            '  # two-letter alias, so a correctly narrowed pipe answered `D:P(A;;0x1f019f;;;LA)`',
+            '  # on `windows-latest` — `LA` being the built-in Administrator, RID 500, which is',
+            '  # what a hosted runner runs as — and a search for the SID text found nothing',
+            '  # (2026-09-09).',
+            '  [Console]::Out.WriteLine(''pipe DACL: '' +',
+            '    $security.GetSecurityDescriptorSddlForm(''Access''))',
+            '  if ($security.AreAccessRulesProtected -ne $true) {',
+            '    throw ''the pipe descriptor still inherits''',
+            '  }',
+            '  $rules = @($security.GetAccessRules($true, $true,',
+            '    [System.Security.Principal.SecurityIdentifier]))',
+            '  if ($rules.Count -ne 1) {',
+            '    throw ''the pipe carries '' + $rules.Count + '' entries, not one''',
+            '  }',
+            '  $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+            '  if ($rules[0].IdentityReference -ne $me) {',
+            '    throw ''the pipe grants '' + $rules[0].IdentityReference.Value + '' and not '' + $me.Value',
+            '  }',
+            '} finally {',
+            '  $client.Dispose()',
+            '}',
+            '[Console]::Out.WriteLine(''pipe descriptor: this account, and not Everyone'')'
+          )
+          Set-Content -Path $descriptor -Value $descriptorLines -Encoding ascii
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File $descriptor -Name $name | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            throw "the descriptor probe exited $LASTEXITCODE"
           }
-          Write-Host 'pipe descriptor: this account, and not Everyone'
 
-      # The assertion the whole story is for. A second local account opens the
-      # pipe the way any client would — `PipeDirection.In`, which the **default**
-      # descriptor grants to Everyone — and has to be refused.
-      - name: A second local account is refused the pipe
-        shell: pwsh
-        env:
-          SECOND_USER: ${{ inputs.second_user }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = $env:XPLAINER_T26_PIPE_ROOT
+          # ── The assertion the whole story is for. A second local account opens
+          # the pipe the way any client would — `PipeDirection.In`, which the
+          # **default** descriptor grants to Everyone — and has to be refused.
           $probeDir = Join-Path $root 'probe'
           New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
           $probe = Join-Path $probeDir 'open-pipe.ps1'
@@ -982,7 +1189,7 @@ jobs:
           $run = Start-Process -FilePath 'powershell.exe' -Wait -PassThru -Credential $credential `
             -WorkingDirectory $probeDir `
             -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-              '-File', $probe, '-Server', '.', '-Name', $env:XPLAINER_T26_PIPE_NAME,
+              '-File', $probe, '-Server', '.', '-Name', $name,
               '-Answer', $answer)
           Write-Host "the second account's probe exited $($run.ExitCode)"
           if (-not (Test-Path $answer)) { throw 'the second account wrote no answer at all' }
@@ -993,6 +1200,10 @@ jobs:
           }
           Write-Host 'two accounts, one pipe, and only the creating account can open it'
 
+      # `exit 0` for the reason the T26 job's cleanup carries it: the daemon went
+      # with the step that started it, so `taskkill` answers "not found" and a
+      # cleanup step must not fail a job over a process it was asked to kill
+      # twice.
       - name: Stop the daemon and remove the second account
         if: always()
         shell: pwsh
@@ -1003,5 +1214,10 @@ jobs:
           if ($env:XPLAINER_T26_PIPE_PID) {
             taskkill /PID $env:XPLAINER_T26_PIPE_PID /T /F | Out-Host
           }
+          if ($env:XPLAINER_T26_PIPE_ROOT) {
+            Get-Content (Join-Path $env:XPLAINER_T26_PIPE_ROOT 'serve.log') -ErrorAction SilentlyContinue |
+              Write-Host
+          }
           Remove-LocalUser -Name $env:SECOND_USER -ErrorAction SilentlyContinue
           Write-Host 'daemon stopped and account removed'
+          exit 0

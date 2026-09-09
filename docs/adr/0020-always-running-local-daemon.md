@@ -842,3 +842,60 @@ clock-validation rule and the residual it leaves open are argued. This note reco
 was needed and points at the record that designs it, rather than carrying a design of its own.
 
 This record stays `accepted` and no line above is rewritten.
+## Note, 2026-09-09: the Windows restart policy, measured — one half of it does not happen, and the
+other half was not running at all
+
+§Decision Outcome's table gives Windows the restart policy "`RestartOnFailure` 3 × `PT1M`, plus an
+indefinite `PT5M` trigger repetition with `IgnoreNew`", and §Restart on crash builds on it: "on
+Windows the indefinite repetition trigger still restarts the process every five minutes, at which
+point it re-reads the stall flag and exits 0 again." Both sentences were written from the schema.
+They have now been measured on a real `windows-latest` machine — three throwaway tasks side by side,
+one action that exits `10`, `Get-ScheduledTaskInfo` polled every twenty seconds for eleven minutes
+(run `34317779107`, job `102357526877`) — and the measurement disagrees with each of them in a
+different way. Nothing above is rewritten; this note is what the record now says on the subject.
+
+**`<RestartOnFailure>` does not restart an action that exits non-zero.** The task in the measurement
+carried `<Count>3</Count>` and `<Interval>PT1M</Interval>`, registered and read back out of
+`Export-ScheduledTask`, and was started **by a trigger** rather than on demand. Its runs are five
+minutes apart, not one minute apart. A Win32 exit code of `10` produces a *completed* run that Task
+Scheduler records as `LastTaskResult 10`; the failure `<RestartOnFailure>` restarts is the task
+failing to **launch**. The element stays in the document — that is a real, different failure — but
+the "3 × `PT1M`" is not a retry cadence for a daemon that started and exited, and no proof or record
+in this repository may count it as one. The effective Windows cadence is the `PT5M` repetition
+alone.
+
+**A `<Repetition>` belongs to a trigger, and the shipped document's trigger was not firing.** This
+is the half that was a product defect rather than an overstated record. The document as first built
+carried the repetition on its `<LogonTrigger>`, and `daemon install` started the task with
+`Start-ScheduledTask` — which is an **on-demand** run: it starts the action and starts no trigger,
+so no repetition follows it. A logon trigger fires at an interactive logon, which a hosted runner
+never has and which a real machine has already had by the time a user runs `xplainer daemon install`
+in a terminal inside that session. So on Windows, between an install and the next logon, **nothing
+re-checked the daemon at all**: the daemon `install` started and then killed stayed dead. Measured
+three times identically before the fix — one run, and a `LastRunTime` frozen for thirty minutes
+(runs `34308488886`, `34311062150`, `34313848702`).
+
+**As amended, the document carries two triggers.** A `<RegistrationTrigger>` carrying the same
+indefinite `PT5M` `<Repetition>` sits beside the `<LogonTrigger>`, because **registering the task is
+itself the trigger event**: the run that registration produces is a triggered run, and its
+repetition then runs the task every five minutes for ever. The same measurement watched that
+document run three times, five minutes apart, started by nothing but its own registration. The two
+triggers are complementary and both are kept — registration covers this boot, the logon trigger
+covers the next one — and neither carries a `<Duration>`, which is what keeps the repetition
+indefinite.
+
+**`install`'s explicit `Start-ScheduledTask` stays, and `IgnoreNew` is why that is safe.** The third
+task in the measurement registered with a `<RegistrationTrigger>` and a four-minute action and was
+then asked for `Start-ScheduledTask` immediately; it recorded **one** start.
+`MultipleInstancesPolicy` `IgnoreNew` — already in the table — is what makes a trigger and an
+explicit start unable to produce two concurrent daemons. The explicit start is kept because `daemon
+start` (T12) is that same call and has to work on a task that is registered and not running.
+
+**What this changes downstream.** T14's Windows arm now waits out five repetitions — about twenty
+minutes — rather than three `PT1M` retries and a repetition, and `install/testing/breaker-proof.ts`
+and `daemon-breaker.yml` carry that number with the measurement written beside it. §Restart on
+crash's "cheap no-op" sentence is unchanged in substance: a latched daemon on Windows is still asked
+to run every five minutes, still re-reads the flag, and still exits `0`. What is corrected is *which
+element* asks it, and the fact that before this amendment nothing did.
+
+This record stays `accepted` and no line above is rewritten.

@@ -13,9 +13,19 @@
  * shipped `serve`; the failure is a **real bind refusal** — this process holds the port recorded in
  * `daemon.json`, so every start resolves that port, fails `EADDRINUSE`, records its own end and
  * exits `10` — and the cadence between attempts is the supervisor's own: `RestartSec=2` under
- * systemd, `ThrottleInterval` 30 s under launchd, and the three `PT1M` retries then the `PT5M`
- * repetition under Task Scheduler. That is why this script takes minutes on Linux and the better
- * part of a quarter of an hour on Windows.
+ * systemd, `ThrottleInterval` 30 s under launchd, and the `PT5M` trigger repetition under Task
+ * Scheduler. That is why this script takes minutes on Linux and the better part of half an hour on
+ * Windows.
+ *
+ * **The Windows cadence is the repetition and nothing else, and that is a measurement.** ADR 0020's
+ * table reads "`RestartOnFailure` 3 × `PT1M`, plus an indefinite `PT5M` trigger repetition", and
+ * the first half of it does not happen: on `windows-latest`, 2026-09-09 (run 34317779107, job
+ * 102357526877) a task with `<Count>3</Count>` and `<Interval>PT1M</Interval>` registered and read
+ * back out of `Export-ScheduledTask`, started **by a trigger**, whose action exits `10`, was re-run
+ * at five-minute spacing and never at one-minute spacing. An action exiting non-zero is a
+ * *completed* run recorded as `LastTaskResult 10`; the failure `<RestartOnFailure>` restarts is the
+ * task failing to launch. So five failures here are five repetitions — about twenty minutes — and
+ * {@link historyBudgetMs} says so.
  *
  * ```sh
  * # macOS, on this machine, under a throwaway label removed in a `finally`:
@@ -53,9 +63,9 @@
  *    the throttle interval.
  * 3. **`daemon status` says so, in words, naming the pid.** The condition is `stalled` and ADR
  *    0020's first sentence names this process as the one holding the port.
- * 4. **Windows only: the `PT5M` repetition re-reads the flag and exits `0` again.** The logon
- *    trigger's repetition keeps starting the task after the restart count is spent, and each of
- *    those runs must read the latch and exit `0` without adding a start record.
+ * 4. **Windows only: the `PT5M` repetition re-reads the flag and exits `0` again.** The
+ *    registration trigger's repetition keeps starting the task for ever, and each of those runs
+ *    must read the latch and exit `0` without adding a start record.
  * 5. **`xplainer daemon restart` clears it**, and a daemon comes back and answers — which is only
  *    possible because the port is released first, in the step before.
  */
@@ -85,13 +95,17 @@ import { currentSupervisorEnvironment, type ProbeCommand, runProbe } from "../pr
 import {
   deregisterCommands,
   guiService,
+  POWERSHELL,
+  POWERSHELL_ARGV,
   type RegistrationTarget,
   registerCommands,
+  scheduledTaskSelector,
 } from "../register.js";
 import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
 import { renderScheduledTask } from "../supervisors/schtasks.js";
 import { renderSystemdUnit } from "../supervisors/systemd.js";
+import { removeScratchRoot } from "./scratch.js";
 
 /** The launchd label this proof registers under. Never the product's, and re-enabled in a `finally`. */
 export const THROWAWAY_LABEL = "video.xplainer.t14-proof";
@@ -129,9 +143,11 @@ const HELD_PORT = 18_790;
 /**
  * How long each platform's five failures are allowed to take, at that platform's own cadence.
  *
- * `RestartSec=2` under systemd, a 30-second `ThrottleInterval` under launchd, and under Task
- * Scheduler three `PT1M` retries followed by a `PT5M` repetition that has to fire twice — which is
- * why the Windows budget is a quarter of an hour and is not a sign that anything is stuck.
+ * `RestartSec=2` under systemd and a 30-second `ThrottleInterval` under launchd. Under Task
+ * Scheduler it is the `PT5M` trigger repetition **five times over** — the registration trigger's
+ * first run and four repetitions, twenty minutes of wall clock — because `<RestartOnFailure>`'s
+ * three `PT1M` retries do not happen for an action that exits non-zero (the header's measurement).
+ * Twenty-six minutes is that with slack, and it is not a sign that anything is stuck.
  */
 function historyBudgetMs(platform: NodeJS.Platform): number {
   if (platform === "linux") {
@@ -141,7 +157,7 @@ function historyBudgetMs(platform: NodeJS.Platform): number {
     return 420_000;
   }
   if (platform === "win32") {
-    return 900_000;
+    return 1_560_000;
   }
   return 300_000;
 }
@@ -270,9 +286,12 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
 
   let artefactPath: string;
   let identity: string;
+  /** What the shipped builders would address on this machine, and what has to be rewritten away. */
+  let productName = "";
   if (kind === "launchd") {
     const rendered = renderLaunchAgentPlist(spec, environment);
     identity = THROWAWAY_LABEL;
+    productName = rendered.identity;
     artefactPath = join(home, "Library", "LaunchAgents", `${THROWAWAY_LABEL}.plist`);
     writeFileSync(
       artefactPath,
@@ -285,12 +304,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   } else if (kind === "systemd") {
     const rendered = renderSystemdUnit(spec, environment);
     identity = THROWAWAY_UNIT;
+    productName = rendered.identity;
     artefactPath = join(process.env.HOME ?? home, ".config", "systemd", "user", THROWAWAY_UNIT);
     mkdirSync(join(artefactPath, ".."), { recursive: true });
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   } else {
     const rendered = renderScheduledTask(spec, environment);
     identity = THROWAWAY_TASK;
+    productName = rendered.identity;
     artefactPath = join(root, "task.xml");
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   }
@@ -307,12 +328,15 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   });
 
   const target: RegistrationTarget = { kind, identity, artefact: artefactPath, uid };
-  const product =
-    kind === "launchd"
-      ? "video.xplainer.daemon"
-      : kind === "systemd"
-        ? "xplainer.service"
-        : "\\xplainer\\";
+  // The product's own word for this daemon, rewritten to the throwaway one. On Windows it is the
+  // **leaf** of the task path and not the whole of it, because `scheduledTaskSelector()` splits
+  // every `*-ScheduledTask` command but `Register-`'s into `-TaskPath … -TaskName '<leaf>'`, so
+  // the leaf is the only part a substitution can reach — and rewriting `\xplainer\` to itself,
+  // which is what stood here, rewrote nothing at all.
+  const [product, replacement] =
+    kind === "task-scheduler"
+      ? [taskLeaf(productName), taskLeaf(identity)]
+      : [productName, identity];
   return {
     root,
     home,
@@ -321,11 +345,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
     run: (command) =>
       runProbe({
         ...command,
-        argv: command.argv.map((word) =>
-          word.replaceAll(product, kind === "task-scheduler" ? "\\xplainer\\" : identity),
-        ),
+        argv: command.argv.map((word) => word.replaceAll(product, replacement)),
       }),
   };
+}
+
+/** The name a `-TaskName` argument carries: everything after the last backslash of a task path. */
+function taskLeaf(identity: string): string {
+  return identity.slice(identity.lastIndexOf("\\") + 1);
 }
 
 /**
@@ -558,7 +585,7 @@ async function proveLaunchd(squatter: Server): Promise<void> {
       shell(step.command.program, [...step.command.argv]);
     }
     shell("launchctl", ["enable", service]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -601,33 +628,48 @@ async function proveSystemd(squatter: Server): Promise<void> {
     }
     rmSync(bed.target.artefact, { force: true });
     shell("systemctl", ["--user", "daemon-reload"]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
 // ── Windows ──────────────────────────────────────────────────────────────────────────────────
 
-/** `Get-ScheduledTaskInfo`'s two fields, which are the documented machine-readable answer here. */
+/**
+ * `Get-ScheduledTaskInfo`'s two fields, which are the documented machine-readable answer here.
+ *
+ * Addressed through {@link scheduledTaskSelector} rather than by writing `-TaskName '<full path>'`
+ * here, for `register.ts`'s reason: the folder and the leaf are two arguments, and this file having
+ * its own spelling of that is a second copy of a rule to get wrong. `Get-ScheduledTaskInfo` does
+ * happen to accept a full path — it is measured doing so in run 34313848702 — but `Get-ScheduledTask`
+ * does not, and there is no reading of the module's documentation that says which is which.
+ */
 function taskInfo(): { lastRunTime: string; lastResult: string } {
-  const answer = shell("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `$info = Get-ScheduledTaskInfo -TaskName '${THROWAWAY_TASK}'; ` +
-      "Write-Output $info.LastRunTime.ToString('o'); Write-Output $info.LastTaskResult",
+  const answer = shell(POWERSHELL, [
+    ...POWERSHELL_ARGV,
+    `$info = Get-ScheduledTaskInfo ${scheduledTaskSelector(THROWAWAY_TASK)}; ` +
+      "[Console]::Out.WriteLine($info.LastRunTime.ToString('o')); " +
+      "[Console]::Out.WriteLine($info.LastTaskResult)",
   ]);
   const lines = answer.stdout.split("\n").map((line) => line.trim());
   return { lastRunTime: lines[0] ?? "", lastResult: lines[1] ?? "" };
 }
 
 /**
- * Task Scheduler: three `PT1M` retries, then the `PT5M` repetition that keeps knocking.
+ * Task Scheduler: the `PT5M` repetition, five times over, and then once more.
  *
- * The repetition is the half that only exists here. Once `<RestartOnFailure>`'s count is spent the
- * task stops being restarted, but the logon trigger's `<Repetition>` starts it again every five
- * minutes for ever — so a latched daemon is asked to run again and again, and each of those runs
- * has to read the flag, exit `0`, and leave the latch and the history alone. A run that started
- * over would be a crash loop with a five-minute period.
+ * The repetition is the whole of the cadence here, and it is the half that only exists on this
+ * platform. `<RestartOnFailure>` restarts a task that failed to *launch*, not an action that
+ * exited `10` — measured, see the header — so nothing brings the daemon back but the trigger
+ * repetition, which starts the task again every five minutes for ever. That is what produces the
+ * five failed starts, and it is also why the proof does not end there: a latched daemon goes on
+ * being asked to run, and each of those runs has to read the flag, exit `0`, and leave the latch
+ * and the history alone. A run that started over would be a crash loop with a five-minute period.
+ *
+ * The repetition needs a trigger that has **fired**, which is why the shipped document carries a
+ * `<RegistrationTrigger>` beside its `<LogonTrigger>`: registering the task is the trigger event,
+ * and a hosted runner — like a machine whose user logged in before `install` ran — never fires the
+ * logon one. Before that trigger existed this arm measured exactly one run and a `LastRunTime`
+ * frozen for thirty minutes.
  */
 async function proveTaskScheduler(squatter: Server): Promise<void> {
   const bed = prepareBed("task-scheduler", 0);
@@ -668,7 +710,7 @@ async function proveTaskScheduler(squatter: Server): Promise<void> {
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);
     }
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 

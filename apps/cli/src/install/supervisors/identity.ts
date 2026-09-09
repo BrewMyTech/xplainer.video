@@ -401,6 +401,25 @@ function parseTaskScheduler(output: string): LoadedIdentity {
   }
   const execute = fields.get("Execute") ?? "";
   const args = fields.get("Arguments") ?? "";
+  // A registered task always has something to execute, so an empty `Execute` is the query having
+  // found no task rather than a task with no command — and reporting it as a *read* value turns a
+  // correct install into two mismatches against `""`. That is what `-TaskName '\folder\leaf'`
+  // produced before `scheduledTaskSelector` addressed the folder and the leaf separately: a
+  // non-terminating `ObjectNotFound`, three empty values and exit `0` (`windows-latest`,
+  // 2026-09-09). The query now stops on that error, and this is the second line of defence.
+  if (execute === "") {
+    const said = output.trim().split(/\r?\n/)[0]?.trim() ?? "";
+    return {
+      available: true,
+      answered: false,
+      command: null,
+      environment: null,
+      cwd: null,
+      detail:
+        "the registered scheduled task named no command, which is a task the query did not find " +
+        `rather than one with nothing to run: it answered ${said === "" ? "nothing at all" : JSON.stringify(said)}`,
+    };
+  }
   return {
     available: true,
     answered: true,

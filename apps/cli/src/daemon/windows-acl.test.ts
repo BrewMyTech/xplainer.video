@@ -12,9 +12,11 @@ import { describe, expect, it } from "vitest";
 import {
   ACL_DIRECTORY_RIGHTS,
   ACL_FILE_RIGHTS,
+  aclPrincipalArgument,
   aclQuery,
   parseAclEntries,
   readAclVerdict,
+  removeForeignCommand,
   restrictToOwner,
   restrictToOwnerCommand,
 } from "./windows-acl.js";
@@ -192,5 +194,76 @@ Successfully processed 1 files; Failed processing 0 files
   /** A query and nothing else: no `/grant`, no `/inheritance`, so `daemon status` stays read-only. */
   it("reads the entry with a query that changes nothing", () => {
     expect(aclQuery(TOKEN_PATH)).toEqual({ program: "icacls", argv: [TOKEN_PATH] });
+  });
+});
+
+/**
+ * The second run, and the case that made it necessary.
+ *
+ * `/inheritance:r /grant:r` leaves a *third* principal's **explicit** entry exactly where it was,
+ * and a path whose parent has no inheritable ACE gets its whole DACL from the creating token's
+ * default one — explicit `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`, every time. That is
+ * what a scratch directory under GitHub's `windows-latest` runner temp is, and it is why six cases
+ * across `token.test.ts` and `commands/serve.test.ts` read back a widened ACL on 2026-09-09.
+ */
+const DEFAULT_DACL_SURVIVED = `${TOKEN_PATH} NT AUTHORITY\\SYSTEM:(F)
+                              BUILTIN\\Administrators:(F)
+                              MACHINE\\alice:(R,W)
+
+Successfully processed 1 files; Failed processing 0 files
+`;
+
+describe("taking the principals R-SEC-5's own command cannot take off", () => {
+  it("names every principal that is not this account, and nothing else", () => {
+    const removal = removeForeignCommand(
+      TOKEN_PATH,
+      parseAclEntries(DEFAULT_DACL_SURVIVED, TOKEN_PATH),
+      "alice",
+    );
+
+    expect(removal).toEqual({
+      program: "icacls",
+      argv: [TOKEN_PATH, "/remove", "NT AUTHORITY\\SYSTEM", "/remove", "BUILTIN\\Administrators"],
+    });
+  });
+
+  /** The ordinary path under a profile directory: one entry, already this account's. */
+  it("asks for nothing when the first command already left one entry", () => {
+    expect(
+      removeForeignCommand(TOKEN_PATH, parseAclEntries(NARROWED, TOKEN_PATH), "alice"),
+    ).toBeNull();
+  });
+
+  /**
+   * An inherited entry is `/inheritance:r`'s to remove and this run's too: after that command it is
+   * still there only because it was never inherited in the first place, and either way the property
+   * being made true is "one principal, this account".
+   */
+  it("takes an inherited principal off as readily as an explicit one, once and only once", () => {
+    const removal = removeForeignCommand(
+      TOKEN_PATH,
+      parseAclEntries(INHERITANCE_RESTORED, TOKEN_PATH),
+      "alice",
+    );
+
+    expect(removal?.argv).toEqual([
+      TOKEN_PATH,
+      "/remove",
+      "BUILTIN\\Administrators",
+      "/remove",
+      "NT AUTHORITY\\SYSTEM",
+    ]);
+  });
+
+  /**
+   * A deleted account prints as a bare SID, and `icacls` reads an unprefixed one as a name it
+   * cannot resolve — so the entry would survive a removal that reported success.
+   */
+  it("hands icacls a SID in the form it documents for one", () => {
+    expect(aclPrincipalArgument("S-1-5-21-1004336348-1177238915-682003330-512")).toBe(
+      "*S-1-5-21-1004336348-1177238915-682003330-512",
+    );
+    expect(aclPrincipalArgument("NT AUTHORITY\\SYSTEM")).toBe("NT AUTHORITY\\SYSTEM");
+    expect(aclPrincipalArgument("MACHINE\\Some User")).toBe("MACHINE\\Some User");
   });
 });

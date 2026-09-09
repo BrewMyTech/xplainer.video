@@ -21,7 +21,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
@@ -29,6 +29,9 @@ import { isAlive } from "../../../daemon/worker-identity.js";
 import { type ProbeResult, type ProbeRunner, spell } from "../../preflight.js";
 import type { SupervisorEnvironment } from "../../supervisors/artefact.js";
 import { readUpdateJournal, type UpdateTransition } from "../journal.js";
+
+/** Where this harness sends the daemon's own output, in the state directory it was given. */
+export const HARNESS_LOG_FILE = "supervisor-daemon.log";
 
 /**
  * The line the parked updater prints before it stops existing.
@@ -155,12 +158,36 @@ export function updateHarness(options: UpdateHarnessOptions): UpdateHarness {
     if (refuseFor !== null && spec.executable.startsWith(refuseFor)) {
       return;
     }
+    // **A log sink, not a pipe held by whoever asked for the start.** Every real supervisor writes
+    // the daemon's output to a file it owns — `StandardErrorPath`, the journal, the task's log —
+    // and none of them hands the daemon a pipe whose reader is the process that called `start`.
+    // That difference is load-bearing at the `staged` boundary: the updater is killed there and the
+    // daemon it had not yet drained must go on serving, which it cannot do while its own stderr
+    // drains into a dead parent. It is also the fix for a pipe nobody reads, which is a daemon that
+    // eventually blocks on writing to it. `log_sink` is a recorded field for the same reason.
+    const sink = join(options.stateDir, HARNESS_LOG_FILE);
+    const fd = openSync(sink, "a", 0o600);
     const spawned = spawn(spec.executable, [...spec.argv], {
       cwd: spec.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", fd, fd],
+      // **`detached` because a supervisor's child outlives the process that asked for the start,
+      // and on Windows that is not the default.** libuv puts every non-detached child into a single
+      // Job Object whose handle the parent holds, with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: when
+      // the parent goes, the handle closes, the job closes, and every child in it is killed.
+      // `UV_PROCESS_DETACHED` is what adds `CREATE_BREAKAWAY_FROM_JOB`.
+      //
+      // That is the whole of the `staged` boundary. The updater is killed there **before** it has
+      // drained, so the daemon it was about to drain has to still be running and still answering —
+      // and on `windows-latest` it was neither: `runtime.json` named a pid that was gone and
+      // `/healthz` answered nothing (runs 34304152961 and 34307691608, and 2026-09-08 before
+      // them). On POSIX the same child is simply reparented, which is why the other two platforms
+      // never saw it. `stop()` signals the recorded pid, so a new process group changes nothing
+      // about how this harness ends a daemon.
+      detached: true,
     });
     child = spawned;
     spawned.once("exit", () => {
+      closeSync(fd);
       if (child === spawned) {
         child = null;
       }

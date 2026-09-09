@@ -783,6 +783,20 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `daemon uninstall` after the S4U install and was **red** at `f73e8cc` (run `34206429621`) for
     reasons fixed in `d376533` and not re-run since. So the `runner` ×3 half of this row is
     **pending**; what is met is the local half.
+  - *Amended 2026-09-09 (Windows runner): the **Windows** leg of the runner half is met, and that is
+    a narrower claim than this row's ×3.* `daemon-windows.yml`'s install job runs the shipped
+    `daemon uninstall` after a real S4U install on `windows-latest` and now **asserts** two things
+    where it previously printed one: the command exits `0`, and `Get-ScheduledTask -TaskPath
+    '\xplainer\'` comes back empty afterwards. Both are needed, because the defect being guarded is
+    an uninstall that reported success having removed nothing — which is exactly what
+    `Unregister-ScheduledTask` does when it is given a task's full path in `-TaskName` (run
+    `34304152961`) — so a status alone and an empty folder alone are each satisfiable by a
+    regression. The two assertions are made only when nothing earlier in the job failed: the step is
+    `always()` so that the removal after a failed install still runs, and uninstalling an install
+    that never happened is not a regression. Green with both assertions in run `34319269304`, which
+    prints `daemon uninstall exited 0` and `uninstalled, and nothing is left registered`. **No macOS
+    or Linux runner runs an uninstall proof at all**, so on those two the row stays pending exactly
+    as the note above leaves it.
 - **P2-10** Each degraded path in ADR 0020 exits with its documented code, **writes nothing**,
   and prints the exact remediation command: no user service manager (6), lingering denied (5),
   no batch-logon right (5), Task Scheduler registration blocked (6), `xplainer setup` not run
@@ -810,6 +824,34 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `SCHED_S_BATCH_LOGON_PROBLEM` rather than asserting a guess about it — and that job was **red**
     at `f73e8cc` (run `34206429621`) for reasons fixed in `d376533` and not re-run since. So `5`
     (batch logon) and `6` (registration blocked) on Windows are **pending**, not met.
+  - *Amended 2026-09-09 (Windows runner): the two Windows paths are met, and the paragraph above
+    describes a measurement `daemon-windows.yml` no longer makes.* Two corrections, both taken from
+    real `windows-latest` runs rather than reasoned:
+    - **The freshly created standard user proves the refusal; it does not carry the install.** A
+      standard user cannot register an S4U task **at any path**. A four-way probe — first run
+      `34306540942`, and re-printed by `daemon-windows.yml` on every dispatch since — registers
+      `InteractiveToken` at the root and in a subfolder and is answered "Access is denied" for `S4U`
+      at both, so the folder was never the obstacle and the logon type needs an elevated token. The
+      standard-user leg therefore asserts the refusal it is:
+      `daemon install` exits **`5` exactly** — not merely non-zero, because telling `5` (the
+      supervisor is here and refused *this* account) from `6` (there is no supervisor at all) is the
+      whole of what this row asks — while quoting `Register-ScheduledTask`'s own "Access is denied",
+      saying the supervisor was present, and leaving no task under `\xplainer\`, no `daemon.json`
+      and no mirrored artefact behind. Green with the exact code asserted in run `34319269304`,
+      which prints `refused with exit 5, which is what it must do`.
+    - **Criterion 11's S4U install is made by the runner's own account**, which is the account whose
+      token can register that logon type. Everything else about it is the shipped command: the same
+      payload, the same port, `<LogonType>S4U</LogonType>` read back out of the mirrored XML, and no
+      interactive session — which is the property that makes S4U worth having.
+
+    One consequence is recorded here rather than left implicit: that job's `create → put_source →
+    narrate` gate narrates with **`dry_run: true`**, so **no speech is synthesised on Windows
+    anywhere in this phase**. The pinned Kokoro image is `linux/amd64`, and `XPLAINER_TTS_FIXTURE`
+    is read in the daemon process — which Task Scheduler starts with the system environment, not
+    the step's. `dry_run` is the contract's own mode and still produces a real `timings.json` and
+    `captions.json`, and the subject of the gate — a job enqueued over the *installed* daemon's
+    pipe, under an S4U principal with no interactive session behind it, reaching terminal `done` —
+    is unchanged by it.
 - **P2-11** A daemon whose port is permanently held stops respawning after five failed starts
   within 30 seconds and records the reason, on all three platforms; `xplainer daemon status`
   names the holding pid in words; `xplainer daemon restart` clears the latched failure and the
@@ -839,6 +881,36 @@ owner's, and it is what turns those lines from pending into met or into defects.
     half:** in run `34206438487` (`f73e8cc`), *the breaker's own rules* passed on `macos-latest` and
     `ubuntu-latest`, *ThrottleInterval 30 s drives the latch* passed on macOS and *RestartSec=2
     drives the latch* on ubuntu; both Windows jobs failed and have not been re-run since `d376533`.
+  - *Amended 2026-09-09 (Windows runner): the Windows leg was red because of a **product** defect,
+    which is now fixed and measured; the cadence this criterion is judged at on Windows is not the
+    one the note above assumes.* Two facts about Task Scheduler, both measured on `windows-latest`
+    on 2026-09-09 (run `34317779107`, job `102357526877`), and the argument is in
+    [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of that date. **(1)** A
+    `<Repetition>` belongs to a trigger that has *fired*, and the shipped document's only trigger
+    was a `<LogonTrigger>` — which a hosted runner never fires, and which a real machine has already
+    fired before a user runs `install` in a terminal. `Start-ScheduledTask` is an on-demand run and
+    starts no trigger. So nothing brought a failed daemon back between an install and the next
+    logon: measured three times as one run and a `LastRunTime` frozen for thirty minutes (runs
+    `34308488886`, `34311062150`, `34313848702`). `supervisors/schtasks.ts` now emits a
+    `<RegistrationTrigger>` carrying the same `PT5M` repetition beside the logon one, and the same
+    measurement watched that document run three times, five minutes apart, started by nothing but
+    its own registration. **(2)** `<RestartOnFailure>` 3 × `PT1M` does not restart an action that
+    exits non-zero — it restarts a task that failed to *launch* — so the sentence above about "Task
+    Scheduler's one-minute schema minimum" describes a cadence that never happens. The Windows
+    cadence is the `PT5M` repetition alone, five failed starts are about twenty minutes of wall
+    clock, and `install/testing/breaker-proof.ts` and `daemon-breaker.yml` carry that budget with
+    the measurement written beside it. Nothing about the criterion's predicate changes: each start
+    still has to fail within 30 s of *its own* start, which the spacing between starts has never
+    been part of. **The Windows leg is now met**, in run `34319237168` — all eleven expectations,
+    with the cadence printed start by start: five failed starts at `06:29:53`, `06:34:54`,
+    `06:39:54`, `06:44:54` and `06:49:54` (300954, 299440, 300168 and 299826 ms apart, and *no*
+    one-minute retry between any of them), each living 22–463 ms and so well inside the 30-second
+    window; the latch and an exit `0`; two further repetitions at `06:54:53` and `06:59:53` that
+    each read the flag, exited `0` and added no start record; `daemon status` saying "stopped after
+    5 failed starts; port 18790 is held by pid 8956, which is not an xplainer daemon"; and
+    `daemon restart` clearing the latch and bringing a daemon back on the port it could not bind.
+    The macOS and Linux legs of this row have not been dispatched since this file reached `main`
+    and stay exactly as the note above leaves them.
 - **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
   dependency named and justified, or `Type=exec` retained with a readiness wait in the
   installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new
