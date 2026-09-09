@@ -169,10 +169,13 @@ jobs:
       # `discovery.test.ts` and `bridge.test.ts` go further: each starts a real
       # `xplainer serve` out of such a payload and drives it into the state it
       # asserts — a stale token, a held port, a supervisor answering "switched
-      # off". Those arrangements are per-platform (a `launchctl`/`systemctl` on
-      # `PATH`; a `ScheduledTasks` module in front of the system one on
-      # `PSModulePath`), which is why this step runs on all three runners and
-      # not only on the one the author had.
+      # off". That arrangement is one shape with a per-platform file — the
+      # program the supervisor query names, in a directory prepended to `PATH`:
+      # a `launchctl` or `systemctl` shell script, and on Windows a
+      # `Get-ScheduledTask.ps1` that PowerShell's command searcher resolves
+      # ahead of the module auto-loading that would reach the real cmdlet. That
+      # is why this step runs on all three runners and not only on the one the
+      # author had.
       - name: Unit tests for the desktop main process
         run: pnpm --filter @xplainer/desktop test
 

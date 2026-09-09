@@ -373,27 +373,38 @@ describe("spawnPlan", () => {
   });
 
   /**
-   * And `startProgram` — the app's only `spawn` — actually uses it. The child cannot start on this
+   * And `startProgram` — the app's only `spawn` — actually uses it. The child cannot start on any
    * machine, which is the point: what is asserted is the image and the command line Node was given,
    * which `spawnfile` and `spawnargs` carry whether or not the process ever existed.
+   *
+   * **The interpreter is named as a path no machine has, and that is load-bearing rather than
+   * incidental.** This test used to name `C:\\Windows\\System32\\cmd.exe` and wait for the `error`
+   * that a missing image raises. On a POSIX host that path is missing and the event arrives at
+   * once; on `windows-latest` it is the real `cmd.exe`, so the child *started*, printed "The system
+   * cannot find the path specified." for a launcher this fixture never wrote, exited — and raised
+   * no `error` at all, leaving the promise below unresolved. Measured on `windows-latest`,
+   * 2026-09-08, `desktop.yml` run 34304160979: "Test timed out in 5000ms". `ComSpec` is therefore
+   * an absent path everywhere, which makes `ENOENT` a property of the argument rather than of the
+   * host running the suite.
    */
   it("is what startProgram spawns, rather than the batch file itself", async () => {
+    const absentInterpreter = "C:\\xplainer-no-such-directory\\cmd.exe";
     const child = startProgram(LAUNCHER, ["daemon", "install"], {
       platform: "win32",
-      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      env: { ComSpec: absentInterpreter },
     });
     const failure = await new Promise<NodeJS.ErrnoException>((resolve) => {
       child.on("error", resolve);
     });
 
-    expect(child.spawnfile).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(child.spawnfile).toBe(absentInterpreter);
     expect(child.spawnargs.slice(1)).toEqual([
       "/d",
       "/s",
       "/c",
       `""${LAUNCHER}" "daemon" "install""`,
     ]);
-    // On this machine there is no such interpreter, and that is the only reason it failed.
+    // There is no such interpreter on any machine, and that is the only reason it failed.
     expect(failure.code).toBe("ENOENT");
   });
 });
