@@ -765,8 +765,10 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `34304152961`) — so a status alone and an empty folder alone are each satisfiable by a
     regression. The two assertions are made only when nothing earlier in the job failed: the step is
     `always()` so that the removal after a failed install still runs, and uninstalling an install
-    that never happened is not a regression. **No macOS or Linux runner runs an uninstall proof at
-    all**, so on those two the row stays pending exactly as the note above leaves it.
+    that never happened is not a regression. Green with both assertions in run `34319269304`, which
+    prints `daemon uninstall exited 0` and `uninstalled, and nothing is left registered`. **No macOS
+    or Linux runner runs an uninstall proof at all**, so on those two the row stays pending exactly
+    as the note above leaves it.
 - **P2-10** Each degraded path in ADR 0020 exits with its documented code, **writes nothing**,
   and prints the exact remediation command: no user service manager (6), lingering denied (5),
   no batch-logon right (5), Task Scheduler registration blocked (6), `xplainer setup` not run
@@ -807,7 +809,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
       supervisor is here and refused *this* account) from `6` (there is no supervisor at all) is the
       whole of what this row asks — while quoting `Register-ScheduledTask`'s own "Access is denied",
       saying the supervisor was present, and leaving no task under `\xplainer\`, no `daemon.json`
-      and no mirrored artefact behind.
+      and no mirrored artefact behind. Green with the exact code asserted in run `34319269304`,
+      which prints `refused with exit 5, which is what it must do`.
     - **Criterion 11's S4U install is made by the runner's own account**, which is the account whose
       token can register that logon type. Everything else about it is the shipped command: the same
       payload, the same port, `<LogonType>S4U</LogonType>` read back out of the mirrored XML, and no

@@ -259,12 +259,13 @@ export function powerShellLiteral(value: string): string {
  * '\xplainer\t13-proof'` started the task (run 34310353206) and `Get-ScheduledTaskInfo -TaskName
  * '\xplainer\t14-proof'` returned a real `LastRunTime` and `LastTaskResult` (run 34313848702). So
  * the rule this function encodes is **not** "a path in `-TaskName` never matches" — it is that
- * which cmdlet tolerates one is undocumented, unpredictable per cmdlet, and silent when it does
- * not, so every one of them is addressed the documented way from one place. Every command this
- * module composes goes through it, and so does every `*-ScheduledTask` command composed anywhere
- * else in this repository: `lifecycle.ts`'s verbs, the update's `switch.ts`, and the three proof
- * helpers in `testing/` — which is the property that makes the paragraph above a rule rather than
- * an observation about four cmdlets.
+ * which cmdlet tolerates one is undocumented, differs per cmdlet, and is silent when it does not,
+ * so every one of them is addressed the documented way from one place. That is what makes the
+ * paragraph above a rule rather than an observation about four cmdlets, and it holds only while
+ * every call site obeys it: this module's own sequences, `lifecycle.ts`'s verbs, and the helpers in
+ * `testing/` that drive a throwaway task. The one command that does **not** come through here is
+ * the update's re-registration in `update/switch.ts`, and that is correct — it is a `Register-`,
+ * which is creating the name and takes the whole path.
  *
  * @throws {RangeError} for an identity that is not a task path, which every caller's is.
  */

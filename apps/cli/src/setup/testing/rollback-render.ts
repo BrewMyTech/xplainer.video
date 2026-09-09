@@ -147,6 +147,14 @@ function harnessLogTail(stateDir: string, lines = 24): readonly string[] {
   return written.slice(-lines);
 }
 
+/** What a caught rollback said about itself, in one line, whatever kind of value it turned out to be. */
+function refusalMessage(thrown: unknown): string {
+  if (thrown instanceof Error) {
+    return thrown.message.split("\n").join(" / ");
+  }
+  return thrown === null ? "it did not refuse at all" : String(thrown);
+}
+
 /** One environment variable this entry cannot do anything without. */
 function required(name: string): string {
   const value = process.env[name];
@@ -493,6 +501,9 @@ try {
       },
     });
 
+    // What the transaction said about itself, kept for the diagnostic below: both arms produce a
+    // refusal and the sentence inside it is the only thing that says *which* half gave up.
+    let refused: unknown = null;
     if (current === DOOMED_CASE) {
       const install = await installDaemon({
         stateDir,
@@ -515,6 +526,7 @@ try {
         () => null,
         (thrown: unknown) => thrown,
       );
+      refused = refusal;
       require_(
         refusal instanceof UpdateRefusal && refusal.exitCode === DAEMON_UNHEALTHY_EXIT_CODE,
         `the update refused with ${String(DAEMON_UNHEALTHY_EXIT_CODE)} and rolled back to A`,
@@ -556,6 +568,7 @@ try {
         () => null,
         (thrown: unknown) => thrown,
       );
+      refused = recovered;
       require_(
         recovered instanceof UpdateRefusal && recovered.exitCode === DAEMON_UNHEALTHY_EXIT_CODE,
         `\`xplainer daemon recover\`'s engine rolled back and reported ${String(DAEMON_UNHEALTHY_EXIT_CODE)}`,
@@ -578,6 +591,12 @@ try {
       for (const line of harnessLogTail(stateDir)) {
         say(`    ${line}`);
       }
+      // And what the rollback itself said, which is the half the log cannot give: a refusal whose
+      // sentence is "the previous runtime … did not answer either" is a rollback that gave up on
+      // its own comeback, and one saying "is installed and answering" is a rollback that succeeded
+      // and a daemon that stopped afterwards. Those are different bugs and the two were told apart
+      // by guesswork until this line existed (`windows-latest`, run 34319281465).
+      say(`  and what the rollback itself reported: ${refusalMessage(refused)}`);
     }
     require_(
       health?.version === alphaVersion,

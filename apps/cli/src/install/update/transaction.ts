@@ -111,6 +111,27 @@ import { SwitchRefusal, switchRuntime } from "./switch.js";
 /** How long the replacement is given to answer an authenticated `/healthz` before it is rolled back. */
 export const REPLACEMENT_READY_TIMEOUT_MS = 60_000;
 
+/**
+ * The floor under the **rollback**'s own wait, whatever budget the caller gave the replacement.
+ *
+ * `healthTimeoutMs` is a budget for the runtime being installed — "how long am I prepared to wait
+ * to find out this is not going to work" — and a caller is entitled to make it small. Applying that
+ * same number to the wait on the retained previous runtime is a different question with a much
+ * worse wrong answer: the machine has just been put back the way it was, and a rollback that gives
+ * up on its own comeback leaves a journal, a stopped daemon and a user who has to run
+ * `xplainer daemon recover` by hand. The previous runtime is the one thing here already known to
+ * work, so it is given the ordinary budget as a **minimum** — `Math.max`, so a caller who asked for
+ * longer still gets longer.
+ *
+ * Measured rather than reasoned: `windows-latest`, 2026-09-09, run 34319281465. T33's rollback
+ * cases pass `healthTimeoutMs: 1_500` to make a *deliberately* doomed replacement fail fast, and
+ * that 1.5 s then became the whole budget for the previous runtime's restart. `xplainer serve` on a
+ * hosted Windows runner had written two lines of its start-up log when the wait expired, and the
+ * case failed with "A is answering /healthz as release 0.0.0" over a daemon that was seconds from
+ * answering.
+ */
+export const ROLLBACK_READY_FLOOR_MS: number = REPLACEMENT_READY_TIMEOUT_MS;
+
 /** Which step of the transaction a refusal stopped in. */
 export type UpdatePhase =
   | "installed"
@@ -425,7 +446,15 @@ async function rollBack(
 
   let health: HealthAnswer;
   try {
-    health = await awaitLaunched(context, journal.previous, rollingBackFrom, journal);
+    // {@link ROLLBACK_READY_FLOOR_MS}: the caller's budget was for the runtime being installed, and
+    // the previous one — the one already known to work — is not given less than the ordinary wait.
+    health = await awaitLaunched(
+      context,
+      journal.previous,
+      rollingBackFrom,
+      journal,
+      ROLLBACK_READY_FLOOR_MS,
+    );
   } catch (error) {
     throw new UpdateRefusal(
       "rollback",
@@ -625,8 +654,12 @@ async function awaitLaunched(
   side: JournalledRuntime,
   since: number,
   journal: UpdateJournal,
+  floorMs = 0,
 ): Promise<HealthAnswer> {
-  const timeoutMs = context.request.healthTimeoutMs ?? REPLACEMENT_READY_TIMEOUT_MS;
+  const timeoutMs = Math.max(
+    context.request.healthTimeoutMs ?? REPLACEMENT_READY_TIMEOUT_MS,
+    floorMs,
+  );
   let health: HealthAnswer;
   try {
     health = await awaitHealthy({

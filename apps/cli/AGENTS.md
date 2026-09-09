@@ -892,10 +892,11 @@ Then the root procedure: `pnpm verify`.
   of runs (34310353206 and 34313848702). So the rule is not "a path never matches": it is that
   **which** cmdlet tolerates one is undocumented and silent when it does not, so all of them are
   addressed the documented way from `install/register.ts`'s `scheduledTaskSelector()` — the verbs in
-  `install/lifecycle.ts`, the update's `switch.ts` and the proof helpers in `install/testing/`
-  included. The two queries also carry `-ErrorAction Stop`, so a task that is not there is an honest
-  "the query did not answer" — a non-zero status and nothing on stdout — rather than a row of empty
-  strings.
+  `install/lifecycle.ts` and the proof helpers in `install/testing/` included. The one composed
+  command that does not come through it is the update's re-registration in `update/switch.ts`, and
+  that is correct: a `Register-` is creating the name and takes the whole path. The two queries also
+  carry `-ErrorAction Stop`, so a task that is not there is an honest "the query did not answer" — a
+  non-zero status and nothing on stdout — rather than a row of empty strings.
 - **A Windows deregistration is two commands, because unregistering does not stop.**
   `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
   job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance
