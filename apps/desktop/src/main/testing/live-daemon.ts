@@ -16,7 +16,7 @@
  * production call path D10 defines, not a stand-in for it.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   linkSync,
@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { type CliProgram, resolveCliProgram, type SpawnedDaemon, spawnDaemon } from "../discovery";
@@ -210,136 +210,127 @@ export function amendDaemonState(stateDir: string, change: Record<string, unknow
 /** The word the CLI's Windows switch query has to read back for this arrangement to mean anything. */
 export const SWITCHED_OFF_STATE = "Disabled";
 
-/** The `ScheduledTasks` module a Windows arrangement puts in front of the system one. */
+/** The two PowerShell scripts a Windows arrangement puts in front of the real cmdlets. */
 export type ScheduledTasksShim = {
-  /** `ScheduledTasks.psd1` — the manifest module auto-loading reads to find the command names. */
-  manifest: string;
-  /** `ScheduledTasks.psm1` — the two functions themselves. */
-  module: string;
+  /** `Get-ScheduledTask.ps1` — the switch query's own command, answering for any named task. */
+  getScheduledTask: string;
+  /** `Get-ScheduledTaskInfo.ps1` — the health query's, so one arrangement answers both. */
+  getScheduledTaskInfo: string;
+};
+
+/** What each script in {@link ScheduledTasksShim} is called on disk, in the same order. */
+export const SCHEDULED_TASKS_SHIM_FILES: Readonly<Record<keyof ScheduledTasksShim, string>> = {
+  getScheduledTask: "Get-ScheduledTask.ps1",
+  getScheduledTaskInfo: "Get-ScheduledTaskInfo.ps1",
 };
 
 /**
- * The stand-in `ScheduledTasks` module, as text, so the Windows branch is readable from any machine.
+ * The stand-in `Get-ScheduledTask`, as text, so the Windows branch is readable from any machine.
  *
- * **The symptom is measured; the cause is not, and this docblock used to state one as though it
- * were.** What happened is that a `windows-latest` run of the desktop suite on 2026-09-08 reported
- * `expected 'unknown' to be 'off'` for `discovery.test.ts`'s switched-off case — the arrangement
- * below did not answer the CLI's query, and the app was blamed for the arrangement. That line is
- * the whole of the Windows evidence, and it is recorded here as the run report it was: the
- * transcript is not in this repository.
+ * **These are scripts on `PATH` rather than a module on `PSModulePath`, and the reason is
+ * measured.** The arrangement here used to be a `ScheduledTasks` module written to a directory that
+ * `PSModulePath` was then set to — *and to nothing else*, on the strength of `about_PSModulePath`'s
+ * rule that a value which does not contain the `$PSHOME` modules path is "used as defined since the
+ * user deliberately removed the `$PSHOME` location". Measured on 2026-09-09 in
+ * `mcr.microsoft.com/powershell:7.4-ubuntu-22.04`, that is not what the engine does: started with
+ * `PSModulePath=/exp/m`, PowerShell reported
+ * `$env:PSModulePath` as `…/.local/share/powershell/Modules:…/usr/local/share/powershell/Modules:`
+ * `/opt/microsoft/powershell/7/Modules:/exp/m` — it puts its own module paths **in front of** the
+ * value it was given, so the system module is the one auto-loading reaches first and a stand-in
+ * cannot win that race by being on the path at all. That is exactly what `windows-latest` reported
+ * for `desktop.yml` run 34304160979: the real cmdlet ran and answered
+ * "No MSFT_ScheduledTask objects found with property 'TaskName' equal to
+ * '\\xplainer\\runneradmin-daemon'".
  *
- * **It does not tell you which failure it was.** The previous text of this docblock said the old
- * shim declared nothing but `[Parameter(ValueFromRemainingArguments = $true)] $Rest`, that
- * PowerShell's binder therefore refused `-TaskName` outright, and that `readSwitch` turned the
- * refusal into `unknown` because it reads `unregistered` only out of "cannot find" — offered as the
- * mechanism rather than as a candidate. `readSwitch` cannot carry that weight. Measured on
- * 2026-09-08 against `@xplainer/cli`'s own built `install/lifecycle.js`: its `task-scheduler` branch
- * matches `/cannot find|does not exist|no mapping/i`, so the binder's actual wording — "A parameter
- * cannot be **found** that matches parameter name 'TaskName'" — classifies as `unknown`, and so
- * does the real cmdlet's "No MSFT_ScheduledTask objects found with property 'TaskName' equal to
- * …", and so does every other non-zero answer. `unknown` is what *any* failure of this arrangement
- * looks like from the test, which leaves the binder and an auto-load that reached the system module
- * equally consistent with the line.
+ * **A script on `PATH` does not race auto-loading; it pre-empts it.** PowerShell's command searcher
+ * resolves a name against aliases, functions, cmdlets already in the session and then files on
+ * `PATH`, and module auto-discovery is attempted **only when that search finds nothing**. Measured
+ * in the same container on 2026-09-09, with `/exp/bin/Get-ScheduledTask.ps1` on `PATH` and a
+ * competing module still on `PSModulePath`: `Get-Command Get-ScheduledTask -All` answers
+ * `ExternalScript:/exp/bin/Get-ScheduledTask.ps1` and nothing else, and the CLI's own query —
+ * `-NoProfile -NonInteractive -Command "(Get-ScheduledTask -TaskName '\\xplainer\\…').State"` —
+ * prints `Disabled` and exits `0`.
  *
- * **What the correction of 2026-09-08 actually changed is a fact about the diff**, and only the
- * third item makes a future failure attributable:
- *
- * 1. {@link switchedOffEnvironment} sets `PSModulePath` to the shim's directory **and nothing
- *    else**. It used to prepend that directory to the machine's own, which left the real
- *    `ScheduledTasks` under `$PSHOME` discoverable and made the answer a question about search
- *    order.
- * 2. Both functions declare `-TaskName` and `-TaskPath` — the real cmdlet's own two named
- *    parameters — beside the remaining-arguments catch-all, and `Get-ScheduledTask` echoes
- *    `TaskName` back. The shim answers the query's exact shape instead of depending on how the
- *    binder treats a name it has no parameter for.
- * 3. {@link assertScheduledTasksShimAnswers} runs the CLI's own query **before** the arrangement is
- *    handed out, so a shim that does not answer fails naming itself rather than the app.
- *
- * **None of the three has run on a Windows runner.** They landed after the commit from which every
- * GitHub Actions job in this organisation is refused on billing (`docs/ROADMAP.md` §Phase 2's note
- * on the runner halves), so the correction is unverified on the only platform it is about, and the
- * next dispatch of `desktop.yml` is what tests it.
+ * It also makes all three platforms one arrangement rather than two: every supervisor is now
+ * answered by a file of the queried name in a directory prepended to `PATH`.
  */
 export function scheduledTasksShim(state: string = SWITCHED_OFF_STATE): ScheduledTasksShim {
+  // The real cmdlets' own two named parameters, so the query's `-TaskName` has somewhere to bind,
+  // plus the remaining-arguments catch-all for anything a future query adds positionally.
+  const parameters = [
+    "param(",
+    "  [string] $TaskName,",
+    "  [string] $TaskPath,",
+    "  [Parameter(ValueFromRemainingArguments = $true)] $Rest",
+    ")",
+  ];
   return {
-    manifest: [
-      "@{",
-      "  ModuleVersion = '99.0.0'",
-      "  GUID = '4a2f6f1a-9d4e-4f0e-9a3f-2f5c9f6c8d21'",
-      "  RootModule = 'ScheduledTasks.psm1'",
-      "  FunctionsToExport = @('Get-ScheduledTask', 'Get-ScheduledTaskInfo')",
-      "}",
+    getScheduledTask: [
+      ...parameters,
+      `[pscustomobject]@{ TaskName = $TaskName; State = '${state}' }`,
       "",
     ].join("\r\n"),
-    module: [
-      "function Get-ScheduledTask {",
-      // The real cmdlet's own two named parameters, so the binder has somewhere to put them, plus
-      // the remaining-arguments catch-all for anything a future query adds positionally.
-      "  param(",
-      "    [string] $TaskName,",
-      "    [string] $TaskPath,",
-      "    [Parameter(ValueFromRemainingArguments = $true)] $Rest",
-      "  )",
-      `  [pscustomobject]@{ TaskName = $TaskName; State = '${state}' }`,
-      "}",
-      "function Get-ScheduledTaskInfo {",
-      "  param(",
-      "    [string] $TaskName,",
-      "    [string] $TaskPath,",
-      "    [Parameter(ValueFromRemainingArguments = $true)] $Rest",
-      "  )",
-      "  [pscustomobject]@{ TaskName = $TaskName; LastTaskResult = 0 }",
-      "}",
-      "Export-ModuleMember -Function Get-ScheduledTask, Get-ScheduledTaskInfo",
+    getScheduledTaskInfo: [
+      ...parameters,
+      "[pscustomobject]@{ TaskName = $TaskName; LastTaskResult = 0 }",
       "",
     ].join("\r\n"),
   };
 }
 
 /**
+ * The spelling of one environment variable **this process actually inherited**.
+ *
+ * Windows environment variable *names* are case-insensitive but an environment *block* is a list of
+ * strings, and `{ ...process.env, PATH: … }` beside an inherited `Path` puts both spellings into
+ * that list — which of the two a grandchild then reads is not defined anywhere. Writing the
+ * override under the spelling that is already there keeps the block single-valued. On POSIX,
+ * where the inherited name is `PATH` and nothing else can be, this returns the argument.
+ */
+function inheritedVariableName(name: string): string {
+  const wanted = name.toUpperCase();
+  return Object.keys(process.env).find((key) => key.toUpperCase() === wanted) ?? name;
+}
+
+/**
  * A supervisor on this machine that answers "switched off" for one label.
  *
- * Every platform is asked a different documented question, and each is arranged the way that
- * platform allows a query to be answered by something other than the real service manager:
+ * One arrangement on all three platforms: a file named for the command the CLI's switch query runs,
+ * in a directory prepended to `PATH`, so the program of that name earlier on the path is what
+ * answers. That is the same recording-program-on-a-temporary-path pattern the CLI's own `connect`
+ * tests use for vendor CLIs.
  *
- * - **macOS** and **Linux** are asked by name — `launchctl`, `systemctl` — so a program of that
- *   name earlier on `PATH` is what answers. That is the same recording-program-on-a-temporary-path
- *   pattern the CLI's own `connect` tests use for vendor CLIs.
- * - **Windows** is asked through PowerShell, which resolves `Get-ScheduledTask` by auto-loading a
- *   module named `ScheduledTasks` off `PSModulePath` — so a module of that name is written and
- *   `PSModulePath` is set to **that directory and nothing else**, which is the arrangement
- *   `about_PSModulePath` documents as supported: "If `PSModulePath` contains `$PSHOME` modules
- *   path: **AllUsers** modules path is inserted before `$PSHOME` modules path — else: Just use
- *   `PSModulePath` as defined since the user deliberately removed the `$PSHOME` location". Removing
- *   it is what makes the answer decidable rather than a question about search order: the real
- *   `ScheduledTasks` module lives under `$PSHOME` and is not discoverable at all, so the only
- *   `Get-ScheduledTask` in that session is this one. Windows PowerShell's own built-in commands are
- *   loaded by the shell configuration rather than off this path, and the query uses none of them.
- *   `powershell.exe` itself is the real one.
+ * - **macOS** and **Linux** are asked by name — `launchctl`, `systemctl` — so the file is a shell
+ *   script of that name.
+ * - **Windows** is asked through PowerShell, and the name in the query is a command rather than a
+ *   program: `Get-ScheduledTask`. A `Get-ScheduledTask.ps1` on `PATH` is what PowerShell's command
+ *   searcher resolves it to, ahead of the module auto-loading that would otherwise reach the real
+ *   cmdlet — see {@link scheduledTasksShim} for the measurement behind that, and for why setting
+ *   `PSModulePath` could not do it. `powershell.exe` itself is the real one.
  *
  * **The Windows arrangement checks itself before it is handed out**, because two different failures
- * of it — a shim the binder refuses, and an auto-load that reached the system module instead —
- * both surface as the CLI answering `unknown`, which reads as a defect in the app. The check runs
- * the query the CLI runs; a wrong answer throws here, naming the arrangement.
+ * of it — a shim the binder refuses, and a search that reached the real cmdlet instead — both
+ * surface as the CLI answering `unknown`, which reads as a defect in the app. The check runs the
+ * query the CLI runs; a wrong answer throws here, naming the arrangement and what
+ * `Get-ScheduledTask` actually resolved to.
  *
  * Nothing on the machine is registered, enabled or disabled: `launchctl disable` writes a record
  * into a per-user store that has no removal verb, and a test may not leave that behind.
  */
 export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
-  const root = temporaryDirectory("xd-supervisor-");
+  const bin = join(temporaryDirectory("xd-supervisor-"), "bin");
+  mkdirSync(bin, { recursive: true });
+
   if (process.platform === "win32") {
-    const module = join(root, "modules", "ScheduledTasks");
-    mkdirSync(module, { recursive: true });
     const shim = scheduledTasksShim();
-    writeFileSync(join(module, "ScheduledTasks.psd1"), shim.manifest);
-    writeFileSync(join(module, "ScheduledTasks.psm1"), shim.module);
-    const environment = { PSModulePath: join(root, "modules") };
+    for (const [command, file] of Object.entries(SCHEDULED_TASKS_SHIM_FILES)) {
+      writeFileSync(join(bin, file), shim[command as keyof ScheduledTasksShim]);
+    }
+    const environment = { [inheritedVariableName("PATH")]: prependedPath(bin) };
     assertScheduledTasksShimAnswers(identity, environment);
     return environment;
   }
 
-  const bin = join(root, "bin");
-  mkdirSync(bin, { recursive: true });
   const program = process.platform === "darwin" ? "launchctl" : "systemctl";
   const script =
     process.platform === "darwin"
@@ -366,7 +357,22 @@ export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
           "",
         ].join("\n");
   writeFileSync(join(bin, program), script, { mode: 0o755 });
-  return { PATH: `${bin}:${process.env.PATH ?? ""}` };
+  return { [inheritedVariableName("PATH")]: prependedPath(bin) };
+}
+
+/** This machine's `PATH` with one directory in front of it, in this platform's own spelling. */
+function prependedPath(bin: string): string {
+  const inherited = process.env[inheritedVariableName("PATH")] ?? "";
+  return inherited === "" ? bin : `${bin}${delimiter}${inherited}`;
+}
+
+/** One PowerShell command, run the way the CLI runs its own. */
+function askPowerShell(script: string, environment: NodeJS.ProcessEnv): SpawnSyncReturns<string> {
+  return spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+    { encoding: "utf8", env: { ...process.env, ...environment }, windowsHide: true },
+  );
 }
 
 /**
@@ -376,32 +382,33 @@ export function switchedOffEnvironment(identity: string): NodeJS.ProcessEnv {
  * rather than imported: `src/install/` is the CLI's internal machinery and this package consumes
  * that CLI as a program, not as a module. If the two ever drift, this check fails on the platform
  * that runs it — which is the platform the query exists for.
+ *
+ * A failure names what `Get-ScheduledTask` resolved to, which is the one fact that separates the
+ * two ways this can go wrong: `ExternalScript:` and a wrong answer is the shim's own doing, and
+ * anything else is the search having reached past it.
  */
 function assertScheduledTasksShimAnswers(identity: string, environment: NodeJS.ProcessEnv): void {
-  const answer = spawnSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      `(Get-ScheduledTask -TaskName '${identity.replaceAll("'", "''")}').State`,
-    ],
-    { encoding: "utf8", env: { ...process.env, ...environment }, windowsHide: true },
-  );
+  const quoted = `'${identity.replaceAll("'", "''")}'`;
+  const answer = askPowerShell(`(Get-ScheduledTask -TaskName ${quoted}).State`, environment);
   const said = (answer.stdout ?? "").trim();
   if (said === SWITCHED_OFF_STATE) {
     return;
   }
+  const resolved = askPowerShell(
+    "(Get-Command Get-ScheduledTask -All -ErrorAction SilentlyContinue | " +
+      "ForEach-Object { $_.CommandType.ToString() + ':' + $_.Source }) -join '|'",
+    environment,
+  );
   throw new Error(
-    `the switched-off arrangement does not answer: \`(Get-ScheduledTask -TaskName '${identity}')` +
+    `the switched-off arrangement does not answer: \`(Get-ScheduledTask -TaskName ${quoted})` +
       `.State\` said ${JSON.stringify(said)} rather than ${JSON.stringify(SWITCHED_OFF_STATE)}` +
       `${answer.error === undefined ? "" : ` (${answer.error.message})`}` +
       `${(answer.stderr ?? "").trim() === "" ? "" : `, and wrote: ${(answer.stderr ?? "").trim()}`}` +
-      ". Either PowerShell refused the shim module's parameters or it auto-loaded the system " +
-      "ScheduledTasks module instead of the one on PSModulePath; both would make the CLI answer " +
-      "`unknown`, which is a fact about this arrangement rather than about the app under test.",
+      `. \`Get-ScheduledTask\` there resolves to ${JSON.stringify((resolved.stdout ?? "").trim())}` +
+      ", which says which of the two failures this is: an `ExternalScript` that answered wrongly " +
+      "is the shim's own doing, and anything else is PowerShell having searched past it. Either " +
+      "way the CLI would answer `unknown`, which is a fact about this arrangement rather than " +
+      "about the app under test.",
   );
 }
 

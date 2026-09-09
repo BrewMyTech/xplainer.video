@@ -34,6 +34,7 @@ import {
   payloadResources,
   programFor,
   recordToolchain,
+  SCHEDULED_TASKS_SHIM_FILES,
   SWITCHED_OFF_STATE,
   scheduledTasksShim,
   startDaemon,
@@ -400,27 +401,31 @@ describe("discover", () => {
 /**
  * The Windows half of the switched-off arrangement, read from a machine that cannot run it.
  *
- * The three surfaces the CLI's query touches are the two command names PowerShell has to
- * auto-load by, the `-TaskName` the query names them with, and the word `readSwitch` reads back.
- * Measured under PowerShell 7.4 (`mcr.microsoft.com/powershell:7.4-ubuntu-22.04`, 2026-09-08) with
- * `PSModulePath` set to the shim's directory and nothing else:
- * `(Get-ScheduledTask -TaskName 'video.xplainer.daemon').State` prints `Disabled`.
+ * The three surfaces the CLI's query touches are the two command names it calls, the `-TaskName`
+ * it names them with, and the word `readSwitch` reads back. Measured under PowerShell 7.4
+ * (`mcr.microsoft.com/powershell:7.4-ubuntu-22.04`, 2026-09-09) with these two scripts in a
+ * directory prepended to `PATH` and a competing `ScheduledTasks` module still on `PSModulePath`:
+ * `Get-Command Get-ScheduledTask -All` answers `ExternalScript:/exp/bin/Get-ScheduledTask.ps1` and
+ * nothing else, and `(Get-ScheduledTask -TaskName '\xplainer\runneradmin-daemon').State` prints
+ * `Disabled` and exits `0`.
  */
 describe("the switched-off ScheduledTasks shim", () => {
-  it("exports the two commands the CLI's queries call, and answers for a named task", () => {
+  it("is a script per command the CLI's queries call, answering for a named task", () => {
     const shim = scheduledTasksShim();
 
-    expect(shim.manifest).toContain("RootModule = 'ScheduledTasks.psm1'");
-    expect(shim.manifest).toContain(
-      "FunctionsToExport = @('Get-ScheduledTask', 'Get-ScheduledTaskInfo')",
-    );
-    for (const command of ["Get-ScheduledTask", "Get-ScheduledTaskInfo"]) {
-      expect(shim.module).toContain(`function ${command} {`);
+    // The file name is the command name: that is the whole of how PowerShell finds it on `PATH`.
+    expect(SCHEDULED_TASKS_SHIM_FILES).toEqual({
+      getScheduledTask: "Get-ScheduledTask.ps1",
+      getScheduledTaskInfo: "Get-ScheduledTaskInfo.ps1",
+    });
+    for (const script of [shim.getScheduledTask, shim.getScheduledTaskInfo]) {
+      // The real cmdlets' own named parameters, so the binder has somewhere to put the query's.
+      expect(script).toContain("[string] $TaskName");
+      expect(script).toContain("[string] $TaskPath");
+      expect(script).toContain("[pscustomobject]@{ TaskName = $TaskName;");
     }
-    // The real cmdlet's own named parameters, so the binder has somewhere to put the query's.
-    expect(shim.module).toContain("[string] $TaskName");
-    expect(shim.module).toContain("[string] $TaskPath");
-    expect(shim.module).toContain(`State = '${SWITCHED_OFF_STATE}'`);
+    expect(shim.getScheduledTask).toContain(`State = '${SWITCHED_OFF_STATE}'`);
+    expect(shim.getScheduledTaskInfo).toContain("LastTaskResult = 0");
     expect(SWITCHED_OFF_STATE.toLowerCase()).toBe("disabled");
   });
 });
