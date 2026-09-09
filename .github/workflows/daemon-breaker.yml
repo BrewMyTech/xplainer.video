@@ -320,3 +320,153 @@ jobs:
           Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
             ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
           Write-Host 'throwaway task removed'
+
+  probe:
+    name: TEMPORARY registration-trigger measurement (windows-latest)
+    if: ${{ inputs.windows }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: What Task Scheduler does with each trigger shape
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\tsprobe'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $account = "$env:USERDOMAIN\$env:USERNAME"
+          Write-Host "account: $account"
+
+          $logon = @"
+              <LogonTrigger>
+                <Repetition>
+                  <Interval>PT5M</Interval>
+                </Repetition>
+                <Enabled>true</Enabled>
+                <UserId>$account</UserId>
+              </LogonTrigger>
+          "@
+          $both = @"
+              <LogonTrigger>
+                <Repetition>
+                  <Interval>PT5M</Interval>
+                </Repetition>
+                <Enabled>true</Enabled>
+                <UserId>$account</UserId>
+              </LogonTrigger>
+              <RegistrationTrigger>
+                <Repetition>
+                  <Interval>PT5M</Interval>
+                </Repetition>
+                <Enabled>true</Enabled>
+              </RegistrationTrigger>
+          "@
+          $registration = @"
+              <RegistrationTrigger>
+                <Enabled>true</Enabled>
+              </RegistrationTrigger>
+          "@
+
+          function Body($tag, $triggers, $arguments) {
+            return @"
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo>
+              <Description>probe $tag</Description>
+            </RegistrationInfo>
+            <Triggers>
+          $triggers
+            </Triggers>
+            <Principals>
+              <Principal id="Author">
+                <UserId>$account</UserId>
+                <LogonType>S4U</LogonType>
+                <RunLevel>LeastPrivilege</RunLevel>
+              </Principal>
+            </Principals>
+            <Settings>
+              <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+              <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+              <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+              <AllowHardTerminate>true</AllowHardTerminate>
+              <AllowStartOnDemand>true</AllowStartOnDemand>
+              <Enabled>true</Enabled>
+              <Hidden>false</Hidden>
+              <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+              <RestartOnFailure>
+                <Interval>PT1M</Interval>
+                <Count>3</Count>
+              </RestartOnFailure>
+            </Settings>
+            <Actions Context="Author">
+              <Exec>
+                <Command>C:\Windows\System32\cmd.exe</Command>
+                <Arguments>$arguments</Arguments>
+                <WorkingDirectory>C:\tsprobe</WorkingDirectory>
+              </Exec>
+            </Actions>
+          </Task>
+          "@
+          }
+
+          $failA = '/c echo %TIME% &gt;&gt; "C:\tsprobe\a.log" &amp; exit /b 10'
+          $failB = '/c echo %TIME% &gt;&gt; "C:\tsprobe\b.log" &amp; exit /b 10'
+          $long = '/c echo %TIME% &gt;&gt; "C:\tsprobe\c.log" &amp; ping -n 240 127.0.0.1 &gt;nul &amp; exit /b 0'
+
+          Register-ScheduledTask -Xml (Body 'A' $logon $failA) -TaskName '\tsprobe\A' -Force | Out-Null
+          Start-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'A'
+          Write-Host 'A: LogonTrigger only, started on demand (what ships today)'
+
+          $t0 = Get-Date
+          Register-ScheduledTask -Xml (Body 'B' $both $failB) -TaskName '\tsprobe\B' -Force | Out-Null
+          Write-Host "B: LogonTrigger + RegistrationTrigger, NEVER started by hand, registered $($t0.ToString('o'))"
+
+          Register-ScheduledTask -Xml (Body 'C' $registration $long) -TaskName '\tsprobe\C' -Force | Out-Null
+          Start-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'C'
+          Write-Host 'C: RegistrationTrigger + an immediate Start-ScheduledTask, long-running action'
+
+          Write-Host ''
+          Write-Host '--- what the service stored for B ---'
+          Export-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'B' | Out-String | Write-Host
+
+          function Runs($file) {
+            $path = Join-Path 'C:\tsprobe' $file
+            if (-not (Test-Path $path)) { return 0 }
+            return @(Get-Content $path | Where-Object { $_.Trim() -ne '' }).Count
+          }
+
+          Write-Host '--- polling every 20 s for 11 minutes ---'
+          for ($i = 1; $i -le 33; $i++) {
+            Start-Sleep -Seconds 20
+            $line = "t+$([int]((Get-Date) - $t0).TotalSeconds)s"
+            foreach ($name in 'A', 'B') {
+              $info = Get-ScheduledTaskInfo -TaskPath '\tsprobe\' -TaskName $name
+              $when = if ($null -eq $info.LastRunTime) { '<never>' } else { $info.LastRunTime.ToString('HH:mm:ss') }
+              $state = (Get-ScheduledTask -TaskPath '\tsprobe\' -TaskName $name).State
+              $runs = Runs "$($name.ToLower()).log"
+              $line += "   ${name}: runs=$runs last=$when result=$($info.LastTaskResult) missed=$($info.NumberOfMissedRuns) state=$state"
+            }
+            $line += "   C: starts=$(Runs 'c.log')"
+            Write-Host $line
+          }
+
+          Write-Host ''
+          Write-Host '--- final ---'
+          Write-Host "A (LogonTrigger only, on-demand start):            $(Runs 'a.log') run(s)"
+          Write-Host "B (LogonTrigger + RegistrationTrigger, no hand start): $(Runs 'b.log') run(s)"
+          Write-Host "C (RegistrationTrigger + Start-ScheduledTask):     $(Runs 'c.log') concurrent start(s)"
+          foreach ($name in 'A', 'B', 'C') {
+            Write-Host "--- $name ---"
+            Get-ScheduledTaskInfo -TaskPath '\tsprobe\' -TaskName $name | Format-List | Out-String | Write-Host
+          }
+
+      - name: Remove the probe tasks
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-ScheduledTask -TaskPath '\tsprobe\' -ErrorAction SilentlyContinue | ForEach-Object {
+            Stop-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false
+          }
+          Write-Host 'probe tasks removed'
