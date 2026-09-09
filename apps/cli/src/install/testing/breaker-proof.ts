@@ -78,6 +78,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { awaitStopped, requestDrain } from "../../daemon/control.js";
 import {
   type DaemonStart,
   FAILED_START_WINDOW_MS,
@@ -706,6 +707,25 @@ async function proveTaskScheduler(squatter: Server): Promise<void> {
     await proveTheSentence(bed, "win32", 0);
     await proveRestartClearsIt(bed, "win32", 0, squatter);
   } finally {
+    // The daemon `daemon restart` brought back is still serving out of this directory, and
+    // Windows will not remove a directory a process is running from: `Stop-ScheduledTask` ends
+    // the task's own process and leaves whatever it spawned exactly where it was, and the retries
+    // `removeScratchRoot` makes do not outlast a live handle (`windows-latest`, 2026-09-09, run
+    // 34327255228: all eleven expectations passed and the removal then answered `EPERM`). So this
+    // proof ends the way the restart proof does — a planned stop over the drain route, waited for
+    // by pid, and only then the deregistration and the removal.
+    say("\ndraining the daemon this proof left running:");
+    const last = await requestDrain({ socketPath: resolveIpcPath(bed.stateDir) });
+    if (last.ok) {
+      const gone = await awaitStopped({
+        stateDir: bed.stateDir,
+        pid: last.acknowledgement.pid,
+        timeoutMs: 40_000,
+      });
+      say(`  pid ${String(last.acknowledgement.pid)} gone after ${String(gone.elapsedMs)} ms`);
+    } else {
+      say(`  nothing answered the socket: ${last.reason}`);
+    }
     say("\nunregistering the throwaway task:");
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);
