@@ -2,7 +2,7 @@
 # Task Scheduler, and the two Windows facts nothing in this repository could
 # measure on the machines it was written on.
 #
-# WHAT IT CLOSES. Three criteria, none of which can be established on any machine
+# WHAT IT CLOSES. Five criteria, none of which can be established on any machine
 # this project's authors have:
 #
 #   * **T11**, criterion 11 — the create → narrate gate from T3, run against the
@@ -36,20 +36,35 @@
 #     has no Job Object API and this project ships no native addon. Everything
 #     about that is asserted from a decoded command on macOS and Linux; the
 #     behaviour itself can only happen here.
+#   * **ADR 0024's identity triple**, which on this platform was a decision
+#     nothing implemented. `worker-identity.ts` spawned `ps` on every platform
+#     that is not Linux and Windows has no `ps`, and it read a boot id only on
+#     Linux and macOS, so `selfIdentity()` here was `(pid, null, null)`: every
+#     live pid classified `uncertain`, no reconciliation could ever take a
+#     positive kill decision, and `startIsProvablyGone` answered `false` for any
+#     recorded pid Windows had since handed to somebody else. T14's Windows leg
+#     is where that surfaced, as a flake — run 34319237168 green and run
+#     34333162332 red on the same code, according to whether the machine had
+#     reused one of five recorded pids. Both halves are now read from CIM in one
+#     `powershell.exe`, and the `identity` job below runs the four suites that
+#     are about the tuple on the platform whose answer they never had, next to a
+#     measurement of what the probe costs there.
 #
 # THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
-# dispatched and has reported, all three are unproven, and no record in this
+# dispatched and has reported, all five are unproven, and no record in this
 # repository may say otherwise.** `workflow_dispatch` registers from the
 # repository's default branch, so this file has to reach `main` before the API
 # will accept a dispatch of it at all — GitHub's own rule, not a repository
-# setting — and `--ref` then chooses whose code runs. It has never been
-# dispatched.
+# setting — and `--ref` then chooses whose code runs. It has been dispatched
+# and has reported: all six jobs green on `phase-2-win2`, run 34339968171,
+# 2026-09-09, which is the run the `identity` job's measurement above is
+# quoted from.
 #
 #   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-windows.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 #
 # `windows` is the per-OS boolean every proof workflow in this repository now
-# carries, and here it is the only one there could be: all five jobs below are
+# carries, and here it is the only one there could be: all six jobs below are
 # `windows-latest`. It therefore defaults to `true` rather than to the `false`
 # the macOS and Windows checkboxes take elsewhere — a default of `false` would
 # make the ordinary dispatch of this file a no-op, which is not a saving, it is
@@ -312,6 +327,76 @@ jobs:
           $keepers | Select-Object ProcessId, CommandLine | Format-List | Out-String | Write-Host
           if ($keepers.Count -gt 0) { throw "a Job Object keeper outlived its worker by 20 s" }
           Write-Host 'no keeper left behind'
+
+  identity:
+    name: the identity tuple this platform can actually read (windows-latest)
+    if: ${{ inputs.windows }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # `turbo`'s `test` task depends on the **dependencies'** builds, and the
+      # steps below run vitest and a source entry point directly, so the build
+      # is a step of its own.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # A measurement and not an assertion, for the reason the header gives: it
+      # prints and exits `0` whatever the numbers are. ADR 0024's note priced
+      # the macOS probe at 4.5 ms and wrote the store's whole cost discipline
+      # around it; the Windows probe is a `powershell.exe` start, and this step
+      # is the number the note of 2026-09-09 quotes rather than guesses.
+      - name: What one identity probe costs on this runner
+        run: |
+          node --import ./apps/cli/src/daemon/testing/ts-source-hook.ts `
+            apps/cli/src/daemon/testing/identity-cost.ts
+
+      # THE SUITES THAT WERE NEVER RUN HERE, AND WHY THAT MATTERED. Every case
+      # in these four files is about the identity triple, and until 2026-09-09
+      # `worker-identity.ts` answered `(pid, null, null)` on Windows: no `ps`
+      # to spawn and no boot id outside Linux and macOS. So `classifyWorker`
+      # said `uncertain` for every live pid, `classifyHolder` believed every
+      # live lock holder, and `startIsProvablyGone` was `false` for any recorded
+      # pid the machine had since handed to somebody else — which is how T14's
+      # Windows leg failed on run 34333162332 and passed on 34319237168 with the
+      # same code, according to whether Windows had reused one of five pids.
+      # These cases would all have failed here and none of them was run to find
+      # out. They run on every push on the other two platforms; this is the leg
+      # that makes them Windows evidence.
+      - name: The tuple, the lock it decides, and the reconciliation it licenses
+        run: >
+          pnpm --filter @xplainer/cli exec vitest run
+          src/daemon/worker-identity.test.ts
+          src/daemon/lock.test.ts
+          src/daemon/reconciler.test.ts
+          src/daemon/daemon-state.test.ts
+
+      # A reconciliation case spawns detached sleepers and kills them itself.
+      # One that outlived the suite would be a leak on every boot, so the last
+      # word is that none is left.
+      - name: No sleeper survived the suite
+        if: always()
+        shell: pwsh
+        run: |
+          $strays = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+            Where-Object { $_.CommandLine -like '*setInterval*' })
+          $strays | Select-Object ProcessId, CommandLine | Format-List | Out-String | Write-Host
+          if ($strays.Count -gt 0) { throw "a detached sleeper outlived the suite" }
+          Write-Host 'no sleeper left behind'
 
   install:
     name: install under the S4U principal, then create → narrate (windows-latest)

@@ -352,8 +352,13 @@ describe("recentStarts and stalled", () => {
    *
    * `writeRuntimeState` is reached only from `markReady`, so a run that dies before readiness never
    * writes one — and a later start deciding whether that run is "provably gone" has nothing else to
-   * read. The two probed members are `null` on a platform that cannot answer, and `startIdentity`
-   * is what puts them back together with the pid.
+   * read. `startIdentity` is what puts the two probed members back together with the pid.
+   *
+   * Both are required on **all three** platforms, and that line used to exempt `win32`: until
+   * 2026-09-09 `worker-identity.ts` read no start token and no boot id there, so every start this
+   * daemon recorded on Windows carried `(pid, null, null)` and `startIsProvablyGone` could never
+   * answer `true` for one whose number the machine had since reused. T14's Windows leg failed on
+   * exactly that (run `34333162332`), and the exemption is what let this case pass while it was so.
    */
   it("persists this run's identity tuple with its start record", () => {
     const stateDir = stateDirectory();
@@ -364,10 +369,8 @@ describe("recentStarts and stalled", () => {
     expect(entry?.pid).toBe(process.pid);
     expect(entry?.start_time).toBe(selfIdentity().start_time);
     expect(entry?.boot_id).toBe(selfIdentity().boot_id);
-    if (process.platform === "darwin" || process.platform === "linux") {
-      expect(entry?.start_time).not.toBeNull();
-      expect(entry?.boot_id).not.toBeNull();
-    }
+    expect(entry?.start_time).not.toBeNull();
+    expect(entry?.boot_id).not.toBeNull();
     // Alive, and itself: the one verdict that is neither `gone` nor `stranger`.
     expect(entry === undefined ? true : startIsProvablyGone(entry)).toBe(false);
   });
