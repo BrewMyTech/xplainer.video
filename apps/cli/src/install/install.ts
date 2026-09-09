@@ -589,10 +589,15 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
     if (kind === "task-scheduler") {
       // Read only now: `LastTaskResult` a second after `Start-ScheduledTask` is `267011`
       // (SCHED_S_TASK_HAS_NOT_RUN) on a perfectly healthy task, so it says nothing on its own.
-      const info = run({ ...taskInfoCommand(target), timeoutMs: REGISTRATION_TIMEOUT_MS });
+      const probe = taskInfoCommand(target);
+      const info = run({ ...probe, timeoutMs: REGISTRATION_TIMEOUT_MS });
       commands.push({
         title: "ask Task Scheduler why the task did not answer",
-        command: `${taskInfoCommand(target).program} Get-ScheduledTaskInfo ${target.identity}`,
+        // The script `taskInfoCommand` built, rather than a second spelling of it written here: a
+        // task is addressed by folder and leaf (`register.ts`'s `scheduledTaskSelector`), and a
+        // transcript that showed `Get-ScheduledTaskInfo \xplainer\<user>-daemon` would be printing
+        // a command nothing ran and that would not have worked if anything had.
+        command: `${probe.program} ${probe.argv[probe.argv.length - 1] ?? ""}`,
         status: info.status,
         tolerated: false,
       });

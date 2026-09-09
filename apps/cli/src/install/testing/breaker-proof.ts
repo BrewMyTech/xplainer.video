@@ -85,8 +85,11 @@ import { currentSupervisorEnvironment, type ProbeCommand, runProbe } from "../pr
 import {
   deregisterCommands,
   guiService,
+  POWERSHELL,
+  POWERSHELL_ARGV,
   type RegistrationTarget,
   registerCommands,
+  scheduledTaskSelector,
 } from "../register.js";
 import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
@@ -618,14 +621,21 @@ async function proveSystemd(squatter: Server): Promise<void> {
 
 // ── Windows ──────────────────────────────────────────────────────────────────────────────────
 
-/** `Get-ScheduledTaskInfo`'s two fields, which are the documented machine-readable answer here. */
+/**
+ * `Get-ScheduledTaskInfo`'s two fields, which are the documented machine-readable answer here.
+ *
+ * Addressed through {@link scheduledTaskSelector} rather than by writing `-TaskName '<full path>'`
+ * here, for `register.ts`'s reason: the folder and the leaf are two arguments, and this file having
+ * its own spelling of that is a second copy of a rule to get wrong. `Get-ScheduledTaskInfo` does
+ * happen to accept a full path — it is measured doing so in run 34313848702 — but `Get-ScheduledTask`
+ * does not, and there is no reading of the module's documentation that says which is which.
+ */
 function taskInfo(): { lastRunTime: string; lastResult: string } {
-  const answer = shell("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `$info = Get-ScheduledTaskInfo -TaskName '${THROWAWAY_TASK}'; ` +
-      "Write-Output $info.LastRunTime.ToString('o'); Write-Output $info.LastTaskResult",
+  const answer = shell(POWERSHELL, [
+    ...POWERSHELL_ARGV,
+    `$info = Get-ScheduledTaskInfo ${scheduledTaskSelector(THROWAWAY_TASK)}; ` +
+      "[Console]::Out.WriteLine($info.LastRunTime.ToString('o')); " +
+      "[Console]::Out.WriteLine($info.LastTaskResult)",
   ]);
   const lines = answer.stdout.split("\n").map((line) => line.trim());
   return { lastRunTime: lines[0] ?? "", lastResult: lines[1] ?? "" };

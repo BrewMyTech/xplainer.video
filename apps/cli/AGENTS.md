@@ -863,16 +863,22 @@ Then the root procedure: `pnpm verify`.
   with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
   pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
   necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
-- **Only `Register-ScheduledTask` takes a task *path* in `-TaskName`.** `\xplainer\<user>-daemon`
-  is a path, and every other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM
-  query whose `TaskName` is the **leaf** and whose `TaskPath` is the folder — so a full path there
-  matches nothing, and matches nothing *quietly*: `Get-` writes a non-terminating `ObjectNotFound`
-  and exits `0`, and `Unregister-` reports success having removed no task. `install/register.ts`'s
-  `scheduledTaskSelector()` is the one place that splits the two, and every composed command goes
-  through it. Measured on `windows-latest`, 2026-09-09: T17 read a correct install's loaded row back
-  as an empty command and reported drift on it, and T16's uninstall left the task it said it had
-  deregistered. The two queries also carry `-ErrorAction Stop`, so a task that is not there is an
-  honest "the query did not answer" rather than a row of empty strings.
+- **Address a scheduled task by folder *and* leaf, from one place.** `\xplainer\<user>-daemon` is a
+  path; `Register-ScheduledTask -TaskName` takes one because it is creating the name, and every
+  other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM query whose `TaskName`
+  is the **leaf** and whose `TaskPath` is the folder. Two of them are measured *refusing* a full
+  path on `windows-latest`, 2026-09-09, and both refuse quietly: `Get-ScheduledTask` writes a
+  non-terminating `ObjectNotFound` and exits `0` (T17 then read a correct install's loaded row back
+  as an empty command and reported drift on it), and `Unregister-ScheduledTask` reports success
+  having removed no task (T16's uninstall left the task it said it had deregistered). Two others —
+  `Start-ScheduledTask` and `Get-ScheduledTaskInfo` — are measured *accepting* one in the same batch
+  of runs (34310353206 and 34313848702). So the rule is not "a path never matches": it is that
+  **which** cmdlet tolerates one is undocumented and silent when it does not, so all of them are
+  addressed the documented way from `install/register.ts`'s `scheduledTaskSelector()` — the verbs in
+  `install/lifecycle.ts`, the update's `switch.ts` and the proof helpers in `install/testing/`
+  included. The two queries also carry `-ErrorAction Stop`, so a task that is not there is an honest
+  "the query did not answer" — a non-zero status and nothing on stdout — rather than a row of empty
+  strings.
 - **A Windows deregistration is two commands, because unregistering does not stop.**
   `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
   job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance

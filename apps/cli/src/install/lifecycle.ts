@@ -616,8 +616,13 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
  *   the word is read and the status is not. `masked` is `off` too — a masked unit cannot be started
  *   at all — and `not-found` is `unregistered` rather than `off`.
  * - **Task Scheduler.** `State` is an enum whose members are `Unknown`, `Disabled`, `Queued`,
- *   `Ready` and `Running`; only `Disabled` is off, and a `Get-ScheduledTask` that could not find
- *   the task writes to stderr and prints nothing.
+ *   `Ready` and `Running`; only `Disabled` is off. A `Get-ScheduledTask` that could not find the
+ *   task writes to stderr, prints nothing, and — since {@link disabledQuery} carries
+ *   `-ErrorAction Stop`, which turns that cmdlet's non-terminating `ObjectNotFound` into a
+ *   terminating one — exits non-zero as well. Both halves land in the same `status !== 0 ||
+ *   word === ""` branch below, so the reading is the same either way; the `-ErrorAction Stop` is
+ *   there so that a query which found nothing cannot be mistaken for one that found a task with
+ *   an empty state.
  */
 export function readSwitch(
   kind: SupervisorKind,

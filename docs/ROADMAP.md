@@ -755,6 +755,18 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `daemon uninstall` after the S4U install and was **red** at `f73e8cc` (run `34206429621`) for
     reasons fixed in `d376533` and not re-run since. So the `runner` ×3 half of this row is
     **pending**; what is met is the local half.
+  - *Amended 2026-09-09 (Windows runner): the **Windows** leg of the runner half is met, and that is
+    a narrower claim than this row's ×3.* `daemon-windows.yml`'s install job runs the shipped
+    `daemon uninstall` after a real S4U install on `windows-latest` and now **asserts** two things
+    where it previously printed one: the command exits `0`, and `Get-ScheduledTask -TaskPath
+    '\xplainer\'` comes back empty afterwards. Both are needed, because the defect being guarded is
+    an uninstall that reported success having removed nothing — which is exactly what
+    `Unregister-ScheduledTask` does when it is given a task's full path in `-TaskName` (run
+    `34304152961`) — so a status alone and an empty folder alone are each satisfiable by a
+    regression. The two assertions are made only when nothing earlier in the job failed: the step is
+    `always()` so that the removal after a failed install still runs, and uninstalling an install
+    that never happened is not a regression. **No macOS or Linux runner runs an uninstall proof at
+    all**, so on those two the row stays pending exactly as the note above leaves it.
 - **P2-10** Each degraded path in ADR 0020 exits with its documented code, **writes nothing**,
   and prints the exact remediation command: no user service manager (6), lingering denied (5),
   no batch-logon right (5), Task Scheduler registration blocked (6), `xplainer setup` not run
@@ -782,6 +794,33 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `SCHED_S_BATCH_LOGON_PROBLEM` rather than asserting a guess about it — and that job was **red**
     at `f73e8cc` (run `34206429621`) for reasons fixed in `d376533` and not re-run since. So `5`
     (batch logon) and `6` (registration blocked) on Windows are **pending**, not met.
+  - *Amended 2026-09-09 (Windows runner): the two Windows paths are met, and the paragraph above
+    describes a measurement `daemon-windows.yml` no longer makes.* Two corrections, both taken from
+    real `windows-latest` runs rather than reasoned:
+    - **The freshly created standard user proves the refusal; it does not carry the install.** A
+      standard user cannot register an S4U task **at any path**. A four-way probe — first run
+      `34306540942`, and re-printed by `daemon-windows.yml` on every dispatch since — registers
+      `InteractiveToken` at the root and in a subfolder and is answered "Access is denied" for `S4U`
+      at both, so the folder was never the obstacle and the logon type needs an elevated token. The
+      standard-user leg therefore asserts the refusal it is:
+      `daemon install` exits **`5` exactly** — not merely non-zero, because telling `5` (the
+      supervisor is here and refused *this* account) from `6` (there is no supervisor at all) is the
+      whole of what this row asks — while quoting `Register-ScheduledTask`'s own "Access is denied",
+      saying the supervisor was present, and leaving no task under `\xplainer\`, no `daemon.json`
+      and no mirrored artefact behind.
+    - **Criterion 11's S4U install is made by the runner's own account**, which is the account whose
+      token can register that logon type. Everything else about it is the shipped command: the same
+      payload, the same port, `<LogonType>S4U</LogonType>` read back out of the mirrored XML, and no
+      interactive session — which is the property that makes S4U worth having.
+
+    One consequence is recorded here rather than left implicit: that job's `create → put_source →
+    narrate` gate narrates with **`dry_run: true`**, so **no speech is synthesised on Windows
+    anywhere in this phase**. The pinned Kokoro image is `linux/amd64`, and `XPLAINER_TTS_FIXTURE`
+    is read in the daemon process — which Task Scheduler starts with the system environment, not
+    the step's. `dry_run` is the contract's own mode and still produces a real `timings.json` and
+    `captions.json`, and the subject of the gate — a job enqueued over the *installed* daemon's
+    pipe, under an S4U principal with no interactive session behind it, reaching terminal `done` —
+    is unchanged by it.
 - **P2-11** A daemon whose port is permanently held stops respawning after five failed starts
   within 30 seconds and records the reason, on all three platforms; `xplainer daemon status`
   names the holding pid in words; `xplainer daemon restart` clears the latched failure and the

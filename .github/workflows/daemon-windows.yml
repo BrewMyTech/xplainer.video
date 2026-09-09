@@ -536,10 +536,19 @@ jobs:
           $said = (Get-Content $log -ErrorAction SilentlyContinue | Out-String) +
             (Get-Content $err -ErrorAction SilentlyContinue | Out-String)
           $said | Write-Host
-          if ($process.ExitCode -eq 0) {
-            throw "a standard user registered an S4U task, which the measurement above says Windows refuses"
+          # Exit `5` exactly, and not merely non-zero. P2-10 is "each degraded
+          # path in ADR 0020 exits with **its documented code**", and the two
+          # codes this refusal sits between are the ones a caller acts on
+          # differently: `5` (`ADMIN_REQUIRED_EXIT_CODE`) is "the supervisor is
+          # here and will not let *this* account register that logon type", and
+          # `6` (`NO_SUPERVISOR_EXIT_CODE`) is "there is no supervisor at all".
+          # A check that accepted any non-zero status is green over a
+          # regression that swapped one for the other, which is the whole of
+          # what this job is the judge of.
+          if ($process.ExitCode -ne 5) {
+            throw "a standard user's S4U install must exit 5 — ADR 0020's `"the supervisor is here and refused`" — and it exited $($process.ExitCode)"
           }
-          Write-Host "refused with exit $($process.ExitCode), which is what it must do"
+          Write-Host 'refused with exit 5, which is what it must do'
           # It quotes the supervisor rather than guessing: the sentence carries
           # `Register-ScheduledTask`'s own words, and the refusal says the
           # supervisor is present and declined rather than absent.
@@ -714,17 +723,40 @@ jobs:
 
       # The uninstall is run by the account that made the install — this
       # runner's own — because that is whose task and whose profile the artefact
-      # is under. It is `always()` and tolerant: the step after it removes
-      # whatever is left whatever this one answered.
+      # is under. It is `always()` so that the removal after it still runs when
+      # something earlier failed, and its two assertions are made only when
+      # nothing earlier did: uninstalling an install that never happened is not
+      # a regression, and `job.status` is what tells the two apart.
+      #
+      # The assertions are here because this is the only workflow that runs the
+      # shipped `daemon uninstall` against a real Task Scheduler, and the
+      # regression it guards is measured: `Unregister-ScheduledTask` given a
+      # task's full path in `-TaskName` removes nothing and reports success
+      # (`windows-latest`, run 34304152961), so an uninstall that only *printed*
+      # its status was green while leaving the task registered. The status and
+      # the emptiness of `\xplainer\` are two different claims and both are made.
       - name: Uninstall
         if: always()
         shell: pwsh
+        env:
+          NOTHING_FAILED_YET: ${{ job.status == 'success' }}
         run: |
           $ErrorActionPreference = 'Continue'
           $env:XPLAINER_STATE_DIR = Join-Path $env:XPLAINER_T11_ROOT 'state'
           & node apps\cli\dist\bin.js daemon uninstall | Write-Host
-          Write-Host "daemon uninstall exited $LASTEXITCODE"
-          exit 0
+          $code = $LASTEXITCODE
+          Write-Host "daemon uninstall exited $code"
+          $left = @(Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue)
+          $left | Format-List | Out-String | Write-Host
+          if ($env:NOTHING_FAILED_YET -ne 'true') {
+            Write-Host 'an earlier step failed, so neither is asserted here'
+            exit 0
+          }
+          if ($code -ne 0) { throw "daemon uninstall exited $code" }
+          if ($left.Count -ne 0) {
+            throw "daemon uninstall reported success and left $($left.Count) task(s) under \xplainer\"
+          }
+          Write-Host 'uninstalled, and nothing is left registered'
 
       - name: Remove the throwaway account and every task it left
         if: always()

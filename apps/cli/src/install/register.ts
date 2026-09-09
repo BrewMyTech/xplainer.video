@@ -234,20 +234,37 @@ export function powerShellLiteral(value: string): string {
 }
 
 /**
- * How every `*-ScheduledTask` cmdlet **except `Register-`** has to be told which task is meant.
+ * How every `*-ScheduledTask` cmdlet **except `Register-`** is told which task is meant.
  *
  * `\xplainer\<user>-daemon` is the task's *full path*, and `Register-ScheduledTask -TaskName` takes
  * one — it is creating the name, folder included. Every other cmdlet in the `ScheduledTasks` module
  * is a CDXML wrapper over a CIM query on `MSFT_ScheduledTask`, whose `TaskName` property is the
- * **leaf** and whose `TaskPath` is the folder, so a full path in `-TaskName` matches nothing at
- * all. It does not fail loudly either: `Get-` writes a non-terminating `ObjectNotFound` and carries
- * on, so the query answers `Execute=` with nothing after it and exits `0`, and `Unregister-`
- * removes no task while reporting success.
+ * **leaf** and whose `TaskPath` is the folder, and the two arguments are what those cmdlets are
+ * documented to take.
  *
- * Both were measured on `windows-latest` on 2026-09-09. T17's proof read a *correct* install's
- * loaded row back as an empty command and an empty working directory and reported drift on it
- * (run 34306551605); T16's uninstall said "deregistered" and the workflow's own cleanup step then
- * found `runneradmin-daemon` still registered (run 34304152961).
+ * **What was measured, and what was not.** Two of them are measured refusing a full path, and both
+ * refusals are quiet:
+ *
+ * - `Get-ScheduledTask` writes a non-terminating `ObjectNotFound` and exits `0`, so the query it is
+ *   inside answers `Execute=` with nothing after it. T17's proof read a *correct* install's loaded
+ *   row back as an empty command and an empty working directory and reported drift on it
+ *   (`windows-latest`, 2026-09-09, run 34306551605); the same message is printed in full in
+ *   run 34310360595 — `No MSFT_ScheduledTask objects found with property 'TaskName' equal to
+ *   '\xplainer\lifecycle-probe'`.
+ * - `Unregister-ScheduledTask` removes no task while reporting success. T16's uninstall said
+ *   "deregistered" and the workflow's own cleanup step then found `runneradmin-daemon` still
+ *   registered (run 34304152961).
+ *
+ * Two others are measured *accepting* one, in the same batch of runs: `Start-ScheduledTask -TaskName
+ * '\xplainer\t13-proof'` started the task (run 34310353206) and `Get-ScheduledTaskInfo -TaskName
+ * '\xplainer\t14-proof'` returned a real `LastRunTime` and `LastTaskResult` (run 34313848702). So
+ * the rule this function encodes is **not** "a path in `-TaskName` never matches" — it is that
+ * which cmdlet tolerates one is undocumented, unpredictable per cmdlet, and silent when it does
+ * not, so every one of them is addressed the documented way from one place. Every command this
+ * module composes goes through it, and so does every `*-ScheduledTask` command composed anywhere
+ * else in this repository: `lifecycle.ts`'s verbs, the update's `switch.ts`, and the three proof
+ * helpers in `testing/` — which is the property that makes the paragraph above a rule rather than
+ * an observation about four cmdlets.
  *
  * @throws {RangeError} for an identity that is not a task path, which every caller's is.
  */

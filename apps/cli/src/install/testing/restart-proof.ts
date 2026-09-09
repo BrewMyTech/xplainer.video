@@ -82,8 +82,11 @@ import { currentSupervisorEnvironment, type ProbeCommand, runProbe } from "../pr
 import {
   deregisterCommands,
   guiService,
+  POWERSHELL,
+  POWERSHELL_ARGV,
   type RegistrationTarget,
   registerCommands,
+  scheduledTaskSelector,
 } from "../register.js";
 import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
@@ -644,13 +647,8 @@ async function proveTaskScheduler(): Promise<void> {
     say("   proving a supervisor restart first:");
     await boot(bed);
     await proveRouteAndExitZero(bed, {
-      program: "powershell.exe",
-      argv: [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `Start-ScheduledTask -TaskName '${THROWAWAY_TASK}'`,
-      ],
+      program: POWERSHELL,
+      argv: [...POWERSHELL_ARGV, `Start-ScheduledTask ${scheduledTaskSelector(THROWAWAY_TASK)}`],
     });
     await proveShippedRestart(bed, 0, "win32");
   } finally {
