@@ -29,9 +29,9 @@
  * only writer and only parser, and `ready.test.ts` is where the exact bytes are asserted.
  *
  * The one field whose *behaviour* is a fact about this module rather than about the record:
- * `socket` is nullable, because a server bound without one is a supported shape
- * (`services/media-service` binds no socket) and a parent that cannot use a path it has no
- * filesystem access to needs to tell that case from "an older daemon".
+ * `socket` is nullable, because a server bound without one is a supported shape — the hosted media
+ * service (relocated to a private repository, ADR 0023) binds no socket — and a parent that cannot
+ * use a path it has no filesystem access to needs to tell that case from "an older daemon".
  */
 
 import type { ChildProcess } from "node:child_process";

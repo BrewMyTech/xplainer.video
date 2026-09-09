@@ -24,8 +24,15 @@ reduced to the local product and the hosted tier was relocated
 ([ADR 0023](adr/0023-split-the-repository.md)) — deferred pending a written answer from
 Remotion AG on whether a rendering service may accept user-authored code, **not cancelled**.
 
-**What remains before this repository is made public.** These are gates, not aspirations, and
-the first one is the reason the others matter.
+**What remained before this repository was made public.** These were gates, not aspirations, and
+the first one was the reason the others mattered.
+
+*Amended 2026-09-09.* **The repository is public.** Six of these six are now closed, and the list
+is kept rather than deleted because each item says what was wrong and each amendment says what
+answered it — a deleted gate is a gate nobody can audit. What is written below survives as the
+record; the status line under each item is the current truth. The remaining gate for the **first
+npm publish** is no longer on this list at all: it is `pnpm changeset publish` itself, which is
+close to irreversible and is a decision rather than a task.
 
 1. **The private repository's name still ships inside published packages.** It appears in the
    `description` strings of twelve JSON Schema files under `packages/protocol/schemas/`, and in
@@ -35,12 +42,23 @@ the first one is the reason the others matter.
    does. Fixing the schema descriptions requires re-running
    `pnpm --filter @xplainer/protocol codegen` in the same commit, or CI's staleness check
    (AC-9c) goes red.
+   - *Closed before 2026-09-09: no file under `packages/protocol/schemas/` names the private
+     repository, and the generated TypeScript and pydantic output is clean with it.*
 2. **Comment-level references to the relocated packages, in surviving and published code.**
    `apps/cli/package.json`'s `description` names the hosted media-service and **ships to npm**;
    the same class of reference sits in `apps/cli/src/`, `packages/mcp-server/src/` and
    `packages/protocol/tests/`. Editorial, at source — the same call
    [ADR 0022](adr/0022-open-source-the-published-packages.md) already made for the shipped
    `.d.ts` citations. Re-check `dist/**/*.d.ts` after the edit.
+   - *Closed 2026-09-09. `apps/cli/package.json`'s `description` no longer names the hosted
+     media-service, and the comment-level references across `apps/cli/src/`,
+     `packages/mcp-server/src/` and `packages/protocol/`'s Python half now name **the hosted media
+     service (relocated to a private repository, ADR 0023)** in prose rather than citing a
+     `services/media-service` path that is not in this checkout. The reasoning each comment
+     carries — a seam is a parameter because a second binder supplies its own guard, state or
+     socket — is unchanged. `generated/` and `schemas/` were deliberately left alone: the tool
+     contract is backend-agnostic on purpose, and its "local backend / hosted backend" wording is
+     the published contract rather than a stale path.*
 3. **The plugin bundles are retargeted, and must not be published yet.** Both `.mcp.json`
    files declared `https://mcp.xplainer.video/mcp` — an endpoint this repository no longer
    describes — and the Codex bundle declared an `oauth_resource` that a loopback daemon cannot
@@ -50,22 +68,40 @@ the first one is the reason the others matter.
    publishing a dead URL and publishing a command that exits 2 are the same failure in different
    clothes, and a marketplace fetch is not retractable. `xplainer mcp` becomes real in phase 1;
    submission is phase 4.
+   - *Status 2026-09-09: `xplainer mcp` is real — phase 1 built it and phase 2's proofs drive it
+     over the daemon's socket — so the bundles are no longer describing a command that exits 2.
+     They remain unpublished, and submission is still phase 4.*
 4. **`LICENSE` Part Two still names three directories that no longer exist here**, and still
    covers `apps/desktop`, `packages/config`, `services/tts-sidecar`, `docs/`, `infra/` and
    `scripts/` as proprietary. Making the repository public does not relicense them, and ADR 0023
    is explicit that it did not. Correcting the file, and deciding whether the remainder is
    relicensed, is open work.
+   - *Closed 2026-09-09. `LICENSE` Part Two no longer lists `apps/api`, `apps/web` or
+     `services/media-service`; it records in one paragraph that no `hosted` member remains here
+     and why. The decision the sentence above left open was taken and is **no relicensing**:
+     `apps/desktop`, `packages/config` and `services/tts-sidecar` stay proprietary and stay
+     `UNLICENSED`, and Part Two now says in as many words that making the repository public made
+     them readable rather than usable.*
 5. **The Remotion disclosure is still owed on three surfaces.** ADR 0022 named five: the root
    `README.md`, `apps/cli/README.md`, `packages/render-core/README.md`, the three plugin
    manifest `description` fields, and one line in `SKILL.md`. The root README carries it; the two
    package READMEs do not exist and the manifests do not say it. The manifests also still declare
    `"license": "UNLICENSED"` against packages whose own `package.json` says `Apache-2.0` — a
    defect ADR 0022 identified and that ships inside the published bundles.
+   - *Closed 2026-09-09. All three manifests declare `"license": "Apache-2.0"`. The root
+     `README.md`, `apps/cli/README.md` and `packages/render-core/README.md` all exist and all
+     carry the disclosure, and the three manifest `description` fields and one line of `SKILL.md`
+     now carry it too — the five surfaces ADR 0022 named, complete.*
 6. **`SKILL.md` still sells a hosted backend** — a whole "Two backends, one tool set" section
    and two more sentences. Rewriting it is constrained: `packages/skill/src/build.test.ts`
    asserts a literal sentence is present and that the set of `explainer_*` names mentioned
    **equals** the protocol's `TOOL_NAMES` exactly, so a rewrite keeps all eight names and moves
    the assertion in the same commit.
+   - *Closed 2026-09-09. The section is now "One tool set, and it runs on this machine" and says
+     what is true today: one runtime, on the user's own machine, and no second route to reach for.
+     `build.test.ts` needed no change — the literal sentence it pins, "Prefer the local tools when
+     they are present", survives the rewrite, and all eight `explainer_*` names are still
+     mentioned exactly once each.*
 
 **Judged by** the surviving phase-5 criteria, which kept their ids — see
 [Phase 5](#phase-5--the-split-what-is-discharged-and-what-is-not) at the foot of this file.

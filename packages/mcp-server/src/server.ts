@@ -13,9 +13,10 @@
  * manifest entry and a `RenderBackend` method, adding one without an
  * implementation fails loudly instead of silently serving nothing.
  *
- * The fourth surface, `apps/api`, is Python and cannot share this code. It is
- * pinned by assertion instead: its pytest and this package's Vitest both
- * compare against `packages/protocol`'s manifest, never against each other.
+ * The fourth surface, the hosted API (relocated to a private repository,
+ * ADR 0023), is Python and cannot share this code. It is pinned by assertion
+ * instead: its pytest and this package's Vitest both compare against
+ * `packages/protocol`'s manifest, never against each other.
  *
  * Registration is also where the rules that must hold on every surface live:
  * {@link PRE_DISPATCH_GUARDS} runs before the backend is reached, which is what

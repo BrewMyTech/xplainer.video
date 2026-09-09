@@ -4,9 +4,10 @@
  *
  * `createServer()` is the whole HTTP surface of this phase: a liveness probe and
  * a Streamable HTTP MCP endpoint. `apps/cli serve` binds it to a port on the
- * developer's machine and `services/media-service` imports this same function
- * for its container image, so the two cannot drift into two implementations of
- * one tool contract. Everything below the tool names comes from
+ * developer's machine and the hosted media service (relocated to a private
+ * repository, ADR 0023) imports this same function for its container image, so
+ * the two cannot drift into two implementations of one tool contract.
+ * Everything below the tool names comes from
  * `createMcpServer()` in `@xplainer/mcp-server`, which iterates
  * `@xplainer/protocol`'s manifest — so `tools/list` equals the manifest by
  * construction rather than by a second list kept in step by hand (AC-14d).
@@ -23,8 +24,8 @@
  * middleware that every route passes first, so the TCP listener can carry the
  * loopback guard (`daemon/guard.ts`: `Host` allowlist, `Origin` validation and
  * the bearer token) while the IPC listener carries none — filesystem
- * permissions are that transport's authentication — and
- * `services/media-service` can carry its own at phase 3. ADR 0020 §The agent
+ * permissions are that transport's authentication — and the hosted media
+ * service can carry its own at phase 3. ADR 0020 §The agent
  * path is IPC says why it is shaped that way: "One place decides, and the
  * loopback Host allowlist does not have to be wrong for the hosted service."
  * `startServer()` takes it as a *factory* over the bound port, because R-SEC-2
@@ -141,7 +142,7 @@ export type DrainAcknowledgement = {
  * The six steps, as the HTTP layer sees them: two facts to report and one thing to begin.
  *
  * A seam rather than an import, because `daemon/shutdown.ts` owns the sequence and this file must
- * stay the plain HTTP application `services/media-service` can bind with no daemon underneath it.
+ * stay the plain HTTP application the hosted media service can bind with no daemon underneath it.
  * Omit it and {@link DRAIN_PATH} is not registered at all, which is the honest answer for a server
  * that has no drain to run.
  */
@@ -186,7 +187,7 @@ export type CreateServerOptions = {
    * about which listener took the connection rather than anything a client can claim. A route that
    * asked a header, a path or `remoteAddress` instead would be a bypass of the loopback guard.
    *
-   * Absent — as it is for `services/media-service`, which binds no socket — every request is
+   * Absent — as it is for the hosted media service, which binds no socket — every request is
    * treated as not-over-IPC, so {@link DRAIN_PATH} answers `404` to all of them.
    */
   isOverIpc?: (request: Request) => boolean;
@@ -206,7 +207,7 @@ export type CreateServerOptions = {
    * that computed it at request time would answer for the process as it is now rather than for the
    * process as it was launched.
    *
-   * Absent for `services/media-service`, which takes no state directory and holds no ownership; the
+   * Absent for the hosted media service, which takes no state directory and holds no ownership; the
    * two fields are then `null`, so the body's shape is the same either way and a reader never has
    * to tell "the field is missing" apart from "this release does not have it".
    */
@@ -222,7 +223,7 @@ export type CreateServerOptions = {
    * process, and a workspace can be deleted while the daemon is up — so a snapshot taken at bind
    * would answer for a machine that no longer exists.
    *
-   * A **parameter**, for the same reason the guard is one: `services/media-service` binds this same
+   * A **parameter**, for the same reason the guard is one: the hosted media service binds this same
    * application in a container with no state directory and no toolchain to have an opinion about,
    * and it passes none. Absent, `/healthz` answers `ok` with `reason: null`, so the body's shape is
    * the same either way and a reader never has to tell "this release has no such field" apart from
@@ -235,7 +236,7 @@ export type CreateServerOptions = {
    * ADR 0016's REST and SSE under `/api` for GUI clients — the library, the artefact bytes, the
    * three enqueueing calls, one job and its event stream — mounted from `src/api/`. It is a
    * parameter rather than a fixture for the same reason the guard and the toolchain are: it needs a
-   * workspace root, and `services/media-service` binds this application in a container that has
+   * workspace root, and the hosted media service binds this application in a container that has
    * none. Absent, the surface does not exist at all; the routes are never registered, so a request
    * for one gets the `404` a route this server does not have gives.
    *
@@ -311,7 +312,7 @@ export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"
    *
    * `daemon/ipc.ts` produces the path, having made the `0700` directory that is this transport's
    * whole authentication (ADR 0020 §The agent path is IPC, not TCP). Omit it and only the TCP
-   * listener is bound, which is what `services/media-service` wants.
+   * listener is bound, which is what the hosted media service wants.
    */
   ipc?: { path: string };
   /**
@@ -320,7 +321,7 @@ export type StartServerOptions = Omit<CreateServerOptions, "guard" | "isOverIpc"
    * Present only for the deliberately non-loopback bind of ADR 0020 §Security R-SEC-9, where TLS is
    * one of the five preconditions; `daemon/tls.ts` reads and checks the pair, and `commands/serve.ts`
    * refuses the bind before this function is called if it is missing. Omitted is plain `http`,
-   * which is what every loopback daemon and `services/media-service` behind its own terminator get.
+   * which is what every loopback daemon and the hosted media service behind its own terminator get.
    *
    * The values are the PEM text rather than paths: this function does no I/O, and a caller that
    * passed a path would be asking the *listener* to decide what happens when the file cannot be
@@ -352,7 +353,7 @@ const METHOD_NOT_ALLOWED = {
  * Build the HTTP application: `GET /healthz` plus the MCP endpoint at `/mcp`.
  *
  * The returned app is not bound to a port. `startServer()` binds it for the CLI;
- * `services/media-service` binds the same app in its container.
+ * the hosted media service binds the same app in its container.
  */
 export function createServer(backend: RenderBackend, options: CreateServerOptions = {}): Hono {
   const version = options.version ?? CLI_VERSION;

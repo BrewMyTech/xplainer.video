@@ -11,9 +11,9 @@
  * {@link ApiArtefact}s instead, each with the route that serves its bytes.
  *
  * **The library is a seam.** `createWorkspaceLibrary()` is the local implementation, over the same
- * `videoPaths()` layout `backend.ts` and the workers use; `services/media-service` would pass its
- * own, and a test passes one over a temporary directory. Nothing in the routes knows what a
- * workspace looks like.
+ * `videoPaths()` layout `backend.ts` and the workers use; the hosted media service (relocated to a
+ * private repository, ADR 0023) would pass its own, and a test passes one over a temporary
+ * directory. Nothing in the routes knows what a workspace looks like.
  *
  * **An artefact is fetched by name, and the name is never joined onto a path.** `open()` enumerates
  * what the video has and returns the entry whose name matches exactly, so `..%2f..%2fetc%2fpasswd`

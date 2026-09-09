@@ -7,10 +7,11 @@ same order. If it ever drifts, every one of those surfaces drifts with it.
 
 ``ENGINE_OWNED_FILES`` is held to the same standard, and to one more: it must
 equal the ``not``/``enum`` in ``explainer_put_source``'s input schema. Nothing in
-Python enforces that list yet — ``apps/api``'s tools are placeholders in this
-phase — so this test is what stops the constant and the published schema drifting
-apart in the meantime, and it is the reason the hosted implementation will have
-the right five names to refuse the day it is written (ADR 0018).
+Python enforces that list yet — the tools in the hosted API (relocated to a
+private repository, ADR 0023) are placeholders in this phase — so this test is
+what stops the constant and the published schema drifting apart in the meantime,
+and it is the reason the hosted implementation will have the right five names to
+refuse the day it is written (ADR 0018).
 """
 
 from __future__ import annotations

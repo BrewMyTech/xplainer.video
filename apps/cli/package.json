@@ -2,7 +2,7 @@
   "name": "@xplainer/cli",
   "version": "0.0.0",
   "type": "module",
-  "description": "The xplainer local runtime: the `xplainer` binary and the HTTP/MCP server core shared with the hosted media-service.",
+  "description": "The xplainer local runtime: the `xplainer` binary, its always-on daemon, and the HTTP and MCP server core they serve.",
   "homepage": "https://xplainer.video",
   "repository": {
     "type": "git",

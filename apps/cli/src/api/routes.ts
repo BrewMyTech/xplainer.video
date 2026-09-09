@@ -26,8 +26,9 @@
  *    client's (T13, ADR 0024 §Drain on planned restart).
  *
  * The whole surface is **optional**: `createServer()` mounts it only when it is given
- * {@link ApiSeam}, so `services/media-service` binds the same application with `/healthz` and
- * `/mcp` and nothing that assumes a workspace on local disk.
+ * {@link ApiSeam}, so the hosted media service (relocated to a private repository, ADR 0023) binds
+ * the same application with `/healthz` and `/mcp` and nothing that assumes a workspace on local
+ * disk.
  */
 
 import type { RenderBackend } from "@xplainer/mcp-server";

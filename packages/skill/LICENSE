@@ -47,21 +47,22 @@ Every other file in this repository is proprietary. No permission is granted
 to use, copy, modify, merge, publish, distribute, sublicense, or sell any part
 of it. This covers, without being limited to:
 
-    apps/api                 the hosted API                    (tier: hosted)
-    apps/web                 the hosted web client             (tier: hosted)
-    services/media-service   the hosted render service         (tier: hosted)
-
     apps/desktop             the desktop client                (tier: open-later)
     packages/config          shared build presets and tooling  (tier: open-later)
     services/tts-sidecar     the packaged TTS sidecar          (tier: open-later)
 
     infra/, scripts/, docs/, and every other file at the root
 
-The `hosted` tier stays proprietary and is not on any path to being opened.
-The three `open-later` members listed above are on that path but have NOT been
-relicensed: opening the six published packages did not open them, and each
-still declares `"license": "UNLICENSED"` in its own manifest. Nothing in Part
-One extends to them.
+No `hosted` member remains in this repository. `apps/api`, `apps/web` and
+`services/media-service` were relocated to a private repository on 2026-09-06
+(ADR 0023) and this file stopped listing them when they went; that tier stays
+proprietary wherever it lives.
+
+The three `open-later` members listed above are on a path to being opened but
+have NOT been relicensed: opening the six published packages did not open them,
+and each still declares `"license": "UNLICENSED"` in its own manifest. Nothing
+in Part One extends to them. Making this repository public did not change that
+either — it made them readable, not usable.
 
 The tier each package belongs to is declared in its own package.json as
 `"xplainer": { "tier": "hosted" | "open-later" }`, and the boundary between

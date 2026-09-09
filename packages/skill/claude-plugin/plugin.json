@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "xplainer",
   "displayName": "Xplainer",
-  "description": "Turn a bug, a root cause, or an architecture decision into a short narrated explainer video with captions, rendered to one MP4.",
+  "description": "Turn a bug, a root cause, or an architecture decision into a short narrated explainer video with captions, rendered to one MP4. Rendering uses Remotion: depending on the size of your company and how you use it, you may need your own Remotion licence — see https://remotion.pro/license.",
   "author": {
     "name": "xplainer.video",
     "url": "https://xplainer.video"
