@@ -991,27 +991,41 @@ on exactly the machines this is for. A probe that cannot run answers `null`, whi
 which is the same refusal every other platform makes when it cannot say.
 
 **What it costs, measured rather than assumed** — `windows-latest`, node v24.20.0, 2026-09-09, run
-`34338721332` job `102424170713`, from `daemon/testing/identity-cost.ts`:
+`34339968171` job `102428197910`, from `daemon/testing/identity-cost.ts`:
 
 ```text
-  platform: win32  node: v24.20.0  pid: 7096
-  selfIdentity() cold:      2771.1 ms      (one powershell.exe, both halves)
-    start_time: CreationDate=134334222396555310
-    boot_id:    LastBootUpTime=134334209301179940
-  selfIdentity() memoised:  0.017 ms
-  machineBootId() memoised: 0.009 ms
-  processStartToken(live pid), 5 readings: 310.3, 322.1, 327.1, 313.7, 317.2 ms
-    mean: 318.1 ms
+  platform: win32  node: v24.20.0  pid: 6464
+  selfIdentity() cold:      2870.6 ms      (one powershell.exe, both halves)
+    start_time: CreationDate=134334230704561090
+    boot_id:    LastBootUpTime=134334228835081440
+  selfIdentity() memoised:  0.012 ms
+  machineBootId() memoised: 0.006 ms
+  processStartToken(live pid), 5 readings: 332.6, 331.4, 342.3, 335.6, 326.4 ms
+    mean: 333.7 ms
   distinct tokens across 5 further readings: 1
+  a bare powershell.exe that only prints, 5 readings: 177.1, 172.7, 171.7, 175.2, 169.8 ms
+    mean: 173.3 ms
 ```
 
-So **318 ms warm and 2.8 s cold**, against the 4.5 ms this record priced the macOS `ps` at — seventy
-times the number the cost discipline was written around. The discipline itself does not change; it
-becomes load-bearing rather than tidy. `selfIdentity()` is memoised and takes **both** halves out of
-the one invocation, which is the only reason it is one spawn and not two; `machineBootId()` is
-memoised from the same reading; and `classifyWorker()` reaches the probe only for a recorded pid
-that is still alive, because a dead one is decided by `isAlive` and a record from another boot by
-the boot id, neither of which spawns anything.
+Run `34338721332`, the first dispatch of the same job, read 2771.1 ms cold and a 318.1 ms mean over
+the same five readings, so the numbers reproduce.
+
+So **about 330 ms warm and 2.9 s cold**, against the 4.5 ms this record priced the macOS `ps` at —
+seventy times the number the cost discipline was written around. **The last line is why no cheaper
+query is worth looking for.** A `powershell.exe -NoProfile -NonInteractive` that does nothing but
+print one line costs 173 ms, so the spawn is already more than half of the 334 ms and the two CIM
+queries are the rest. `[System.Diagnostics.Process]::GetProcessById($pid).StartTime` would read the
+same clock out of pure .NET and skip WMI altogether, and at best it halves a number whose larger
+half it cannot touch — while answering `Access is denied` for a pid belonging to another account,
+which is precisely the pid-reuse case the token exists to decide. The only thing that would remove
+the spawn is a native addon, which [ADR 0020](0020-always-running-local-daemon.md) rules out for the
+same reason it rules out DPAPI.
+
+The discipline itself does not change; it becomes load-bearing rather than tidy. `selfIdentity()` is
+memoised and takes **both** halves out of the one invocation, which is the only reason it is one
+spawn and not two; `machineBootId()` is memoised from the same reading; and `classifyWorker()`
+reaches the probe only for a recorded pid that is still alive, because a dead one is decided by
+`isAlive` and a record from another boot by the boot id, neither of which spawns anything.
 
 **The steady-state effect on a daemon is one warm probe per start, and that was measured too**, on
 run `34338749290`, by comparing two Windows runs of the same suites: `commands/serve.test.ts`, 31

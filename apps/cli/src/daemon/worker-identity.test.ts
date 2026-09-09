@@ -227,7 +227,7 @@ describe("classifyWorker", () => {
     async () => {
       // The child waits to be killed rather than exiting on a timer of its own. It used to run
       // `setTimeout(…, 50)`, which is a race the probe has to win: on macOS `identify()` is a 4.5 ms
-      // `ps` and always did, and on `windows-latest` it is a 318 ms `powershell.exe` and never
+      // `ps` and always did, and on `windows-latest` it is a ~330 ms `powershell.exe` and never
       // does — the child is already gone when the first verdict is taken, so `ours` reads `gone`
       // and the case fails for the platform's probe cost rather than for the classifier. Measured
       // on run 34338721332, 2026-09-09. When the child dies is now this case's decision.

@@ -10,8 +10,9 @@
  *
  * Three measured constraints from that note shape the code:
  *
- * - **Reading the start token is a process spawn and costs about 4.5 ms** on macOS — and 318 ms on
- *   Windows, where it is a `powershell.exe` (see below). An earlier revision of the spike called it
+ * - **Reading the start token is a process spawn and costs about 4.5 ms** on macOS — and about
+ *   330 ms on Windows, where it is a `powershell.exe` (see below). An earlier revision of the spike
+ *   called it
  *   once per record and made every storage-shape number 4.5 ms per record, hiding the thing being
  *   measured. So {@link selfIdentity} is memoised for the life of the process, and
  *   {@link classifyWorker} is called once per worker at reconciliation — never per write.
@@ -49,11 +50,14 @@
  * spawn and is deliberately not used: it is deprecated and absent from current Windows images, so a
  * probe built on it would answer `null` — "uncertain" — on exactly the machines this is for.
  *
- * That spawn is a PowerShell start, and it costs **318 ms warm and 2.8 s cold** against the macOS
- * `ps`'s 4.5 ms — measured on `windows-latest`, 2026-09-09, run `34338721332`, by
- * `testing/identity-cost.ts`, which `daemon-windows.yml`'s `identity` job runs and whose whole
- * reading is in ADR 0024's note of that date. Seventy times the number the cost discipline above
- * was written around, so that discipline is load-bearing here rather than tidy: {@link selfIdentity}
+ * That spawn is a PowerShell start, and it costs **about 330 ms warm and 2.9 s cold** against the
+ * macOS `ps`'s 4.5 ms — measured on `windows-latest`, 2026-09-09, runs `34338721332` and
+ * `34339968171`, by `testing/identity-cost.ts`, which `daemon-windows.yml`'s `identity` job runs and
+ * whose whole reading is in ADR 0024's note of that date. A `powershell.exe` that only prints one
+ * line costs 173 ms of it, so the spawn is more than half the number and no cheaper query can reach
+ * the larger half; the only thing that would is a native addon, which ADR 0020 rules out. Seventy
+ * times the number the cost discipline above was written around, so that discipline is
+ * load-bearing here rather than tidy: {@link selfIdentity}
  * pays the spawn **once** for the life of the process and gets both halves out of the one
  * invocation, {@link machineBootId} is memoised from the same reading, and {@link classifyWorker}
  * reaches the probe only for a recorded pid that is still alive — a dead one is decided by

@@ -67,12 +67,12 @@ let workspaceRoot = "";
  *
  * `localBackend()` calls `selfIdentity()`, and on Windows — since 2026-09-09, when the platform
  * got the other two members of ADR 0024's identity triple — that is a `powershell.exe` rather than
- * a `ps`. Warm it costs 318 ms and cold it costs 2.8 s (`windows-latest`, run 34338721332), and
- * the very first one a fresh runner starts, paged in and scanned on the way, cost 15 s: the first
- * case in this file exceeded its own 5 s budget and reported that `answers GET /healthz` had timed
- * out, which is a true sentence about the wrong thing. The probe is memoised for the life of the
- * process, so paying it here costs every case after this one nothing, and the budget is written
- * where it says what is being waited for.
+ * a `ps`. Warm it costs about 330 ms and cold it costs 2.9 s (`windows-latest`, runs 34338721332
+ * and 34339968171), and the very first one a fresh runner starts — paged in and scanned on the way
+ * — cost 15 s: the first case in this file exceeded its own 5 s budget and reported that
+ * `answers GET /healthz` had timed out, which is a true sentence about the wrong thing. The probe
+ * is memoised for the life of the process, so paying it here costs every case after this one
+ * nothing, and the budget is written where it says what is being waited for.
  */
 const IDENTITY_PROBE_BUDGET_MS = 60_000;
 

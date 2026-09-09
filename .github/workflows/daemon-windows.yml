@@ -55,8 +55,10 @@
 # repository may say otherwise.** `workflow_dispatch` registers from the
 # repository's default branch, so this file has to reach `main` before the API
 # will accept a dispatch of it at all — GitHub's own rule, not a repository
-# setting — and `--ref` then chooses whose code runs. It has never been
-# dispatched.
+# setting — and `--ref` then chooses whose code runs. It has been dispatched
+# and has reported: all six jobs green on `phase-2-win2`, run 34339968171,
+# 2026-09-09, which is the run the `identity` job's measurement above is
+# quoted from.
 #
 #   gh workflow run daemon-windows.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-windows.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
