@@ -246,6 +246,16 @@ container — which waits for `/v1/audio/voices` to answer before it narrates �
 copies the transcript and the MP4 out of a bind-mounted `/artifacts`, and removes
 both containers and the network on the way out, on the failure path too.
 
+**The container needs the public network too, not only Kokoro.** Since 2026-09-09
+`render.mjs` runs a real `xplainer setup` inside it — the toolchain gate refuses
+`explainer_still` and `explainer_render` on a machine with no
+`<state>/toolchain.json` — so the run fetches a headless shell from the reviewed
+manifest and resolves the render workspace with `npm ci`. The image's own
+`remotion browser ensure` layer is still worth its place: the proof links
+`/repo/node_modules/.remotion` into the workspace `setup` materialised, so
+Remotion's copy of the same browser is not fetched again inside the measured
+still job.
+
 **It starts its own Kokoro and publishes no host port.** A developer machine very
 often already has a Kokoro answering on 8880, and this proof must neither disturb
 it nor depend on it, so the render reaches its own by container name over the

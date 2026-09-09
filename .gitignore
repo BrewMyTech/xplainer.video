@@ -32,6 +32,14 @@ __pycache__/
 # --- Agent tooling scratch ---------------------------------------------------
 .session/
 
+# Claude Code puts a linked git worktree per background lane under here. They are
+# checkouts of this same repository, so every one of them carries a `biome.json`
+# — and a nested *root* configuration is a hard error for `pnpm biome check .`,
+# which means one running lane would fail `pnpm verify` for everybody. `biome.json`
+# sets `vcs.useIgnoreFile`, so ignoring the directory here is what keeps it out of
+# both. Only the worktrees: `.claude/skills/` is committed on purpose.
+.claude/worktrees/
+
 # OMC state, ignored in full. This directory previously carried two negations,
 # `!.omc/specs/` and `!.omc/plans/`, so that the interview spec and the execution
 # plan — the decision provenance the ADRs cite — were committed on purpose. Both

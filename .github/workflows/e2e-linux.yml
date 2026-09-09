@@ -1,8 +1,10 @@
 # The Linux half of roadmap P1-1, on a GitHub runner.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. This job renders a real video: it
-# pulls the multi-gigabyte Kokoro CPU image, waits for its voice pack, lets
-# Remotion download a Chrome headless shell and then spends minutes in it. On
+# pulls the multi-gigabyte Kokoro CPU image, waits for its voice pack, runs a
+# real `xplainer setup` (a ~100 MB headless shell and an `npm ci` of the render
+# workspace), lets Remotion download a headless shell of its own and then spends
+# minutes in it. On
 # `push` it would double the wall-clock cost of every commit and would go red
 # for reasons that are not this repository's code — an upstream image that will
 # not pull, a runner without the disk for Chrome. `ci.yml` is the gate; this is
@@ -56,8 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     # The render itself is fast — 30 seconds for 491 frames in the local Docker
     # proof of 2026-09-07. The budget is for everything around it on a cold
-    # runner: the multi-gigabyte Kokoro pull, its voice pack, the dependency
-    # install and Remotion's Chrome download, each paid in full on every run.
+    # runner: the multi-gigabyte Kokoro pull, its voice pack, the pnpm install,
+    # `xplainer setup`'s browser download and `npm ci`, and then Remotion's own
+    # Chrome download — a runner has no `node_modules/.remotion` for the proof to
+    # borrow — each paid in full on every run.
     timeout-minutes: 60
 
     services:

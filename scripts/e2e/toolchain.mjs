@@ -868,14 +868,31 @@ function stopDaemon(child) {
   });
 }
 
-/** Call one tool and return its structured result, refusing a tool error. */
+/**
+ * Call one tool and return its structured result, refusing a tool error.
+ *
+ * The refusal is read **before** anything is parsed. A tool that fails answers with prose in
+ * `content[0].text` and no structured content at all, so parsing first turns the sentence that
+ * says what is wrong into a JSON syntax error about its first character. Measured: the toolchain
+ * gate's refusal opens with the marker's path, and this script reported it as `Unexpected token
+ * '/', "/tmp/xplai"... is not valid JSON` — a message about the letter that named nothing.
+ */
 async function callTool(client, name, args) {
   const result = await client.callTool({ name, arguments: args });
-  const structured = result.structuredContent ?? JSON.parse(result.content?.[0]?.text ?? "null");
+  const text = result.content?.[0]?.text ?? "";
   if (result.isError === true) {
-    throw new Error(`${name} refused: ${result.content?.[0]?.text ?? JSON.stringify(structured)}`);
+    throw new Error(`${name} refused: ${text === "" ? JSON.stringify(result) : text}`);
   }
-  return structured;
+  if (result.structuredContent !== undefined) {
+    return result.structuredContent;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `${name} answered with content this gate cannot read as JSON: ${text.slice(0, 400)}`,
+    );
+  }
 }
 
 /** Enqueue one job and poll `explainer_job` to a conclusion, asserting P1-5's sequence. */

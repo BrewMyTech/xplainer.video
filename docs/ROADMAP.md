@@ -294,6 +294,33 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     on `ubuntu-latest` with Kokoro as a service container and the transcript and MP4 uploaded as
     the `e2e-linux` artifact. It is `workflow_dispatch` **only**, for the reason its own header
     gives.
+  - *Amended 2026-09-09: the proof now runs `xplainer setup`, because batch 6 put a gate in front
+    of the two tools it drives.* `explainer_still` and `explainer_render` refuse a machine whose
+    `<state>/toolchain.json` does not record a complete toolchain
+    (`apps/cli/src/setup/toolchain.ts`), and `render.mjs` used a scratch state directory nobody had
+    ever run `setup` against — so the first dispatch after that gate landed (run `34304136498`, on
+    `phase-2`) failed at `still`. Two things were wrong and both are fixed. The script's `callTool`
+    parsed `content[0].text` **before** it looked at `isError`, so the refusal — which opens with
+    the marker's path — was reported as `Unexpected token '/', "/tmp/xplai"... is not valid JSON`
+    rather than as the sentence that says to run `setup`; the refusal is now read first, as
+    `runtime.mjs` has always read it. And the gate is now satisfied the way the product satisfies
+    it: a real `xplainer setup --manifest <the reviewed manifest this checkout commits> --tts-url
+    <the Kokoro this proof already needs>`, which acquires the headless shell, records the external
+    speech route and resolves the render workspace with `npm ci`. The borrowed
+    checkout `node_modules` is gone — it can never satisfy the workspace half of the gate, which is
+    judged from the `workspace.manifest.json` only `setup`'s own workspace route writes — and no
+    marker is written from the proof: `recordTestToolchain` in `apps/cli/src/setup/testing/` is
+    excluded from the build and must not ship, and a gate that asserts its own precondition proves
+    nothing. Measured on macOS arm64, 2026-09-09: `setup` took **14.3 s** (a 98 MB browser and 247
+    packages resolved), and the run passed with the same numbers as before — 491 frames, 16.37 s,
+    13.67 ms from `timings.json`, 3.890% of the caption band against 0.001% elsewhere. `pnpm
+    e2e:render:linux` passed the same day inside the Debian image, where `setup` took **16.7 s**,
+    took the `linux-arm64-glibc235` row of the manifest and resolved the same 247 packages. The one
+    thing still borrowed is Remotion's **browser cache**, linked in where the checkout has one
+    (`infra/e2e/Dockerfile` fills it at build time on purpose) so a second copy of the same
+    headless shell is not fetched inside the measured still job. That second copy is the product's
+    own shape and not the proof's: the gate checks `chrome.path` exists and nothing hands it to
+    Remotion.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged
@@ -627,8 +654,9 @@ owner's, and it is what turns those lines from pending into met or into defects.
   - *Amended 2026-09-08 (T33): what `setup` installed is now asserted by rendering with it, and the
     live speech route is exercised once with no fixture.* `pnpm e2e:toolchain` carries the render
     half: from the same isolated artefact, out of the **materialised** workspace — never the
-    checkout's `node_modules`, which is `scripts/e2e/render.mjs`'s deliberate shortcut and not this
-    gate's — `narrate → still → render`, with the MP4 read back by `ffprobe` exactly as
+    checkout's `node_modules`, which was `scripts/e2e/render.mjs`'s deliberate shortcut until
+    2026-09-09 and was never this gate's — `narrate → still → render`, with the MP4 read back by
+    `ffprobe` exactly as
     `apps/cli/src/workers/render.test.ts` reads one. Measured on **2026-09-08**, macOS arm64, with
     `XPLAINER_TTS_FIXTURE` unset and the narration synthesised by a real Kokoro-FastAPI: a
     1920×1080 30/1 h264 MP4 with an **aac** stream, 259 frames — `timings.durationInFrames` exactly,

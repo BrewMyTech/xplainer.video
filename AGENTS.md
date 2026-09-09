@@ -182,7 +182,7 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 | Script | Command | What it proves | The `[runner]` half |
 |---|---|---|---|
-| `e2e/render.mjs` | `pnpm e2e:render` | P1-1: one real video through the MCP tools — `create → put_source → narrate → still → render` over `mcp --attach`, real Kokoro speech, `ffprobe` on the MP4 and a frame diff against a captions-disabled render | `e2e-linux.yml` (the same render on a Linux VM) |
+| `e2e/render.mjs` | `pnpm e2e:render` | P1-1: one real video through the MCP tools — a real `xplainer setup` first, because batch 6's toolchain gate refuses `still` and `render` without one, then `create → put_source → narrate → still → render` over `mcp --attach`, real Kokoro speech, `ffprobe` on the MP4 and a frame diff against a captions-disabled render | `e2e-linux.yml` (the same render on a Linux VM) |
 | `e2e/linux.mjs` | `pnpm e2e:render:linux` | The Linux half of P1-1: `render.mjs` inside the `infra/e2e` Debian container, against a Kokoro container, both created and destroyed around it | none of its own: `e2e-linux.yml` is the hosted form of the same proof and runs `render.mjs` directly against a service container |
 | `e2e/runtime.mjs` | `pnpm e2e:runtime` | B1: `create → put_source → narrate` driven entirely out of a **relocated** payload 1, with no `node` on `PATH` and no checkout in any ancestor | `e2e-runtime.yml` (3-OS matrix) |
 | `e2e/toolchain.mjs` | `pnpm e2e:toolchain` | B6: `xplainer setup` acquires a browser, records a speech route and materialises the workspace on that same machine — and a picture comes out of `still → render` | `e2e-toolchain.yml` (3-OS matrix) |
