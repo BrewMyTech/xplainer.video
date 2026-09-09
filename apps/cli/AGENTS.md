@@ -838,12 +838,38 @@ Then the root procedure: `pnpm verify`.
   permission is settable there and that the owner/group/other distinction is not implemented, so
   the mint runs R-SEC-5's own remedy on the file it has just created —
   `icacls <path> /inheritance:r /grant:r "<user>:(R,W)"`, in `daemon/windows-acl.ts` — and `serve`
-  names in one line which of the two protections this platform got. A failure to apply it is
+  names in one line which of the two protections this platform got. **That command is the first of
+  up to three, because it removes only what was *inherited*.** `/inheritance:r` takes the inherited
+  ACEs off and `/grant:r` replaces the named account's explicit ones; a third principal's explicit
+  entry survives both, and `icacls` has no option meaning "and nobody else". Under `%LOCALAPPDATA%`
+  there is never such an entry, which is why the ADR spells the requirement as one command — but a
+  path whose parent carries no inheritable ACE gets its DACL from the creating token's *default*
+  one, and those entries are explicit. A scratch directory under GitHub's `windows-latest` runner
+  temp is exactly that (`NT AUTHORITY\SYSTEM:(F) BUILTIN\Administrators:(F)` on a file this process
+  had just created, 2026-09-09), so the entry is read back and whatever is not this account is
+  removed. A failure to apply any of it is
   **reported, never fatal**: a daemon that refused to start over a missing `icacls` would trade a
   weaker file for no service at all. R-SEC-5's other half is `daemon status`: it re-reads the entry
   with a plain `icacls <path>` **query** and prints `WARNING —` when a second principal is on the
   file or an `(I)` flag says inheritance has been restored, naming both what it found and the
   command that narrows it again.
+- **Nothing this project parses may arrive through PowerShell's output formatter.** Every value a
+  `powershell.exe -Command` script emits is formatted on its way to stdout, and with stdout
+  redirected — which it always is here — that formatter **wraps at 80 columns**. Two answers this
+  package reads back are longer than that and were being read as truncated ones: the
+  loaded-configuration row (`Execute=`, `Arguments=` and `WorkingDirectory=` are absolute paths, so
+  a *correct* Task Scheduler install reported `command` and `cwd` as drifted) and `pipe-acl.ts`'s
+  success line (prefix, digest-length pipe name and a SID, read back as half a SID). Both now write
+  with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
+  pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
+  necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
+- **A Windows deregistration is two commands, because unregistering does not stop.**
+  `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
+  job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance
+  running. `install/register.ts`'s `deregisterCommands` therefore emits `Stop-ScheduledTask` first
+  and tolerates its failure, or an uninstall leaves a daemon holding the state directory every file
+  naming it has just stopped naming — which is what an `EPERM` on removing that directory was
+  (`windows-latest`, 2026-09-09).
 - **The guard is handed a function, so a rotation reaches a daemon that is already running.**
   ADR 0020 §Security R-SEC-8's `xplainer token rotate` writes a new value and keeps the old one in
   `<token>.previous` for a grace window — five minutes by default, a day at most, `0` for a leak —

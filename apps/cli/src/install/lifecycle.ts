@@ -574,10 +574,19 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         ],
       };
     case "task-scheduler":
-      // Three `Key=value` lines, composed by the script itself rather than by a formatter.
-      // `Format-List` wraps a value longer than the console width across lines, and an installed
-      // `Arguments` is two absolute paths and six flags long — so a formatted answer would arrive
-      // broken in the middle of a path and be compared as a mismatch that is really a line break.
+      // Three `Key=value` lines, composed by the script itself rather than by a formatter, and
+      // written with `[Console]::Out.WriteLine` rather than emitted as PowerShell objects.
+      //
+      // **Both halves of that are load-bearing.** `Format-List` wraps a value longer than the
+      // console width across lines, and an installed `Arguments` is two absolute paths and six
+      // flags long — so a formatted answer arrives broken in the middle of a path. Composing the
+      // lines by hand is not enough on its own, because *every* value PowerShell emits goes through
+      // the same output formatter on its way to stdout, and with stdout redirected — which it
+      // always is here — that formatter wraps at a default width rather than at a terminal's.
+      // `[Console]::Out` is the one documented way past it. Measured on `windows-latest` on
+      // 2026-09-09 (run 34304155063): a correct install reported `command` and `cwd` as drifted,
+      // and both values were the registered ones cut off mid-path.
+      //
       // String concatenation also turns an absent `WorkingDirectory` into an empty value on its own
       // line rather than into no line at all, which keeps the three keys always present.
       return {
@@ -585,8 +594,9 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         argv: [
           ...POWERSHELL_ARGV,
           `$action = @((Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).Actions)[0]; ` +
-            '"Execute=" + $action.Execute; "Arguments=" + $action.Arguments; ' +
-            '"WorkingDirectory=" + $action.WorkingDirectory',
+            '[Console]::Out.WriteLine("Execute=" + $action.Execute); ' +
+            '[Console]::Out.WriteLine("Arguments=" + $action.Arguments); ' +
+            '[Console]::Out.WriteLine("WorkingDirectory=" + $action.WorkingDirectory)',
         ],
       };
   }

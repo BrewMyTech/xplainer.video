@@ -89,6 +89,7 @@ import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
 import { renderScheduledTask } from "../supervisors/schtasks.js";
 import { renderSystemdUnit } from "../supervisors/systemd.js";
+import { removeScratchRoot } from "./scratch.js";
 
 /** The launchd label this proof registers under. Never the product's, and booted out in a `finally`. */
 export const THROWAWAY_LABEL = "video.xplainer.t13-proof";
@@ -559,7 +560,7 @@ async function proveLaunchd(): Promise<void> {
       shell(step.command.program, [...step.command.argv]);
     }
     shell("launchctl", ["enable", service]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -602,7 +603,7 @@ async function proveSystemd(): Promise<void> {
     }
     rmSync(bed.target.artefact, { force: true });
     shell("systemctl", ["--user", "daemon-reload"]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -621,6 +622,14 @@ async function proveTaskScheduler(): Promise<void> {
   const bed = prepareBed("task-scheduler", 0);
   try {
     say(`\nTask Scheduler, ${THROWAWAY_TASK}, with the shipped XML under a throwaway name:`);
+    // macOS and Linux register and start the bed inside `proveSupervisorRestart`, because there the
+    // supervisor's own restart verb is the first thing worth measuring. Windows has no such verb —
+    // that absence is what this half is about — so the bed is brought up on its own here. Without
+    // this the two proofs below start against a task that was never registered, and each one waits
+    // out its full minute for a running job that nothing was ever asked to produce.
+    say("\n0. registering and starting the task, which is what the other two platforms get from");
+    say("   proving a supervisor restart first:");
+    await boot(bed);
     await proveRouteAndExitZero(bed, {
       program: "powershell.exe",
       argv: [
@@ -636,7 +645,7 @@ async function proveTaskScheduler(): Promise<void> {
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);
     }
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 

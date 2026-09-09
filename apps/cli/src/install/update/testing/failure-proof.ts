@@ -67,7 +67,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,6 +89,7 @@ import { installDaemon } from "../../install.js";
 import { currentSupervisorEnvironment } from "../../preflight.js";
 import { stagedRuntimeRoot } from "../../stage.js";
 import { supervisorKindForPlatform } from "../../supervisors/index.js";
+import { removeScratchRoot } from "../../testing/scratch.js";
 import { writeToolchainMarker } from "../../testing/toolchain.js";
 import { updateJournalPath } from "../journal.js";
 import { operationLockPath } from "../lock.js";
@@ -413,7 +413,7 @@ try {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
 } finally {
   say(deregisterThrowaway({ label: THROWAWAY_LABEL, environment, uid }));
-  rmSync(root, { recursive: true, force: true });
+  removeScratchRoot(root);
   say(`cleaned up ${root}`);
 }
 

@@ -35,8 +35,10 @@
  *    manager is still holding what the artefact said before the edit.
  * 2. **The artefact rewritten and never reloaded.** On Linux both detectors fire, and the loaded row
  *    is stale *by measurement*: `systemctl show` answers from the manager's cached unit until
- *    `daemon-reload`. On macOS there is no loaded row at all (§1.3b D7), so the responding detector
- *    fires alone and `daemon status` says which one did.
+ *    `daemon-reload`. On Windows both fire for a different reason in the same shape: row 2 is read
+ *    from the **registered task** and what is rewritten is the XML mirror beside it. On macOS there
+ *    is no loaded row at all (§1.3b D7), so the responding detector fires alone and `daemon status`
+ *    says which one did.
  * 3. **Switched and reloaded, but never restarted.** Row 2 now agrees with row 1 and only the digest
  *    can see it — with both runtimes on the same release version, which is the case a comparison on
  *    `CLI_VERSION` would call a pass.
@@ -45,6 +47,10 @@
  *    digest computed from `daemon.json` equals the one the running daemon advertises. That is the
  *    single assertion which proves the two sides compute the same thing over a real install, and
  *    nothing in the seam suite can make it.
+ *
+ * Every expectation that turns on "does this platform have a row 2" is therefore a three-way and
+ * never a macOS-versus-Linux pair: Windows has one, and reading it back off a real Task Scheduler
+ * is the whole of what `daemon-identity.yml` exists to establish.
  *
  * ## What is real, and the one thing that is not
  *
@@ -60,15 +66,7 @@
  * run it on a runner or in `infra/e2e/Dockerfile.systemd`.
  */
 
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -87,6 +85,7 @@ import { uninstallDaemon } from "../uninstall.js";
 import { readUpdateStatus } from "../update/recover.js";
 import { fixtureEnvironment } from "../update/testing/harness.js";
 import { deregisterThrowaway, throwawayProbe } from "../update/testing/throwaway-supervisor.js";
+import { removeScratchRoot } from "./scratch.js";
 import { writeToolchainMarker } from "./toolchain.js";
 
 /** The label this proof registers under. Never the product's, and booted out in a `finally`. */
@@ -114,6 +113,24 @@ function detectors(report: DaemonStatusReport): string {
 /** The fields each mismatch names, as one comparable string. */
 function fields(report: DaemonStatusReport): string {
   return report.identity.mismatches.map((entry) => `${entry.detector}/${entry.field}`).join(", ");
+}
+
+/**
+ * Every mismatch with both of its values, one per line.
+ *
+ * A field name on its own says a comparison disagreed and not what about, and the two rows are
+ * strings a supervisor composed — a command line, a working directory — so "which one and how" is
+ * the whole of the diagnosis. Printed beside the detector list wherever a drift claim is made, so
+ * an unexpected one arrives with its evidence rather than with a second run.
+ */
+function rows(report: DaemonStatusReport): string {
+  return report.identity.mismatches
+    .map(
+      (entry) =>
+        `\n       ${entry.detector}/${entry.field}: desired ${JSON.stringify(entry.desired)} ` +
+        `vs found ${JSON.stringify(entry.found)}`,
+    )
+    .join("");
 }
 
 const platform = process.platform;
@@ -231,20 +248,33 @@ try {
     healthy.identity.desired.digest === healthy.health?.runtime_digest,
     `${healthy.identity.desired.digest ?? "<none>"} vs ${healthy.health?.runtime_digest ?? "<none>"}`,
   );
-  check("nothing has drifted", healthy.identity.consistent, healthy.identity.detail);
-  if (kind === "systemd") {
-    check(
-      "the loaded row came back from the real user manager",
-      healthy.identity.loaded.answered && (healthy.identity.loaded.command ?? "").includes("serve"),
-      healthy.identity.loaded.detail,
-    );
-  } else {
+  check(
+    "nothing has drifted",
+    healthy.identity.consistent,
+    `${healthy.identity.detail}${rows(healthy)}`,
+  );
+  // Two of the three platforms have a loaded row and one does not, which is §1.3b D7 rather than a
+  // gap: `launchctl print` is the only surface its own manual disowns, so macOS reports the row as
+  // unavailable and detects a failed switch through the responding identity instead. systemd and
+  // Task Scheduler both answer a documented query, and every assertion below that turns on "is
+  // there a row 2" is this same three-way.
+  if (kind === "launchd") {
     check(
       "macOS declares the loaded row unavailable rather than parsing `launchctl print`",
       !healthy.identity.loaded.available,
       healthy.identity.loaded.detail,
     );
+  } else {
+    check(
+      kind === "systemd"
+        ? "the loaded row came back from the real user manager"
+        : "the loaded row came back from the real Task Scheduler",
+      healthy.identity.loaded.answered && (healthy.identity.loaded.command ?? "").includes("serve"),
+      healthy.identity.loaded.detail,
+    );
   }
+  /** Whether this platform has a row 2 at all, which is what every drift expectation branches on. */
+  const loadedRow = kind !== "launchd";
   const runningDigest = healthy.health?.runtime_digest ?? "";
   const runningRunId = healthy.health?.run_id ?? "";
 
@@ -265,13 +295,12 @@ try {
     fields(edited),
   );
   check(
-    kind === "systemd"
-      ? "and on Linux the same edit is a desired-versus-loaded mismatch too"
+    loadedRow
+      ? "and where there is a loaded row the same edit is a desired-versus-loaded mismatch too"
       : "and on macOS the identity detector is the only one there is",
-    kind === "systemd"
-      ? detectors(edited) === "loaded-configuration+responding-identity"
-      : detectors(edited) === "responding-identity",
-    detectors(edited),
+    detectors(edited) ===
+      (loadedRow ? "loaded-configuration+responding-identity" : "responding-identity"),
+    `${detectors(edited)}${rows(edited)}`,
   );
 
   // ── 2. the artefact rewritten, and nothing reloaded ───────────────────────────────────────
@@ -285,11 +314,13 @@ try {
   check(
     kind === "systemd"
       ? "systemd is still holding A: the loaded row is stale until `daemon-reload`"
-      : "macOS detects it through the responding identity instead (§1.3b D7)",
-    kind === "systemd"
-      ? detectors(rewritten) === "loaded-configuration+responding-identity"
-      : detectors(rewritten) === "responding-identity",
-    detectors(rewritten),
+      : kind === "task-scheduler"
+        ? "Task Scheduler is still holding A: row 2 is read from the registered task, and what was " +
+          "rewritten is the XML mirror beside it"
+        : "macOS detects it through the responding identity instead (§1.3b D7)",
+    detectors(rewritten) ===
+      (loadedRow ? "loaded-configuration+responding-identity" : "responding-identity"),
+    `${detectors(rewritten)}${rows(rewritten)}`,
   );
   const prose = describeStatus(rewritten, readUpdateStatus(stateDir));
   check(
@@ -305,6 +336,14 @@ try {
   if (kind === "systemd") {
     const reload = probe({ program: "systemctl", argv: ["--user", "daemon-reload"] });
     check("`systemctl --user daemon-reload` ran", reload.started && reload.status === 0);
+  } else if (kind === "task-scheduler") {
+    say(
+      "  Task Scheduler has no reload either: `Register-ScheduledTask -Force` over the same name",
+    );
+    say("  replaces the definition rather than refreshing one, and this proof does not ask a");
+    say("  supervisor to replace the registration a running daemon came out of. So the XML");
+    say("  rewritten above is as far as a switch gets here without restarting, and the assertion");
+    say("  below is the one that holds on both platforms without a reload.");
   } else {
     say("  launchd has no reload that is not a restart: `bootout` stops the job, so the plist");
     say("  rewritten above is as far as a switch can get without restarting. The assertion below");
@@ -373,6 +412,6 @@ try {
     );
   }
   process.stdout.write(`${deregisterThrowaway({ label: THROWAWAY_LABEL, environment, uid })}\n`);
-  rmSync(root, { recursive: true, force: true });
+  removeScratchRoot(root);
   process.stdout.write(`cleaned up ${root}\n`);
 }

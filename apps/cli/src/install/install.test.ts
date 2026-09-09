@@ -691,7 +691,11 @@ describe("daemon install — Windows", () => {
       expect(scripts[0]).toContain("-TaskName '\\xplainer\\tester-daemon' -Force");
       expect(scripts[1]).toContain("Start-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
       expect(scripts[2]).toContain("Get-ScheduledTaskInfo -TaskName '\\xplainer\\tester-daemon'");
-      expect(scripts[3]).toContain("Unregister-ScheduledTask");
+      // Two steps, not one: `Unregister-ScheduledTask` takes the registration away and leaves a
+      // running instance running, so a rollback that only unregistered would leave the daemon it
+      // started holding the state directory it is about to remove (`install/register.ts`).
+      expect(scripts[3]).toContain("Stop-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
+      expect(scripts[4]).toContain("Unregister-ScheduledTask");
       // Rolled back: the XML this process wrote is gone again, and so is everything else — the
       // hashed set here is the Windows one, task store included.
       expect(

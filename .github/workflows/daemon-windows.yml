@@ -357,6 +357,74 @@ jobs:
             console.log('marker written');
           "
 
+      # A MEASUREMENT AND NOT AN ASSERTION, in the same spirit as criterion 12's
+      # own step: it prints what it found and exits `0` either way.
+      #
+      # `daemon install` registers `\xplainer\<user>-daemon`, which is two things
+      # at once — a task in a **subfolder** of the root task folder, and one
+      # whose principal is **S4U** — and the first run of this job answered
+      # `Register-ScheduledTask : Access is denied.` for the pair without saying
+      # which half it refused (2026-09-09, run 34304159108). A standard user
+      # registering in the root and a standard user creating a folder under it
+      # are different rights, and so is registering a logon type that stores no
+      # password, so the four combinations are registered as throwaway tasks and
+      # each answer is printed. `icacls` on the root task folder is printed
+      # beside them, because that folder's DACL is what decides the first half.
+      - name: What a standard user may register, and where
+        shell: pwsh
+        env:
+          STANDARD_USER: ${{ inputs.standard_user }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = $env:XPLAINER_T11_ROOT
+          $probe = Join-Path $root 'register-probe.ps1'
+          $out = Join-Path $root 'register-probe.txt'
+          # The child script, line by line rather than as a here-string: a here-string's terminator
+          # has to sit in the first column, which nothing inside a YAML block scalar does. Nothing
+          # here is expanded by this session either, which is the other half of what matters —
+          # `Start-Process -Credential` hands the child *this* session's environment block, so the
+          # identity the child must ask for is `WindowsIdentity::GetCurrent()` and never `%USERNAME%`.
+          $lines = @(
+            '$ErrorActionPreference = ''Continue''',
+            '$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name',
+            'Write-Output "running as $me"',
+            'foreach ($name in @(''\xplainer-probe-root'', ''\xplainer-probe-folder\leaf'')) {',
+            '  foreach ($logon in @(''S4U'', ''InteractiveToken'')) {',
+            '    $xml = ''<?xml version="1.0" encoding="UTF-16"?>'' +',
+            '      ''<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'' +',
+            '      ''<Principals><Principal id="Author"><UserId>'' + $me + ''</UserId><LogonType>'' +',
+            '      $logon + ''</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>'' +',
+            '      ''<Settings><Enabled>true</Enabled><AllowStartOnDemand>true</AllowStartOnDemand></Settings>'' +',
+            '      ''<Actions Context="Author"><Exec><Command>cmd.exe</Command>'' +',
+            '      ''<Arguments>/c exit 0</Arguments></Exec></Actions></Task>''',
+            '    try {',
+            '      Register-ScheduledTask -Xml $xml -TaskName $name -Force -ErrorAction Stop | Out-Null',
+            '      Write-Output "OK       $logon at $name"',
+            '      Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue',
+            '    } catch {',
+            '      Write-Output "REFUSED  $logon at $name -> $($_.Exception.Message)"',
+            '    }',
+            '  }',
+            '}'
+          )
+          Set-Content -Path $probe -Value $lines -Encoding utf8
+          $password = [System.Guid]::NewGuid().ToString() + 'aA1!'
+          $secret = ConvertTo-SecureString -String $password -AsPlainText -Force
+          Set-LocalUser -Name $env:STANDARD_USER -Password $secret
+          $credential = New-Object System.Management.Automation.PSCredential(
+            "$env:COMPUTERNAME\$env:STANDARD_USER", $secret)
+          Start-Process -FilePath 'powershell.exe' -Wait -Credential $credential `
+            -WorkingDirectory $root `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                            '-File', $probe) `
+            -RedirectStandardOutput $out -RedirectStandardError (Join-Path $root 'register-probe.err.txt')
+          Write-Host '--- what the standard user could register ---'
+          Get-Content $out -ErrorAction SilentlyContinue | Write-Host
+          Get-Content (Join-Path $root 'register-probe.err.txt') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- the root task folder DACL, which decides the folder half ---'
+          icacls C:\Windows\System32\Tasks | Write-Host
+          exit 0
+
       # The install, as the standard user. `Start-Process -Credential` is what
       # runs a process as another local account from an elevated session; the
       # exit code comes back through `-Wait -PassThru`, and both streams are
@@ -876,17 +944,30 @@ jobs:
           $readyFile = Join-Path $root 'ready.json'
           $ready = $null
           foreach ($attempt in 1..60) {
-            if ((Test-Path $readyFile) -and (Get-Content $readyFile -Raw).Trim() -ne '') {
-              $ready = Get-Content $readyFile -Raw | ConvertFrom-Json
+            # `Get-Content -Raw` on a zero-byte file answers `$null`, and `Start-Process
+            # -RedirectStandardOutput` creates that file the instant the child starts — so
+            # `.Trim()` on the first pass is a method call on `$null`, which under
+            # `$ErrorActionPreference = 'Stop'` ends the step before the daemon has had a
+            # millisecond. `IsNullOrWhiteSpace` takes a null and answers `$true`.
+            $line = if (Test-Path $readyFile) { Get-Content $readyFile -Raw } else { $null }
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+              $ready = $line | ConvertFrom-Json
               break
             }
+            # A daemon that exited says so faster than the loop can time out, and its reason is in
+            # `serve.log` rather than in anything this step can see.
+            if ($daemon.HasExited) { break }
             Start-Sleep -Milliseconds 500
           }
+          # Whatever happened, print what the daemon said: the step that redirected stderr to a file
+          # and showed none of it is why the first failure here reported nothing at all.
+          Write-Host '--- serve.log ---'
+          Get-Content (Join-Path $root 'serve.log') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- end serve.log ---'
           if ($null -eq $ready) {
-            Get-Content (Join-Path $root 'serve.log') | Write-Host
-            throw 'the daemon never announced a ready line'
+            $why = if ($daemon.HasExited) { "it exited $($daemon.ExitCode)" } else { 'it is still running' }
+            throw "the daemon never announced a ready line ($why)"
           }
-          Get-Content (Join-Path $root 'serve.log') | Write-Host
           $name = $ready.socket -replace '^\\\\[.?]\\pipe\\', ''
           "XPLAINER_T26_PIPE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "pipe: $($ready.socket)"

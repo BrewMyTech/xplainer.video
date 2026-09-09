@@ -172,6 +172,19 @@ export function deregisterCommands(target: RegistrationTarget): readonly Registr
       ];
     case "task-scheduler":
       return [
+        // The counterpart of `disable --now` and of `bootout`, and the reason it is a step of its
+        // own: `Unregister-ScheduledTask` removes the *registration* and leaves a running instance
+        // running. On the other two the deregistration stops the process — `systemctl --user
+        // disable --now` and `launchctl bootout` both do — so a Windows deregistration without
+        // this one leaves a daemon holding its state directory after every file naming it is gone,
+        // which is what an `EPERM` on removing that directory was on `windows-latest`, 2026-09-09.
+        {
+          title: "stop the task, which unregistering it does not do",
+          command: powershellCommand(
+            `Stop-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+          ),
+          tolerated: true,
+        },
         {
           title: "unregister the scheduled task",
           command: powershellCommand(

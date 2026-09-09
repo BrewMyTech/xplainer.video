@@ -56,7 +56,7 @@
  * mid-proof — which a killed run would otherwise leave behind.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -67,6 +67,7 @@ import { readTemplatePins } from "../../../runtime/verify.js";
 import { installDaemon } from "../../install.js";
 import { currentSupervisorEnvironment } from "../../preflight.js";
 import { supervisorKindForPlatform } from "../../supervisors/index.js";
+import { removeScratchRoot } from "../../testing/scratch.js";
 import { writeToolchainMarker } from "../../testing/toolchain.js";
 import { updateJournalPath } from "../journal.js";
 import { updateDaemon } from "../transaction.js";
@@ -225,6 +226,6 @@ try {
 } finally {
   // Whatever happened, this machine's launchd goes back to holding nothing of ours.
   process.stdout.write(`${deregisterThrowaway({ label: THROWAWAY_LABEL, environment, uid })}\n`);
-  rmSync(root, { recursive: true, force: true });
+  removeScratchRoot(root);
   process.stdout.write(`cleaned up ${root}\n`);
 }

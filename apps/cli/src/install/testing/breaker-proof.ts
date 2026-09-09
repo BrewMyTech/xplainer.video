@@ -92,6 +92,7 @@ import type { SupervisorEnvironment } from "../supervisors/artefact.js";
 import { renderLaunchAgentPlist } from "../supervisors/launchd.js";
 import { renderScheduledTask } from "../supervisors/schtasks.js";
 import { renderSystemdUnit } from "../supervisors/systemd.js";
+import { removeScratchRoot } from "./scratch.js";
 
 /** The launchd label this proof registers under. Never the product's, and re-enabled in a `finally`. */
 export const THROWAWAY_LABEL = "video.xplainer.t14-proof";
@@ -558,7 +559,7 @@ async function proveLaunchd(squatter: Server): Promise<void> {
       shell(step.command.program, [...step.command.argv]);
     }
     shell("launchctl", ["enable", service]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -601,7 +602,7 @@ async function proveSystemd(squatter: Server): Promise<void> {
     }
     rmSync(bed.target.artefact, { force: true });
     shell("systemctl", ["--user", "daemon-reload"]);
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 
@@ -668,7 +669,7 @@ async function proveTaskScheduler(squatter: Server): Promise<void> {
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);
     }
-    rmSync(bed.root, { recursive: true, force: true });
+    removeScratchRoot(bed.root);
   }
 }
 

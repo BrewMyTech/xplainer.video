@@ -146,10 +146,13 @@ export function testIpcEndpoint(directory: string, name = "x.sock"): string {
  * Whether the endpoint a daemon announced has gone, whichever kind of endpoint it was.
  *
  * A unix domain socket is a **file**, and step 6 of ADR 0024's drain unlinks it, so its absence is
- * the fact the drain is asserted on. A named pipe has no directory entry at all — `existsSync` on
- * one is `false` while the daemon is serving on it, which is why the same assertion there would
- * pass without the daemon ever having stopped — and is gone when nothing will accept a connection
- * on the name.
+ * the fact the drain is asserted on. A named pipe has no directory entry to unlink, and
+ * `existsSync` is not a stand-in for one: libuv implements `uv_fs_stat` on `\\.\pipe\<name>` by
+ * *opening* the pipe for its attributes, so it answers `true` while an instance is free and `false`
+ * while every instance is busy — a fact about the connection pool rather than about the endpoint,
+ * measured on `windows-latest` on 2026-09-09, where a serving daemon answered `true`. What is
+ * asked here instead is the only question the drain is about: whether anything will still accept a
+ * connection on the name.
  */
 export function endpointGone(socketPath: string): Promise<boolean> {
   if (!isNamedPipe(socketPath)) {
