@@ -433,9 +433,22 @@ async function proveTheLatch(bed: Bed): Promise<void> {
   }
 
   const budget = historyBudgetMs(process.platform);
+  // Wait for the starts to be present AND settled. A failed start is recorded in two writes — the
+  // identity tuple when it begins, the outcome and end time when it fails — so `recentStarts.length`
+  // reaches STALL_AFTER_FAILED_STARTS the instant the last start *begins*, and a read taken then
+  // sees its `outcome`/`ended_at` still null. The two checks below assert exactly those fields, so
+  // reading between the two writes flakes them (daemon-breaker windows run 34356788340). Once
+  // STALL_AFTER_FAILED_STARTS settled failures exist the breaker has latched and records no further
+  // start, so requiring every recorded start to be settled is both sufficient and terminating.
   const enough = await waitFor(
-    `${String(STALL_AFTER_FAILED_STARTS)} failed starts`,
-    () => readDaemonState(bed.stateDir).recentStarts.length >= STALL_AFTER_FAILED_STARTS,
+    `${String(STALL_AFTER_FAILED_STARTS)} settled failed starts`,
+    () => {
+      const starts = readDaemonState(bed.stateDir).recentStarts;
+      return (
+        starts.length >= STALL_AFTER_FAILED_STARTS &&
+        starts.every((s) => s.outcome !== null && s.ended_at !== null)
+      );
+    },
     budget,
   );
   const history = readDaemonState(bed.stateDir).recentStarts;
