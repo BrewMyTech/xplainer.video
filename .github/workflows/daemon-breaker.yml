@@ -55,6 +55,14 @@
 # trigger event; the same measurement watched that document run three times,
 # five minutes apart, started by nothing but its own registration.
 #
+# With both of those settled, the Windows leg passed: run 34319237168, all
+# eleven expectations. Five failed starts at 06:29:53, 06:34:54, 06:39:54,
+# 06:44:54 and 06:49:54 — 300954, 299440, 300168 and 299826 ms apart, with no
+# one-minute retry anywhere between them — each living 22 to 463 ms and so well
+# inside the 30-second window; then the latch, an exit 0, two more repetitions
+# that read the flag and added no start record, the pid named in words, and
+# `daemon restart` bringing a daemon back on the port it could not bind.
+#
 # THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
 # dispatched and has reported, the runner half of T14 is unproven, and no record
 # in this repository may say otherwise.** `workflow_dispatch` registers from the

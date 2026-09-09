@@ -873,7 +873,16 @@ owner's, and it is what turns those lines from pending into met or into defects.
     clock, and `install/testing/breaker-proof.ts` and `daemon-breaker.yml` carry that budget with
     the measurement written beside it. Nothing about the criterion's predicate changes: each start
     still has to fail within 30 s of *its own* start, which the spacing between starts has never
-    been part of.
+    been part of. **The Windows leg is now met**, in run `34319237168` — all eleven expectations,
+    with the cadence printed start by start: five failed starts at `06:29:53`, `06:34:54`,
+    `06:39:54`, `06:44:54` and `06:49:54` (300954, 299440, 300168 and 299826 ms apart, and *no*
+    one-minute retry between any of them), each living 22–463 ms and so well inside the 30-second
+    window; the latch and an exit `0`; two further repetitions at `06:54:53` and `06:59:53` that
+    each read the flag, exited `0` and added no start record; `daemon status` saying "stopped after
+    5 failed starts; port 18790 is held by pid 8956, which is not an xplainer daemon"; and
+    `daemon restart` clearing the latch and bringing a daemon back on the port it could not bind.
+    The macOS and Linux legs of this row have not been dispatched since this file reached `main`
+    and stay exactly as the note above leaves them.
 - **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
   dependency named and justified, or `Type=exec` retained with a readiness wait in the
   installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new
