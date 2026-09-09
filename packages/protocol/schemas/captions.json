@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Captions",
-  "description": "Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
+  "description": "Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
   "type": "array",
   "items": { "$ref": "#/$defs/Caption" },
   "$defs": {

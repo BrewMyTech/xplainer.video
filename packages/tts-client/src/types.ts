@@ -2,7 +2,7 @@
  * Wire types for the two Kokoro-FastAPI endpoints this package shapes
  * (plan §4 S2.3, deviation D-6).
  *
- * Everything here mirrors `max/.explainers/scripts/narrate.py`, which is the
+ * Everything here mirrors the reference implementation's `narrate.py`, the
  * only place the contract is currently written down. Field names that cross the
  * wire keep the server's snake_case spelling (`start_time`, `lang_code`) so a
  * reader can diff this file against the Python by eye; the names that stay on

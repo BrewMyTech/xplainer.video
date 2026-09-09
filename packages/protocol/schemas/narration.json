@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Narration",
-  "description": "The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.",
+  "description": "The narration spec an agent hands to explainer_narrate. Field defaults mirror the reference implementation that consumes this document.",
   "type": "object",
   "additionalProperties": false,
   "required": ["segments"],

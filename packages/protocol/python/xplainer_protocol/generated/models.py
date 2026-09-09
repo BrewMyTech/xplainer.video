@@ -46,12 +46,12 @@ class Caption(BaseModel):
 
 class Captions(RootModel[list[Caption]]):
     """
-    Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.
+    Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
     """
 
     root: list[Caption] = Field(
         ...,
-        description="Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
+        description="Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
         title='Captions',
     )
 
@@ -569,7 +569,7 @@ class ExplainerStillOutput(BaseModel):
 
 class Narration(BaseModel):
     """
-    The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.
+    The narration spec an agent hands to explainer_narrate. Field defaults mirror the reference implementation that consumes this document.
     """
 
     model_config = ConfigDict(

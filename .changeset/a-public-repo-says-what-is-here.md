@@ -38,6 +38,17 @@ rather than to reach for a route that does not exist. The three plugin and marke
 drop the same framing and gain the Remotion disclosure ADR 0022 requires on a pre-install surface —
 completing the five surfaces that record named, none of which existed when it was written.
 
-Nothing in the tool contract moved. `packages/protocol`'s schemas and generated output still
-describe a local and a hosted backend, deliberately: that wording is the published contract rather
-than a stale path, and narrowing it would be a contract change wearing an editorial hat.
+Two schema `description` strings did move, and they are the reason this pass was not editorial
+after all. `captions.json` and `narration.json` cited `max/.explainers/scripts/narrate.py` by file
+and line — a path into the private reference implementation this product was derived from — and
+`@xplainer/protocol` ships `schemas`, `python/**/*.py` and `dist/**/*.d.ts`, so one citation was
+live on three surfaces at once. Twelve descriptions named that implementation, an earlier hand pass
+scrubbed ten, and these two outlived it. Both keep their claim and lose the coordinate: caption
+timing is still "measured rather than inferred", narration defaults still "mirror the reference
+implementation". `check-publish-contract` now carries a `no-private-reference-path` rule beside the
+one that matches the hosted repository's name, with its own negative test, because a class scrubbed
+by hand comes back and a class matched by a gate does not.
+
+What did NOT move is the local/hosted wording itself. The tool contract describes both backends
+deliberately, that wording is the published contract rather than a stale path, and narrowing it
+would be a contract change wearing an editorial hat.

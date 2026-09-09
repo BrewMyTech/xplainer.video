@@ -173,7 +173,11 @@ export type CreateServerOptions = {
    * [ADR 0020](../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC: "the
    * TCP binding passes the loopback guard, the IPC binding passes none, and at phase 3
    * `services/media-service` passes its OAuth guard. One place decides, and the loopback Host
-   * allowlist does not have to be wrong for the hosted service."
+   * allowlist does not have to be wrong for the hosted service." The record's
+   * `services/media-service` is the hosted media service, relocated to a private repository by
+   * ADR 0023; the quotation keeps the path the record wrote. This docblock ships in
+   * `dist/server.d.ts` and in `api/cli.api.md`, where it stands on its own — which is why the
+   * correction is here and not only at the head of the file.
    *
    * It is mounted before any route, so `/healthz`, `/mcp` and the future `/api/*` are covered by
    * construction rather than by remembering to list them (R-SEC-2).

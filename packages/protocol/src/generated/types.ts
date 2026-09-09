@@ -26,7 +26,7 @@ export interface Caption {
 }
 
 /**
- * Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.
+ * Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
  */
 export type Captions = Caption[];
 
@@ -304,7 +304,7 @@ export type JobState = "queued" | "running" | "done" | "error" | "cancelled";
 export type JobType = "explainer_narrate" | "explainer_render" | "explainer_still";
 
 /**
- * The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.
+ * The narration spec an agent hands to explainer_narrate. Field defaults mirror the reference implementation that consumes this document.
  */
 export interface Narration {
   /**

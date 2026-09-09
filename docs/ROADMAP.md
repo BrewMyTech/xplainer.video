@@ -42,8 +42,16 @@ close to irreversible and is a decision rather than a task.
    does. Fixing the schema descriptions requires re-running
    `pnpm --filter @xplainer/protocol codegen` in the same commit, or CI's staleness check
    (AC-9c) goes red.
-   - *Closed before 2026-09-09: no file under `packages/protocol/schemas/` names the private
-     repository, and the generated TypeScript and pydantic output is clean with it.*
+   - *Closed 2026-09-09, and it took two passes rather than one.* The hosted repository's own
+     name went earlier. What outlived it was the **other** private path: `captions.json` and
+     `narration.json` cited `max/.explainers/scripts/narrate.py` by file and line, and
+     `packages/protocol` ships `schemas`, `python/**/*.py` and `dist/**/*.d.ts`, so that citation
+     was live on three surfaces at once. Twelve descriptions named the reference implementation,
+     a hand pass scrubbed ten, and these two survived it — which is the argument for the rule
+     rather than the grep. `check-publish-contract` now carries
+     `no-private-reference-path` beside `no-private-repository-name`, with its own negative test,
+     so the class fails a gate instead of waiting for a reader. The descriptions keep their claim
+     and lose the coordinate.*
 2. **Comment-level references to the relocated packages, in surviving and published code.**
    `apps/cli/package.json`'s `description` names the hosted media-service and **ships to npm**;
    the same class of reference sits in `apps/cli/src/`, `packages/mcp-server/src/` and

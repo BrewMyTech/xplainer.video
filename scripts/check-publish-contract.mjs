@@ -125,6 +125,29 @@ const EXPECTED_AUTHOR = "Rishav Anand <rishav@brewmytech.com>";
 const PRIVATE_REPOSITORY_NAME = "xplainer-hosted";
 
 /**
+ * A path into the private reference implementation (ADR 0002, ADR 0006, ADR 0007).
+ *
+ * `~/projects/max` is where this product's behaviour was first written down, and
+ * early schema descriptions and docblocks cited it by path and line — provenance
+ * that is precise, useful in review, and meaningless to a stranger, because the
+ * repository it names is not one they can open.
+ *
+ * It is a SECOND rule rather than another spelling of the one above, and the
+ * reason is the miss it exists to close. That rule matches a repository NAME;
+ * this one matches a PATH, and nothing matched a path until 2026-09-09. Twelve
+ * schema `description` strings cited the reference implementation, ten were
+ * scrubbed by hand in one pass, and the two naming `narrate.py` survived it —
+ * reaching `schemas`, `python/**\/*.py` and `dist/**\/*.d.ts`, all three of
+ * which `@xplainer/protocol` ships. A hand-scrubbed class comes back; a matched
+ * one does not.
+ *
+ * Anchored on a token boundary so `minmax/`, `@scope/max/` and the like are not
+ * matches, and written as a pattern rather than a literal because the leak is
+ * the shape `max/<anything>`, not one file that happened to be cited twice.
+ */
+const PRIVATE_REFERENCE_PATH = /(^|[^A-Za-z0-9_@/-])max\/[A-Za-z0-9_.-]/;
+
+/**
  * The publishable set, declared rather than discovered.
  *
  * Discovery alone cannot catch drift: a member that silently lost `private:
@@ -279,6 +302,19 @@ const CONTENT_RULES = [
       "patching dist/.",
     appliesTo: () => true,
     matches: (text) => text.includes(PRIVATE_REPOSITORY_NAME),
+  },
+  {
+    id: "no-private-reference-path",
+    label: "a path into the private reference implementation in the tarball",
+    detail:
+      "A `max/...` path cites the private reference implementation this product was derived " +
+      "from (ADR 0002). It names a file a reader cannot open, and the line numbers beside it " +
+      "are provenance for us and noise for them. Keep the claim the sentence makes and drop " +
+      'the coordinate: "mirrors the reference implementation" says everything a consumer ' +
+      "can act on. Fix it at the source the file was generated from — a schema description, a " +
+      "docblock — never by patching dist/.",
+    appliesTo: () => true,
+    matches: (text) => PRIVATE_REFERENCE_PATH.test(text),
   },
 ];
 
@@ -708,6 +744,17 @@ const SELF_TESTS = [
       text: `/** Relocated to BrewMyTech/${PRIVATE_REPOSITORY_NAME}. */\n`,
     },
     clean: { path: "dist/index.d.ts", text: "/** Relocated to a private repository. */\n" },
+  },
+  {
+    rule: "no-private-reference-path",
+    violating: {
+      path: "dist/index.d.ts",
+      text: "/** Field defaults mirror max/.explainers/scripts/narrate.py:191-196. */\n",
+    },
+    clean: {
+      path: "dist/index.d.ts",
+      text: "/** Field defaults mirror the reference implementation. */\n",
+    },
   },
 
   // --- MANIFEST_RULES -----------------------------------------------------
