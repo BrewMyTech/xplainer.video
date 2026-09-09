@@ -656,6 +656,13 @@ async function proveSystemd(squatter: Server): Promise<void> {
  * happen to accept a full path — it is measured doing so in run 34313848702 — but `Get-ScheduledTask`
  * does not, and there is no reading of the module's documentation that says which is which.
  */
+/**
+ * `LastTaskResult` while a run is in flight: HRESULT `SCHED_S_TASK_RUNNING`, 0x00041301. Task
+ * Scheduler reports it between a run starting and the action exiting, so a reader that wants the
+ * exit code has to wait past it.
+ */
+const SCHED_S_TASK_RUNNING = "267009";
+
 function taskInfo(): { lastRunTime: string; lastResult: string } {
   const answer = shell(POWERSHELL, [
     ...POWERSHELL_ARGV,
@@ -698,9 +705,21 @@ async function proveTaskScheduler(squatter: Server): Promise<void> {
 
     say("\n4. the PT5M repetition, re-reading the flag:");
     const startsBefore = readDaemonState(bed.stateDir).recentStarts.length;
+    // Wait for the repetition to start the task again AND for that run to settle. `LastRunTime`
+    // advances the instant the trigger fires, but `LastTaskResult` is `SCHED_S_TASK_RUNNING`
+    // (0x00041301 = 267009) for the tens of milliseconds the daemon lives — start, read the flag,
+    // exit — so reading the result the moment the run time moves catches it mid-run and reports
+    // 267009 rather than the exit code. That raced on daemon-breaker windows run 34353236088.
+    // Requiring a settled result is what makes "and that run exited 0" a claim about the exit code
+    // and not about when the poll landed; the assertion below then still checks the code is `0`.
     const again = await waitFor(
-      "the repetition to start the task again",
-      () => taskInfo().lastRunTime !== latchedAt.lastRunTime,
+      "the repetition to start the task again and settle",
+      () => {
+        const info = taskInfo();
+        return (
+          info.lastRunTime !== latchedAt.lastRunTime && info.lastResult !== SCHED_S_TASK_RUNNING
+        );
+      },
       420_000,
     );
     const repeated = taskInfo();
