@@ -863,6 +863,16 @@ Then the root procedure: `pnpm verify`.
   with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
   pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
   necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
+- **Only `Register-ScheduledTask` takes a task *path* in `-TaskName`.** `\xplainer\<user>-daemon`
+  is a path, and every other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM
+  query whose `TaskName` is the **leaf** and whose `TaskPath` is the folder — so a full path there
+  matches nothing, and matches nothing *quietly*: `Get-` writes a non-terminating `ObjectNotFound`
+  and exits `0`, and `Unregister-` reports success having removed no task. `install/register.ts`'s
+  `scheduledTaskSelector()` is the one place that splits the two, and every composed command goes
+  through it. Measured on `windows-latest`, 2026-09-09: T17 read a correct install's loaded row back
+  as an empty command and reported drift on it, and T16's uninstall left the task it said it had
+  deregistered. The two queries also carry `-ErrorAction Stop`, so a task that is not there is an
+  honest "the query did not answer" rather than a row of empty strings.
 - **A Windows deregistration is two commands, because unregistering does not stop.**
   `systemctl --user disable --now` and `launchctl bootout` both stop the process as they take the
   job away; `Unregister-ScheduledTask` removes the registration and leaves a running instance

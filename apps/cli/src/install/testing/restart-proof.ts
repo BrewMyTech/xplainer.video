@@ -264,9 +264,12 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
 
   let artefactPath: string;
   let identity: string;
+  /** What the shipped builders would address on this machine, and what has to be rewritten away. */
+  let productName = "";
   if (kind === "launchd") {
     const rendered = renderLaunchAgentPlist(spec, environment);
     identity = THROWAWAY_LABEL;
+    productName = rendered.identity;
     artefactPath = join(home, "Library", "LaunchAgents", `${THROWAWAY_LABEL}.plist`);
     writeFileSync(
       artefactPath,
@@ -279,12 +282,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   } else if (kind === "systemd") {
     const rendered = renderSystemdUnit(spec, environment);
     identity = THROWAWAY_UNIT;
+    productName = rendered.identity;
     artefactPath = join(process.env.HOME ?? home, ".config", "systemd", "user", THROWAWAY_UNIT);
     mkdirSync(join(artefactPath, ".."), { recursive: true });
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   } else {
     const rendered = renderScheduledTask(spec, environment);
     identity = THROWAWAY_TASK;
+    productName = rendered.identity;
     artefactPath = join(root, "task.xml");
     writeFileSync(artefactPath, rendered.contents, { mode: rendered.mode });
   }
@@ -301,12 +306,17 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
   });
 
   const target: RegistrationTarget = { kind, identity, artefact: artefactPath, uid };
-  const product =
-    kind === "launchd"
-      ? "video.xplainer.daemon"
-      : kind === "systemd"
-        ? "xplainer.service"
-        : "\\xplainer\\";
+  // What each platform's word for "this daemon" is, and what this proof registered instead. On
+  // Windows it is the **leaf** of the task path rather than the whole of it: every cmdlet but
+  // `Register-` is addressed as `-TaskPath '\xplainer\' -TaskName '<leaf>'`, so the full path
+  // appears in one command out of six and the leaf appears in all of them. Rewriting `\xplainer\`
+  // to itself — which is what stood here — rewrote nothing at all, and `daemon restart` on Windows
+  // therefore asked Task Scheduler to start `\xplainer\runneradmin-daemon`, a task this proof never
+  // registered (`windows-latest`, 2026-09-09: "The system cannot find the file specified").
+  const [product, replacement] =
+    kind === "task-scheduler"
+      ? [taskLeaf(productName), taskLeaf(identity)]
+      : [productName, identity];
   return {
     root,
     stateDir,
@@ -318,11 +328,14 @@ function prepareBed(kind: "launchd" | "systemd" | "task-scheduler", uid: number)
     run: (command) =>
       runProbe({
         ...command,
-        argv: command.argv.map((word) =>
-          word.replaceAll(product, kind === "task-scheduler" ? "\\xplainer\\" : identity),
-        ),
+        argv: command.argv.map((word) => word.replaceAll(product, replacement)),
       }),
   };
+}
+
+/** The name a `-TaskName` argument carries: everything after the last backslash of a task path. */
+function taskLeaf(identity: string): string {
+  return identity.slice(identity.lastIndexOf("\\") + 1);
 }
 
 /**

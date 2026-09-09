@@ -102,8 +102,8 @@ import {
   guiService,
   POWERSHELL,
   POWERSHELL_ARGV,
-  powerShellLiteral,
   type RegistrationTarget,
+  scheduledTaskSelector,
 } from "./register.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
 import {
@@ -538,7 +538,7 @@ export function disabledQuery(target: RegistrationTarget): ProbeCommand {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `(Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).State`,
+          `(Get-ScheduledTask ${scheduledTaskSelector(target.identity)} -ErrorAction Stop).State`,
         ],
       };
   }
@@ -593,10 +593,11 @@ export function loadedConfigurationQuery(target: RegistrationTarget): ProbeComma
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `$action = @((Get-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}).Actions)[0]; ` +
-            '[Console]::Out.WriteLine("Execute=" + $action.Execute); ' +
-            '[Console]::Out.WriteLine("Arguments=" + $action.Arguments); ' +
-            '[Console]::Out.WriteLine("WorkingDirectory=" + $action.WorkingDirectory)',
+          `$action = @((Get-ScheduledTask ${scheduledTaskSelector(target.identity)} ` +
+            "-ErrorAction Stop).Actions)[0]; " +
+            "[Console]::Out.WriteLine('Execute=' + $action.Execute); " +
+            "[Console]::Out.WriteLine('Arguments=' + $action.Arguments); " +
+            "[Console]::Out.WriteLine('WorkingDirectory=' + $action.WorkingDirectory)",
         ],
       };
   }
@@ -901,10 +902,7 @@ export function startCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [
-          ...POWERSHELL_ARGV,
-          `Start-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
-        ],
+        argv: [...POWERSHELL_ARGV, `Start-ScheduledTask ${scheduledTaskSelector(target.identity)}`],
       };
   }
 }
@@ -931,10 +929,7 @@ export function stopCommand(target: RegistrationTarget): ProbeCommand {
     case "task-scheduler":
       return {
         program: POWERSHELL,
-        argv: [
-          ...POWERSHELL_ARGV,
-          `Stop-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
-        ],
+        argv: [...POWERSHELL_ARGV, `Stop-ScheduledTask ${scheduledTaskSelector(target.identity)}`],
       };
   }
 }
@@ -1489,7 +1484,7 @@ function enableCommand(target: RegistrationTarget): ProbeCommand {
         program: POWERSHELL,
         argv: [
           ...POWERSHELL_ARGV,
-          `Enable-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+          `Enable-ScheduledTask ${scheduledTaskSelector(target.identity)}`,
         ],
       };
   }

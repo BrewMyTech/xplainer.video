@@ -21,7 +21,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
@@ -29,6 +29,9 @@ import { isAlive } from "../../../daemon/worker-identity.js";
 import { type ProbeResult, type ProbeRunner, spell } from "../../preflight.js";
 import type { SupervisorEnvironment } from "../../supervisors/artefact.js";
 import { readUpdateJournal, type UpdateTransition } from "../journal.js";
+
+/** Where this harness sends the daemon's own output, in the state directory it was given. */
+export const HARNESS_LOG_FILE = "supervisor-daemon.log";
 
 /**
  * The line the parked updater prints before it stops existing.
@@ -155,12 +158,22 @@ export function updateHarness(options: UpdateHarnessOptions): UpdateHarness {
     if (refuseFor !== null && spec.executable.startsWith(refuseFor)) {
       return;
     }
+    // **A log sink, not a pipe held by whoever asked for the start.** Every real supervisor writes
+    // the daemon's output to a file it owns — `StandardErrorPath`, the journal, the task's log —
+    // and none of them hands the daemon a pipe whose reader is the process that called `start`.
+    // That difference is load-bearing at the `staged` boundary: the updater is killed there and the
+    // daemon it had not yet drained must go on serving, which it cannot do while its own stderr
+    // drains into a dead parent. It is also the fix for a pipe nobody reads, which is a daemon that
+    // eventually blocks on writing to it. `log_sink` is a recorded field for the same reason.
+    const sink = join(options.stateDir, HARNESS_LOG_FILE);
+    const fd = openSync(sink, "a", 0o600);
     const spawned = spawn(spec.executable, [...spec.argv], {
       cwd: spec.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", fd, fd],
     });
     child = spawned;
     spawned.once("exit", () => {
+      closeSync(fd);
       if (child === spawned) {
         child = null;
       }

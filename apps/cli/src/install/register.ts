@@ -140,7 +140,7 @@ export function registerCommands(target: RegistrationTarget): readonly Registrat
         {
           title: "start the task",
           command: powershellCommand(
-            `Start-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+            `Start-ScheduledTask ${scheduledTaskSelector(target.identity)}`,
           ),
         },
       ];
@@ -181,14 +181,14 @@ export function deregisterCommands(target: RegistrationTarget): readonly Registr
         {
           title: "stop the task, which unregistering it does not do",
           command: powershellCommand(
-            `Stop-ScheduledTask -TaskName ${powerShellLiteral(target.identity)}`,
+            `Stop-ScheduledTask ${scheduledTaskSelector(target.identity)}`,
           ),
           tolerated: true,
         },
         {
           title: "unregister the scheduled task",
           command: powershellCommand(
-            `Unregister-ScheduledTask -TaskName ${powerShellLiteral(target.identity)} -Confirm:$false`,
+            `Unregister-ScheduledTask ${scheduledTaskSelector(target.identity)} -Confirm:$false`,
           ),
           tolerated: true,
         },
@@ -207,7 +207,7 @@ export function deregisterCommands(target: RegistrationTarget): readonly Registr
  */
 export function taskInfoCommand(target: RegistrationTarget): ProbeCommand {
   return powershellCommand(
-    `(Get-ScheduledTaskInfo -TaskName ${powerShellLiteral(target.identity)}) | ` +
+    `(Get-ScheduledTaskInfo ${scheduledTaskSelector(target.identity)}) | ` +
       "Select-Object -Property LastTaskResult,LastRunTime,NumberOfMissedRuns | Format-List",
   );
 }
@@ -231,4 +231,36 @@ function powershellCommand(script: string): ProbeCommand {
  */
 export function powerShellLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * How every `*-ScheduledTask` cmdlet **except `Register-`** has to be told which task is meant.
+ *
+ * `\xplainer\<user>-daemon` is the task's *full path*, and `Register-ScheduledTask -TaskName` takes
+ * one — it is creating the name, folder included. Every other cmdlet in the `ScheduledTasks` module
+ * is a CDXML wrapper over a CIM query on `MSFT_ScheduledTask`, whose `TaskName` property is the
+ * **leaf** and whose `TaskPath` is the folder, so a full path in `-TaskName` matches nothing at
+ * all. It does not fail loudly either: `Get-` writes a non-terminating `ObjectNotFound` and carries
+ * on, so the query answers `Execute=` with nothing after it and exits `0`, and `Unregister-`
+ * removes no task while reporting success.
+ *
+ * Both were measured on `windows-latest` on 2026-09-09. T17's proof read a *correct* install's
+ * loaded row back as an empty command and an empty working directory and reported drift on it
+ * (run 34306551605); T16's uninstall said "deregistered" and the workflow's own cleanup step then
+ * found `runneradmin-daemon` still registered (run 34304152961).
+ *
+ * @throws {RangeError} for an identity that is not a task path, which every caller's is.
+ */
+export function scheduledTaskSelector(identity: string): string {
+  const cut = identity.lastIndexOf("\\");
+  if (!identity.startsWith("\\") || cut <= 0 || cut === identity.length - 1) {
+    throw new RangeError(
+      `a scheduled task is addressed by folder and leaf, and ${JSON.stringify(identity)} is ` +
+        "neither: it has to begin with a backslash and carry a name after the last one.",
+    );
+  }
+  return (
+    `-TaskPath ${powerShellLiteral(identity.slice(0, cut + 1))} ` +
+    `-TaskName ${powerShellLiteral(identity.slice(cut + 1))}`
+  );
 }
