@@ -85,6 +85,7 @@ import { recoverUpdate } from "../../install/update/recover.js";
 import {
   fixtureEnvironment,
   fixtureLingerMarker,
+  HARNESS_LOG_FILE,
   PARKED_LINE,
   updateHarness,
 } from "../../install/update/testing/harness.js";
@@ -132,6 +133,18 @@ function require_(condition: boolean, what: string): void {
     throw new Error(`FAILED: ${what}`);
   }
   say(`  ok: ${what}`);
+}
+
+/** The last lines the harness's daemons wrote in this case, or one sentence saying there are none. */
+function harnessLogTail(stateDir: string, lines = 24): readonly string[] {
+  const sink = join(stateDir, HARNESS_LOG_FILE);
+  if (!existsSync(sink)) {
+    return [`there is no ${sink}: nothing this harness started ever wrote a line`];
+  }
+  const written = readFileSync(sink, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "");
+  return written.slice(-lines);
 }
 
 /** One environment variable this entry cannot do anything without. */
@@ -556,6 +569,16 @@ try {
       `daemon.json records A as the runtime the daemon runs out of (${String(installedRuntime)})`,
     );
     const health = await askHealth(stateDir);
+    if (health === null) {
+      // The one question this assertion cannot answer on its own: a daemon that is not answering
+      // said *why* somewhere, and the harness sends its output to a sink in the state directory
+      // precisely so that a proof running on a machine nobody can log into still has it. An exit
+      // `10` here is a predecessor that never went away; anything else is the rollback's own.
+      say(`  the recovered daemon is not answering. What it wrote, from ${HARNESS_LOG_FILE}:`);
+      for (const line of harnessLogTail(stateDir)) {
+        say(`    ${line}`);
+      }
+    }
     require_(
       health?.version === alphaVersion,
       `A is answering /healthz as release ${alphaVersion}`,

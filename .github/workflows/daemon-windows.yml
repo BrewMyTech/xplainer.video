@@ -691,16 +691,20 @@ jobs:
           });
           console.log(JSON.stringify(enqueued));
 
+          // `status`, which is what `explainer_job` answers with and what
+          // `explainer_job.output.json` names — the first run of this step polled
+          // a `state` field no record has, read `undefined` three hundred times
+          // and then failed a job that had reached `done` in 91 ms (2026-09-09).
           let job = null;
           for (let attempt = 0; attempt < 300; attempt += 1) {
             job = await call(100 + attempt, "explainer_job", { job_id: enqueued.job_id });
-            if (job?.state === "done" || job?.state === "error") break;
+            if (job?.status === "done" || job?.status === "error") break;
             await new Promise((done) => setTimeout(done, 1000));
           }
           console.log(JSON.stringify(job));
           child.kill();
-          if (job?.state !== "done") {
-            console.log(`FAIL: the job ended ${String(job?.state)}`);
+          if (job?.status !== "done") {
+            console.log(`FAIL: the job ended ${String(job?.status)}`);
             process.exitCode = 1;
           } else {
             console.log("check: the installed daemon, under the S4U principal, reached a terminal done");
