@@ -111,6 +111,12 @@ describe("the Task Scheduler document", () => {
       <Enabled>true</Enabled>
       <UserId>WORKGROUP\\alice</UserId>
     </LogonTrigger>
+    <RegistrationTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </RegistrationTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -198,6 +204,38 @@ describe("the Task Scheduler document", () => {
     );
     expect(contents).not.toContain("<Duration>");
     expect(contents).not.toContain("StopAtDurationEnd");
+  });
+
+  /**
+   * The second trigger, and the reason the repetition is on **both** rather than on the logon
+   * trigger alone.
+   *
+   * A repetition belongs to a trigger, and a trigger that has not fired has no repetition running.
+   * Measured on `windows-latest`, 2026-09-09 (run 34317779107): the shipped document with a
+   * `<LogonTrigger>` alone, started with `Start-ScheduledTask`, ran **once** and never again in
+   * eleven minutes — an on-demand start starts no trigger, and a machine already logged in fires
+   * no logon trigger. The same document plus a `<RegistrationTrigger>` carrying the same
+   * repetition ran three times, five minutes apart, having been started by nothing but its own
+   * registration. Both triggers stay: registration covers this boot, logon covers the next one.
+   */
+  it("also repeats from a registration trigger, so the re-check exists before the next logon", () => {
+    const contents = renderScheduledTask(spec, environment).contents;
+
+    expect(contents).toContain(
+      "    <RegistrationTrigger>\n" +
+        "      <Repetition>\n" +
+        "        <Interval>PT5M</Interval>\n" +
+        "      </Repetition>\n" +
+        "      <Enabled>true</Enabled>\n" +
+        "    </RegistrationTrigger>",
+    );
+    // Both triggers carry it, which is what "the re-check survives a reboot as well" means.
+    expect(contents.match(/<Interval>PT5M<\/Interval>/g)).toHaveLength(2);
+    // Two `<UserId>` elements and no more: the logon trigger's and the principal's. A registration
+    // is not a per-user event, and Windows' own export of this document carries none on it — which
+    // the block asserted above already spells out, and this counts so that adding one anywhere
+    // fails here rather than at a registration.
+    expect(contents.match(/<UserId>/g)).toHaveLength(2);
   });
 
   /**

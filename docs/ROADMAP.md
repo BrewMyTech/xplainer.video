@@ -850,6 +850,27 @@ owner's, and it is what turns those lines from pending into met or into defects.
     half:** in run `34206438487` (`f73e8cc`), *the breaker's own rules* passed on `macos-latest` and
     `ubuntu-latest`, *ThrottleInterval 30 s drives the latch* passed on macOS and *RestartSec=2
     drives the latch* on ubuntu; both Windows jobs failed and have not been re-run since `d376533`.
+  - *Amended 2026-09-09 (Windows runner): the Windows leg was red because of a **product** defect,
+    which is now fixed and measured; the cadence this criterion is judged at on Windows is not the
+    one the note above assumes.* Two facts about Task Scheduler, both measured on `windows-latest`
+    on 2026-09-09 (run `34317779107`, job `102357526877`), and the argument is in
+    [ADR 0020](adr/0020-always-running-local-daemon.md)'s note of that date. **(1)** A
+    `<Repetition>` belongs to a trigger that has *fired*, and the shipped document's only trigger
+    was a `<LogonTrigger>` — which a hosted runner never fires, and which a real machine has already
+    fired before a user runs `install` in a terminal. `Start-ScheduledTask` is an on-demand run and
+    starts no trigger. So nothing brought a failed daemon back between an install and the next
+    logon: measured three times as one run and a `LastRunTime` frozen for thirty minutes (runs
+    `34308488886`, `34311062150`, `34313848702`). `supervisors/schtasks.ts` now emits a
+    `<RegistrationTrigger>` carrying the same `PT5M` repetition beside the logon one, and the same
+    measurement watched that document run three times, five minutes apart, started by nothing but
+    its own registration. **(2)** `<RestartOnFailure>` 3 × `PT1M` does not restart an action that
+    exits non-zero — it restarts a task that failed to *launch* — so the sentence above about "Task
+    Scheduler's one-minute schema minimum" describes a cadence that never happens. The Windows
+    cadence is the `PT5M` repetition alone, five failed starts are about twenty minutes of wall
+    clock, and `install/testing/breaker-proof.ts` and `daemon-breaker.yml` carry that budget with
+    the measurement written beside it. Nothing about the criterion's predicate changes: each start
+    still has to fail within 30 s of *its own* start, which the spacing between starts has never
+    been part of.
 - **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
   dependency named and justified, or `Type=exec` retained with a readiness wait in the
   installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new

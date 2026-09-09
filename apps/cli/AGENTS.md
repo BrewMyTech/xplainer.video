@@ -863,6 +863,23 @@ Then the root procedure: `pnpm verify`.
   with `[Console]::Out.WriteLine`, which is the one way past the formatter, and both have a unit
   pinning that. Measured on `windows-latest`, 2026-09-09. Composing `Key=value` lines by hand is
   necessary and is not sufficient — `Format-List` is only the most obvious way to be wrapped.
+- **A `<Repetition>` belongs to a trigger that has fired, and `<RestartOnFailure>` is not a retry
+  policy for an action that exits non-zero.** Both measured on `windows-latest`, 2026-09-09 (run
+  `34317779107`, job `102357526877`), three tasks side by side for eleven minutes. The document
+  `supervisors/schtasks.ts` renders therefore carries the indefinite `PT5M` repetition on **two**
+  triggers: a `<RegistrationTrigger>`, because registering the task is itself a trigger event and so
+  the five-minute re-check exists from the moment `install` finishes, and the `<LogonTrigger>` for
+  the next boot. With the logon trigger alone the re-check did not exist at all between an install
+  and the next logon — `Start-ScheduledTask`, which is what `install` and `daemon start` call, is an
+  **on-demand** run that starts no trigger, and a logon trigger does not fire in a session the user
+  logged into before running `install`. `MultipleInstancesPolicy: IgnoreNew` is what makes the
+  trigger and the explicit start unable to produce two daemons, and that was measured too: a
+  registration trigger plus an immediate `Start-ScheduledTask` over a four-minute action recorded
+  one start. `<RestartOnFailure>` stays because a task failing to *launch* is a real and different
+  failure, but nothing here may count on it: a daemon that exits `10` is re-run by the repetition
+  and by nothing else, which is why T14's Windows arm waits about twenty minutes for five failed
+  starts. [ADR 0020](../../docs/adr/0020-always-running-local-daemon.md)'s note of 2026-09-09 is the
+  record.
 - **Address a scheduled task by folder *and* leaf, from one place.** `\xplainer\<user>-daemon` is a
   path; `Register-ScheduledTask -TaskName` takes one because it is creating the name, and every
   other cmdlet in the `ScheduledTasks` module is a CDXML wrapper over a CIM query whose `TaskName`

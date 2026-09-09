@@ -4,22 +4,21 @@
 #
 # WHAT IT CLOSES. T14's criteria 10 and 11 — "hold the recorded port and let the
 # **real supervisor** drive its own natural retries — `RestartSec=2` on Linux,
-# `ThrottleInterval` on macOS, the three `PT1M` retries then the `PT5M`
-# repetition on Windows — and assert `stalled`, exit `0`, the pid named in
-# words, and `restart` clearing the latch". `daemon-state.test.ts` proves the
-# rule as arithmetic over records; `install/testing/breaker-proof.ts` is the
-# proof that a real supervisor produces those records at all, and this workflow
-# is where it runs on a hosted Linux VM, on a hosted Mac, and on Windows.
+# `ThrottleInterval` on macOS, the `PT5M` trigger repetition on Windows — and
+# assert `stalled`, exit `0`, the pid named in words, and `restart` clearing the
+# latch". `daemon-state.test.ts` proves the rule as arithmetic over records;
+# `install/testing/breaker-proof.ts` is the proof that a real supervisor produces
+# those records at all, and this workflow is where it runs on a hosted Linux VM,
+# on a hosted Mac, and on Windows.
 #
 # WHAT IS ACTUALLY MEASURED, AND WHY IT TAKES SO LONG. Nothing here shortens a
 # retry interval or fakes a failure. The proof holds the port recorded in
 # `daemon.json` in its own process, so every supervised `serve` resolves that
 # port, fails `EADDRINUSE`, records its own end and exits `10`; the spacing
 # between attempts is then the supervisor's own. That is ~15 s of wall clock on
-# systemd, ~3 minutes under launchd's 30-second `ThrottleInterval`, and the
-# better part of a quarter of an hour under Task Scheduler, whose
-# `<RestartOnFailure>` has a one-minute schema minimum and whose `<Repetition>`
-# fires every five minutes after the restart count is spent. The Windows job's
+# systemd, ~3 minutes under launchd's 30-second `ThrottleInterval`, and about
+# twenty minutes under Task Scheduler, whose `<Repetition>` fires every five
+# minutes and is the only thing that brings the daemon back. The Windows job's
 # generous `timeout-minutes` is that cadence and not a hung process.
 #
 # THE DEFECT ALL OF THIS IS ABOUT. The shipped breaker inferred a run's end from
@@ -31,21 +30,40 @@
 # together; on macOS and Windows the second is far outside the 30-second window
 # and the first is well inside it, which is the whole story in two columns.
 #
-# WINDOWS IS THE PLATFORM NOTHING LOCAL CAN MEASURE, AND ONE CLAIM IN IT IS A
-# GUESS UNTIL THIS JOB RUNS. `<RestartOnFailure>` is documented as restarting a
-# task that "fails"; whether Task Scheduler counts an action exiting `10` as a
-# failure is a property of somebody else's scheduler, and this job is where that
-# is settled in one direction or the other. If it does not, the Windows arm
-# reports a history the supervisor never produced, and that answer is worth
-# having rather than worth hiding.
+# WINDOWS IS THE PLATFORM NOTHING LOCAL CAN MEASURE, AND THE CLAIM THAT WAS A
+# GUESS HAS NOW BEEN SETTLED — AGAINST ITSELF. `<RestartOnFailure>` is documented
+# as restarting a task that "fails", and whether Task Scheduler counts an action
+# exiting `10` as a failure was a property of somebody else's scheduler. It does
+# not: on `windows-latest`, 2026-09-09 (run 34317779107, job 102357526877), a
+# task with `<Count>3</Count>` and `<Interval>PT1M</Interval>` registered and
+# read back out of `Export-ScheduledTask`, started by a trigger, whose action
+# exits `10`, was re-run at five-minute spacing and never at one-minute spacing.
+# An action exiting non-zero is a *completed* run recorded as `LastTaskResult
+# 10`; what `<RestartOnFailure>` restarts is a task that failed to launch.
+#
+# The same run settled a second thing, and it was a real product defect rather
+# than a property of the proof. A `<Repetition>` belongs to a **trigger**, and a
+# trigger that never fires has no repetition running: the shipped document's
+# `<LogonTrigger>` does not fire on a hosted runner, and does not fire on a real
+# machine either when `install` is run from a terminal inside a session the user
+# logged into an hour ago. `Start-ScheduledTask` is an on-demand run and starts
+# no trigger. So between the install and the next logon nothing re-checked the
+# daemon at all — measured, one run and a `LastRunTime` frozen for thirty
+# minutes, three times over (runs 34308488886, 34311062150, 34313848702). The
+# renderer now emits a `<RegistrationTrigger>` carrying the same `PT5M`
+# repetition beside the logon one, because registering the task is itself the
+# trigger event; the same measurement watched that document run three times,
+# five minutes apart, started by nothing but its own registration.
 #
 # THE HONEST STATUS, AND IT IS PART OF THE FILE. **Until this workflow has been
 # dispatched and has reported, the runner half of T14 is unproven, and no record
 # in this repository may say otherwise.** `workflow_dispatch` registers from the
 # repository's **default branch**, so this file has to reach `main` before the
 # API will accept a dispatch of it at all — GitHub's own rule, not a repository
-# setting — and `--ref` then chooses whose code runs. It has never been
-# dispatched.
+# setting — and `--ref` then chooses whose code runs. The Windows legs have been
+# dispatched and have reported, at `phase-2-win`; the Linux and macOS legs have
+# not been dispatched since this file reached `main`, and `docs/ROADMAP.md`
+# carries which of the three the record may lean on.
 #
 #   gh workflow run daemon-breaker.yml --ref "$(git branch --show-current)" -f windows=true
 #   gh run watch "$(gh run list --workflow daemon-breaker.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
@@ -278,13 +296,14 @@ jobs:
           launchctl bootout "gui/$(id -u)/video.xplainer.t14-proof" 2>&1 || echo 'nothing loaded'
 
   schtasks:
-    name: three PT1M retries, then the PT5M repetition (windows-latest)
+    name: the PT5M repetition drives the latch (windows-latest)
     if: ${{ inputs.windows }}
     runs-on: windows-latest
-    # The cadence, not a hung process: 3 minutes of `<RestartOnFailure>`, then
-    # a `<Repetition>` that has to fire twice at five-minute spacing, and a
-    # `daemon restart` after it.
-    timeout-minutes: 45
+    # The cadence, not a hung process: five runs at five-minute spacing is
+    # twenty minutes before the breaker can latch at all, then a `<Repetition>`
+    # that has to fire once more, then a `daemon restart`. `<RestartOnFailure>`
+    # contributes nothing here — see the header.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -320,153 +339,3 @@ jobs:
           Get-ScheduledTask -TaskPath '\xplainer\' -ErrorAction SilentlyContinue |
             ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false }
           Write-Host 'throwaway task removed'
-
-  probe:
-    name: TEMPORARY registration-trigger measurement (windows-latest)
-    if: ${{ inputs.windows }}
-    runs-on: windows-latest
-    timeout-minutes: 25
-
-    steps:
-      - name: What Task Scheduler does with each trigger shape
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = 'C:\tsprobe'
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          $account = "$env:USERDOMAIN\$env:USERNAME"
-          Write-Host "account: $account"
-
-          $logon = @"
-              <LogonTrigger>
-                <Repetition>
-                  <Interval>PT5M</Interval>
-                </Repetition>
-                <Enabled>true</Enabled>
-                <UserId>$account</UserId>
-              </LogonTrigger>
-          "@
-          $both = @"
-              <LogonTrigger>
-                <Repetition>
-                  <Interval>PT5M</Interval>
-                </Repetition>
-                <Enabled>true</Enabled>
-                <UserId>$account</UserId>
-              </LogonTrigger>
-              <RegistrationTrigger>
-                <Repetition>
-                  <Interval>PT5M</Interval>
-                </Repetition>
-                <Enabled>true</Enabled>
-              </RegistrationTrigger>
-          "@
-          $registration = @"
-              <RegistrationTrigger>
-                <Enabled>true</Enabled>
-              </RegistrationTrigger>
-          "@
-
-          function Body($tag, $triggers, $arguments) {
-            return @"
-          <?xml version="1.0" encoding="UTF-16"?>
-          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-            <RegistrationInfo>
-              <Description>probe $tag</Description>
-            </RegistrationInfo>
-            <Triggers>
-          $triggers
-            </Triggers>
-            <Principals>
-              <Principal id="Author">
-                <UserId>$account</UserId>
-                <LogonType>S4U</LogonType>
-                <RunLevel>LeastPrivilege</RunLevel>
-              </Principal>
-            </Principals>
-            <Settings>
-              <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-              <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-              <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-              <AllowHardTerminate>true</AllowHardTerminate>
-              <AllowStartOnDemand>true</AllowStartOnDemand>
-              <Enabled>true</Enabled>
-              <Hidden>false</Hidden>
-              <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-              <RestartOnFailure>
-                <Interval>PT1M</Interval>
-                <Count>3</Count>
-              </RestartOnFailure>
-            </Settings>
-            <Actions Context="Author">
-              <Exec>
-                <Command>C:\Windows\System32\cmd.exe</Command>
-                <Arguments>$arguments</Arguments>
-                <WorkingDirectory>C:\tsprobe</WorkingDirectory>
-              </Exec>
-            </Actions>
-          </Task>
-          "@
-          }
-
-          $failA = '/c echo %TIME% &gt;&gt; "C:\tsprobe\a.log" &amp; exit /b 10'
-          $failB = '/c echo %TIME% &gt;&gt; "C:\tsprobe\b.log" &amp; exit /b 10'
-          $long = '/c echo %TIME% &gt;&gt; "C:\tsprobe\c.log" &amp; ping -n 240 127.0.0.1 &gt;nul &amp; exit /b 0'
-
-          Register-ScheduledTask -Xml (Body 'A' $logon $failA) -TaskName '\tsprobe\A' -Force | Out-Null
-          Start-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'A'
-          Write-Host 'A: LogonTrigger only, started on demand (what ships today)'
-
-          $t0 = Get-Date
-          Register-ScheduledTask -Xml (Body 'B' $both $failB) -TaskName '\tsprobe\B' -Force | Out-Null
-          Write-Host "B: LogonTrigger + RegistrationTrigger, NEVER started by hand, registered $($t0.ToString('o'))"
-
-          Register-ScheduledTask -Xml (Body 'C' $registration $long) -TaskName '\tsprobe\C' -Force | Out-Null
-          Start-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'C'
-          Write-Host 'C: RegistrationTrigger + an immediate Start-ScheduledTask, long-running action'
-
-          Write-Host ''
-          Write-Host '--- what the service stored for B ---'
-          Export-ScheduledTask -TaskPath '\tsprobe\' -TaskName 'B' | Out-String | Write-Host
-
-          function Runs($file) {
-            $path = Join-Path 'C:\tsprobe' $file
-            if (-not (Test-Path $path)) { return 0 }
-            return @(Get-Content $path | Where-Object { $_.Trim() -ne '' }).Count
-          }
-
-          Write-Host '--- polling every 20 s for 11 minutes ---'
-          for ($i = 1; $i -le 33; $i++) {
-            Start-Sleep -Seconds 20
-            $line = "t+$([int]((Get-Date) - $t0).TotalSeconds)s"
-            foreach ($name in 'A', 'B') {
-              $info = Get-ScheduledTaskInfo -TaskPath '\tsprobe\' -TaskName $name
-              $when = if ($null -eq $info.LastRunTime) { '<never>' } else { $info.LastRunTime.ToString('HH:mm:ss') }
-              $state = (Get-ScheduledTask -TaskPath '\tsprobe\' -TaskName $name).State
-              $runs = Runs "$($name.ToLower()).log"
-              $line += "   ${name}: runs=$runs last=$when result=$($info.LastTaskResult) missed=$($info.NumberOfMissedRuns) state=$state"
-            }
-            $line += "   C: starts=$(Runs 'c.log')"
-            Write-Host $line
-          }
-
-          Write-Host ''
-          Write-Host '--- final ---'
-          Write-Host "A (LogonTrigger only, on-demand start):            $(Runs 'a.log') run(s)"
-          Write-Host "B (LogonTrigger + RegistrationTrigger, no hand start): $(Runs 'b.log') run(s)"
-          Write-Host "C (RegistrationTrigger + Start-ScheduledTask):     $(Runs 'c.log') concurrent start(s)"
-          foreach ($name in 'A', 'B', 'C') {
-            Write-Host "--- $name ---"
-            Get-ScheduledTaskInfo -TaskPath '\tsprobe\' -TaskName $name | Format-List | Out-String | Write-Host
-          }
-
-      - name: Remove the probe tasks
-        if: always()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          Get-ScheduledTask -TaskPath '\tsprobe\' -ErrorAction SilentlyContinue | ForEach-Object {
-            Stop-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -ErrorAction SilentlyContinue
-            Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false
-          }
-          Write-Host 'probe tasks removed'
