@@ -117,7 +117,14 @@ describe("a second xplainer serve", () => {
     // Byte for byte, the same directory: no reconciliation, no rewrite, no signal sent.
     expect(snapshot(stateDir)).toBe(before);
     expect(first.process.exitCode).toBeNull();
-  });
+    // The budget this case's own helpers assume. `waitForLine` gives a spawned daemon 20 s to
+    // announce itself and `waitForExit` another 10, and vitest's default of 5 s cannot pay for
+    // either: a case that starts **two** real `serve` processes and reads a ready line out of the
+    // first is not a five-second case anywhere, and on a `windows-latest` runner it timed out at
+    // exactly that (2026-09-09, run 34311062150). Every case in `commands/serve.test.ts` that
+    // spawns a daemon carries the same explicit number for the same reason; the assertions above
+    // are unchanged.
+  }, 30_000);
 
   it("records the port and the crash history in daemon.json, and the run in runtime.json", async () => {
     const stateDir = stateDirectory();
@@ -142,7 +149,8 @@ describe("a second xplainer serve", () => {
     expect(Object.keys(runtimeJson)).not.toContain("stalled");
     expect(runtimeJson.pid).toBe(serving.process.pid);
     expect(readdirSync(layout.jobs)).toEqual([]);
-  });
+    // Explicit for the reason the case above states: this one spawns a real `serve` too.
+  }, 30_000);
 
   it("exits 0 rather than restarting for ever once the circuit breaker is latched", async () => {
     const stateDir = stateDirectory();
@@ -159,7 +167,7 @@ describe("a second xplainer serve", () => {
 
     expect(exit.code).toBe(0);
     expect(serving.stderr()).toContain("stalled since");
-  });
+  }, 30_000);
 
   it("exits 11 when daemon.json cannot be read", async () => {
     const stateDir = stateDirectory();
@@ -170,7 +178,7 @@ describe("a second xplainer serve", () => {
 
     expect(exit.code).toBe(11);
     expect(serving.stderr()).toContain("cannot be read as JSON");
-  });
+  }, 30_000);
 });
 
 describe("a daemon killed the instant a job is enqueued", () => {
@@ -204,7 +212,7 @@ describe("a daemon killed the instant a job is enqueued", () => {
       expect(job.error_code).toBe("daemon_restarted");
       expect(job.finished_at).not.toBeNull();
     }
-  });
+  }, 30_000);
 });
 
 describe("a daemon killed while a job is running", () => {
@@ -271,7 +279,7 @@ describe("a daemon killed while a job is running", () => {
       expect(job.output.lines.join(" ")).toContain("reconciled at boot");
       expect(runner.get({ job_id: jobId, output_lines: 2 }).output.lines).toHaveLength(2);
     }
-  });
+  }, 30_000);
 });
 
 /**
