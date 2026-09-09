@@ -808,15 +808,36 @@ jobs:
           "XPLAINER_T26_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "XPLAINER_T26_PID=$($daemon.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          # **The ready line, not the token file.** The mint happens before the two binds, so a
+          # token on disk says only that the daemon got that far — and every question below is
+          # about a daemon that is *serving*: `daemon status` reads the port out of `daemon.json`
+          # and `runtime.json`, and both are written at readiness. Waiting on the token instead
+          # asked `daemon status` two seconds into a start that had not finished, and it answered
+          # `condition: absent` about a daemon that was seconds from listening (2026-09-09, run
+          # 34309285430). ADR 0025 §Part three makes that line the contract; this reads it.
+          $readyFile = Join-Path $root 'ready.json'
           $token = Join-Path $env:XPLAINER_STATE_DIR 'token'
-          foreach ($attempt in 1..60) {
-            if (Test-Path $token) { break }
+          $ready = $null
+          foreach ($attempt in 1..120) {
+            # `Get-Content -Raw` answers `$null` for the zero-byte file `Start-Process` created,
+            # and `IsNullOrWhiteSpace` is what takes a null without throwing.
+            $line = if (Test-Path $readyFile) { Get-Content $readyFile -Raw } else { $null }
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+              $ready = $line | ConvertFrom-Json
+              break
+            }
+            if ($daemon.HasExited) { break }
             Start-Sleep -Milliseconds 500
           }
-          if (-not (Test-Path $token)) {
-            Get-Content (Join-Path $root 'serve.log') | Write-Host
-            throw "the daemon never minted a token"
+          Write-Host '--- serve.log ---'
+          Get-Content (Join-Path $root 'serve.log') -ErrorAction SilentlyContinue | Write-Host
+          Write-Host '--- end serve.log ---'
+          if ($null -eq $ready) {
+            $why = if ($daemon.HasExited) { "it exited $($daemon.ExitCode)" } else { 'it is still running' }
+            throw "the daemon never announced a ready line ($why)"
           }
+          Write-Host "ready on port $($ready.port), socket $($ready.socket)"
+          if (-not (Test-Path $token)) { throw "the daemon announced readiness and minted no token" }
 
           $acl = Get-Acl -Path $token
           $acl.AccessToString | Write-Host
@@ -867,7 +888,6 @@ jobs:
           # own doing.
           icacls $token /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 
-          $ready = Get-Content (Join-Path $root 'ready.json') -Raw | ConvertFrom-Json
           $port = $ready.port
           $before = (Get-Content $token -Raw).Trim()
           $healthz = "http://127.0.0.1:$port/healthz"
