@@ -6,11 +6,15 @@
 # this project's authors have:
 #
 #   * **T11**, criterion 11 — the create → narrate gate from T3, run against the
-#     **installed** daemon under the standard-user S4U principal, ending in a
-#     terminal `done`. Registering and starting a task proves registration; it
-#     does not prove that a job runs under a principal with no network
-#     credentials and no access to encrypted files, and that is exactly what
-#     `<LogonType>S4U</LogonType>` in `supervisors/schtasks.ts` asks for.
+#     **installed** daemon under an S4U principal, ending in a terminal `done`.
+#     Registering and starting a task proves registration; it does not prove that
+#     a job runs under a principal with no network credentials, no access to
+#     encrypted files and no interactive session, and that is exactly what
+#     `<LogonType>S4U</LogonType>` in `supervisors/schtasks.ts` asks for. The
+#     principal is this runner's own account rather than the throwaway standard
+#     user, because the measurement below settles that a token without elevation
+#     cannot register that logon type at all; the standard user's install is
+#     asserted for the refusal it is.
 #   * **T11**, criterion 12 — whether `Register-ScheduledTask` is in fact the
 #     only call that surfaces `SCHED_S_BATCH_LOGON_PROBLEM` (`0x0004131C`,
 #     267036). The plan records that claim as **unverified**, and `install.ts`'s
@@ -599,64 +603,32 @@ jobs:
         run: |
           cat > gate.mjs <<'GATE'
           import { spawn } from "node:child_process";
-          import { mkdirSync, writeFileSync } from "node:fs";
-          import { join } from "node:path";
           import process from "node:process";
 
-          // The speech fixture, recorded on the spot: one sine WAV and its word
-          // spans per segment, which is what `XPLAINER_TTS_FIXTURE` names. The
-          // gate stops at narration, so nothing here needs a real synthesiser.
+          // **Speech is not what this gate establishes, and on Windows there is
+          // none to have.** `setup/manifest.ts`'s delivery position says so per
+          // platform: nothing is published for the `bundle` route, the pinned
+          // Kokoro image is linux/amd64 and `windows-latest` has no engine for
+          // it, and `--tts-url` acquires nothing. A recorded fixture could not
+          // reach the worker either: `XPLAINER_TTS_FIXTURE` is read in the
+          // process that runs the job, and that process is the **installed
+          // daemon**, which Task Scheduler started with the system environment
+          // — `<Exec>` has no environment map, which is the same fact
+          // `--state-dir` exists for.
+          //
+          // `dry_run` is the contract's own answer: silence of a plausible
+          // length, with real `timings.json` and real `captions.json`. Everything
+          // criterion 11 is about stays real — a job enqueued through
+          // `mcp --attach` over the daemon's own pipe, carried out by the
+          // supervised process under its S4U principal with no interactive
+          // session behind it, reaching a terminal `done`.
           const SEGMENTS = [
-            { id: "one", text: "The installed daemon answered.", seconds: 1.5, frequency: 440 },
-            { id: "two", text: "And it ran the job.", seconds: 1.2, frequency: 660 },
+            { id: "one", text: "The installed daemon answered." },
+            { id: "two", text: "And it ran the job." },
           ];
-          const sineWav = (seconds, frequency) => {
-            const rate = 24000;
-            const frames = Math.round(rate * seconds);
-            const data = Buffer.alloc(frames * 2);
-            for (let frame = 0; frame < frames; frame += 1) {
-              const value = Math.round(Math.sin((2 * Math.PI * frequency * frame) / rate) * 12000);
-              data.writeInt16LE(value, frame * 2);
-            }
-            const header = Buffer.alloc(44);
-            header.write("RIFF", 0);
-            header.writeUInt32LE(36 + data.length, 4);
-            header.write("WAVEfmt ", 8);
-            header.writeUInt32LE(16, 16);
-            header.writeUInt16LE(1, 20);
-            header.writeUInt16LE(1, 22);
-            header.writeUInt32LE(rate, 24);
-            header.writeUInt32LE(rate * 2, 28);
-            header.writeUInt16LE(2, 32);
-            header.writeUInt16LE(16, 34);
-            header.write("data", 36);
-            header.writeUInt32LE(data.length, 40);
-            return Buffer.concat([header, data]);
-          };
-          const fixtures = join(process.env.XPLAINER_T11_ROOT, "tts-fixtures");
-          mkdirSync(fixtures, { recursive: true });
-          const manifest = [];
-          for (const segment of SEGMENTS) {
-            writeFileSync(join(fixtures, `${segment.id}.wav`), sineWav(segment.seconds, segment.frequency));
-            const words = segment.text.split(/\s+/);
-            const step = segment.seconds / words.length;
-            writeFileSync(
-              join(fixtures, `${segment.id}-words.json`),
-              JSON.stringify(
-                words.map((word, index) => ({
-                  word,
-                  start_time: Number((index * step).toFixed(6)),
-                  end_time: Number(((index + 1) * step).toFixed(6)),
-                })),
-              ),
-            );
-            manifest.push({ text: segment.text, audio: `${segment.id}.wav`, words: `${segment.id}-words.json` });
-          }
-          writeFileSync(join(fixtures, "fixtures.json"), JSON.stringify(manifest));
 
           const child = spawn(process.execPath, ["apps/cli/dist/bin.js", "mcp", "--attach"], {
             stdio: ["pipe", "pipe", "inherit"],
-            env: { ...process.env, XPLAINER_TTS_FIXTURE: fixtures },
           });
           const replies = [];
           let buffered = "";
@@ -691,13 +663,32 @@ jobs:
           await waitFor(1);
           send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
+          // The two arguments each tool actually takes, which is what
+          // `packages/protocol/schemas/tools/` says and `scripts/e2e/render.mjs`
+          // drives: `explainer_put_source` writes **files** and nothing else, and
+          // the narration spec belongs to `explainer_narrate`. Handing the spec
+          // to `put_source` refused with "files is empty, so there is nothing to
+          // write" the first time this step was reached (2026-09-09).
+          //
+          // One agent-owned file is enough because this gate stops at narration:
+          // nothing here bundles a composition, and `Scenes.tsx` is the file the
+          // ownership boundary is about.
           console.log(JSON.stringify(await call(2, "explainer_create", { slug: "t11-windows" })));
           await call(3, "explainer_put_source", {
             slug: "t11-windows",
-            narration: { voice: "af_heart", speed: 1, fps: 30, segments: SEGMENTS.map(
-              (segment) => ({ id: segment.id, text: segment.text })) },
+            files: [
+              {
+                path: "Scenes.tsx",
+                content: "import type { SceneMap } from \"./Video\";\n" +
+                  "export const scenes: SceneMap = {};\n",
+              },
+            ],
           });
-          const enqueued = await call(4, "explainer_narrate", { slug: "t11-windows" });
+          const enqueued = await call(4, "explainer_narrate", {
+            slug: "t11-windows",
+            dry_run: true,
+            narration: { voice: "af_heart", speed: 1, fps: 30, segments: SEGMENTS },
+          });
           console.log(JSON.stringify(enqueued));
 
           let job = null;
@@ -1065,15 +1056,26 @@ jobs:
             '  [System.IO.HandleInheritability]::None)',
             'try {',
             '  $client.Connect(5000)',
-            '  $sddl = $client.GetAccessControl().GetSecurityDescriptorSddlForm(''Access'')',
-            '  [Console]::Out.WriteLine(''pipe DACL: '' + $sddl)',
-            '  $everyone = New-Object System.Security.Principal.SecurityIdentifier ''S-1-1-0''',
-            '  if ($sddl -match [regex]::Escape($everyone.Value)) {',
-            '    throw ''the pipe still grants Everyone''',
+            '  $security = $client.GetAccessControl()',
+            '  # Printed for the record, and compared as SIDs rather than as this string:',
+            '  # `GetSecurityDescriptorSddlForm` abbreviates a well-known account to its',
+            '  # two-letter alias, so a correctly narrowed pipe answered `D:P(A;;0x1f019f;;;LA)`',
+            '  # on `windows-latest` — `LA` being the built-in Administrator, RID 500, which is',
+            '  # what a hosted runner runs as — and a search for the SID text found nothing',
+            '  # (2026-09-09).',
+            '  [Console]::Out.WriteLine(''pipe DACL: '' +',
+            '    $security.GetSecurityDescriptorSddlForm(''Access''))',
+            '  if ($security.AreAccessRulesProtected -ne $true) {',
+            '    throw ''the pipe descriptor still inherits''',
+            '  }',
+            '  $rules = @($security.GetAccessRules($true, $true,',
+            '    [System.Security.Principal.SecurityIdentifier]))',
+            '  if ($rules.Count -ne 1) {',
+            '    throw ''the pipe carries '' + $rules.Count + '' entries, not one''',
             '  }',
             '  $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
-            '  if ($sddl -notmatch [regex]::Escape($me.Value)) {',
-            '    throw ''the pipe does not grant this account''',
+            '  if ($rules[0].IdentityReference -ne $me) {',
+            '    throw ''the pipe grants '' + $rules[0].IdentityReference.Value + '' and not '' + $me.Value',
             '  }',
             '} finally {',
             '  $client.Dispose()',

@@ -879,7 +879,9 @@ describe("daemon status — the three queries, and nothing that parses launchctl
         uid: 0,
       }),
     );
-    expect(windows).toContain("(Get-ScheduledTask -TaskName '\\xplainer\\tester-daemon').State");
+    expect(windows).toContain(
+      "(Get-ScheduledTask -TaskPath '\\xplainer\\' -TaskName 'tester-daemon' -ErrorAction Stop).State",
+    );
     expect(windows.startsWith("powershell.exe -NoProfile -NonInteractive")).toBe(true);
   });
 
@@ -903,13 +905,15 @@ describe("daemon status — the three queries, and nothing that parses launchctl
       artefact: "",
       uid: 0,
     });
-    expect(line(windows ?? { program: "", argv: [] })).toContain("Get-ScheduledTask -TaskName");
+    expect(line(windows ?? { program: "", argv: [] })).toContain(
+      "Get-ScheduledTask -TaskPath '\\xplainer\\' -TaskName 'tester-daemon'",
+    );
     // Written past PowerShell's output formatter, not emitted as values: with stdout redirected —
     // which it always is here — that formatter wraps a long line, and an installed `Arguments` is
     // two absolute paths long. A wrapped answer is read back as a path cut in half and reported as
     // drift on a correct install (`windows-latest`, 2026-09-09).
     expect(line(windows ?? { program: "", argv: [] })).toContain(
-      '[Console]::Out.WriteLine("Execute=" + $action.Execute)',
+      "[Console]::Out.WriteLine('Execute=' + $action.Execute)",
     );
     expect(
       loadedConfigurationQuery({

@@ -654,6 +654,24 @@ async function proveTaskScheduler(): Promise<void> {
     });
     await proveShippedRestart(bed, 0, "win32");
   } finally {
+    // The daemon `daemon restart` brought back is holding a fake worker, and on Windows a
+    // directory cannot be removed while any process is running out of it — `Stop-ScheduledTask`
+    // ends the task's own process and leaves that worker's tree exactly where it was, which is an
+    // `EPERM` no amount of retrying gets past (`windows-latest`, 2026-09-09, run 34307686678). So
+    // the proof ends the way a planned stop does, over the route it has just finished proving:
+    // step 3 of the drain is what takes the whole process group with it.
+    say("\ndraining the daemon this proof left running:");
+    const last = await requestDrain({ socketPath: bed.socket });
+    if (last.ok) {
+      const gone = await awaitStopped({
+        stateDir: bed.stateDir,
+        pid: last.acknowledgement.pid,
+        timeoutMs: 40_000,
+      });
+      say(`  pid ${String(last.acknowledgement.pid)} gone after ${String(gone.elapsedMs)} ms`);
+    } else {
+      say(`  nothing answered the socket: ${last.reason}`);
+    }
     say("\nunregistering the throwaway task:");
     for (const step of deregisterCommands(bed.target)) {
       shell(step.command.program, [...step.command.argv]);

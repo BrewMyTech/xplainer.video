@@ -688,14 +688,18 @@ describe("daemon install — Windows", () => {
       // The document is UTF-8 on disk and declares `UTF-16`, because what Task Scheduler parses is
       // the string PowerShell decoded; the read has to say which encoding the bytes are in.
       expect(scripts[0]).toContain("-Raw -Encoding UTF8)");
+      // `Register-` alone takes the task's **path** in `-TaskName`, because it is creating the
+      // name; every cmdlet after it is a CIM query whose `TaskName` is the leaf, and a full path
+      // there matches nothing quietly (`install/register.ts`'s `scheduledTaskSelector`).
       expect(scripts[0]).toContain("-TaskName '\\xplainer\\tester-daemon' -Force");
-      expect(scripts[1]).toContain("Start-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
-      expect(scripts[2]).toContain("Get-ScheduledTaskInfo -TaskName '\\xplainer\\tester-daemon'");
+      const selector = "-TaskPath '\\xplainer\\' -TaskName 'tester-daemon'";
+      expect(scripts[1]).toContain(`Start-ScheduledTask ${selector}`);
+      expect(scripts[2]).toContain(`Get-ScheduledTaskInfo ${selector}`);
       // Two steps, not one: `Unregister-ScheduledTask` takes the registration away and leaves a
       // running instance running, so a rollback that only unregistered would leave the daemon it
       // started holding the state directory it is about to remove (`install/register.ts`).
-      expect(scripts[3]).toContain("Stop-ScheduledTask -TaskName '\\xplainer\\tester-daemon'");
-      expect(scripts[4]).toContain("Unregister-ScheduledTask");
+      expect(scripts[3]).toContain(`Stop-ScheduledTask ${selector}`);
+      expect(scripts[4]).toContain(`Unregister-ScheduledTask ${selector}`);
       // Rolled back: the XML this process wrote is gone again, and so is everything else — the
       // hashed set here is the Windows one, task store included.
       expect(
