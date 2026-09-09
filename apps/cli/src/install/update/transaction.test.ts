@@ -36,6 +36,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { readDaemonState, readRuntimeState } from "../../daemon/daemon-state.js";
@@ -108,6 +109,9 @@ const DOOMED_HEALTH_MS = 1_500;
  * answer is ever the replacement's again.
  */
 const ROLLBACK_HEALTH_MS = 4_000;
+
+/** How long the teardown waits for a daemon it signalled to actually be gone before removing its tree. */
+const ORPHAN_EXIT_MS = 10_000;
 
 /** The child entry that parks a half-finished transaction so the suite can kill it. */
 const INTERRUPT_UPDATE = fileURLToPath(new URL("./testing/interrupt-update.ts", import.meta.url));
@@ -225,6 +229,18 @@ afterEach(async () => {
         process.kill(orphan, "SIGKILL");
       } catch {
         // It exited between the liveness check and the signal, which is the outcome asked for.
+      }
+      // **And waited for**, for the same reason the spawned children above are. `process.kill`
+      // returns as soon as the signal is delivered, and a signalled process still holds every
+      // handle it had until it actually exits — so a `rmSync` issued inside that window answers
+      // `EPERM` over a daemon that is already on its way out. The children above go through
+      // `killAndWait` because a `ChildProcess` has an `exit` event; a daemon this suite only knows
+      // by the pid in `runtime.json` has none, so its exit is polled instead. Measured on
+      // `windows-latest`, run 34322304924, where the tree of a rolled-back daemon — which every
+      // successful rollback deliberately leaves running — could not be removed.
+      const deadline = Date.now() + ORPHAN_EXIT_MS;
+      while (isAlive(orphan) && Date.now() < deadline) {
+        await sleep(50);
       }
     }
   }
