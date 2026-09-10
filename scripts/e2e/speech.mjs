@@ -174,6 +174,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
@@ -1053,6 +1054,82 @@ function walkFiles(root) {
 }
 
 /** Start `xplainer serve` and resolve on its one line of stdout. */
+/**
+ * The drain route, spelled here because this script cannot import `apps/cli/src/server.ts`.
+ *
+ * `DRAIN_PATH` there is the definition. A divergence does not pass silently: the acknowledgement
+ * assertion below quotes the status and the body, so a renamed route fails as a `404` naming the
+ * path that was asked for rather than as a shutdown that mysteriously did not happen.
+ */
+const DRAIN_PATH = "/api/daemon/drain";
+
+/**
+ * `POST /api/daemon/drain` over the IPC endpoint, in `node:http` rather than `fetch`.
+ *
+ * `request({ socketPath })` names a unix socket on POSIX and a **named pipe** on Windows, which is
+ * why this needs no new machinery for the platform it exists for. `fetch` has no supported way to
+ * name either — that is why the product ships `mcp/socket-fetch.ts`, and that file is TypeScript
+ * this script cannot import. The route is registered on the **socket only**, so there is no TCP
+ * spelling of this request to fall back to. Mirrors `commands/serve.test.ts`'s `postDrain`.
+ */
+function postDrain(socketPath) {
+  return new Promise((resolve, reject) => {
+    const call = request(
+      { socketPath, path: DRAIN_PATH, method: "POST", headers: { host: "xplainer.ipc" } },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    call.once("error", reject);
+    call.end();
+  });
+}
+
+/**
+ * Ask the daemon to stop the way a supervisor on **this** platform asks, and answer with which way.
+ *
+ * `SIGTERM` on POSIX — what `systemctl --user stop` and `launchctl kill SIGTERM` send, and what
+ * ADR 0024's drain is written against. **Windows has no such signal.** `child.kill("SIGTERM")`
+ * there is `TerminateProcess`: no handler runs, the six steps never start, and `runtime.json` is
+ * left behind. That is not a deduction, it is what this proof measured — `windows-latest`, run
+ * 34494707551, where every one of the 90 assertions before this section passed and the section
+ * itself reported `the daemon exited on SIGTERM` with no `[daemon]` drain line at all, against
+ * macOS's two.
+ *
+ * So the planned stop there is `POST /api/daemon/drain` over the named pipe, which
+ * `apps/cli/src/install/lifecycle.ts` calls "the daemon's own six steps and the only graceful stop
+ * Windows has at all", and which `xplainer daemon restart` sends.
+ * `commands/serve.test.ts`'s `beginPlannedShutdown` is the same branch in the unit suite and this
+ * is the proof's copy of it; the two must not diverge.
+ *
+ * **The six steps that follow are identical on all three platforms**, which is why every assertion
+ * after this call is identical too. The mechanism differs; the outcome asserted does not — and it
+ * is asserted rather than assumed: `serve.test.ts`'s own drain-route case measures `exit.code === 0`
+ * and a removed `runtime.json` after a `202`, exactly as the signal produces them. This is a branch
+ * in the arrangement and deliberately **not** a `.skipIf`: both platforms have a documented,
+ * working route to the same end state, so there is nothing here to decline to prove.
+ */
+async function beginPlannedShutdown(child, socketPath) {
+  if (process.platform !== "win32") {
+    child.kill("SIGTERM");
+    return "SIGTERM";
+  }
+  const acknowledgement = await postDrain(socketPath);
+  check(
+    acknowledgement.status === 202,
+    `POST ${DRAIN_PATH} over ${socketPath} was acknowledged (${acknowledgement.status} ` +
+      `${acknowledgement.body.trim()}) — Windows has no SIGTERM, so this is the planned stop there`,
+  );
+  return `POST ${DRAIN_PATH}`;
+}
+
 function startDaemon(env) {
   const child = spawn(process.execPath, [CLI, "serve", "--port", "0"], {
     cwd: REPO,
@@ -1843,12 +1920,15 @@ async function main() {
       resolve({ code, signal });
     });
   });
-  daemon.child.kill("SIGTERM");
+  const asked = await beginPlannedShutdown(daemon.child, announcement.socket);
   const exited = await stopped;
   say(
     `  the daemon exited ${exited.code === null ? `on ${exited.signal}` : `with code ${exited.code}`}`,
   );
-  check(exited.code === 0, "SIGTERM shut the daemon down cleanly (exit 0)");
+  // The message names the mechanism that was actually used. It used to say `SIGTERM` on a platform
+  // where no SIGTERM had been delivered, which is the same species of unhelpfulness as the empty
+  // `control exited null:` above: a failure that describes something that did not happen.
+  check(exited.code === 0, `${asked} shut the daemon down cleanly (exit 0)`);
   check(
     !existsSync(join(stateDir, "runtime.json")),
     "runtime.json is gone after the clean shutdown",
