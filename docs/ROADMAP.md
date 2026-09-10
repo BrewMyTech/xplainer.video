@@ -367,6 +367,15 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     headless shell is not fetched inside the measured still job. That second copy is the product's
     own shape and not the proof's: the gate checks `chrome.path` exists and nothing hands it to
     Remotion.
+  - *Amended 2026-09-11: the hosted form of this proof has run green, which the amendment above
+    reports only a **failed** dispatch of.* The note above names run `34304136498` as the first
+    dispatch after the toolchain gate landed and as the one that failed at `still`. With both fixes
+    in, `e2e-linux` run **`34364354535`** (2026-09-09, `phase-2`@`fe67b3e`) succeeded — job
+    **`end-to-end render (linux)`** on `ubuntu-latest` with Kokoro as a service container, and
+    *Upload the transcript and the MP4* green, so the artefacts this row's local runs wrote to
+    `$COLLIE_ARTIFACTS_DIR` now exist as a run artifact as well. The Linux half of P1-1 was already
+    closed on 2026-09-07 by the local Docker run; this is the same proof on a hosted runner and is
+    cited so the workflow's own status is not left reading as a failure.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged
@@ -577,6 +586,13 @@ date says exactly what is proven and on which platform, and it does not claim a 
 **P2-6, P2-7 and P2-8 are unchanged**, and so is the billing paragraph below: what changed is a
 missing route, not the runner situation.
 
+*Amended 2026-09-11: the count is **one**, and it is P2-6.* **P2-4 is met on all three platforms**
+(`e2e-speech` run `34496585851`) and **P2-7 is met** (`desktop` run `34364401949`, the upload step
+green on all three), so neither is a not-pass any longer. What remains is **P2-6**, which is not a
+pass and never will be as this roadmap words it, because standalone binaries were **descoped** to
+phase 4 rather than deferred by evidence. **P2-8 stays pending on a human**, which the sentence above
+already said and which no run below changes.
+
 *Amended 2026-09-09: RESOLVED. The paragraph below is kept as the record of why every
 "pending on a runner" line was stuck, and it is no longer the current state.* Making the repository
 public moved it to free standard runners, and on 2026-09-09 every Phase 2 proof was dispatched and
@@ -584,6 +600,64 @@ went green on ubuntu, macOS and Windows — the twelve workflows behind `main` a
 "pending on a runner" line below that still reads as blocked is stale; the constraint now is only
 that a **new** proof workflow must reach the default branch before `workflow_dispatch` can register
 it.
+
+*Amended 2026-09-11: **every runner half below is now reconciled against a named run.*** The
+amendment of 2026-09-09 above declared the blockage resolved and then left every row beneath it
+saying what it had said while the blockage lasted, which is worse than either state on its own: a
+reader could not tell a pending that means *nobody has run this* from a pending that meant *the
+account cannot pay for a runner*, and so no "pending" in this list was worth anything. Each row now
+carries its own dated line naming the run that answered it, or saying what is still missing. **The twelve runs of 2026-09-09** were all dispatched on `phase-2`
+at `fe67b3e`, which is the commit `0cde7d6` merged to `main`, and every one of them succeeded at the
+run level. **Four of the twelve upload anything at all** — `e2e-linux`, `e2e-runtime`,
+`e2e-toolchain` and `desktop` — and in those four **every upload step is green**, which answers the
+artifact-storage quota in the paragraph below and not only the billing block; the eight daemon and
+proof workflows have no upload step to fail:
+
+| Workflow | Run | Platforms green |
+|---|---|---|
+| `e2e-linux` | `34364354535` | linux |
+| `e2e-runtime` | `34364358658` | ubuntu, macOS, Windows |
+| `e2e-toolchain` | `34364362924` | ubuntu, macOS, Windows, + the Windows T20 criterion-3 job |
+| `phase-2 proofs` | `34364366726` | P2-S4 on ubuntu; P2-S5 on ubuntu and Windows |
+| `daemon lifecycle` | `34364371567` | ubuntu, macOS, Windows (six jobs) |
+| `daemon restart` | `34364376444` | ubuntu, macOS, Windows (six jobs) |
+| `daemon breaker` | `34364380810` | ubuntu, macOS, Windows (six jobs) |
+| `daemon update` | `34364384414` | systemd, launchd, Task Scheduler |
+| `daemon identity` | `34364389162` | ubuntu, macOS, Windows |
+| `daemon remote` | `34364393120` | ubuntu, macOS — the whole of that workflow's matrix |
+| `daemon-windows` | `34364397390` | Windows (six jobs) |
+| `desktop` | `34364401949` | ubuntu, macOS, Windows, **including *Upload unsigned installers*** |
+
+**And two runs of 2026-09-10**, after ADR 0028's in-process speech route landed: `e2e-speech` run
+**`34496585851`** green on all three platforms — 86 assertions on ubuntu, 90 on macOS, 93 on Windows,
+each ending `SPEECH END-TO-END PASSED` — and `e2e-toolchain` run **`34492622026`**, the Windows-only
+dispatch that reads back what `deliveryPosition()` says today. `ci` and `desktop` are green on `main`
+at `250e52a` (runs `34497948400` and `34497948352`).
+
+**What is actually left, now that the noise is gone. Two things need a human and nothing else does.**
+
+1. **P2-8 — reboot persistence.** Pending on a **human** on all three operating systems, and no
+   machine in or out of this repository can discharge it: a reboot with **nobody logged in** on
+   Linux, a real login on macOS, a real logon on Windows, each observed from outside the machine. A
+   hosted runner has no persistent machine to reboot and no console session to log into. **No
+   transcript exists.**
+2. **The packaged window has never been looked at.** The `human` half shared by P2-1, P2-2 and P2-3
+   — install a packed artefact, open the application, see the window, play a video in it. The
+   screenshots this phase recorded are from a **dev run**, not from an installer. This is
+   observation, not a dispatch, so no workflow can produce it either.
+
+**Two further rows are not passes for reasons that are not about evidence at all**, and they are
+listed separately so they are not mistaken for things a dispatch would fix. **P2-6** is **descoped**:
+standalone binaries moved to phase 4 on measurement and the row names its substitution, which is met
+on all three platforms. And the macOS and Linux legs of **P2-9**'s runner half stay pending because
+**no workflow runs an uninstall proof on those two platforms** — `daemon-windows.yml` is the only one
+that calls the verb at all. That is a gap in coverage; only a new job closes it.
+
+*One reading correction that applies to every row below.* Ten notes said a fix "landed in `d376533`"
+and had "no runner evidence" or was "not re-run since". `d376533` is an **ancestor of `fe67b3e`**, so
+every one of those fixes was carried by all twelve runs of 2026-09-09 and each has runner evidence
+now. The sentences are kept where they stand, because each says what was true when it was written;
+the dated line under it says what the evidence is.
 
 **One fact every "pending on a runner" line below shared, and it was not a code problem.** GitHub
 Actions was **billing-blocked for this organisation**. Every job dispatched on `d376533` on
@@ -618,6 +692,14 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `dbfe59d`) and red on `windows-latest` at the desktop main-process unit tests; those win32
     fixes landed in `d376533` and their re-dispatch is billing-blocked. **Still `human`:** opening
     the packaged application and seeing the window.
+  - *Amended 2026-09-11: **the runner half is met on all three; the `human` half is unchanged and is
+    now the only thing outstanding on this row.*** `desktop`'s `package` job was green on
+    `windows-latest`, `macos-latest` **and** `ubuntu-latest` in run `34364401949` (2026-09-09,
+    `phase-2`@`fe67b3e`) — including *Unit tests for the desktop main process*, which is the step the
+    `d376533` win32 fixes were for and the step that had failed on Windows in `34217857540`. Every
+    step of all three jobs succeeded, *Check the packaged payload* included. **Still `human`, and
+    still nobody has done it:** opening the packaged application and seeing the window. That is
+    observation, not a dispatch, and it is shared with P2-2 and P2-3.
 - **P2-2** A packaged installer — not a dev run — launches the daemon successfully on all
   three operating systems, which is the `asarUnpack` proof.
   - *Amended 2026-09-08 (T30): **PENDING — met on macOS and Linux against the packed artefact,
@@ -655,6 +737,17 @@ owner's, and it is what turns those lines from pending into met or into defects.
     as phase-4 work. The runtime manifest records the **interpreter architecture** and the app
     compares it from an already-compatible process before spawning, so the mismatch is a named
     refusal rather than `Bad CPU type in executable`. The graphical launch stays `human`.
+  - *Amended 2026-09-11: **the Windows half is met, so the packed-artefact proof now holds on all
+    three. Two things this row records stay exactly as they are.*** In `desktop` run `34364401949`
+    (2026-09-09, `fe67b3e`) the `package (windows-latest)` job reached and passed **both** steps this
+    row names — *Pack unsigned installers* and *Check the packaged payload* — where in `34217857540`
+    it had failed earlier and reached neither. So the payload assertions the second step makes (the
+    real directory rather than a pnpm symlink, the platform's own resources root, the architecture
+    comparison, `runtime verify` re-hashing the payload as packed, and the production call path with
+    no `ELECTRON_RUN_AS_NODE`) now hold on `resources/` on Windows as well as on macOS and Linux.
+    **What does not change:** the `arm64`-only `mac:` block, so **an Intel Mac still has no supported
+    desktop installer for the whole phase** and per-architecture payload builds are still phase-4
+    work; and **the graphical launch is still `human`** and still unobserved.
 - **P2-3** Library, player, job progress and settings all work against the daemon's REST/SSE
   API; no render or TTS code has crept into `apps/desktop` (the phase-0 grep still passes).
   - *Amended 2026-09-08 (T30): **met locally; playback in the packaged window stays `human`.***
@@ -670,6 +763,16 @@ owner's, and it is what turns those lines from pending into met or into defects.
     7.93 s of its 16.41 s. **One consequence of this row belongs beside it**: the render path is
     reachable on a clean machine because payload 1 carries npm and `setup --workspace` resolves the
     template's pins, so a **first run needs a network** — stated here rather than discovered.
+  - *Amended 2026-09-11: **the grep step is green on `main`; the `human` half is the packaged
+    window's playback and is one of the two things left in this phase.*** *apps/desktop holds no
+    render or TTS code (AC-14f)* passes as its own step of `ci` on `main` at `250e52a` (run
+    `34497948400`) and at `0cde7d6` (run `34371645413`). The distinction this row's `human` half
+    turns on is worth stating plainly, because the artefact list above can be misread as
+    discharging it: `desktop-library.png` … `desktop-playback.json` were observed in a **dev run**,
+    against a real daemon but not from a packaged installer. **Nobody has yet installed a packed
+    artefact, opened the window and played a video in it.** No workflow can produce that — a headless
+    runner has no window to look at — so it stays `human` beside P2-8 rather than pending on a
+    dispatch.
 - **P2-4** `xplainer setup` downloads, verifies and installs both artefacts on a clean
   machine per OS, and a corrupted download fails loudly rather than half-installing.
   - *Amended 2026-09-08 (T19): three artefacts, not two, and the delivery position is stated rather
@@ -799,6 +902,61 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `windows-delivery-position` job now reads back what `deliveryPosition()` says today, with the
     three retired sentences asserted absent; it is `workflow_dispatch` only and, per the note at the
     head of this list, has not been dispatched.
+  - *Amended 2026-09-11: **MET, on all three platforms, and the two halves of the line above are
+    both now false.*** This is the correction that matters most on this row, because the line of
+    2026-09-08 (T30) still read *"PENDING — met on macOS and Linux; pending on Windows, closed by
+    the phase-4 milestone: native speech bundles per platform, published with the manifest behind
+    the connected custom domain"* — and **neither clause survives**.
+
+    **Windows is met.** `pnpm e2e:speech` ran green on `windows-latest`, `macos-latest` and
+    `ubuntu-latest` in run **`34496585851`** (2026-09-10, `workspace-win-spawn`@`7f70360`) —
+    **93 assertions on Windows**, 90 on macOS, 86 on ubuntu, each job ending
+    `SPEECH END-TO-END PASSED`. It proves the **first** clause of this criterion — downloads,
+    verifies and installs on a clean machine per OS — and not the second: the *corrupted download*
+    clause is proved where the amendment above puts it, against the fixture server and by the
+    cache-identity fix, and no run of `e2e:speech` corrupts anything. The machine is **clean of
+    every alternative**, proved rather than assumed: the child's `PATH` is one
+    directory holding exactly the executables the proof put there — 6 on Windows (`cmd.exe`,
+    `icacls.exe`, `node.exe`, `npm.cmd`, `powershell.exe`, `taskkill.exe`), 5 on macOS, 3 on ubuntu
+    — and spawning `docker`, `python` and `python3` in that environment fails with `ENOENT` on all
+    three, by the same call `providers/speech-docker.ts` uses to ask whether a host has an engine.
+    `setup` then acquires the browser and the four speech artefacts on each platform, printing the
+    digest it expects before it fetches (`sha256 c0c02b32…`, 92,361,055 bytes for the model graph),
+    and `narrate → still → render` produces a real MP4: 1920×1080, `30/1`, `h264` with an `aac`
+    stream, 908 frames over 4 segments, `timings.json`'s 30,255.000 ms total equal to the WAV's
+    within **0.000 ms** on every platform and the video within 11.67 ms of it, and the captions
+    burned in — the caption band differs from a captions-disabled render across 2.271% of its pixels
+    on Windows (0.001% elsewhere), 2.745% on macOS (0.000%) and 3.490% on ubuntu (0.011%). The
+    assertion the route exists for also holds on all three: all 58 words of a script full of
+    out-of-dictionary terms appear in `captions.json` as 58 spans, `frobnicator` among them by name.
+
+    **And it was closed by [ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md), not by
+    the phase-4 bundle.** That is not a bookkeeping distinction. The phase-4 milestone the T30 line
+    named — a native relocatable speech bundle per platform, published with the manifest to R2
+    behind a connected custom domain and its Cache Rule — **was superseded and never built**, and
+    the four-platform build matrix, the standalone CPython, the wheel closure and the relocation
+    tooling it implied were never built either. Nothing was published to `cdn.xplainer.video`, and
+    nothing needs to be: the `onnx` route reads no manifest of ours at all. A reader who follows the
+    T30 line to phase 4 looking for the artefact that closed this row will not find one, which is
+    why the phase-4 sub-bullet it points at now carries its own note saying so.
+
+    **The `windows-delivery-position` job has been dispatched**, which the amendment above says it
+    had not. `e2e-toolchain` run **`34492622026`** (2026-09-10, Windows only) is green in both its
+    jobs, and the one named *setup names the delivery position (windows, T20 criterion 3)* is the
+    reader that asserts the three retired sentences are **absent** from what `deliveryPosition()`
+    says today. The earlier job under that criterion, *setup names no speech route (windows, T20
+    criterion 3)*, was also green in run `34364362924` a day before — asserting the **opposite**
+    sentence, correctly, because on 2026-09-09 Windows genuinely had no route. Both runs are cited
+    because together they are the record of the sentence changing rather than of a gate being
+    rewritten.
+
+    **`darwin-x64` is met by a different route from the other platforms, which is the one asymmetry
+    left on this row.** `onnxruntime-node` publishes no `darwin/x64` binding, so an Intel Mac never
+    reaches the in-process engine: it takes `docker` — the route that met macOS and Linux in the T19
+    and T20 amendments above, and which still works — or `--tts-url`. So the criterion holds there,
+    on older evidence and by an older mechanism, and **the docker route is therefore not retired**.
+    Its retirement is booked in the phase-4 entry behind the per-architecture work that closes
+    `darwin-x64`, and not behind this row, which is already met.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
   - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
@@ -811,6 +969,12 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `REMOTE GATE PASSED`. `daemon-remote.yml` carries the runner job and **has never been
     dispatched**: `workflow_dispatch` registers from the default branch, so it must be mirrored to
     `main` first, and Actions is billing-blocked.
+  - *Amended 2026-09-11: **met, local and runner.*** `daemon-remote.yml` has been dispatched:
+    *R-SEC-9 on a non-loopback address* succeeded on `ubuntu-latest` **and** `macos-latest` in run
+    `34364393120` (2026-09-09, `fe67b3e`). Those two are the **whole** of that workflow's matrix and
+    not a subset of three — it carries `linux` and `macos` inputs and no Windows leg, because the
+    proof binds a real non-loopback address with a real certificate — so this row has no third
+    platform waiting on anything.
 - **P2-6** Standalone binaries run `--version`, `serve` and `mcp` on each OS with no Node
   installed.
   - *Amended 2026-09-08 (T30): **NOT met as this row words it, and what is proved instead is
@@ -834,6 +998,20 @@ owner's, and it is what turns those lines from pending into met or into defects.
     failed there in the rollback rerun. Both of those runs are red at the run level **only because
     their upload steps are**, which is why the step is named here rather than the job; the Linux
     fix is in `d376533` and has no runner evidence yet.
+  - *Amended 2026-09-11: **the substitution's runner half is met on all three platforms, and this
+    row stays NOT met for a reason that has nothing to do with runners.*** Both gates are green at
+    the **job** level now, so the step-level reporting above is no longer necessary: `e2e-runtime`
+    run `34364358658` — *runtime gate* on `ubuntu-latest`, `macos-latest` and `windows-latest`, with
+    *Upload the transcript* green in all three — and `e2e-toolchain` run `34364362924`, *toolchain
+    gate* on the same three plus the Windows criterion-3 job, again with every upload green. The
+    ubuntu rollback-rerun failure named above was the `d376533` harness defect, which `fe67b3e`
+    carries. So the artifact quota is answered as well as the billing block, and nothing about this
+    row is pending on a dispatch. **It is still not met as worded**, and it will not become met by
+    running anything: standalone binaries were **descoped** to phase 4 on measurement, and what
+    ships is the relocatable runtime artefact
+    ([ADR 0027](adr/0027-relocatable-runtime-artefact-and-the-supervisor-switch.md)). This row is a
+    scope decision recorded as a criterion, which is why it is the one remaining not-pass in the
+    header list and why it reads differently from a pending.
 - **P2-7** Unsigned installers are still produced green on all three CI runners.
   - *Amended 2026-09-08 (T30): **PENDING. A green build with a red upload has not produced an
     installer, and this row is not met until a run uploads one.*** In run `34217857540`
@@ -845,6 +1023,15 @@ owner's, and it is what turns those lines from pending into met or into defects.
     keeps `if-no-files-found: error`, which is the point of it. **The build half is partial
     evidence and is reported as that, never as the criterion**; re-dispatching `desktop` once
     billing and the quota recalculation allow it is what closes this row.
+  - *Amended 2026-09-11: **MET. A run has uploaded an installer, on each of the three runners.***
+    `desktop` run `34364401949` (2026-09-09, `fe67b3e`) is green at the job level on
+    `ubuntu-latest`, `macos-latest` and `windows-latest`, and the step this row was held open by —
+    ***Upload unsigned installers*** — **succeeded in all three**. That is the whole of the
+    criterion: the step still carries `if-no-files-found: error`, so a green upload is an installer
+    that exists, which is exactly the distinction the note above insisted on rather than counting a
+    green build. `windows-latest` reached the pack step this time, having failed before it in
+    `34217857540`. The artifact-storage quota that refused the uploads in that run is answered by
+    the same evidence and is not a live constraint on any row below.
 - **P2-8** `xplainer daemon install` completes with **no password prompt** on all three
   operating systems, and after a **reboot** the daemon answers `/healthz` — on Linux with
   nobody logged in, on macOS after the first login, on Windows after the first logon. The
@@ -861,6 +1048,26 @@ owner's, and it is what turns those lines from pending into met or into defects.
     a prompt (`install/preflight.test.ts`, `install/install.test.ts`). **The phase is not complete
     without the Linux transcript**, and this line is the record of that rather than an excuse for
     it.
+  - *Amended 2026-09-11: **STILL PENDING ON A HUMAN, unchanged, and now one of only two things in
+    this phase that a dispatch cannot close.*** Every other "pending on a runner" line in this list
+    moved to met against the runs of 2026-09-09 and 2026-09-10. **This row did not move at all, and
+    it is important that it reads that way rather than blending into the reconciliation around it.**
+    No transcript exists. Nothing was dispatched for it, because there is nothing to dispatch: the
+    criterion is a `reboot` with **nobody logged in** on Linux, a real login on macOS and a real
+    logon on Windows, each observed from outside the machine, and a hosted runner cannot supply any
+    of the three — it has no persistent machine to reboot, no console session to log into, and its
+    lifetime ends with the job. The eleven proof workflows have never claimed otherwise; none of
+    them contains a reboot.
+
+    **What discharging it takes, stated so it can be picked up rather than rediscovered.** A real
+    Linux VM the owner controls: `xplainer daemon install`, then `ssh vm 'sudo reboot'`, then a wait,
+    then `curl -sf http://127.0.0.1:<port>/healthz` with an `Authorization` header **and no
+    interactive login in between**. That last clause is the whole of the test — a `curl` after an
+    `ssh` login proves the daemon starts on session start, which is what a LaunchAgent does anyway
+    and what lingering exists to make unnecessary. macOS and Windows are the same shape with a real
+    login and a real logon in place of the reboot-with-nobody-there. **The phase is not complete
+    without the Linux transcript**, which the line above already says, and the phase-2 merge to
+    `main` did not change it.
 - **P2-9** `xplainer daemon uninstall` leaves no unit, plist or task, no state file, no
   `launchctl` disable record and no live token, and does **not** disable lingering it did not
   enable; a re-install afterwards succeeds first time.
@@ -898,6 +1105,23 @@ owner's, and it is what turns those lines from pending into met or into defects.
     prints `daemon uninstall exited 0` and `uninstalled, and nothing is left registered`. **No macOS
     or Linux runner runs an uninstall proof at all**, so on those two the row stays pending exactly
     as the note above leaves it.
+  - *Amended 2026-09-11: **the Windows leg is re-confirmed on the merged commit; macOS and Linux stay
+    pending, and the reason is a missing workflow rather than a missing dispatch.*** `daemon-windows`
+    run `34364397390` (2026-09-09, `fe67b3e`) is green in all six jobs, *install under the S4U
+    principal, then create → narrate* among them, which is the job that calls the shipped
+    `daemon uninstall` and makes the two assertions the 2026-09-09 note added. So the Windows leg
+    holds on the code that reached `main`, not only on the branch it was fixed at, and the
+    `d376533` sentence above is answered — that commit is an ancestor of `fe67b3e`.
+
+    **The ×3 half of this row is the one genuine coverage gap in the list, and it is a different
+    thing from every other pending here.** There is no macOS or Linux uninstall job to dispatch:
+    `daemon-lifecycle.yml`, `daemon-restart.yml`, `daemon-breaker.yml`, `daemon-update.yml` and
+    `daemon-identity.yml` all run on those platforms and **none of them calls `daemon uninstall`**,
+    while the only workflow that does is `daemon-windows.yml`. So this row cannot be closed by
+    running anything that exists; it is closed by adding the verb to a job on those two platforms —
+    the local proof against real launchd and real systemd
+    (`install/testing/supervisor-proof.ts`) is what the workflow would lift. Recorded here as work
+    rather than as a wait.
 - **P2-10** Each degraded path in ADR 0020 exits with its documented code, **writes nothing**,
   and prints the exact remediation command: no user service manager (6), lingering denied (5),
   no batch-logon right (5), Task Scheduler registration blocked (6), `xplainer setup` not run
@@ -953,6 +1177,22 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `captions.json`, and the subject of the gate — a job enqueued over the *installed* daemon's
     pipe, under an S4U principal with no interactive session behind it, reaching terminal `done` —
     is unchanged by it.
+  - *Amended 2026-09-11: **met on all six paths, re-confirmed on the merged commit; and the
+    "no speech is synthesised on Windows anywhere in this phase" sentence above is now false.***
+    `daemon-windows` run `34364397390` (2026-09-09, `fe67b3e`) is green in all six jobs, so the two
+    Windows paths this row was pending on — `5` (batch logon) and `6` (registration blocked) — hold
+    on the code that reached `main` rather than only on the branch they were measured at. The
+    `d376533` sentence in the T30 note is answered: that commit is an ancestor of `fe67b3e`, so the
+    run that was "not re-run since" it has happened. **The speech consequence is the part worth
+    correcting.** That paragraph's reasoning was sound when written — the pinned Kokoro image is
+    `linux/amd64` and `XPLAINER_TTS_FIXTURE` is read in a daemon process Task Scheduler starts with
+    the system environment — but its conclusion described the *phase*, and the phase acquired a
+    fourth route. Real speech **is** synthesised on Windows now, in `e2e-speech` run `34496585851`
+    (P2-4's note of 2026-09-11 has the numbers), which needs neither a container nor an inherited
+    environment variable because the engine is a library call inside the narration worker. The
+    `dry_run: true` narration in *this* job is unchanged and is still the right choice for it: what
+    that gate's subject is — a job over the **installed** daemon's pipe under an S4U principal with
+    no interactive session — is not made stronger by synthesising audio inside it.
 - **P2-11** A daemon whose port is permanently held stops respawning after five failed starts
   within 30 seconds and records the reason, on all three platforms; `xplainer daemon status`
   names the holding pid in words; `xplainer daemon restart` clears the latched failure and the
@@ -1012,6 +1252,15 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `daemon restart` clearing the latch and bringing a daemon back on the port it could not bind.
     The macOS and Linux legs of this row have not been dispatched since this file reached `main`
     and stay exactly as the note above leaves them.
+  - *Amended 2026-09-11: **met on all three platforms — the macOS and Linux legs the note above left
+    undispatched have been dispatched.*** `daemon breaker` run `34364380810` (2026-09-09,
+    `fe67b3e`) is green in all six of its jobs, which is this row's whole matrix at once: *the
+    breaker's own rules* on `ubuntu-latest`, `macos-latest` **and** `windows-latest`, plus each
+    platform's own supervisor driving its own natural retries — *RestartSec=2 drives the latch* on
+    ubuntu, *ThrottleInterval 30 s drives the latch* on macOS, and *the PT5M repetition drives the
+    latch* on Windows. So the three cadences the amendments above describe are each measured against
+    the real supervisor that produces them, and the `PT5M` correction of 2026-09-09 holds on the
+    merged commit rather than on the branch it was found at.
 - **P2-S4 (spike)** systemd readiness is settled: either an `sd_notify` mechanism with its
   dependency named and justified, or `Type=exec` retained with a readiness wait in the
   installer. Node's `node:dgram` cannot open an `AF_UNIX` datagram socket, so the "no new
@@ -1143,6 +1392,17 @@ owner's, and it is what turns those lines from pending into met or into defects.
     Windows jobs in both runs failed — *the drain route and the restart verb*, *the Task Scheduler
     adapter, executed at all*, and *the failure injection against a real Task Scheduler* — and have
     not been re-run since `d376533`.
+  - *Amended 2026-09-11: **met on all three platforms. The three Windows jobs named above have been
+    re-run and are green.*** `d376533` is an ancestor of `fe67b3e`, and both workflows were
+    dispatched there on 2026-09-09. `daemon restart` run `34364376444` is green in all six jobs:
+    *the drain route and the restart verb* on `ubuntu-latest`, `macos-latest` **and**
+    `windows-latest`, *systemctl --user restart during a job* on ubuntu, *launchctl kickstart -k
+    during a job* on macOS, and ***the Task Scheduler adapter, executed at all*** on Windows — the
+    third of those being the job that had been red and the one P2-13 also waits on. `daemon update`
+    run `34364384414` is green in all three: *the update transaction against a real systemd*,
+    *against a real launchd*, and ***the failure injection against a real Task Scheduler***. So the
+    restart half and the update-failure half are each proved against every real service manager the
+    product supports, and nothing on this row is pending.
 - **P2-13** A parent knows the daemon is ready without sleeping or guessing. **The method is
   conditional on P2-S4's outcome**, because the two candidate mechanisms give different
   guarantees and it would be wrong to assert the stronger one while permitting the weaker:
@@ -1181,6 +1441,15 @@ owner's, and it is what turns those lines from pending into met or into defects.
     has **not** passed on Windows is the adapter that drives the restart around that wait — *the
     Task Scheduler adapter, executed at all*, red in run `34206435651` (`f73e8cc`) — so the Windows
     equivalent of this row is pending, and has not been re-run since `d376533`.
+  - *Amended 2026-09-11: **met, and the Windows equivalent is no longer pending.*** The one job the
+    note above names as the obstacle — *the Task Scheduler adapter, executed at all* — succeeded on
+    `windows-latest` in `daemon restart` run `34364376444` (2026-09-09, `fe67b3e`, which contains
+    `d376533`). The rest of the row's evidence is re-confirmed on the same commit: `daemon lifecycle`
+    run `34364371567` is green in all six jobs, *the queries against a real systemd* and *the queries
+    against a real launchd* and *what Get-ScheduledTask actually reports* among them, and the P2-S4
+    readiness job succeeded again in `phase-2 proofs` run `34364366726`. So the `Type=exec` branch
+    this criterion is judged by holds on all three platforms with the adapter that drives the restart
+    around the readiness wait proved on each.
 
 ---
 
@@ -1258,6 +1527,46 @@ capability, and it already has a decision record behind it.
     `electron-updater`. What made the bundle avoidable was a licence problem rather than a
     packaging one — the phonemizer every route to Kokoro's Python stack reaches is GPL, and removing
     it deletes words from the audio — and ADR 0028 carries that argument.
+  - *Amended 2026-09-11: **the Docker speech route is NOT retired, and its retirement is booked here
+    behind the per-architecture work rather than behind the platform proofs.*** The plan booked
+    "retire the docker speech route once the platforms are proven". The platforms **are** proven —
+    `e2e-speech` run `34496585851`, green on ubuntu, macOS and Windows on 2026-09-10 — and the route
+    **stays**, because the condition that plan named turned out to be the wrong one.
+
+    The reason is one platform and it is named in the code. `onnxruntime-node` ships five
+    `<platform>/<arch>` subtrees and **`darwin/x64` is not one of them** —
+    `ONNX_RUNTIME_PLATFORMS` at
+    [`apps/cli/src/setup/providers/speech-onnx.ts:199`](../apps/cli/src/setup/providers/speech-onnx.ts),
+    with the argument in that file's docblock at line 80 — so on an Intel Mac
+    `runtimePlatformKey()` (line 390) refuses **by name**: *"notably no darwin/x64 — so the
+    in-process speech path cannot run here at all, rather than running slowly. Nothing was
+    downloaded."* It raises `OnnxUnavailable`, which `providers/speech.ts` treats as an **absence**
+    rather than a failure and walks past to the next route. Since 2026-09-10 `onnx` sits **above**
+    `docker` in that precedence (`ACQUIRING_ROUTES`), which changes what `docker` is for: it is no
+    longer the route most machines take, it is the route reached **only where ONNX is unavailable**,
+    and `darwin/x64` is the only platform where that is structural rather than a transient failure.
+    Retiring it would therefore leave `darwin-x64` with `--tts-url` as its sole route — "run your own
+    Kokoro server" — on the one platform that **also** has no supported desktop installer (P2-2's
+    `arm64`-only `mac:` block). One platform losing both its speech route and its installer in the
+    same phase is not a tidy-up.
+
+    **So the condition is rewritten rather than met: the route is retired when `darwin-x64` has an
+    in-process engine, and not when the other platforms are proven.** That closure is phase 4's
+    per-architecture work, and what it takes for **speech** is worth separating from the installer
+    bullet below it, because the two are not the same job and the payload build does not do both.
+    An x64 runner building its own payload closes P2-2's installer gap; it does **not** make
+    `onnxruntime-node` publish a binding it does not publish. Closing `darwin-x64` for speech needs
+    a darwin-x64 ONNX Runtime from somewhere other than that package's published set — the `bundle`
+    route is the mechanism already built for exactly that shape of artefact, and this is the one
+    platform that would still justify one — or ONNX Runtime Web, which ADR 0028 measured at 1.0×
+    realtime and 1019 MB and rejected. Neither is decided here; what is decided is that **the
+    `docker` route does not go first**.
+
+    Until then the route is **load-bearing for exactly one platform**, which is the sentence to read
+    before proposing its removal: `services/tts-sidecar`, `@xplainer/tts-client` and the pinned
+    `linux/amd64` image are all still live for it, exactly as
+    [ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md) §Consequences says — *"This adds
+    a route; it retires none"* — and as that record's note of this date restates.
 - **Code signing and notarisation for macOS and Windows.** Phases 0 and 2 ship unsigned
   artefacts by design. This is also what makes the standalone binary a **recommended** way to
   install the always-on daemon: an npm-delivered CLI carries no `com.apple.quarantine`, so
@@ -1331,7 +1640,7 @@ records cite them.
 | # | Criterion | Status |
 |---|---|---|
 | **P5-1** | The repository builds, lints, typechecks and tests from a clean clone with the same two bootstrap commands | **Holds.** Nine members; the bootstrap is unchanged |
-| **P5-2** | No file contains an absolute local path, the private sibling repository's name, or a reference to a `hosted` package | **Not yet.** Absolute paths are gone — two occurrences in accepted records are redacted in place with a dated note, and one file was removed rather than scrubbed. The repository's name still ships in twelve schema `description` strings and their generated output, and hosted-package references remain in comments including one published `description`. Phase-0 gates 1 and 2 |
+| **P5-2** | No file contains an absolute local path, the private sibling repository's name, or a reference to a `hosted` package | ~~**Not yet.** Absolute paths are gone — two occurrences in accepted records are redacted in place with a dated note, and one file was removed rather than scrubbed. The repository's name still ships in twelve schema `description` strings and their generated output, and hosted-package references remain in comments including one published `description`. Phase-0 gates 1 and 2~~ — *amended 2026-09-11:* **Holds.** The two gates this row deferred to, **phase-0 gates 1 and 2, both closed on 2026-09-09**; that is recorded at each of them above and was never carried down here, which left the phase-5 table reading as the only outstanding blocker on a repository that is already public. The twelve schema `description` strings no longer name the private repository, and `check-publish-contract` carries `no-private-reference-path` beside `no-private-repository-name`, each with its own negative test, so the class now fails a gate rather than waiting for a reader; the comment-level `hosted` references — `apps/cli/package.json`'s published `description` included — name the relocated service in prose instead of citing a path that is not in this checkout. The struck wording is kept because it is what those gates were opened for |
 | **P5-3** | The private repository consumes the extracted packages from the registry at pinned versions | **Relocated.** It is that repository's criterion to meet, and it cannot be met before phase 1 publishes |
 | **P5-4** | The tier checks still pass in both repositories, adapted to the new boundary | **Holds, with a stated caveat.** `pnpm lint:tiers` passes and still enforces that every member declares a tier. Its real-graph half is vacuous here — no `hosted` member remains for it to catch — and the synthetic fixture in `packages/config/src/tiers.test.ts` is what still proves the rule can fail. The Python import-linter contract retired outright. Recorded in ADR 0003's and ADR 0001's notes of 2026-09-06 |
 | **P5-5** | A contributor outside the company can run the local tier end to end from the public repository alone | **Not yet, and not for a split reason.** Nothing renders until phase 1. This is the criterion phase 1 is judged against from the outside |
