@@ -12,6 +12,180 @@ that changes this file is a change to the public surface.
 
 Entry point: `dist/index.d.ts`
 
+## `dist/g2p/errors.d.ts`
+
+```ts
+/**
+ * Why a phonemisation could not be produced. Each value names a distinct defect,
+ * so a caller can decide whether to refuse the job or to ask for different text.
+ */
+export type G2pErrorCode = 
+/** No layer could pronounce a word. {@link G2pError.word} names it. */
+"UNPRONOUNCEABLE"
+/** The text held no token anyone could speak, so there is nothing to synthesise. */
+ | "NOTHING_TO_SPEAK";
+
+/** A phonemisation that cannot be produced correctly, rather than one produced wrongly. */
+export declare class G2pError extends Error {
+    /** Which defect this is, for a caller that branches rather than logs. */
+    readonly code: G2pErrorCode;
+    /**
+     * The word that could not be pronounced, exactly as it appeared in the source
+     * text, or `null` for a defect that is not about one word.
+     *
+     * Carried as a field rather than left inside the message because the fix is
+     * mechanical — add this spelling to `data/lexicon.txt` — and a caller that has
+     * to regex its own error message to find out which word to add is a caller
+     * that will get it wrong.
+     */
+    readonly word: string | null;
+    constructor(code: G2pErrorCode, message: string, word?: string | null);
+}
+```
+
+## `dist/g2p/phonemise.d.ts`
+
+```ts
+/** One word's phonemes, located in the phoneme string. */
+export interface WordSpan {
+    /** The word exactly as it appeared in the source text. */
+    readonly word: string;
+    /** Index of the word's first phoneme symbol in `ipa`, inclusive. */
+    readonly start: number;
+    /** Index one past the word's last phoneme symbol in `ipa`. */
+    readonly end: number;
+    /** Which of the four layers pronounced it. */
+    readonly source: PhonemeSource;
+}
+
+/**
+ * A pronunciation this package derived rather than looked up (D5).
+ *
+ * Returned instead of logged, because a pure function that logs is a pure
+ * function with a hidden dependency on somebody's logger. The caller — the
+ * narration worker — decides where these go, and the plan's rule is that they go
+ * somewhere: "every LTS-derived pronunciation is logged, so D5's rule holds in
+ * spirit — the result is auditable and never silent".
+ */
+export interface DerivedPronunciation {
+    /** The word, as it appeared, so it can be pasted into `data/lexicon.txt`. */
+    readonly word: string;
+    /** What this package decided it sounds like. */
+    readonly ipa: string;
+    /** `initialism` or `letter-to-sound` — never one of the two lookup layers. */
+    readonly source: PhonemeSource;
+}
+
+/** What {@link phonemise} answers with. */
+export interface Phonemisation {
+    /** The phoneme string, exactly as it must be tokenised. Every symbol is in Kokoro's vocabulary. */
+    readonly ipa: string;
+    /** One span per word, in reading order. */
+    readonly words: readonly WordSpan[];
+    /** Every pronunciation that was derived rather than looked up. Empty is the good case. */
+    readonly derived: readonly DerivedPronunciation[];
+}
+
+/**
+ * Phonemise `text`.
+ *
+ * @throws {G2pError} `UNPRONOUNCEABLE` when a word survives all four layers, or
+ * when the text holds a letter outside the English alphabet — both name the
+ * thing that could not be read. `NOTHING_TO_SPEAK` when the text holds no word
+ * at all, which is a caller passing an empty or punctuation-only segment.
+ */
+export declare function phonemise(text: string): Phonemisation;
+```
+
+## `dist/g2p/resolve.d.ts`
+
+```ts
+/** Which layer produced a pronunciation. The last two are guesses and are reported. */
+export type PhonemeSource = 
+/** `data/lexicon.txt` — curated, reviewed, and right by construction. */
+"lexicon"
+/** CMUdict — hand-transcribed English. */
+ | "cmudict"
+/** Spelled out letter by letter, because the token looks like an initialism. */
+ | "initialism"
+/** Derived from the spelling by the D8 ruleset. Always reported. */
+ | "letter-to-sound";
+```
+
+## `dist/g2p/vocab.d.ts`
+
+```ts
+/**
+ * Kokoro's symbol table, and the gate that stops this package emitting anything
+ * outside it (plan D5).
+ *
+ * **Why this module exists at all.** Kokoro's ONNX graph takes token ids, and
+ * every id comes from the 115-symbol vocabulary in the model repository's own
+ * `tokenizer.json`. The S0b spike's prototype turned an IPA string into ids with
+ *
+ * ```js
+ * [...ipa].map((c) => vocab[c]).filter((v) => v !== undefined)
+ * ```
+ *
+ * and that `.filter` is exactly the defect D5 exists to prevent, one layer down
+ * from the one the plan found upstream: a symbol the vocabulary does not carry
+ * is *dropped*, so a word phonemised with — say — `ʧ` instead of `tʃ` comes out
+ * of the model mispronounced or missing a consonant, with nothing anywhere
+ * saying so. A silently wrong phoneme is harder to notice than a silently
+ * missing word and just as wrong.
+ *
+ * So the vocabulary is loaded from the vendored tokenizer rather than restated,
+ * {@link kokoroTokenIds} **refuses** an unknown symbol instead of skipping it,
+ * and `vocab.test.ts` walks every symbol this package can emit — every entry in
+ * the curated lexicon, every value in the ARPAbet table, every phone the
+ * letter-to-sound ruleset can produce and every punctuation mark the tokeniser
+ * passes through — and asserts each one is a key here. That test is the reason
+ * the refusal below should never fire in production: it is the last line rather
+ * than the first.
+ *
+ * **Provenance.** `data/kokoro-tokenizer.json` is the `tokenizer.json` of
+ * `onnx-community/Kokoro-82M-v1.0-ONNX-timestamped` at revision
+ * `dd4401a9add81ac692d20e240d22ec9dda82cc29` (Apache-2.0), byte-identical to
+ * upstream — sha256
+ * `77a02c8e164413299b4b4c403b14f8e0e1c1b727db4d46a09d6327b861060a34`. It is
+ * vendored rather than fetched because the mapping is part of *this* package's
+ * correctness: the gate has to hold on a machine that has not run `setup` and
+ * has no model on disk.
+ */
+/**
+ * Kokoro's symbol → token id map, loaded from the vendored tokenizer.
+ *
+ * Lazy because `@xplainer/render-core` is imported by the CLI's every command,
+ * and a command that never narrates should not pay to parse a speech model's
+ * tokenizer at module load.
+ */
+export declare function kokoroVocabulary(): ReadonlyMap<string, number>;
+
+/**
+ * The symbols in `ipa` that Kokoro has no token for, in order of first
+ * appearance and without repeats.
+ *
+ * Answering with the *set* rather than with a boolean is what makes the test in
+ * `vocab.test.ts` and the refusal below able to name what is wrong. Iterating
+ * with a spread rather than by index is deliberate: every symbol in this
+ * vocabulary is a single UTF-16 code unit today, but `[...s]` iterates code
+ * points, so a surrogate pair reaches the lookup whole instead of arriving as
+ * two halves that are both "unknown" and neither of which is the real character.
+ */
+export declare function unsupportedSymbols(ipa: string): readonly string[];
+
+/**
+ * `ipa` as Kokoro token ids, refusing rather than dropping.
+ *
+ * The synthesiser adds the model's own padding token at each end; that is its
+ * business and not this function's, because the padding is a property of the
+ * ONNX graph's expected input and this module is about the alphabet.
+ *
+ * @throws {G2pError} `UNPRONOUNCEABLE`, naming every symbol with no token.
+ */
+export declare function kokoroTokenIds(ipa: string): readonly number[];
+```
+
 ## `dist/narrate/build.d.ts`
 
 ```ts

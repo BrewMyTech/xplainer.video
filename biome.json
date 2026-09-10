@@ -13,6 +13,7 @@
       "!**/dist",
       "!packages/render-core/test/fixtures",
       "!packages/render-core/src/scaffold/templates",
+      "!packages/render-core/src/g2p/data",
       "!packages/protocol/src/generated"
     ]
   },

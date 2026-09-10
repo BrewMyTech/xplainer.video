@@ -125,6 +125,10 @@ const INTERNAL_DOC_MARKERS = [
   /\bAC-\d/,
   /\bexplainer_mcp\.py/,
   /docs\/ROADMAP/,
+  // `.omc/` is this workspace ignored operational state — plans, spikes,
+  // handoffs. A path into it names a file no consumer can open, which is the
+  // same objection check-publish-contract makes to a `max/` coordinate.
+  /\.omc\//,
 ];
 
 /** Translate the small glob subset used above into an anchored RegExp. */
