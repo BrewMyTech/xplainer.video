@@ -47,6 +47,19 @@
  * `existsSync` could see the file, which is how the Windows alias is caught saying one thing to a
  * scan and another to a spawn.
  *
+ * **On Windows, reachability is a question only `spawn` can answer, and `stat` answers it wrongly.**
+ * This is the general rule the alias taught and it is worth more than the fix it caused, because
+ * anything in this repository that decides "is this executable on this machine" will meet it.
+ * `%LOCALAPPDATA%\Microsoft\WindowsApps` holds *app execution aliases* — `APPEXECLINK` reparse
+ * points that Windows ships for `python.exe` and `python3.exe` whether or not any Python is
+ * installed. `existsSync` (and every `stat`, `lstat` and `realpath` under it) reports such a path as
+ * **absent**; `CreateProcess`, and therefore `spawn`, launches it. Measured on `windows-latest`,
+ * run 34490218766: the audit reaches `python` and `python3` through that directory and sees no file
+ * at either name. So a `PATH` scan is not a weaker version of the real check, it is a **different
+ * answer** — which is why the three ENOENT assertions here spawn, why the audit reports both
+ * answers side by side, and why no future gate in this tree should decide an executable's presence
+ * from the filesystem.
+ *
  * **2 — the acquisition.** A real `xplainer setup` in a scratch state directory, with the reviewed
  * manifest this checkout commits (nothing is published to the address `setup` would otherwise read,
  * `docs/ROADMAP.md` §2.5) and **no `--tts-url`**. `providers/speech.ts` then walks its four routes
@@ -557,12 +570,18 @@ function fromParentPath(stem, fallback) {
  *   name at all. Its exit status is not asserted — `sh -c 'exit 0'` and `icacls /?` do not agree
  *   about what success looks like, and the question here is resolution.
  *
- * What is deliberately **not** here: `git` and `ffmpeg`. The subtractive form of this proof dropped
- * `/usr/bin`, `/usr/local/bin` and `/opt/homebrew/bin` on macOS — which is every `git` and every
- * `ffmpeg` on that machine — and `npm ci` still resolved the template's 247 packages and both
- * renders still came out, so neither is something this run needs. The template's lockfile carries
- * no `git+` dependency and Remotion bundles its own ffmpeg; the `ffmpeg` and `ffprobe` this script
- * runs are the **parent's**, resolved by {@link resolveTool} outside the child entirely.
+ * **`git` and `ffmpeg` are deliberately not here, and that is a measurement rather than an
+ * oversight — do not add them back.** Both are the obvious guesses for "what an install and a
+ * render need", and the subtractive form of this proof settled the question by accident: it dropped
+ * `/usr/bin`, `/usr/local/bin` and `/opt/homebrew/bin` on macOS, which between them are every `git`
+ * and every `ffmpeg` on that machine, and `npm ci` still resolved the template's 247 packages and
+ * both renders still came out. The reasons hold generally, not just on that machine: the template's
+ * lockfile carries no `git+` dependency, so npm never shells out to git; Remotion ships its own
+ * compositor and invokes it by absolute path, so no render reads `ffmpeg` from `PATH`; and the
+ * `ffmpeg` and `ffprobe` *this script* runs are the **parent's**, resolved by {@link resolveTool}
+ * outside the child entirely. An entry added here on suspicion rather than on a spawn the product
+ * actually makes is one more executable the child can reach, which is the one thing this
+ * arrangement exists to prevent.
  */
 function allowList() {
   if (process.platform === "win32") {
