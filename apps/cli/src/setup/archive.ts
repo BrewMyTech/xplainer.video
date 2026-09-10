@@ -35,9 +35,18 @@ import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { crc32, inflateRawSync } from "node:zlib";
 
-/** Why an archive was refused. One value per distinguishable condition, never a catch-all. */
+/**
+ * Why an archive was refused. One value per distinguishable condition, never a catch-all.
+ *
+ * The set spans **both** readers — this one and `tar.ts` — because the decision a caller takes is
+ * the same either way and three of the four conditions are literally the same rule: `unsafe-entry`
+ * is {@link safeJoin} in both, `unsupported-entry` is a member kind neither will write, and
+ * `corrupt-entry` is a member whose own integrity field disagrees with its bytes (a CRC-32 in a
+ * zip, a header checksum in a tar). Only the two format assertions are per format.
+ */
 export type ArchiveRefusalReason =
   | "not-a-zip"
+  | "not-a-tarball"
   | "unsupported-entry"
   | "unsafe-entry"
   | "corrupt-entry";

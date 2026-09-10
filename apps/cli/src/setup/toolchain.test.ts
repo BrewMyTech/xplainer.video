@@ -8,7 +8,7 @@
  * written by the writer under test and read back by the reader under test.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -103,6 +103,73 @@ describe("checkToolchain", () => {
     expect(status.reason).toBe(TOOLCHAIN_MISSING);
     expect(status.detail).toContain("speech");
     expect(status.detail).toContain(marker.speech.path);
+  });
+
+  /**
+   * A component made of several files — the ONNX speech route's model, its voice and this
+   * platform's runtime — records them all in `files`, and the gate has to check every one. Checking
+   * only `path` would report a toolchain as present on a machine whose runtime had been cleaned
+   * away, which is the failure this gate exists to turn into a sentence rather than an `ENOENT`
+   * inside a worker.
+   */
+  it("reports toolchain_missing naming a recorded file that is not the component's own path", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const extra = join(where.stateDir, "toolchain", "speech-onnx", "runtime.node");
+    mkdirSync(join(extra, ".."), { recursive: true });
+    writeFileSync(extra, "a stand-in for this platform's ONNX Runtime\n");
+    writeToolchainMarker(where.stateDir, {
+      ...marker,
+      speech: {
+        ...marker.speech,
+        files: [
+          { path: marker.speech.path, sha256: marker.speech.sha256, bytes: 1 },
+          { path: extra, sha256: "0".repeat(64), bytes: 44 },
+        ],
+      },
+    });
+    // The component's own `path` is untouched; only the second recorded file goes.
+    rmSync(extra);
+
+    const status = checkToolchain(where);
+
+    expect(status.reason).toBe(TOOLCHAIN_MISSING);
+    expect(status.detail).toContain(extra);
+    expect(status.detail).not.toContain(`${marker.speech.path},`);
+  });
+
+  it("keeps the recorded files through the writer and the validating reader", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const files = [{ path: marker.speech.path, sha256: marker.speech.sha256, bytes: 12 }];
+
+    writeToolchainMarker(where.stateDir, {
+      ...marker,
+      speech: { ...marker.speech, files },
+    });
+
+    expect(readToolchainMarker(where.stateDir)?.speech.files).toEqual(files);
+  });
+
+  /**
+   * A `files` array of the wrong shape rejects the whole document rather than being dropped:
+   * dropping it would turn a corrupt marker into one recording fewer paths than the component has,
+   * and the existence check above would then pass over exactly what it exists to notice.
+   */
+  it("refuses a marker whose recorded files are the wrong shape", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const path = toolchainMarkerPath(where.stateDir);
+    const document = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...document,
+        speech: { ...marker.speech, files: [{ path: marker.speech.path }] },
+      }),
+    );
+
+    expect(readToolchainMarker(where.stateDir)).toBeNull();
   });
 
   it("reports toolchain_missing when the workspace has no manifest beside it", () => {

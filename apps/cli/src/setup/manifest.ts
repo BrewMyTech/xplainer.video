@@ -197,14 +197,19 @@ export function toolchainManifestUrl(zoneName: string): string {
  * the rest of that message: what is true about delivery, and then which routes still work on the
  * machine that is reading it.
  *
- * **Windows is a different paragraph because it is a different position.** On `darwin` and `linux`
- * two speech routes work and neither one reads this manifest, so the refusal can name them. On
- * `win32` all three are unavailable — nothing is published for the `bundle` route to fetch, the
- * `docker` route needs a linux/amd64 container engine that a Windows host need not have, and
- * `--tts-url` records a server somebody else already runs rather than acquiring one here — so the
- * message says there is no working speech route and names the milestone that closes it rather than
- * offering a route that will fail. That asymmetry is the roadmap's own: P2-4 is met on macOS and
- * Linux and pending on Windows.
+ * **There is no longer a Windows paragraph, and its removal is the point.** This function used to
+ * carry a second, harder message for `win32`: that all three speech routes were unavailable there —
+ * nothing published for `bundle`, a `docker` route needing a linux/amd64 engine a Windows host need
+ * not have, and `--tts-url` recording a server rather than acquiring one — and that phase 4 was the
+ * milestone which would close it. The `onnx` route closes it instead and closes it now, on
+ * `win32-x64` and `win32-arm64` alike, by fetching the model, a voice and that platform's ONNX
+ * Runtime from their own upstream homes and reading no manifest at all. So the asymmetry that
+ * paragraph described has gone, and keeping a sentence that said Windows has no speech would have
+ * been the most confidently wrong line in the product.
+ *
+ * What is left is one message for every platform: the address is empty, three of the four speech
+ * routes never read it, and the one thing that genuinely is waiting on it is the **browser's**
+ * expected digest.
  */
 export function deliveryPosition(probe: HostProbe = probeHost()): string {
   const position =
@@ -215,31 +220,18 @@ export function deliveryPosition(probe: HostProbe = probeHost()): string {
     "does not manage, neither is scheduled here, and no command in this repository uploads a " +
     "manifest — that is the release owner's step, in phase 4. infra/README.md records both.";
 
-  if (probe.platform === "win32") {
-    return (
-      `${position}\n\n` +
-      "Windows has no working speech route at all this phase, and this is where " +
-      `${speechPlatformKey(probe)} is told so rather than discovering it. None of the three is ` +
-      "available here: the bundle route has nothing published to fetch, the docker route needs a " +
-      "linux/amd64 container engine, which a Windows host is not required to have and a " +
-      "windows-latest runner does not have, and --tts-url records a server somebody else already " +
-      "runs rather than acquiring speech on this machine. The milestone that closes it is phase " +
-      "4 — a native speech bundle per platform, published with this manifest to the R2 bucket " +
-      "behind the connected custom domain.\n\n" +
-      "What does complete here is `xplainer setup --skip-speech --manifest <path or https URL>`: " +
-      "the browser and the render workspace, with a reviewed manifest named by hand for the " +
-      "browser's expected digest."
-    );
-  }
-
   return (
     `${position}\n\n` +
-    `Speech still has two routes that work on ${speechPlatformKey(probe)}, and neither of them ` +
-    "reads this manifest:\n\n" +
+    `Speech is not waiting on this address on ${speechPlatformKey(probe)}. Three of its four ` +
+    "routes read no manifest at all:\n\n" +
     "  - `xplainer setup --tts-url <url>` records a Kokoro-FastAPI server you already run. " +
     "Nothing is downloaded and nothing is started.\n" +
     "  - the docker route pulls the pinned Kokoro-FastAPI image by digest. setup pulls it; the " +
-    "daemon never starts a container.\n\n" +
+    "daemon never starts a container.\n" +
+    "  - the onnx route fetches the Kokoro model, one voice and this platform's ONNX Runtime, each " +
+    "pinned by digest and each from its own upstream home, and synthesises in the narration " +
+    "worker: no container, no Python and no server.\n\n" +
+    "Only the bundle route reads this manifest, and it is the one with nothing published.\n\n" +
     "The browser is fetched from Google's own storage host at the URL the pinned Remotion line " +
     "resolves, and all this manifest contributes is the expected digest for that exact URL — so " +
     "`--manifest <path or https URL>` naming a reviewed copy is what lets a browser acquisition " +

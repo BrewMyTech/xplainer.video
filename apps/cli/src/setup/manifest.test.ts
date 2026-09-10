@@ -207,38 +207,44 @@ describe("the delivery position, when the published address answers nothing", ()
     expect(message).toContain("release owner's step, in phase 4");
   });
 
-  it("names the two speech routes that do work on macOS and Linux", () => {
+  it("names the three speech routes that read no manifest, and the one that does", () => {
     for (const host of [
       probe({ platform: "darwin", arch: "arm64", glibc: null }),
       probe({ platform: "linux", arch: "arm64" }),
     ]) {
       const message = deliveryPosition(host);
 
-      expect(message).toContain(`two routes that work on ${speechPlatformKey(host)}`);
+      expect(message).toContain(
+        `Speech is not waiting on this address on ${speechPlatformKey(host)}`,
+      );
+      expect(message).toContain("Three of its four routes read no manifest at all");
       expect(message).toContain("--tts-url <url>");
       expect(message).toContain("the docker route pulls the pinned Kokoro-FastAPI image by digest");
+      expect(message).toContain("the onnx route fetches the Kokoro model");
+      expect(message).toContain("Only the bundle route reads this manifest");
     }
   });
 
   /**
-   * §2.5's asymmetry, which is the roadmap's: P2-4 is met on macOS and Linux and pending on
-   * Windows, so the Windows message offers neither route it cannot deliver and names the milestone
-   * that closes the gap instead.
+   * The asymmetry §2.5 recorded has gone, and this is the case that pins its removal.
+   *
+   * This message used to carry a second, harder paragraph for `win32`: that all three speech routes
+   * were unavailable there and that phase 4 was the milestone which would close it. The `onnx`
+   * route closes it instead and closes it now — `win32-x64` and `win32-arm64` are both in
+   * `onnxruntime-node`'s published set — so Windows gets the same message every other platform
+   * does, and the sentence claiming it has no speech is gone rather than merely unreached.
    */
-  it("tells a Windows machine it has no working speech route, and names phase 4", () => {
-    const message = deliveryPosition(probe({ platform: "win32", arch: "x64", glibc: null }));
+  it("gives Windows the same message as every other platform, with no phase-4 gap", () => {
+    const windows = probe({ platform: "win32", arch: "x64", glibc: null });
+    const message = deliveryPosition(windows);
 
-    expect(message).toContain("Windows has no working speech route at all this phase");
-    expect(message).toContain("None of the three is available");
-    expect(message).toContain("The milestone that closes it is phase 4");
-    // Neither route is offered as available: no "routes that work" sentence, and no bare
-    // instruction to pull an image or to pass a URL.
-    expect(message).not.toMatch(/routes that work/);
-    expect(message).not.toContain("the docker route pulls the pinned Kokoro-FastAPI image");
-    expect(message).not.toContain("`xplainer setup --tts-url <url>` records");
-    // What it does say about each of them is why it is not one.
-    expect(message).toContain("needs a linux/amd64 container engine");
-    expect(message).toContain("rather than acquiring speech on this machine");
+    expect(message).not.toContain("Windows has no working speech route");
+    expect(message).not.toContain("The milestone that closes it is phase 4");
+    expect(message).toContain("Speech is not waiting on this address on win32-x64");
+    expect(message).toContain("the onnx route fetches the Kokoro model");
+    // The one thing that genuinely is waiting on the address, on every platform alike.
+    expect(message).toContain("Only the bundle route reads this manifest");
+    expect(message).toContain("what lets a browser acquisition run at all");
   });
 });
 

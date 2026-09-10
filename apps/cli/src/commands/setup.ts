@@ -8,7 +8,7 @@
  * this command leaves — `<state>/toolchain.json` — is what both of them read instead.
  *
  * **Three components, and each has its own provider module.** The browser
- * (`setup/providers/chrome.ts`), speech (`setup/providers/speech.ts`, over three routes) and the
+ * (`setup/providers/chrome.ts`), speech (`setup/providers/speech.ts`, over four routes) and the
  * render workspace (`setup/providers/workspace.ts`, over two). The command's own job is the order,
  * the selection, the printed report and the marker; every decision about *how* a component is
  * acquired lives with that component.

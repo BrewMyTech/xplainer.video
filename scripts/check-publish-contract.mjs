@@ -587,6 +587,42 @@ const MUST_SHIP_FILES = [
     why: "Scaffold template read verbatim at runtime and edited by the agent.",
   },
 
+  // --- The G2P data files, read verbatim at runtime ------------------------
+  //
+  // src/g2p/ resolves these relative to import.meta.url, so dist/g2p/*.js needs
+  // its own copy beside it; copy-g2p-data.mjs puts one there at build time. Two
+  // of the three are read on the first narration of a process and the third is
+  // a licence, so a minifier or formatter reaching any of them either changes a
+  // pronunciation or breaks an attribution.
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/lexicon.txt",
+    identicalTo: "src/g2p/data/lexicon.txt",
+    why: "The curated domain lexicon, parsed line by line at runtime.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/cmudict.dict",
+    identicalTo: "src/g2p/data/cmudict.dict",
+    why: "CMUdict, parsed line by line at runtime; the vendored copy is upstream verbatim.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/cmudict.LICENSE",
+    identicalTo: "src/g2p/data/cmudict.LICENSE",
+    why:
+      "CMUdict is 2-clause BSD and clause 1 requires the notice and disclaimer to travel with " +
+      "the source. The dictionary is in this tarball, so its licence has to be too.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/kokoro-tokenizer.json",
+    identicalTo: "src/g2p/data/kokoro-tokenizer.json",
+    why:
+      "Kokoro's 115-symbol vocabulary, read at runtime to refuse a phoneme the model would " +
+      "silently drop. Reformatting it is harmless; replacing it is not, so the bytes are pinned.",
+  },
+
   // --- Prose an agent reads as instructions --------------------------------
   //
   // Obfuscating prose is not a coherent operation. Both plugin copies must stay

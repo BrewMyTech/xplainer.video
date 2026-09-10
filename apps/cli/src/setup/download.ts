@@ -41,10 +41,19 @@
  * the name a later `setup`, an install preflight or a render will look for. Staging beside the
  * destination rather than in the system temp directory is what keeps the rename a rename when a
  * user has relocated their state directory to another volume.
+ *
+ * **Two committers, because two of the components are not archives.**
+ * {@link acquireArtefact} is the archive one, and its reader is now a **parameter**
+ * ({@link ArchiveFormat}) rather than "the zip reader": the ONNX speech runtime exists only inside
+ * an npm tarball, and the selector that keeps one platform out of the five it carries belongs at
+ * that provider's call site rather than in here. {@link acquireFile} is the other, for an artefact
+ * that arrives as itself — the Kokoro model graph and its voice tensor — where there is no staging
+ * tree because there is nothing to unpack, and the commit is the same one `rename`.
  */
 
 import { createHash, type Hash } from "node:crypto";
 import {
+  chmodSync,
   createReadStream,
   createWriteStream,
   existsSync,
@@ -60,7 +69,7 @@ import process from "node:process";
 import { pipeline } from "node:stream/promises";
 import { flushDirectory } from "../daemon/durable-write.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
-import { type ExtractionSummary, extractZip } from "./archive.js";
+import { extractZip } from "./archive.js";
 
 /** Why a download was refused. One value per distinguishable condition, never a catch-all. */
 export type DownloadRefusalReason =
@@ -645,6 +654,45 @@ async function digestOfFile(file: string): Promise<string> {
   return hash.digest("hex");
 }
 
+/**
+ * What every archive reader reports, which is the part the two of them agree on.
+ *
+ * `archive.ts` also counts symlinks and `tar.ts` also counts the members its selector walked past;
+ * neither number means anything to this module, which reports the summary and never branches on it.
+ * Both readers' own summaries are assignable to this, so nothing is lost at the call site that
+ * knows which reader it asked for.
+ */
+export type ArchiveSummary = {
+  files: number;
+  directories: number;
+  bytes: number;
+};
+
+/**
+ * One archive format: what it refuses before a byte is fetched, and how it unpacks.
+ *
+ * A pair rather than one function, because the two halves happen at opposite ends of a hundred
+ * megabytes. `assert` runs **before** the download so an artefact this build cannot unpack is a
+ * sentence rather than a wasted transfer — that ordering is the one thing a caller supplying its own
+ * format must not lose — and `extract` runs after the digest has been checked.
+ *
+ * It is a parameter because the ONNX speech route needs a **selective** tar reader: the runtime it
+ * acquires arrives as an npm tarball carrying every platform, and the point of acquiring it at all
+ * is that a machine keeps its own. A format built at that call site closes over the selector, so
+ * this module still knows nothing about npm, tar or platforms.
+ */
+export type ArchiveFormat = {
+  /** Refuse a URL this reader cannot unpack, by extension, before anything is fetched. */
+  assert: (url: string) => void;
+  extract: (archive: string, staging: string) => ArchiveSummary | Promise<ArchiveSummary>;
+};
+
+/** The format every artefact but the ONNX runtime arrives in, and the default. */
+export const ZIP_ARCHIVE: ArchiveFormat = {
+  assert: assertZipArtefact,
+  extract: extractZip,
+};
+
 /** Where the work happens and where the result lands. */
 export type AcquireOptions = {
   request: ArtefactRequest;
@@ -657,6 +705,17 @@ export type AcquireOptions = {
    * filesystem. Pointing it at another volume turns that rename into a copy.
    */
   workDir?: string;
+  /** How the artefact is refused and unpacked. Defaults to {@link ZIP_ARCHIVE}. */
+  archive?: ArchiveFormat;
+  /**
+   * A last write into the staging tree, after extraction and **before** the `rename`.
+   *
+   * It exists so a provider can put a file of its own inside the tree it is committing and have
+   * that file be present exactly when the tree is. Writing it after the rename instead would leave
+   * a window in which a correct tree carries no receipt, and a later run that refuses a tree with
+   * no receipt would then refuse correct work.
+   */
+  stage?: (staging: string, download: DownloadOutcome) => void;
   signal?: AbortSignal;
   idleTimeoutMs?: number;
   onProgress?: (received: number, total: number) => void;
@@ -666,7 +725,7 @@ export type AcquireOptions = {
 export type AcquireOutcome = {
   destination: string;
   download: DownloadOutcome;
-  extraction: ExtractionSummary;
+  extraction: ArchiveSummary;
   /** What `fsync` on the destination's parent reported, as `durable-write.ts` words it. */
   flush: string;
 };
@@ -697,7 +756,8 @@ export async function acquireArtefact(options: AcquireOptions): Promise<AcquireO
         "onto that name, so it never writes into one that is already there.",
     );
   }
-  assertZipArtefact(request.url);
+  const archive = options.archive ?? ZIP_ARCHIVE;
+  archive.assert(request.url);
   const parent = dirname(destination);
   const workDir = options.workDir ?? join(parent, WORK_DIR_NAME);
   mkdirSync(workDir, { recursive: true });
@@ -711,7 +771,8 @@ export async function acquireArtefact(options: AcquireOptions): Promise<AcquireO
   });
   const staging = join(workDir, `${ACQUIRE_STAGE_PREFIX}${process.pid}-${Date.now()}`);
   try {
-    const extraction = extractZip(download.path, staging);
+    const extraction = await archive.extract(download.path, staging);
+    options.stage?.(staging, download);
     mkdirSync(parent, { recursive: true });
     renameSync(staging, destination);
     rmSync(download.path, { force: true });
@@ -719,6 +780,73 @@ export async function acquireArtefact(options: AcquireOptions): Promise<AcquireO
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/** Where a plain, unarchived file is fetched to and what it becomes. */
+export type AcquireFileOptions = {
+  request: ArtefactRequest;
+  /** The **file** the verified bytes become, in one `rename`. */
+  destination: string;
+  /** Where the partial download lives. Defaults to a `.setup` directory beside the destination. */
+  workDir?: string;
+  /** The mode the committed file is given. Defaults to `0644`. */
+  mode?: number;
+  signal?: AbortSignal;
+  idleTimeoutMs?: number;
+  onProgress?: (received: number, total: number) => void;
+};
+
+/** What {@link acquireFile} committed. */
+export type AcquireFileOutcome = {
+  destination: string;
+  download: DownloadOutcome;
+  /** What `fsync` on the destination's parent reported, as `durable-write.ts` words it. */
+  flush: string;
+};
+
+/** The mode a committed artefact file gets, matching `archive.ts`'s default for a zip member. */
+const ACQUIRED_FILE_MODE = 0o644;
+
+/**
+ * Fetch, verify and commit one artefact that is **not** an archive.
+ *
+ * The ONNX speech route's model and voice are plain files — a 92 MB `.onnx` graph and a 510 KB
+ * style tensor, straight out of the HuggingFace repository they live in — so there is nothing to
+ * unpack and {@link acquireArtefact}'s staging *directory* has nothing to stage. What must not
+ * change is the rest of the order: verify the digest before the bytes are visible under the name
+ * anything else will look for, and make them visible in one `rename`. `download.ts` already
+ * verifies; this is the commit, and it is the same `rename`-onto-the-name argument
+ * `install/stage.ts` and `daemon/durable-write.ts` make.
+ *
+ * A destination that already exists is **refused** rather than replaced, exactly as it is for an
+ * archive: whether a warm copy may be trusted is a question about the *component*, and the provider
+ * that pinned the digest is the only thing that can answer it.
+ */
+export async function acquireFile(options: AcquireFileOptions): Promise<AcquireFileOutcome> {
+  const { request, destination } = options;
+  if (existsSync(destination)) {
+    throw new DownloadRefusal(
+      "destination-occupied",
+      request.url,
+      `${destination} already exists. setup commits a file by renaming a verified download onto ` +
+        "that name, so it never writes over one that is already there.",
+    );
+  }
+  const parent = dirname(destination);
+  const workDir = options.workDir ?? join(parent, WORK_DIR_NAME);
+  mkdirSync(workDir, { recursive: true });
+  const partFile = join(workDir, `${basename(destination)}${PART_SUFFIX}`);
+  const download = await downloadArtefact({
+    request,
+    partFile,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
+    ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+  });
+  chmodSync(download.path, options.mode ?? ACQUIRED_FILE_MODE);
+  mkdirSync(parent, { recursive: true });
+  renameSync(download.path, destination);
+  return { destination, download, flush: flushDirectory(parent) };
 }
 
 /**

@@ -35,14 +35,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
-import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
+import type { Toolchain, ToolchainComponent, ToolchainFile } from "@xplainer/protocol";
 import { writeJsonDurably } from "../daemon/durable-write.js";
-import { TOOLCHAIN_FORMAT_VERSION, toolchainMarkerPath } from "../install/preflight.js";
+import {
+  componentPaths,
+  TOOLCHAIN_FORMAT_VERSION,
+  toolchainMarkerPath,
+} from "../install/preflight.js";
 import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
 import { readTemplatePins } from "../runtime/verify.js";
 import { readWorkspaceResolution } from "./providers/workspace.js";
 
-export { TOOLCHAIN_FORMAT_VERSION, toolchainMarkerPath };
+export { componentPaths, TOOLCHAIN_FORMAT_VERSION, toolchainMarkerPath };
 
 /** The `reason` `/healthz` reports when what `setup` recorded is not on this machine. */
 export const TOOLCHAIN_MISSING = "toolchain_missing";
@@ -123,12 +127,53 @@ function asComponent(value: unknown): ToolchainComponent | null {
       return null;
     }
   }
+  const files = asFiles(entry.files);
+  if (files === undefined) {
+    return null;
+  }
   return {
     version: entry.version as string,
     path: entry.path as string,
     sha256: entry.sha256 as string,
     provider: entry.provider as string,
+    ...files,
   };
+}
+
+/**
+ * The optional `files` array, or `undefined` for a document this build will not accept.
+ *
+ * Three answers rather than two, and the distinction is the reason this is a separate function:
+ * **absent** is valid — every route that acquires one artefact records no `files` at all — while
+ * **present and malformed** is not, because a reader that dropped a field it could not parse would
+ * turn a corrupt marker into a marker recording fewer files than the component really has, and the
+ * existence check downstream would then pass over what is missing. So `{}` means "there was none",
+ * `{ files }` means "here it is", and `undefined` means "reject the whole document".
+ */
+function asFiles(value: unknown): { files?: ToolchainFile[] } | undefined {
+  if (value === undefined) {
+    return {};
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const files: ToolchainFile[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return undefined;
+    }
+    const raw = entry as Record<string, unknown>;
+    if (
+      typeof raw.path !== "string" ||
+      raw.path === "" ||
+      typeof raw.sha256 !== "string" ||
+      typeof raw.bytes !== "number"
+    ) {
+      return undefined;
+    }
+    files.push({ path: raw.path, sha256: raw.sha256, bytes: raw.bytes });
+  }
+  return { files };
 }
 
 function asWorkspace(value: unknown): Toolchain["workspace"] | null {
@@ -203,9 +248,15 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     ["chrome", marker.chrome],
     ["speech", marker.speech],
   ];
+  // Every recorded path, not only `path`. A component made of several files — the ONNX speech
+  // route's model, voice and platform runtime — records them all in `files`, and checking only the
+  // one `path` happens to name would report a toolchain as present when the runtime beside it had
+  // been cleaned away. `path` is included as well and first, so a marker with no `files` is checked
+  // exactly as it always was.
   const gone = recorded
-    .filter(([, component]) => !existsSync(component.path))
-    .map(([name, component]) => `${name} (${component.path})`);
+    .flatMap(([name, component]) => componentPaths(component).map((path) => [name, path] as const))
+    .filter(([, path]) => !existsSync(path))
+    .map(([name, path]) => `${name} (${path})`);
   if (gone.length > 0) {
     return {
       ok: false,
