@@ -94,6 +94,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE } from "./spawn.mjs";
 
 /** The repository root, three levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -136,16 +137,6 @@ const STAGE = join(STAGE_ROOT, "staged");
 
 /** The video this gate builds. */
 const SLUG = "runtime-gate";
-
-/**
- * Payload 2's manifest, at the root of the installed workspace.
- *
- * Spelled here rather than imported: this script runs outside the CLI's module graph on purpose,
- * so the name it looks for is the name a consumer of the artefact would have to know. It is
- * `apps/cli/src/runtime/manifest.ts`'s `WORKSPACE_MANIFEST_FILE`, and a rename there that did not
- * reach this line is a failure this gate should report.
- */
-const WORKSPACE_MANIFEST_FILE = "workspace.manifest.json";
 
 /** How long the narration job may take before the gate gives up on it. */
 const NARRATE_TIMEOUT_MS = 300_000;
@@ -268,49 +259,16 @@ function run(command, args, options = {}) {
 }
 
 /**
- * Run a command with both its streams captured into the transcript, and return the whole result.
+ * Both streams into the transcript, and a child that never started named as such.
  *
- * `execFileSync` forwards a child's stderr to this process's own, which leaves it out of the log
- * file — and the log file is the artefact. Anything whose output is evidence goes through here.
- *
- * The exit code is returned rather than enforced, for the one caller whose assertion *is* the exit
- * code: a third-party CLI that answers on whichever stream it prefers, where "it exited 0 and said
- * this" has to be one `check` line rather than an exception with no `ok` beside it.
+ * `spawnLogged` returns the whole result rather than enforcing the exit code, for the one caller
+ * whose assertion *is* the exit code: a third-party CLI that answers on whichever stream it
+ * prefers, where "it exited 0 and said this" has to be one `check` line rather than an exception
+ * with no `ok` beside it. `runLogged` is the same spawn for the commands of ours whose non-zero
+ * exit is simply the end of the run. Both live in `scripts/e2e/spawn.mjs` now, because four private
+ * copies of this helper had three different behaviours and its docblock is that argument.
  */
-function spawnLogged(label, command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    ...options,
-  });
-  for (const [stream, text] of [
-    ["out", result.stdout ?? ""],
-    ["err", result.stderr ?? ""],
-  ]) {
-    for (const line of text.trim().split("\n")) {
-      if (line.trim() !== "") {
-        appendFileSync(LOG_PATH, `  [${label} ${stream}] ${line}\n`);
-      }
-    }
-  }
-  // A child that never started has no streams at all and would otherwise leave the transcript
-  // silent about the one thing that happened to it.
-  if (result.error !== undefined) {
-    appendFileSync(LOG_PATH, `  [${label} error] ${result.error.message}\n`);
-  }
-  return result;
-}
-
-/** The same, for the commands of ours whose non-zero exit is simply the end of the run. */
-function runLogged(label, command, args, options = {}) {
-  const result = spawnLogged(label, command, args, options);
-  if (result.status !== 0) {
-    throw new Error(
-      `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`,
-    );
-  }
-  return result.stdout ?? "";
-}
+const { spawnLogged, runLogged } = transcript(LOG_PATH);
 
 /** Whether `path` is outside the checkout, which is what "moved out of it" has to mean. */
 function outsideCheckout(path) {
@@ -1007,14 +965,14 @@ async function main() {
   );
 
   section("D1 — Remotion runs through the payload's interpreter, on a PATH with no node");
-  const remotionEntry = join(workspace, ...workspaceManifest.remotion_entry.split("/"));
-  check(existsSync(remotionEntry), `@remotion/cli's own bin field names ${remotionEntry}`);
+  const remotionCli = remotionEntry(workspace, workspaceManifest);
+  check(existsSync(remotionCli), `@remotion/cli's own bin field names ${remotionCli}`);
   // `versions`, not `--version`: `--version` is not a Remotion subcommand, falls through to the
   // help listing and exits 1 on a tree where D1 and D2 both hold (§7.20). `versions` is the
   // documented dependency check and exits 0 only when the resolved tree is the pinned one, so this
   // one call proves the entry ran at all under a scrubbed `PATH` and that what it read is right.
   // `cwd` is the workspace because that is the tree the command reports on.
-  const versions = spawnLogged("remotion", launch.interpreter, [remotionEntry, "versions"], {
+  const versions = spawnLogged("remotion", launch.interpreter, [remotionCli, "versions"], {
     cwd: workspace,
     env,
   });

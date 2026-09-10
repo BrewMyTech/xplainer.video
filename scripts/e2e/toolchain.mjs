@@ -98,6 +98,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE, workspaceShim } from "./spawn.mjs";
 
 /** The repository root, two levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -137,9 +138,6 @@ const LOG_PATH = join(ARTIFACTS, "e2e-toolchain.log");
 /** Where the artefact is assembled: inside the checkout, because the move out of it is the test. */
 const STAGE_ROOT = join(REPO, ".session", "e2e-toolchain");
 const STAGE = join(STAGE_ROOT, "staged");
-
-/** Payload 2's manifest, spelled here because this script runs outside the CLI's module graph. */
-const WORKSPACE_MANIFEST_FILE = "workspace.manifest.json";
 
 /** The marker `setup` writes, at the root of the state directory. */
 const TOOLCHAIN_MARKER_FILE = "toolchain.json";
@@ -259,39 +257,15 @@ function skip(message) {
   say(`  skip  ${message}`);
 }
 
-/** Run a command with both streams captured into the transcript, and return the whole result. */
-function spawnLogged(label, command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    ...options,
-  });
-  for (const [stream, text] of [
-    ["out", result.stdout ?? ""],
-    ["err", result.stderr ?? ""],
-  ]) {
-    for (const line of text.trim().split("\n")) {
-      if (line.trim() !== "") {
-        appendFileSync(LOG_PATH, `  [${label} ${stream}] ${line}\n`);
-      }
-    }
-  }
-  if (result.error !== undefined) {
-    appendFileSync(LOG_PATH, `  [${label} error] ${result.error.message}\n`);
-  }
-  return result;
-}
-
-/** The same, for the commands whose non-zero exit is simply the end of the run. */
-function runLogged(label, command, args, options = {}) {
-  const result = spawnLogged(label, command, args, options);
-  if (result.status !== 0) {
-    throw new Error(
-      `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`,
-    );
-  }
-  return result.stdout ?? "";
-}
+/**
+ * Both streams into the transcript, and a child that never started named as such.
+ *
+ * `spawnLogged` returns the whole result, for the assertions here whose subject *is* the exit code;
+ * `runLogged` is the same spawn for the commands whose non-zero exit is simply the end of the run.
+ * Both live in `scripts/e2e/spawn.mjs` now, because four private copies of this helper had three
+ * different behaviours and its docblock is that argument.
+ */
+const { spawnLogged, runLogged } = transcript(LOG_PATH);
 
 /** Whether `path` is outside the checkout, which is what "moved out of it" has to mean. */
 function outsideCheckout(path) {
@@ -1053,18 +1027,15 @@ async function main() {
     "and they are this checkout's own template/package.json pins, package for package",
   );
 
-  const shim = join(
-    paths.videos,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "remotion.cmd" : "remotion",
-  );
+  const shim = workspaceShim(paths.videos, "remotion");
   check(existsSync(shim), `${shim} resolves, which is what says npm linked the CLI`);
 
+  // The shim is what says npm *linked* the CLI; the entry the manifest names is what is spawnable
+  // on all three platforms, under an explicit interpreter. `scripts/e2e/spawn.mjs` spells both.
   const versions = spawnLogged(
     "remotion versions",
     interpreter,
-    [join(paths.videos, resolved.remotion_entry), "versions"],
+    [remotionEntry(paths.videos, resolved), "versions"],
     { cwd: paths.videos, env: scrubbedEnvironment(paths), timeout: 120_000 },
   );
   check(

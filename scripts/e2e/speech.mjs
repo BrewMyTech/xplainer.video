@@ -181,6 +181,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE, workspaceShim } from "./spawn.mjs";
 
 /** The repository root, two levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -510,50 +511,15 @@ function run(command, args, options = {}) {
 }
 
 /**
- * Run a command with both its streams captured into the transcript.
+ * Both streams into the transcript, and a child that never started named as such.
  *
- * `execFileSync` forwards a child's stderr to this process's own, which leaves it out of the log
- * file — and the log file is the artefact. Anything whose output is evidence goes through here.
- *
- * **`result.error` is read, and that is a correction rather than a nicety.** A child that never
- * started has no `status`, no `signal` and neither stream, so every field this helper used to look
- * at is empty and `result.error` is the only one holding the answer. Leaving it unread made a
- * `CreateProcess` refusal on Windows report itself as `control exited null:` with nothing after the
- * colon — a failure that names neither the errno nor the argv, over a transcript with no line about
- * the child at all (run 34492604497). It is now both appended to the transcript and put in the
- * thrown message, and a child that never started says so in those words rather than borrowing the
- * vocabulary of one that ran and exited. `runtime.mjs` and `toolchain.mjs` do the transcript half of
- * this in their own `spawnLogged`; `render.mjs` does neither, and its `.bin` spawn is the same
- * arrangement this file has just stopped using.
+ * This helper used to live here, in the version `scripts/e2e/spawn.mjs` now carries: reading
+ * `result.error` was a correction this file made after run 34492604497, and it was a correction
+ * three other private copies of the same helper never received. The module's docblock is that
+ * argument, and this proof's own docblock — the two-direction `stat`/`spawn` rule — is the general
+ * form of what taught it.
  */
-function runLogged(label, command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    ...options,
-  });
-  for (const [stream, text] of [
-    ["out", result.stdout ?? ""],
-    ["err", result.stderr ?? ""],
-  ]) {
-    for (const line of text.trim().split("\n")) {
-      if (line.trim() !== "") {
-        appendFileSync(LOG_PATH, `  [${label} ${stream}] ${line}\n`);
-      }
-    }
-  }
-  if (result.error !== undefined) {
-    appendFileSync(LOG_PATH, `  [${label} error] ${result.error.message}\n`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      result.error === undefined
-        ? `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`
-        : `${label} never started: ${result.error.message} — the command was ${command} ${args.join(" ")}`,
-    );
-  }
-  return result.stdout ?? "";
-}
+const { runLogged } = transcript(LOG_PATH);
 
 /** The names a program can go by on this platform, for the `PATH` scans below. */
 function executableNames(stem) {
@@ -1477,7 +1443,7 @@ async function main() {
     existsSync(marker.chrome.path),
     `the browser it recorded is on this machine at ${marker.chrome.path}`,
   );
-  const workspaceManifest = join(workspace, "workspace.manifest.json");
+  const workspaceManifest = join(workspace, WORKSPACE_MANIFEST_FILE);
   check(
     existsSync(workspaceManifest),
     "the workspace describes what it resolved, which is the half of the render gate a borrowed " +
@@ -1494,24 +1460,17 @@ async function main() {
   // The **entry** is the file the burned-captions section spawns, and it is checked here so a
   // missing one fails in the section that is about the workspace rather than 300 lines later in the
   // section that is about captions. It is also the only one of the two that is spawnable on all
-  // three platforms; the docblock's second bullet is why.
-  const remotionShim = join(
-    workspace,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "remotion.cmd" : "remotion",
-  );
+  // three platforms; the docblock's second bullet is why. Both paths are spelled by
+  // `scripts/e2e/spawn.mjs`, which is where that argument now lives for every proof.
+  const remotionShim = workspaceShim(workspace, "remotion");
   check(
     existsSync(remotionShim),
     `and ${remotionShim} resolves in it, which is what says npm linked the CLI`,
   );
-  const remotionEntry = join(
-    workspace,
-    ...JSON.parse(readFileSync(workspaceManifest, "utf8")).remotion_entry.split("/"),
-  );
+  const remotionCli = remotionEntry(workspace);
   check(
-    existsSync(remotionEntry),
-    `…and so does ${remotionEntry}, the entry its own manifest names and the file the control ` +
+    existsSync(remotionCli),
+    `…and so does ${remotionCli}, the entry its own manifest names and the file the control ` +
       "render below is actually spawned as",
   );
 
@@ -1844,7 +1803,7 @@ async function main() {
     "control",
     process.execPath,
     [
-      remotionEntry,
+      remotionCli,
       "still",
       `videos/${CONTROL_SLUG}/index.ts`,
       "Explainer",
