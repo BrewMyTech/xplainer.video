@@ -7,8 +7,8 @@
 # machine where the model, the voice pack and the ONNX Runtime are already in
 # somebody's download cache and where the interpreter the proof hides was hidden
 # by hand. Here the checkout is clean, the state is empty, the ~304 MB is fetched
-# from its three upstream hosts for real, and the `PATH` filter is applied to a
-# runner's `PATH` rather than to one shell profile's.
+# from its three upstream hosts for real, and the composed `PATH` has to survive a
+# runner's environment rather than one shell profile's.
 #
 # THREE OPERATING SYSTEMS, AND ALL THREE ARE MEANINGFUL. `onnxruntime-node` 1.29.0
 # publishes a binding for `darwin/arm64`, `linux/x64`, `linux/arm64`, `win32/x64`
@@ -17,15 +17,21 @@
 # phase" stopped being true. Two of the legs carry something the others cannot:
 #
 #   * ubuntu-latest  — the runner with a real Docker engine, which makes this the
-#     one leg where the `PATH` filter is doing load-bearing work rather than
+#     one leg where hiding `docker` is doing load-bearing work rather than
 #     asserting an absence. `providers/speech.ts` puts `onnx` BELOW `docker`, so
-#     a run whose filter failed would record `docker`, pull half a gigabyte of
-#     container and prove the opposite of what it was dispatched for. The proof
-#     asserts `setup` took the ONNX route by the line it printed.
+#     a run that leaked a `docker` onto the child's `PATH` would record `docker`,
+#     pull half a gigabyte of container and prove the opposite of what it was
+#     dispatched for. The proof asserts `setup` took the ONNX route by the line it
+#     printed.
 #   * windows-latest — the platform that had no speech at all before this plan,
-#     and the one whose `PATH` semantics are different in kind: `PATHEXT`, and a
-#     `python3.exe` that lives in the image's tool cache rather than in
-#     `/usr/bin`. `executableNames()` in the proof is what carries that.
+#     and the one whose `PATH` semantics are different in kind: `PATHEXT`, `.cmd`
+#     files that read their own location, and a `python.exe` that is a Store
+#     execution alias rather than a file. That last one is why the proof composes
+#     the child's `PATH` out of named executables instead of subtracting
+#     directories from the runner's: an alias is a reparse point `existsSync`
+#     reports as absent and `CreateProcess` launches anyway, so there is no
+#     directory a filter could have known to drop. `allowList()` in the proof is
+#     what carries all three.
 #   * macos-latest   — Apple silicon, no container engine, and the platform the
 #     local run already covers. It is here for the runner-vs-developer-machine
 #     difference and nothing else, which is why it defaults to off at 10x.
@@ -136,8 +142,10 @@ jobs:
       # already has — no third-party action is introduced for two binaries.
       #
       # This installs them for the PARENT process only, which is the one that
-      # runs them. The proof's own child environment drops whole `PATH`
-      # directories, and dropping the one ffmpeg is in would cost it nothing.
+      # runs them. The proof's own child gets a `PATH` composed of the handful of
+      # executables `allowList()` names, and ffmpeg is deliberately not one of
+      # them: Remotion bundles its own, and the macOS run that dropped every
+      # `ffmpeg` on the machine still rendered twice.
       - name: Install ffmpeg and ffprobe
         run: |
           set -euo pipefail
@@ -194,10 +202,12 @@ jobs:
           sudo apt-get install -y -qq "${packages[@]}"
 
       # The engine this proof exists to do without, named out loud on the one
-      # runner that has one. If the `PATH` filter ever stopped working, this line
-      # is the evidence that there was something to filter — and on the other two
+      # runner that has one. If the composed `PATH` ever leaked a `docker`, this
+      # line is the evidence that there was one to leak — and on the other two
       # legs the absence is the image's, which the proof's own ENOENT assertion
-      # reports either way.
+      # reports either way. The proof also audits the parent's `PATH` and names
+      # every directory a hidden executable is still reachable through, which is
+      # the same evidence for `python` and `python3`.
       - name: Show the Docker engine the proof must do without (Linux only)
         if: runner.os == 'Linux'
         run: docker version --format '{{.Server.Version}}'
