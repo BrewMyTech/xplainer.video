@@ -42,10 +42,23 @@
  * `chrome-headless-shell` 149.0.7790.0 into its own cache. Two copies of one artefact. Worth fixing
  * in the product; not fixable from a proof.
  *
- * **Nothing in it is platform-specific.** It resolves `ffmpeg` and `ffprobe` from `PATH` and takes
- * every other coordinate from the environment: P1-1 is judged on macOS **and** on headless Linux,
- * and one script settles both. The Linux half runs this same file inside the container
- * `infra/e2e/Dockerfile` builds — see `scripts/e2e/linux.mjs`, which is `pnpm e2e:render:linux`.
+ * **Nothing in it is specific to *either POSIX platform*.** It resolves `ffmpeg` and `ffprobe` from
+ * `PATH` and takes every other coordinate from the environment: P1-1 is judged on macOS **and** on
+ * headless Linux, and one script settles both. The Linux half runs this same file inside the
+ * container `infra/e2e/Dockerfile` builds — see `scripts/e2e/linux.mjs`, which is
+ * `pnpm e2e:render:linux`.
+ *
+ * **It is not Windows-capable, and this is the list.** Worth writing down rather than discovering
+ * on a runner, because the two faults that *would* have made a Windows dispatch fail silently — a
+ * `runLogged` that never read `result.error`, and a spawn of the extensionless `.bin/remotion` that
+ * `CreateProcess` refuses — were fixed on 2026-09-11 and moved into `scripts/e2e/spawn.mjs`. What
+ * is left fails loudly, by name, in the first seconds of a run: {@link resolveTool} spawns
+ * `/usr/bin/which`, which does not exist there; the `pnpm turbo build` below is spawned as a bare
+ * `pnpm`, and a `pnpm.cmd` is what libuv refuses without `shell: true` since the CVE-2024-27980 fix
+ * (`runtime.mjs` and `speech.mjs` both carry a `PNPM_BUILD` for exactly this); and the browser cache
+ * is borrowed with a `symlinkSync(…, "dir")`, which needs Developer Mode or an elevated shell. A
+ * Windows leg would also need a Kokoro this proof can reach, which is a decision about what P1-1
+ * claims rather than a portability fix. `pnpm e2e:speech` is the proof that runs on all three.
  *
  * **It is not part of `pnpm verify`, and it must not become part of it.** It needs Docker, a
  * multi-gigabyte model container and several minutes of Chrome; a gate that cannot run on a
@@ -77,7 +90,7 @@
  * so a run that dies mid-render still leaves its transcript behind.
  */
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   appendFileSync,
   copyFileSync,
@@ -99,6 +112,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE, workspaceShim } from "./spawn.mjs";
 
 /** The repository root, three levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -340,35 +354,8 @@ function run(command, args, options = {}) {
   });
 }
 
-/**
- * Run a command with both its streams captured into the transcript.
- *
- * `execFileSync` forwards a child's stderr to this process's own, which leaves it out of the log
- * file — and the log file is the artefact. Anything whose output is evidence goes through here.
- */
-function runLogged(label, command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    ...options,
-  });
-  for (const [stream, text] of [
-    ["out", result.stdout ?? ""],
-    ["err", result.stderr ?? ""],
-  ]) {
-    for (const line of text.trim().split("\n")) {
-      if (line.trim() !== "") {
-        appendFileSync(LOG_PATH, `  [${label} ${stream}] ${line}\n`);
-      }
-    }
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`,
-    );
-  }
-  return result.stdout ?? "";
-}
+/** Both streams into the transcript, and a child that never started named as such. */
+const { runLogged } = transcript(LOG_PATH);
 
 /** Resolve a tool by explicit override, then by `PATH`. */
 function resolveTool(name, override) {
@@ -754,13 +741,27 @@ async function main() {
     `the speech route it recorded is the external server, receipted at ${marker.speech.path}`,
   );
   check(
-    existsSync(join(workspace, "workspace.manifest.json")),
+    existsSync(join(workspace, WORKSPACE_MANIFEST_FILE)),
     "the workspace describes what it resolved, which is the half of the gate a borrowed " +
       "node_modules can never satisfy",
   );
+  // The shim and the entry are two different assertions, and this proof needs both. The **shim** is
+  // what says npm *linked* the CLI rather than merely unpacking it, and `workspaceShim` spells it
+  // under the name npm's linking writes on this platform. The **entry** is the file the burned
+  // captions section actually spawns, and it is stat-ed here so a missing one fails in the section
+  // about the workspace rather than 170 lines later in the section about captions — a gate that
+  // stats a different path than the spawn is how the extensionless `.bin/remotion` survived in this
+  // file until 2026-09-11. `scripts/e2e/spawn.mjs`'s docblock is the whole argument.
+  const remotionShim = workspaceShim(workspace, "remotion");
   check(
-    existsSync(join(workspace, "node_modules", ".bin", "remotion")),
-    "and node_modules/.bin/remotion resolves in it",
+    existsSync(remotionShim),
+    `and ${remotionShim} resolves in it, which is what says npm linked the CLI`,
+  );
+  const remotionCli = remotionEntry(workspace);
+  check(
+    existsSync(remotionCli),
+    `…and so does ${remotionCli}, the entry its own manifest names and the file the control ` +
+      "render below is actually spawned as",
   );
 
   // Remotion's **browser cache**, and nothing else, is borrowed from the checkout. It resolves it
@@ -925,6 +926,14 @@ async function main() {
   // The control: the same sources, the same measured narration, the same frame — with the caption
   // component replaced by one that draws nothing. Rendered by the pinned Remotion CLI directly,
   // because the daemon restores an engine-owned file before every render.
+  //
+  // The CLI is reached as the manifest's own `remotion_entry` under an explicit interpreter, never
+  // through `.bin`: neither file npm writes there is spawnable on Windows — the extensionless one
+  // is a `#!/bin/sh` script `CreateProcess` refuses, and the `.cmd` is what libuv refuses without
+  // `shell: true`, which would hand this argv's absolute paths to `cmd.exe` to re-parse.
+  // `toolchain.mjs`, `runtime.mjs` and `speech.mjs` all spawn the entry this way; the interpreter
+  // is this process's own because this proof runs from a checkout and has no payload to take one
+  // from.
   const controlSource = join(workspace, "videos", CONTROL_SLUG);
   const controlPublic = join(workspace, "public", CONTROL_SLUG);
   cpSync(join(workspace, "videos", SLUG), controlSource, { recursive: true });
@@ -933,8 +942,9 @@ async function main() {
   const controlPng = join(workspace, "out", `${CONTROL_SLUG}.png`);
   runLogged(
     "control",
-    join(workspace, "node_modules", ".bin", "remotion"),
+    process.execPath,
     [
+      remotionCli,
       "still",
       `videos/${CONTROL_SLUG}/index.ts`,
       "Explainer",
