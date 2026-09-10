@@ -15,8 +15,26 @@
  * The Remotion workspace template itself is not a JavaScript export: it is the
  * `template/` directory (`package.json`, `remotion.config.ts`, `tailwind.css`,
  * `tsconfig.json`), reachable through this package's `./template/*` export.
+ *
+ * `src/g2p/` is the grapheme-to-phoneme port that feeds an in-process
+ * synthesiser: English text to Kokoro's IPA and per-word spans, through four
+ * layers ending in a named refusal rather than in silence.
  */
 
+export type {
+  DerivedPronunciation,
+  G2pErrorCode,
+  PhonemeSource,
+  Phonemisation,
+  WordSpan,
+} from "./g2p/index.js";
+export {
+  G2pError,
+  kokoroTokenIds,
+  kokoroVocabulary,
+  phonemise,
+  unsupportedSymbols,
+} from "./g2p/index.js";
 export type {
   NarrateMode,
   NarrateOptions,

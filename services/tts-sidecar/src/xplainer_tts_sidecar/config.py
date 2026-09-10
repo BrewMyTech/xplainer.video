@@ -4,7 +4,8 @@ Every value here is inherited from the reference implementation rather than
 invented, so the scaffold pins the contract roadmap phase 1 will execute against
 instead of re-deriving it:
 
-* ``base_url`` mirrors ``DEFAULT_SERVER`` at ``max/.explainers/scripts/narrate.py:57``.
+* ``base_url`` mirrors ``DEFAULT_SERVER`` at ``narrate.py:57`` in the reference
+  implementation.
 * ``voices_path`` is the endpoint queried at ``narrate.py:126``.
 * ``speech_path`` is the endpoint posted to at ``narrate.py:162``. It is the
   ``/dev/`` captioned-speech route, not ``/v1/audio/speech``: only the former

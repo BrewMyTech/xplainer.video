@@ -8,7 +8,8 @@
  * conventions.
  *
  * **Why the three error classes are matched by `name` and not by `instanceof`.** `server.ts` is the
- * application `services/media-service` binds in its container, and `apps/cli/AGENTS.md` §Public
+ * application the hosted media service (relocated to a private repository, ADR 0023) binds in its
+ * container, and `apps/cli/AGENTS.md` §Public
  * surface states the boundary that makes that safe: "`services/media-service` imports
  * `createServer()` and nothing below it", `src/daemon/` being the local runtime's own machinery. A
  * value import of `JobNotFoundError` or `NotAcceptingJobsError` here would put `daemon/runner.ts` —

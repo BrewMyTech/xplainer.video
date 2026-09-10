@@ -24,8 +24,15 @@ reduced to the local product and the hosted tier was relocated
 ([ADR 0023](adr/0023-split-the-repository.md)) — deferred pending a written answer from
 Remotion AG on whether a rendering service may accept user-authored code, **not cancelled**.
 
-**What remains before this repository is made public.** These are gates, not aspirations, and
-the first one is the reason the others matter.
+**What remained before this repository was made public.** These were gates, not aspirations, and
+the first one was the reason the others mattered.
+
+*Amended 2026-09-09.* **The repository is public.** Six of these six are now closed, and the list
+is kept rather than deleted because each item says what was wrong and each amendment says what
+answered it — a deleted gate is a gate nobody can audit. What is written below survives as the
+record; the status line under each item is the current truth. The remaining gate for the **first
+npm publish** is no longer on this list at all: it is `pnpm changeset publish` itself, which is
+close to irreversible and is a decision rather than a task.
 
 1. **The private repository's name still ships inside published packages.** It appears in the
    `description` strings of twelve JSON Schema files under `packages/protocol/schemas/`, and in
@@ -35,12 +42,31 @@ the first one is the reason the others matter.
    does. Fixing the schema descriptions requires re-running
    `pnpm --filter @xplainer/protocol codegen` in the same commit, or CI's staleness check
    (AC-9c) goes red.
+   - *Closed 2026-09-09, and it took two passes rather than one. The hosted repository's own
+     name went earlier. What outlived it was the **other** private path: `captions.json` and
+     `narration.json` cited `max/.explainers/scripts/narrate.py` by file and line, and
+     `packages/protocol` ships `schemas`, `python/**/*.py` and `dist/**/*.d.ts`, so that citation
+     was live on three surfaces at once. Twelve descriptions named the reference implementation,
+     a hand pass scrubbed ten, and these two survived it — which is the argument for the rule
+     rather than the grep. `check-publish-contract` now carries
+     `no-private-reference-path` beside `no-private-repository-name`, with its own negative test,
+     so the class fails a gate instead of waiting for a reader. The descriptions keep their claim
+     and lose the coordinate.*
 2. **Comment-level references to the relocated packages, in surviving and published code.**
    `apps/cli/package.json`'s `description` names the hosted media-service and **ships to npm**;
    the same class of reference sits in `apps/cli/src/`, `packages/mcp-server/src/` and
    `packages/protocol/tests/`. Editorial, at source — the same call
    [ADR 0022](adr/0022-open-source-the-published-packages.md) already made for the shipped
    `.d.ts` citations. Re-check `dist/**/*.d.ts` after the edit.
+   - *Closed 2026-09-09. `apps/cli/package.json`'s `description` no longer names the hosted
+     media-service, and the comment-level references across `apps/cli/src/`,
+     `packages/mcp-server/src/` and `packages/protocol/`'s Python half now name **the hosted media
+     service (relocated to a private repository, ADR 0023)** in prose rather than citing a
+     `services/media-service` path that is not in this checkout. The reasoning each comment
+     carries — a seam is a parameter because a second binder supplies its own guard, state or
+     socket — is unchanged. `generated/` and `schemas/` were deliberately left alone: the tool
+     contract is backend-agnostic on purpose, and its "local backend / hosted backend" wording is
+     the published contract rather than a stale path.*
 3. **The plugin bundles are retargeted, and must not be published yet.** Both `.mcp.json`
    files declared `https://mcp.xplainer.video/mcp` — an endpoint this repository no longer
    describes — and the Codex bundle declared an `oauth_resource` that a loopback daemon cannot
@@ -50,22 +76,42 @@ the first one is the reason the others matter.
    publishing a dead URL and publishing a command that exits 2 are the same failure in different
    clothes, and a marketplace fetch is not retractable. `xplainer mcp` becomes real in phase 1;
    submission is phase 4.
+   - *Status 2026-09-09: `xplainer mcp` is real — phase 1 built it and phase 2's proofs drive it
+     over the daemon's socket — so the bundles are no longer describing a command that exits 2.
+     They remain unpublished, and submission is still phase 4.*
 4. **`LICENSE` Part Two still names three directories that no longer exist here**, and still
    covers `apps/desktop`, `packages/config`, `services/tts-sidecar`, `docs/`, `infra/` and
    `scripts/` as proprietary. Making the repository public does not relicense them, and ADR 0023
    is explicit that it did not. Correcting the file, and deciding whether the remainder is
    relicensed, is open work.
+   - *Closed 2026-09-09. `LICENSE` Part Two no longer lists `apps/api`, `apps/web` or
+     `services/media-service`; it records in one paragraph that no `hosted` member remains here
+     and why. The decision the sentence above left open was taken and is **no relicensing**:
+     `apps/desktop`, `packages/config` and `services/tts-sidecar` stay proprietary and stay
+     `UNLICENSED`, and Part Two now says in as many words that making the repository public made
+     them readable rather than usable.*
 5. **The Remotion disclosure is still owed on three surfaces.** ADR 0022 named five: the root
    `README.md`, `apps/cli/README.md`, `packages/render-core/README.md`, the three plugin
    manifest `description` fields, and one line in `SKILL.md`. The root README carries it; the two
    package READMEs do not exist and the manifests do not say it. The manifests also still declare
    `"license": "UNLICENSED"` against packages whose own `package.json` says `Apache-2.0` — a
    defect ADR 0022 identified and that ships inside the published bundles.
+   - *Closed 2026-09-09. All three manifests declare `"license": "Apache-2.0"`. The root
+     `README.md`, `apps/cli/README.md` and `packages/render-core/README.md` all exist and all
+     carry the disclosure, and the three manifest `description` fields and one line of `SKILL.md`
+     now carry it too — the five surfaces ADR 0022 named, complete.*
 6. **`SKILL.md` still sells a hosted backend** — a whole "Two backends, one tool set" section
    and two more sentences. Rewriting it is constrained: `packages/skill/src/build.test.ts`
    asserts a literal sentence is present and that the set of `explainer_*` names mentioned
    **equals** the protocol's `TOOL_NAMES` exactly, so a rewrite keeps all eight names and moves
    the assertion in the same commit.
+   - *Closed 2026-09-09. The section is now "One tool set, and it runs on this machine" and says
+     what is true today: one runtime, on the user's own machine, and no second route to reach for.
+     `build.test.ts` needed no change — the literal sentence it pins, "Prefer the local tools when
+     they are present", survives the rewrite, and the **set** of `explainer_*` names the document
+     mentions still equals `TOOL_NAMES`. Set equality is what that assertion measures: it
+     de-duplicates before comparing, so what it forbids is a name the contract does not have and a
+     contract name the document never mentions, not a second mention of `explainer_create`.*
 
 **Judged by** the surviving phase-5 criteria, which kept their ids — see
 [Phase 5](#phase-5--the-split-what-is-discharged-and-what-is-not) at the foot of this file.
@@ -523,8 +569,24 @@ pending on Windows, **P2-6** is not met as this roadmap words it and names a sub
 place, and **P2-7** is pending for as long as the artifact upload fails. **P2-8** is human-evidenced
 and no transcript exists yet, so it is pending too.
 
-**One fact every "pending on a runner" line below shares, and it is not a code problem.** GitHub
-Actions is **billing-blocked for this organisation**. Every job dispatched on `d376533` on
+*Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): the count
+above is now two rather than three.* **P2-4's Windows half no longer waits on an artefact nobody has
+published** — a fourth speech route acquires an in-process engine from its components' own upstream
+homes and reaches every platform ONNX Runtime publishes a binding for. That row's own note of this
+date says exactly what is proven and on which platform, and it does not claim a Windows run.
+**P2-6, P2-7 and P2-8 are unchanged**, and so is the billing paragraph below: what changed is a
+missing route, not the runner situation.
+
+*Amended 2026-09-09: RESOLVED. The paragraph below is kept as the record of why every
+"pending on a runner" line was stuck, and it is no longer the current state.* Making the repository
+public moved it to free standard runners, and on 2026-09-09 every Phase 2 proof was dispatched and
+went green on ubuntu, macOS and Windows — the twelve workflows behind `main` at `0cde7d6`. A
+"pending on a runner" line below that still reads as blocked is stale; the constraint now is only
+that a **new** proof workflow must reach the default branch before `workflow_dispatch` can register
+it.
+
+**One fact every "pending on a runner" line below shared, and it was not a code problem.** GitHub
+Actions was **billing-blocked for this organisation**. Every job dispatched on `d376533` on
 2026-09-08 at 12:08Z was refused before it started with *"The job was not started because recent
 account payments have failed or your spending limit needs to be increased"* — runs `34224329592`
 (`ci`), `34224329595` (`desktop`), `34224368464` (`daemon-windows`), `34224371557`, `34224375439`,
@@ -698,6 +760,45 @@ owner's, and it is what turns those lines from pending into met or into defects.
     same run, the `windows-latest` job's **setup refuses and names no working speech route** step
     passed and only its upload step failed — which is the refusal being correct, not the criterion
     being met.
+  - *Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): **the
+    Windows half is no longer waiting on a phase-4 artefact. A fourth speech route reaches every
+    platform ONNX Runtime publishes a binding for, so what is left of this row on Windows is
+    evidence rather than a route.*** `setup` now acquires an **in-process** speech engine: the
+    Kokoro-82M ONNX graph and one voice pack from the HuggingFace repository they live in, and this
+    platform's ONNX Runtime from the npm registry — four artefacts, each pinned by digest, each
+    verified before use, each committed by one `rename`, measured at **39.7 s** for all four on
+    darwin arm64. **Nothing has to be published for it to work**, which is the whole of the change:
+    the three sentences above about `cdn.xplainer.video`, the connected custom domain and its Cache
+    Rule are still true and no longer stand between any platform and speech, because this route
+    reads no manifest of ours at all. `win32-x64` and `win32-arm64` are both in `onnxruntime-node`'s
+    published set, so `deliveryPosition()` has lost its Windows paragraph and the sentence saying
+    Windows has no working speech route is now false rather than merely unhelpful. Three things this
+    row must not be read as claiming. **It has not been run on Windows or Linux** — the numbers
+    above are darwin arm64's, and Actions is still billing-blocked for this organisation, so the
+    runner halves named in the note at the head of this list are unchanged. **`darwin-x64` is
+    refused by name**: `onnxruntime-node` ships no Intel-Mac binding, so that platform keeps the two
+    routes it already had and is now the one with no in-process engine. And the *corrupted-download*
+    half of this criterion got stronger rather than staying level — `providers/speech-bundle.ts`
+    used to skip the download **and the verification** whenever its destination existed, so a warm
+    cache defeated verify-before-install; cache identity now binds the digest and every committed
+    acquisition re-verifies a record written inside the tree it commits.
+  - *Amended 2026-09-10, later the same day
+    ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md) §Note): **the product now
+    selects the route it acquired, which the amendment above did not yet claim.*** Two halves.
+    `resolveSpeech()` reads `<state>/toolchain.json`, so a daemon on a machine that has run `setup`
+    finds its own engine — until this, the locator defaulted to the three `XPLAINER_ONNX_*`
+    variables and `pnpm e2e:speech` supplied them by hand out of the marker it had just read, which
+    means the acquisition worked and no ordinary machine used it. And `onnx` moved **above**
+    `docker`, because below it every host with a container engine recorded `docker` and never took
+    the in-process route — the one machine class the work exists for. `scripts/e2e/toolchain.mjs`
+    now names the provider it proves (`setup --speech docker`) instead of inferring it from that
+    order, `--speech <route>` is how a user pins one, and a recorded, still-working `docker` route
+    keeps the machine it is on so a re-run of `setup` never moves narration onto a different engine
+    unasked. The proof's three lines are deleted and it asserts the marker's own path on the
+    worker's provenance line instead. `.github/workflows/e2e-toolchain.yml`'s
+    `windows-delivery-position` job now reads back what `deliveryPosition()` says today, with the
+    three retired sentences asserted absent; it is `workflow_dispatch` only and, per the note at the
+    head of this list, has not been dispatched.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
   - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
@@ -1142,6 +1243,21 @@ capability, and it already has a decision record behind it.
     ships a refusal that says all of this in the message a user meets; what it cannot do is publish.
     Windows has no other route — the pinned Kokoro-FastAPI image is linux/amd64 and `--tts-url`
     records a server somebody else already runs — so this bullet is the whole of the closure.
+  - *Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): **this
+    sub-bullet is obsolete, and it stays here saying why rather than being deleted.*** Its last
+    sentence — "Windows has no other route … so this bullet is the whole of the closure" — is now
+    false. Windows has a route, it is the **same** route every other platform uses, and it needs
+    nothing published: `setup` acquires the Kokoro-82M ONNX graph, a voice pack and this platform's
+    ONNX Runtime from their own upstream homes, each pinned by digest, and speech then runs inside
+    the narration worker. So **a native speech bundle per platform is no longer phase-4 work at
+    all** — not deferred, not descoped, but unnecessary, and the four-platform build matrix,
+    standalone CPython, the wheel closure and the relocation tooling it implied are unnecessary with
+    it. This phase keeps the two things this sub-bullet was attached to and that are still owed: the
+    **update feed** and the **version-and-checksum manifest**, which remain infrastructure for the
+    browser's expected digest, for the `bundle` route that still reads one, and for
+    `electron-updater`. What made the bundle avoidable was a licence problem rather than a
+    packaging one — the phonemizer every route to Kokoro's Python stack reaches is GPL, and removing
+    it deletes words from the audio — and ADR 0028 carries that argument.
 - **Code signing and notarisation for macOS and Windows.** Phases 0 and 2 ship unsigned
   artefacts by design. This is also what makes the standalone binary a **recommended** way to
   install the always-on daemon: an npm-delivered CLI carries no `com.apple.quarantine`, so

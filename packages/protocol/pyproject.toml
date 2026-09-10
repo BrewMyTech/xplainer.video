@@ -4,7 +4,7 @@
 # into both and the two halves must never be regenerated separately.
 #
 # Recorded as deviation D-1 in the plan: the spec's proposed layout listed only
-# apps/api and services/tts-sidecar as uv members.
+# apps/api (since relocated, ADR 0023) and services/tts-sidecar as uv members.
 [project]
 name = "xplainer-protocol"
 version = "0.0.0"

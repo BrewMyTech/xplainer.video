@@ -149,7 +149,8 @@ describe("the client surface is optional", () => {
       });
       expect([route.path, answer.status]).toEqual([route.path, 404]);
     }
-    // The rest of the application is untouched: this is the shape `services/media-service` binds.
+    // The rest of the application is untouched: this is the shape the hosted media service
+    // (relocated to a private repository, ADR 0023) binds.
     expect((await send({ port: harness.server.port }, "/healthz")).status).toBe(200);
   });
 });

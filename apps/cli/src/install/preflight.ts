@@ -59,7 +59,7 @@ import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import process from "node:process";
-import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
+import type { Toolchain, ToolchainComponent, ToolchainFile } from "@xplainer/protocol";
 import type { SupervisorKind } from "../daemon/daemon-state.js";
 import {
   INSTALL_CONFLICT_EXIT_CODE,
@@ -386,6 +386,19 @@ export function toolchainMarkerPath(stateDir: string): string {
 }
 
 /**
+ * Every path one component records, de-duplicated, with `path` first.
+ *
+ * It lives here rather than beside the writer because both readers of the marker need it and this
+ * module is the one `setup/toolchain.ts` already imports — the other direction would be a cycle.
+ * `path` first because it is the field an older marker has and the one a message should lead with;
+ * de-duplicated because a multi-file component's `files` normally also carries the artefact `path`
+ * names, and a check that reported the same missing file twice would read as two problems.
+ */
+export function componentPaths(component: ToolchainComponent): string[] {
+  return [...new Set([component.path, ...(component.files ?? []).map((file) => file.path)])];
+}
+
+/**
  * Ask every question, in ADR 0020's order, and answer without touching anything.
  *
  * It is `async` for one reason: establishing whether a port is free means trying to bind it, and
@@ -571,7 +584,15 @@ function probeToolchain(stateDir: string): ToolchainProbe {
     };
   }
 
-  const missing = [marker.chrome.path, marker.speech.path].filter((entry) => !existsSync(entry));
+  // Every recorded path, not only the two `path` fields. ADR 0020 §Ordering makes this probe
+  // "verifies the recorded paths still exist", and a component made of several files — the ONNX
+  // speech route records its model, its voice and this platform's runtime in `files` — has more
+  // than one. Checking only `path` would let an install register a daemon whose synthesiser was
+  // half cleaned away, which is exactly the three-days-later failure this refusal exists to
+  // prevent. A marker with no `files` is checked exactly as it always was.
+  const missing = [...componentPaths(marker.chrome), ...componentPaths(marker.speech)].filter(
+    (entry) => !existsSync(entry),
+  );
   return {
     path,
     marker,
@@ -1297,7 +1318,7 @@ function readMarker(parsed: unknown): Toolchain | null {
   return { format_version: formatVersion, created_at: createdAt, chrome, speech, workspace };
 }
 
-/** One acquired binary's record, or `null` when it is not one. */
+/** One acquired component's record, or `null` when it is not one. */
 function readComponent(value: unknown): ToolchainComponent | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
@@ -1315,7 +1336,45 @@ function readComponent(value: unknown): ToolchainComponent | null {
   ) {
     return null;
   }
-  return { version, path, sha256, provider };
+  const files = readFiles(raw.files);
+  if (files === undefined) {
+    return null;
+  }
+  return { version, path, sha256, provider, ...files };
+}
+
+/**
+ * A component's optional `files`, or `undefined` for a document this build will not accept.
+ *
+ * Absent is valid and is what every single-artefact route records. Present and malformed is not:
+ * dropping a `files` array that could not be parsed would turn a corrupt marker into one recording
+ * fewer paths than the component has, and the existence check above would then pass over the very
+ * files it exists to notice.
+ */
+function readFiles(value: unknown): { files?: ToolchainFile[] } | undefined {
+  if (value === undefined) {
+    return {};
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const files: ToolchainFile[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return undefined;
+    }
+    const raw = entry as Record<string, unknown>;
+    if (
+      typeof raw.path !== "string" ||
+      raw.path === "" ||
+      typeof raw.sha256 !== "string" ||
+      typeof raw.bytes !== "number"
+    ) {
+      return undefined;
+    }
+    files.push({ path: raw.path, sha256: raw.sha256, bytes: raw.bytes });
+  }
+  return { files };
 }
 
 /** The workspace payload's identity, or `null` when it is not recorded. */

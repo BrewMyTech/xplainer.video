@@ -125,3 +125,42 @@ custom domain.
 Nothing above is rewritten. Download-on-first-run is still the decision, the installer still stays
 small enough to be worth signing, and the two acquisition paths for one browser — local download at
 first run, hosted bake at build time — are still tied together by the same pinned Remotion line.
+
+## Note, 2026-09-10: this is now implemented for speech, and it needed no CDN of ours to do it
+
+Added as a dated note rather than a rewrite. The decision is unchanged and is the one that was
+carried out. [ADR 0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) is the record; three things
+happened underneath this one.
+
+**Speech is acquired on first run, for real, on every platform but one.** The note above records
+`setup` with three speech routes, a `bundle` route with nothing published to fetch, and **no working
+route at all on Windows**. There is now a fourth: `xplainer setup` fetches the Kokoro-82M ONNX graph
+and one voice pack from the HuggingFace repository they live in, and this platform's ONNX Runtime
+from the npm registry — four artefacts, each pinned by digest, each verified before use, each
+committed by one `rename`, measured at 39.7 s for all four on darwin-arm64. That is precisely the
+resumable, verified, explicitly-invoked first-run acquisition this record chose over bundling, and
+it is the first time the speech half of it exists rather than being described. The exception is
+`darwin-x64`: ONNX Runtime publishes no binding for it, so an Intel Mac is refused by name and keeps
+the two routes it had.
+
+**It needed neither a CDN nor a manifest of ours, which this record's first Consequence assumed it
+would.** That consequence books "a CDN and a version/checksum manifest become infrastructure" and a
+`TTSModelPackage` entity carrying a per-OS artefact, a version and a checksum. The `onnx` route
+carries no per-OS artefact of ours at all: every byte comes from the component's own upstream home,
+pinned by revision and digest in reviewed code, so nothing has to be published for it to work and
+the R2 bucket, the connected custom domain and its Cache Rule are not on its path. The manifest
+remains infrastructure for the **browser**, whose expected digest it carries, and for the `bundle`
+route, which still reads it. The prediction was right about the browser and wrong about speech — and
+being wrong about speech is what removed a phase-4 milestone rather than adding one.
+
+**This record's own fourth Decision Driver is what rejected the obvious dependency, and it did the
+work in a case its stated mechanism does not cover.** The driver reads: *"CI must not download models
+or browsers during `pnpm install` — AC-1d greps every `package.json` for a `postinstall` that
+fetches a browser, a model or a binary."* `onnxruntime-node` declares exactly such a `postinstall`
+— it fetches a 191,730,792-byte CUDA package from `api.nuget.org` on `linux/x64` — and taking it as
+a dependency would have run that fetch on **the user's** `npm install` and on every CI runner that
+installed this package. The grep AC-1d names reads the `package.json` files *in this repository* and
+would not have seen it; what caught it was reading the dependency, which is the driver being applied
+rather than the gate firing. AC-1d carries a dated note of its own saying so, and this is the second
+time the "explicit command, never an install hook" reasoning in §Decision Outcome has decided
+something — the first was `setup` itself.

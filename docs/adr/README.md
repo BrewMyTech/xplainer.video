@@ -67,8 +67,8 @@ must resolve to "relocated" rather than looking like a typo.
 | [0002](0002-language-split-python-control-plane-ts-media-plane.md) | Language split: Python hosted control plane, TypeScript media plane and local runtime | accepted — **hosted half relocated (0023)** |
 | [0003](0003-tier-boundary-and-open-later-plan.md) | Tier boundary: `hosted` may import `open-later`, never the reverse — machine-checked from the first commit, with the open-source extraction checklist | accepted — note 2026-09-06 |
 | [0004](0004-electron-over-tauri.md) | Electron over Tauri for the desktop client, and the two `.npmrc` settings electron-builder requires | accepted |
-| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — note 2026-09-08 |
-| [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted |
+| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10 |
+| [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — note 2026-09-10 |
 | [0007](0007-mcp-tool-contract-and-put-source.md) | Eight MCP tools with `put_source`, and JSON Schema in `packages/protocol` as the single source of truth for both languages | accepted |
 | [0008](0008-async-job-model-poll-and-progress-no-agent-webhooks.md) | Async job model: return `job_id`, agent polls `explainer_job`, servers emit MCP progress — no webhooks to agents | accepted |
 | [0009](0009-remote-mcp-and-oauth-2-1-with-external-authorization-server.md) | Remote MCP over Streamable HTTP as an OAuth 2.1 resource server, with an external IdP as the authorization server | accepted — **hosted endpoint relocated (0023)**; kept because it explains why the *local* daemon has no OAuth |
@@ -90,6 +90,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted — dated notes, latest 2026-09-08 |
 | [0026](0026-agent-first-repository-contracts.md) | The repository's contracts are machine-checked — ten `tsconfig` flags, `isolatedDeclarations`, seven Biome rules, nine ruff groups, five committed API reports and a checked `docs/ARCHITECTURE.md` — and `AGENTS.md` is the one agent instruction surface | accepted |
 | [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted |
+| [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 
 ### The relocated five, and why each could not stay
 
@@ -186,6 +187,23 @@ happens to it when it is replaced. Each note records only what happened undernea
 Six is the widest set of records any one amendment here has touched, and the convention holds
 unchanged for all of them: the argument lives in ADR 0027's own body, each amended record keeps its
 status and its text, and its note is a pointer plus what changed underneath it.
+
+ADR 0005 and ADR 0006 each gained a dated note of 2026-09-10 pointing at
+[ADR 0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md), and **neither body was rewritten.**
+ADR 0005 because its download-on-first-run decision is now implemented for speech — and implemented
+without the CDN and the per-OS artefact manifest its own first Consequence booked as
+infrastructure, because every byte of the new route comes from its component's upstream home. ADR
+0006 because ADR 0028 is the first thing to amend a *reason* rather than a decision or a
+consequence: its second Decision Driver argued that the contract had to be a **network** contract
+and not a library API, because two backends — a hosted container and a per-OS local install — had to
+satisfy it. The hosted container relocated ([ADR 0023](0023-split-the-repository.md)) and speech now
+runs in the narration worker's own process, so that driver has lost both halves of its premise while
+the decision it justified stands untouched: the HTTP contract is still the contract, two of the four
+speech routes still speak it, `packages/tts-client` still pins the payload, and the record's *first*
+driver — word-level timestamps are non-negotiable — is exactly what selected ADR 0028's engine.
+A note that retires a justification while leaving the decision in force is a third kind, beside
+ADR 0018's addition and ADR 0020's reversal of a stated consequence, and it is recorded here so the
+next one has a precedent to follow.
 
 ## Licence
 

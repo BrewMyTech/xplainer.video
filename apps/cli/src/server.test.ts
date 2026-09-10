@@ -4,9 +4,10 @@
  * Every test binds the real server on an ephemeral port and talks to it over the
  * network, because AC-14c and AC-14d are about what a curl and an MCP client
  * see, not about what the app object contains. The tool list is compared against
- * `TOOL_NAMES` from `@xplainer/protocol` — never against `apps/api`'s Python
- * assertion and never against a list written here — so the two language surfaces
- * are pinned to the manifest instead of to each other (plan §5 R20).
+ * `TOOL_NAMES` from `@xplainer/protocol` — never against the Python assertion in
+ * the hosted API (relocated to a private repository, ADR 0023) and never against
+ * a list written here — so the two language surfaces are pinned to the manifest
+ * instead of to each other (plan §5 R20).
  *
  * The backend under the server is the **real** one — `createLocalBackend()` over a temporary
  * workspace and a temporary job store — and not a stub, because two of these tests are about what
@@ -178,7 +179,7 @@ describe("xplainer serve", () => {
   /**
    * The identity row, and the one caller that has none.
    *
-   * A server built with no identity is `services/media-service`: it takes no state directory and
+   * A server built with no identity is the hosted media service: it takes no state directory and
    * holds no ownership, so there is nothing for it to advertise. Both fields are then `null` rather
    * than absent, which is what keeps the body one shape — a reader never has to tell "this release
    * does not have the field" apart from "this server is not a daemon".
@@ -585,7 +586,7 @@ describe("the loopback guard on a bound listener", () => {
   });
 
   /**
-   * The guard is a parameter, not a mode: the IPC listener and `services/media-service` pass their
+   * The guard is a parameter, not a mode: the IPC listener and the hosted media service pass their
    * own, and a server given none is the one every other test in this file binds.
    */
   it("does not authenticate a server that was given no guard", async () => {

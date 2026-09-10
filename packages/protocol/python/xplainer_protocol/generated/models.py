@@ -46,12 +46,12 @@ class Caption(BaseModel):
 
 class Captions(RootModel[list[Caption]]):
     """
-    Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.
+    Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
     """
 
     root: list[Caption] = Field(
         ...,
-        description="Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
+        description="Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
         title='Captions',
     )
 
@@ -212,33 +212,28 @@ class TimingsSegment(BaseModel):
     )
 
 
-class ToolchainComponent(BaseModel):
+class ToolchainFile(BaseModel):
     """
-    One acquired binary: what it is, where it ended up, what it hashed to, and which route brought it.
+    One file a multi-file component is made of, and the two facts that let a later run decide whether it is still the file that was acquired.
     """
 
     model_config = ConfigDict(
         extra='forbid',
     )
-    version: str = Field(
-        ...,
-        description='The version acquired, exactly as its own provider spells it. Compared as a string and never parsed: an upgrade is reported to the user, and the daemon never applies one itself.',
-        min_length=1,
-    )
     path: str = Field(
         ...,
-        description='The absolute path this component was resolved to. `install` checks that it still exists before it registers anything, which is the difference between "setup has been run" and "setup has been run and its results are still here".',
+        description="The absolute path on this machine, resolved the same way and for the same reason as the component's own `path`.",
         min_length=1,
     )
     sha256: str = Field(
         ...,
-        description='The SHA-256 of the acquired artefact, lowercase hex, as verified against the expected digest the toolchain manifest carries for this platform. Recorded so a later check can tell a replaced binary from a missing one.',
+        description='The SHA-256 of this file, lowercase hex. For a file fetched whole it is the reviewed digest it was admitted on; for a file taken out of a verified archive it is the digest of what came out, recorded so a later run can detect drift in a file whose archive is long gone.',
         pattern='^[0-9a-f]{64}$',
     )
-    provider: str = Field(
+    bytes: int = Field(
         ...,
-        description='Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, `docker`, `bundle` or `url` for the three speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.',
-        pattern='^[a-z][a-z0-9-]*$',
+        description='Its length. Recorded so a check can refuse a truncated or replaced file on a `stat` rather than by hashing a hundred megabytes, and so a report can say how much of the disk the component is.',
+        ge=0,
     )
 
 
@@ -569,7 +564,7 @@ class ExplainerStillOutput(BaseModel):
 
 class Narration(BaseModel):
     """
-    The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.
+    The narration spec an agent hands to explainer_narrate. Field defaults mirror the reference implementation that consumes this document.
     """
 
     model_config = ConfigDict(
@@ -629,26 +624,38 @@ class Timings(BaseModel):
     )
 
 
-class Toolchain(BaseModel):
+class ToolchainComponent(BaseModel):
     """
-    The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install "checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check compares the workspace it records against an incoming runtime's template pins. The three components are the two binaries a render needs — the Chrome Headless Shell that draws every frame, and the speech synthesiser every narration goes through, each recorded with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk — plus the workspace payload, which is recorded here rather than beside the runtime because it survives daemon updates while the runtime does not. Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.
+    One acquired component: what it is, where it ended up, what it hashed to, and which route brought it. Most routes acquire one file and `path` names it. A route that acquires several — the in-process ONNX speech path needs a model graph, a voice tensor and a platform runtime, and no one of them is the component — also records `files`, so that a reader checking that what `setup` produced is still here checks all of it rather than the one artefact `path` happened to name.
     """
 
     model_config = ConfigDict(
         extra='forbid',
     )
-    format_version: int = Field(
+    version: str = Field(
         ...,
-        description='The shape of this document. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon.',
-        ge=1,
+        description='The version acquired, exactly as its own provider spells it. Compared as a string and never parsed: an upgrade is reported to the user, and the daemon never applies one itself.',
+        min_length=1,
     )
-    created_at: AwareDatetime = Field(
+    path: str = Field(
         ...,
-        description="When `setup` finished acquiring what is recorded below. RFC 3339, so a support report can say how old the toolchain is without the file's mtime, which a copy or a restore rewrites.",
+        description='The absolute path this component was resolved to. `install` checks that it still exists before it registers anything, which is the difference between "setup has been run" and "setup has been run and its results are still here".',
+        min_length=1,
     )
-    chrome: ToolchainComponent
-    speech: ToolchainComponent
-    workspace: ToolchainWorkspace
+    sha256: str = Field(
+        ...,
+        description='The SHA-256 of the acquired artefact, lowercase hex, as verified against the expected digest the toolchain manifest carries for this platform. Recorded so a later check can tell a replaced binary from a missing one.',
+        pattern='^[0-9a-f]{64}$',
+    )
+    provider: str = Field(
+        ...,
+        description='Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.',
+        pattern='^[a-z][a-z0-9-]*$',
+    )
+    files: list[ToolchainFile] | None = Field(
+        None,
+        description='Every file this component is made of, where it is made of more than the one `path` names. Optional, and absent for every route that acquires a single artefact — which is why adding it did not move `format_version`: a build that does not read it still finds everything it needs, and a build that does reads a strictly larger set. It is a **small, named** set and never a tree inventory: the four artefacts the ONNX speech route pins, not the several thousand files inside an unpacked bundle. Its purpose is the existence check ADR 0020 §Ordering requires of `daemon install` — "verifies the recorded paths still exist" — which for a multi-file component is only meaningful if every path is recorded. The digests make the same check able to tell a replaced file from a missing one, and are what a warm cache is re-verified against instead of being trusted. It carries no `minItems`, deliberately: a provider that records the field and then leaves it empty is caught by a runtime assertion beside the provider that knows how many files its own route has, and a schema keyword would instead have made the shape depend on `provider` — a conditional, which is the one construct the codegen splitter handles badly.',
+    )
 
 
 class ExplainerNarrateInput(BaseModel):
@@ -670,3 +677,25 @@ class ExplainerNarrateInput(BaseModel):
         False,
         description='Emit silence of a plausible length instead of calling the TTS server. Produces real timings.json and captions.json, so a composition can be built and checked before any speech is synthesised.',
     )
+
+
+class Toolchain(BaseModel):
+    """
+    The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install "checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check compares the workspace it records against an incoming runtime's template pins. The three components are the two binaries a render needs — the Chrome Headless Shell that draws every frame, and the speech synthesiser every narration goes through, each recorded with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk — plus the workspace payload, which is recorded here rather than beside the runtime because it survives daemon updates while the runtime does not. Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    format_version: int = Field(
+        ...,
+        description='The shape of this document. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon.',
+        ge=1,
+    )
+    created_at: AwareDatetime = Field(
+        ...,
+        description="When `setup` finished acquiring what is recorded below. RFC 3339, so a support report can say how old the toolchain is without the file's mtime, which a copy or a restore rewrites.",
+    )
+    chrome: ToolchainComponent
+    speech: ToolchainComponent
+    workspace: ToolchainWorkspace

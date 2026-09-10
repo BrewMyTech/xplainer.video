@@ -602,10 +602,19 @@ function dockerAnswers(pathValue) {
 }
 
 /**
- * Which speech route this machine has, in the precedence the gate owns (phase 3's docblock).
+ * Which speech route this gate can own the lifetime of, in the precedence the gate owns (phase 3's
+ * docblock).
  *
- * It answers what is *possible* here; who starts what follows from the answer and is
- * {@link startProvider}'s. The `docker` question is asked **as `setup` will see it** — with the
+ * **It answers a narrower question than "what speech does this machine have", and since the `onnx`
+ * route landed the difference matters.** Every platform has a working speech route now; what this
+ * function looks for is a *provider* — a server somebody else runs, or a container this gate can
+ * start on a free port and stop in a `finally`. The in-process synthesiser is neither, and taking it
+ * here would add ~204 MB from three upstream hosts to a gate whose subject is the browser, the
+ * workspace, the degraded `/healthz` and the rollback rerun. `pnpm e2e:speech` is the proof that
+ * owns that route, and `--speech docker` is what this gate passes so that `setup` records the
+ * provider this file is about rather than the first one the precedence offers.
+ *
+ * Who starts what follows from the answer and is {@link startProvider}'s. The `docker` question is asked **as `setup` will see it** — with the
  * scrubbed `PATH`, because that is the environment the artefact is run under and a probe from this
  * script's own `PATH` would promise a route `setup` then cannot take. Measured on 2026-09-08: with
  * `PATH=/usr/bin:/bin` a macOS `setup` exits `3` with "docker is not on this machine's PATH", while
@@ -633,8 +642,11 @@ function speechPlan() {
       kind: "none",
       path: shellPath(),
       why:
-        "Windows has no working speech route this phase: the docker provider cannot pull a " +
-        "linux/amd64 image, and nothing is published for the bundle provider to fetch (§2.5, P2-4)",
+        "Windows has no route **this gate can own the lifetime of**: the docker provider cannot " +
+        "pull a linux/amd64 image and nothing is published for the bundle provider to fetch " +
+        "(§2.5). It is no longer true that Windows has no speech at all — the in-process onnx " +
+        "route runs there and `pnpm e2e:speech` is its proof — and this gate deliberately does " +
+        "not take it: what it exercises is a provider somebody starts and stops around one run",
     };
   }
 
@@ -666,7 +678,10 @@ function speechPlan() {
     why:
       "XPLAINER_TTS_URL is unset and no Docker engine answers to a process with the scrubbed " +
       `PATH${client === null ? "" : `, or with ${dirname(client)} added to it`}, so there is no ` +
-      "provider on this machine for setup to record or for this gate to start",
+      "provider on this machine whose lifetime this gate can own. The in-process onnx route is " +
+      "available here and is not taken: it would add ~204 MB from three upstream hosts to a gate " +
+      "whose subject is the browser, the workspace and the rollback rerun, and `pnpm e2e:speech` " +
+      "is the proof that owns it",
   };
 }
 
@@ -1088,8 +1103,9 @@ async function main() {
     PATH: plan.path,
   });
   if (plan.kind === "none") {
-    // The browser-and-workspace-only form, which is what a Windows user has: a plain `setup` there
-    // exits 3 on the missing speech route and the render half would never run.
+    // The browser-and-workspace-only form: `--skip-speech` is what a user runs who does not want a
+    // speech acquisition in this run at all, and it is the form this gate needs, because the route
+    // it could otherwise take here is the ~204 MB in-process one it deliberately does not exercise.
     const partial = spawnLogged(
       "setup --skip-speech --workspace",
       interpreter,
@@ -1099,7 +1115,7 @@ async function main() {
     check(
       partial.status === 0,
       "`setup --skip-speech --workspace` exited 0, having acquired the browser and the workspace " +
-        "on a machine with no speech route",
+        "without acquiring any speech route",
     );
     check(
       !existsSync(join(paths.state, TOOLCHAIN_MARKER_FILE)),
@@ -1109,7 +1125,17 @@ async function main() {
   }
 
   const setupArgv = [entry, "setup", "--manifest", MANIFEST];
-  if (plan.kind !== "docker") {
+  if (plan.kind === "docker") {
+    // `--speech docker` NAMES THE ROUTE THIS GATE IS PROVING, and it is required rather than
+    // tidy. Phase 5 below opens `marker.speech.path` **as the docker receipt** to read
+    // `receipt.image`, and since 2026-09-10 `onnx` sits *above* `docker` in `setup`'s precedence
+    // (`setup/providers/speech.ts`) — so a bare `setup` on this machine would acquire the model
+    // graph, record it at that path, and this gate would `JSON.parse` 92 MB of ONNX. Pinning is
+    // also the honest form: what this leg is here to exercise is T19's docker provider, and a gate
+    // that inferred its subject from a precedence it does not own was one reordering away from
+    // proving something else. The in-process route has a proof of its own, `pnpm e2e:speech`.
+    setupArgv.push("--speech", "docker");
+  } else {
     setupArgv.push(
       "--tts-url",
       plan.kind === "external" ? plan.url : `http://127.0.0.1:${KOKORO_PORT}`,

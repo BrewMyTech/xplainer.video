@@ -183,6 +183,33 @@ describe("xplainer setup", () => {
     expect(second.stdout).not.toContain("still to acquire: speech");
   });
 
+  /**
+   * `--speech` names one of the two routes that acquire something, and a value that is neither is a
+   * usage error before anything is resolved — exit `1`, the table's usage code, with the sentence
+   * naming both routes *and* the two ways to reach the other two. A `choices()` on the option would
+   * exit `1` too and would say only "allowed choices are onnx, docker", which leaves a user who
+   * meant a server they already run with nowhere to go.
+   */
+  it("refuses a --speech value that is not a route, with exit 1 and nothing written", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+
+    const { stderr, exitCode } = await run([
+      "setup",
+      "--state-dir",
+      stateDir,
+      "--speech",
+      "kokoro",
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("--speech kokoro is not a route");
+    expect(stderr).toContain("onnx or docker");
+    expect(stderr).toContain("--tts-url <url>");
+    expect(existsSync(toolchainMarkerPath(stateDir))).toBe(false);
+    // Not even the toolchain directory: the check is above every resolution this command does.
+    expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(false);
+  });
+
   it("refuses a staged payload built for another platform, with exit 3 and nothing recorded", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");

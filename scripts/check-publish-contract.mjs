@@ -125,6 +125,37 @@ const EXPECTED_AUTHOR = "Rishav Anand <rishav@brewmytech.com>";
 const PRIVATE_REPOSITORY_NAME = "xplainer-hosted";
 
 /**
+ * A path into the private reference implementation (ADR 0002, ADR 0006, ADR 0007).
+ *
+ * `~/projects/max` is where this product's behaviour was first written down, and
+ * early schema descriptions and docblocks cited it by path and line — provenance
+ * that is precise, useful in review, and meaningless to a stranger, because the
+ * repository it names is not one they can open.
+ *
+ * It is a SECOND rule rather than another spelling of the one above, and the
+ * reason is the miss it exists to close. That rule matches a repository NAME;
+ * this one matches a PATH, and nothing matched a path until 2026-09-09. Twelve
+ * schema `description` strings cited the reference implementation, ten were
+ * scrubbed by hand in one pass, and the two naming `narrate.py` survived it —
+ * reaching `schemas`, `python/**\/*.py` and `dist/**\/*.d.ts`, all three of
+ * which `@xplainer/protocol` ships. A hand-scrubbed class comes back; a matched
+ * one does not.
+ *
+ * Anchored on a token boundary so `minmax/`, `@scope/max/` and the like are not
+ * matches, and written as a pattern rather than a literal because the leak is
+ * the shape `max/<anything>`, not one file that happened to be cited twice.
+ *
+ * It fails CLOSED, and the cases where that is wrong are known rather than
+ * discovered: `Math.max/2`, `the max/min ratio` and `throughput in max/sec` all
+ * match and none is a leak. A minified bundle dividing by a `.max` property is
+ * the one that could redden a correct publish. That is a spurious red, not a
+ * missed leak, and `EXEMPTIONS` is where it is answered — deliberately, with the
+ * path written down, rather than by loosening the pattern until it stops
+ * catching the thing it exists for.
+ */
+const PRIVATE_REFERENCE_PATH = /(^|[^A-Za-z0-9_@/-])max\/[A-Za-z0-9_.-]/;
+
+/**
  * The publishable set, declared rather than discovered.
  *
  * Discovery alone cannot catch drift: a member that silently lost `private:
@@ -279,6 +310,19 @@ const CONTENT_RULES = [
       "patching dist/.",
     appliesTo: () => true,
     matches: (text) => text.includes(PRIVATE_REPOSITORY_NAME),
+  },
+  {
+    id: "no-private-reference-path",
+    label: "a path into the private reference implementation in the tarball",
+    detail:
+      "A `max/...` path cites the private reference implementation this product was derived " +
+      "from (ADR 0002). It names a file a reader cannot open, and the line numbers beside it " +
+      "are provenance for us and noise for them. Keep the claim the sentence makes and drop " +
+      'the coordinate: "mirrors the reference implementation" says everything a consumer ' +
+      "can act on. Fix it at the source the file was generated from — a schema description, a " +
+      "docblock — never by patching dist/.",
+    appliesTo: () => true,
+    matches: (text) => PRIVATE_REFERENCE_PATH.test(text),
   },
 ];
 
@@ -543,6 +587,42 @@ const MUST_SHIP_FILES = [
     why: "Scaffold template read verbatim at runtime and edited by the agent.",
   },
 
+  // --- The G2P data files, read verbatim at runtime ------------------------
+  //
+  // src/g2p/ resolves these relative to import.meta.url, so dist/g2p/*.js needs
+  // its own copy beside it; copy-g2p-data.mjs puts one there at build time. Two
+  // of the three are read on the first narration of a process and the third is
+  // a licence, so a minifier or formatter reaching any of them either changes a
+  // pronunciation or breaks an attribution.
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/lexicon.txt",
+    identicalTo: "src/g2p/data/lexicon.txt",
+    why: "The curated domain lexicon, parsed line by line at runtime.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/cmudict.dict",
+    identicalTo: "src/g2p/data/cmudict.dict",
+    why: "CMUdict, parsed line by line at runtime; the vendored copy is upstream verbatim.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/cmudict.LICENSE",
+    identicalTo: "src/g2p/data/cmudict.LICENSE",
+    why:
+      "CMUdict is 2-clause BSD and clause 1 requires the notice and disclaimer to travel with " +
+      "the source. The dictionary is in this tarball, so its licence has to be too.",
+  },
+  {
+    package: "@xplainer/render-core",
+    path: "dist/g2p/data/kokoro-tokenizer.json",
+    identicalTo: "src/g2p/data/kokoro-tokenizer.json",
+    why:
+      "Kokoro's 115-symbol vocabulary, read at runtime to refuse a phoneme the model would " +
+      "silently drop. Reformatting it is harmless; replacing it is not, so the bytes are pinned.",
+  },
+
   // --- Prose an agent reads as instructions --------------------------------
   //
   // Obfuscating prose is not a coherent operation. Both plugin copies must stay
@@ -708,6 +788,17 @@ const SELF_TESTS = [
       text: `/** Relocated to BrewMyTech/${PRIVATE_REPOSITORY_NAME}. */\n`,
     },
     clean: { path: "dist/index.d.ts", text: "/** Relocated to a private repository. */\n" },
+  },
+  {
+    rule: "no-private-reference-path",
+    violating: {
+      path: "dist/index.d.ts",
+      text: "/** Field defaults mirror max/.explainers/scripts/narrate.py:191-196. */\n",
+    },
+    clean: {
+      path: "dist/index.d.ts",
+      text: "/** Field defaults mirror the reference implementation. */\n",
+    },
   },
 
   // --- MANIFEST_RULES -----------------------------------------------------

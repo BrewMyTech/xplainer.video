@@ -12,22 +12,25 @@ The bar is comprehension. Someone who watches the output should be able to say
 what broke, why it broke, and what the fix does — without opening the diff.
 That bar is met by **showing the mechanism**, not by narrating a slide deck.
 
-## Two backends, one tool set
+## One tool set, and it runs on this machine
 
-The same eight tools are served two ways: by a local runtime on the user's own
-machine, and by the hosted service. The tool names and their schemas are
-identical either way, so nothing else in this document depends on which one you
-are talking to.
+The eight tools are served by a runtime on the user's own machine. Nothing is
+uploaded and nothing renders anywhere else: the workspace, the speech service
+and every frame stay where this session already is.
 
-**Prefer the local tools when they are present.** If this session has a local
-xplainer server registered, call that one: it renders on the machine the user is
+**Prefer the local tools when they are present.** If this session has an
+xplainer server registered, call it: it renders on the machine the user is
 already sitting at, it has no quota, and the finished MP4 lands somewhere they
-can open. Use the hosted tools when no local server is registered, or when the
-local one refuses the work.
+can open. If none is registered, say so and stop — there is no second route to
+reach for.
+
+Rendering uses Remotion. Depending on the size of the user's company and how
+they use it, they may need their own Remotion licence — see
+<https://remotion.pro/license>.
 
 ## Nothing to install
 
-Remotion, React and Tailwind are already installed in a workspace the backend
+Remotion, React and Tailwind are already installed in the workspace the runtime
 owns. You never run `npm install`, never scaffold a project, and never touch
 `node_modules`. Everything goes through the tools:
 
@@ -64,13 +67,12 @@ want beside them. Nothing about what a scene may contain is constrained: a scene
 is ordinary React and you can draw anything. `Scenes.tsx` is scaffolded once, as
 an empty map, and never overwritten, so `explainer_create` stays safe to re-run.
 
-Your files reach the backend through `explainer_put_source`, one call carrying
+Your files reach the runtime through `explainer_put_source`, one call carrying
 every file you changed. Paths are relative to the video, so a scene component
 goes to `scenes/Symptom.tsx` and the map naming it goes to `Scenes.tsx`. Only
-those five exact top-level names are reserved — `scenes/Root.tsx` is yours. When
-`explainer_create` returns a `write_source_to` path — a local backend does — you
-may write the files there directly instead; the same five names are off limits
-there too.
+those five exact top-level names are reserved — `scenes/Root.tsx` is yours.
+`explainer_create` also returns a `write_source_to` path, and you may write the
+files there directly instead; the same five names are off limits there too.
 
 ## The one mechanic that isn't negotiable
 
@@ -132,8 +134,8 @@ written relative to the scene. To land a beat on a specific spoken word, read
 If the caller handed you screenshots, recordings, or diagrams, use them — real
 footage of the bug beats any abstraction you can draw. Lead with it. Send each
 file with `explainer_put_media` and reference it as `staticFile("media/name.png")`;
-`explainer_create` returns the matching `put_media_in` path for backends that
-also let you drop files there yourself.
+`explainer_create` returns the matching `put_media_in` path, so you may also
+drop the files there yourself.
 
 ## Show the mechanism, don't list it
 
@@ -285,10 +287,10 @@ Then render, and report the output path or URL and the duration.
 
 ## Notes
 
-- **Narration needs a speech service.** On a local backend that service runs on
-  the user's machine, and a failed `explainer_narrate` usually means it is not
-  running yet — the local runtime's own setup command installs and starts it. On
-  the hosted backend, read the failure out of `explainer_job` and retry.
+- **Narration needs a speech service.** It runs on the user's machine, and a
+  failed `explainer_narrate` usually means it is not running yet — the runtime's
+  own setup command installs and starts it. Read the failure out of
+  `explainer_job` before retrying.
 - **Re-running is cheap.** Change the narration and re-narrate, or change the
   components and re-render. There is no state to clean up.
 - **The workspace is a build area, not a repository.** Treat the MP4 as the

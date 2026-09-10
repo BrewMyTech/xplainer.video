@@ -8,7 +8,7 @@
  * this command leaves — `<state>/toolchain.json` — is what both of them read instead.
  *
  * **Three components, and each has its own provider module.** The browser
- * (`setup/providers/chrome.ts`), speech (`setup/providers/speech.ts`, over three routes) and the
+ * (`setup/providers/chrome.ts`), speech (`setup/providers/speech.ts`, over four routes) and the
  * render workspace (`setup/providers/workspace.ts`, over two). The command's own job is the order,
  * the selection, the printed report and the marker; every decision about *how* a component is
  * acquired lives with that component.
@@ -29,6 +29,14 @@
  * drag a browser download or a Docker pull in behind it — which is why a positive flag *restricts*
  * rather than adds when it is the only thing given.
  *
+ * **`--speech <route>` selects *which* speech route rather than whether speech is acquired**, so it
+ * is not part of the union rule above and does not select the speech component: it is `--tts-url`'s
+ * counterpart for the two routes that acquire something (`onnx`, `docker`). It exists because the
+ * precedence deliberately will not move a machine that already records a working `docker` route
+ * onto the in-process engine — `setup/providers/speech.ts`'s migration rule — so `--speech onnx` is
+ * how a user asks for that switch, and `--speech docker` is how a machine or a proof pins the
+ * container route on a host where `onnx` would otherwise win.
+ *
  * **A partial run is a success that says what is still missing.** `toolchain.json` records all
  * three components or it is not a valid document, so a run that acquired one of them merges into
  * whatever the last run recorded and, where the result is still incomplete, exits `0` naming the
@@ -45,7 +53,11 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
 import { Command } from "commander";
-import { DAEMON_INTERNAL_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
+import {
+  DAEMON_INTERNAL_EXIT_CODE,
+  PRECONDITION_UNMET_EXIT_CODE,
+  USAGE_EXIT_CODE,
+} from "../daemon/exit-codes.js";
 import { resolveStateDirSetting } from "../daemon/state-dir.js";
 import type { CliIo } from "../io.js";
 import { ArchiveRefusal } from "../setup/archive.js";
@@ -56,7 +68,12 @@ import {
   ToolchainSelectionRefusal,
 } from "../setup/manifest.js";
 import { acquireChrome, ChromeRefusal } from "../setup/providers/chrome.js";
-import { acquireSpeech, SpeechRefusal } from "../setup/providers/speech.js";
+import {
+  acquireSpeech,
+  isSpeechRoute,
+  PINNABLE_SPEECH_ROUTES,
+  SpeechRefusal,
+} from "../setup/providers/speech.js";
 import {
   materialiseRenderWorkspace,
   templateVersion,
@@ -86,6 +103,7 @@ type SetupOptions = {
   skipSpeech?: boolean;
   skipBrowser?: boolean;
   ttsUrl?: string;
+  speech?: string;
   stateDir?: string;
   manifest?: string;
 };
@@ -132,6 +150,10 @@ export function createSetupCommand(io: CliIo): Command {
     .option("--skip-browser", "leave the browser out of this run")
     .option("--skip-speech", "leave speech out of this run")
     .option("--tts-url <url>", "record a Kokoro-FastAPI server this machine does not own")
+    .option(
+      "--speech <route>",
+      `take this speech route and no other (${PINNABLE_SPEECH_ROUTES.join("|")})`,
+    )
     .option("--state-dir <dir>", "where toolchain.json and the acquisitions go")
     .option("--manifest <source>", "read the toolchain manifest from this file or https URL")
     .configureOutput({
@@ -144,6 +166,21 @@ export function createSetupCommand(io: CliIo): Command {
     })
     .exitOverride((error) => io.exit(error.exitCode))
     .action(async (options: SetupOptions) => {
+      // Validated here rather than with a commander `choices()`, because the sentence a wrong
+      // value earns has to name the two routes a value can be *and* the two ways to reach the
+      // other two — a server needs `--tts-url` and its value, and nothing is published for the
+      // bundle route to fetch this phase. `1` is the table's usage code, which is also commander's
+      // own for a rejected argument, so the two halves of the parser cannot disagree.
+      const route = options.speech;
+      if (route !== undefined && !isSpeechRoute(route)) {
+        io.writeErr(
+          `xplainer setup: --speech ${route} is not a route. It takes ` +
+            `${PINNABLE_SPEECH_ROUTES.join(" or ")} — the two routes that acquire something. For a ` +
+            "server you already run pass `--tts-url <url>` instead; the bundle route reads the " +
+            "published manifest and nothing is published to it in this phase.\n",
+        );
+        io.exit(USAGE_EXIT_CODE);
+      }
       const stateDir = resolveStateDirSetting({ flag: options.stateDir }).path;
       const toolchainDir = join(stateDir, TOOLCHAIN_DIR_NAME);
       const workspaceRoot = resolveWorkspaceRoot(stateDir);
@@ -186,16 +223,27 @@ export function createSetupCommand(io: CliIo): Command {
 
         if (components.includes("speech")) {
           const acquired = await acquireSpeech({
-            // A thunk: the `--tts-url` and `docker` routes need no manifest, and this phase's
-            // published address answers nothing, so loading one eagerly would refuse a run that
-            // had no use for it.
+            // A thunk: the `--tts-url`, `onnx` and `docker` routes need no manifest, and this
+            // phase's published address answers nothing, so loading one eagerly would refuse a run
+            // that had no use for it.
             manifest: async () => loaded?.manifest ?? (await requireManifest(options, log)),
             toolchainDir,
             ...(options.ttsUrl === undefined ? {} : { ttsUrl: options.ttsUrl }),
+            ...(route === undefined ? {} : { route }),
+            // What the last run recorded, so the reordering that put `onnx` above `docker` cannot
+            // move a working machine onto a different engine behind its owner's back. The narrow
+            // rule is `providers/speech.ts`'s; this is only where the record comes from.
+            ...(previous?.speech === undefined ? {} : { recorded: previous.speech }),
             log,
           });
           speech = acquired.component;
           log(`speech: recorded the ${acquired.provider} route at ${acquired.component.path}`);
+          // The routes not taken, once more and together. They were printed as the precedence was
+          // walked, interleaved with the download lines of the route that won; a reader asking
+          // "why this one?" after a 200 MB acquisition should not have to scroll back through it.
+          for (const [skipped, reason] of Object.entries(acquired.skipped)) {
+            log(`speech: ${acquired.provider} was chosen over ${skipped} — ${reason}`);
+          }
         }
 
         if (components.includes("workspace")) {

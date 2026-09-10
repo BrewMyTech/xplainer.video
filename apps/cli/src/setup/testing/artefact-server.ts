@@ -34,7 +34,15 @@ export type ArtefactServer = {
   close: () => Promise<void>;
 };
 
-/** The routes the server answers. Anything else is a `404`. */
+/**
+ * The routes the server answers. Anything else is a `404`.
+ *
+ * Each one names a **behaviour**, and the `.zip` in the path is not part of that: it is there
+ * because `download.ts` refuses an artefact by extension before fetching it, so a route has to be
+ * spelled as something the caller under test will agree to download. The ONNX route fetches npm
+ * tarballs and is refused by the same rule the other way round, which is why {@link tarballRoute}
+ * exists — the same behaviours, under `.tgz`, over the same server.
+ */
 export const ARTEFACT_ROUTES = {
   /** Serves the archive, honouring `Range` with a correct `206`. */
   good: "/good.zip",
@@ -73,6 +81,24 @@ export const ARTEFACT_ROUTES = {
   stalls: "/stalls.zip",
 } as const;
 
+/**
+ * The same route, spelled as a gzipped tarball.
+ *
+ * `assertTarballArtefact` and `assertZipArtefact` are mirror images: each refuses, before any
+ * transfer, a URL whose extension is not its own. So a suite about the tar route asks for
+ * `tarballRoute(ARTEFACT_ROUTES.corrupt)` and gets the *corrupt* behaviour under a name the tar
+ * caller will accept. The server maps it back before it decides what to answer, so there is one
+ * implementation of each behaviour and not two.
+ */
+export function tarballRoute(route: string): string {
+  return `${route.replace(/\.zip$/, "")}.tgz`;
+}
+
+/** A requested path back to the {@link ARTEFACT_ROUTES} entry whose behaviour it asks for. */
+export function canonicalRoute(path: string): string {
+  return path.endsWith(".tgz") ? `${path.slice(0, -".tgz".length)}.zip` : path;
+}
+
 /** How long a dropped body's bytes are given to reach the client before the socket is reset. */
 const DROP_DELAY_MS = 50;
 
@@ -97,7 +123,7 @@ export async function startArtefactServer(archive: Buffer): Promise<ArtefactServ
       range: request.headers.range ?? null,
     });
     route({ request, response, path, archive, corrupted, flakyServed });
-    if (path === ARTEFACT_ROUTES.flaky && request.method === "GET") {
+    if (canonicalRoute(path) === ARTEFACT_ROUTES.flaky && request.method === "GET") {
       flakyServed += 1;
     }
   });
@@ -123,8 +149,11 @@ type RouteContext = {
 };
 
 function route(context: RouteContext): void {
-  const { request, response, path, archive, corrupted } = context;
+  const { request, response, archive, corrupted } = context;
   const isHead = request.method === "HEAD";
+  // A `.tgz` request is the same behaviour under the name a tarball caller will accept; see
+  // {@link tarballRoute}. Mapped here so every route below has exactly one implementation.
+  const path = canonicalRoute(context.path);
   switch (path) {
     case ARTEFACT_ROUTES.good:
       serveRangeable(request, response, archive);

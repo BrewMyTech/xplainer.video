@@ -116,7 +116,71 @@ runner because they take tens of seconds
 | `daemon/video-lock.ts` | `<workspace>/locks/<slug>.lock`: one writer per video, across processes — the shared workspace's own exclusion |
 | `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker, and the pinned Remotion CLI with render-core's argv |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
-| `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else `XPLAINER_TTS_URL`, else the tts-client's own resolution |
+| `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else a server somebody named, else the engine `toolchain.json` records, else the tts-client's own default |
+
+**The narration worker is told which state directory this daemon is using**, in the one
+`WorkerSpec.env` this registry sets (`XPLAINER_STATE_DIR`). It has to be: the worker resolves its
+speech route out of `<state>/toolchain.json`, and the state directory is a *setting* whose
+precedence ends in a platform default — `serve --state-dir` moves it, and all three settings travel
+in argv on every platform because Task Scheduler's `<Exec>` action has no environment map. A worker
+left to resolve it for itself would read the platform-default marker on exactly the supervised
+machines the flag exists for. This is not the `PATH` injection D1 refuses: that leaks an interpreter
+onto the `PATH` of everything a worker spawns, and the narration worker spawns nothing.
+
+### `src/speech/` — speech in this process, with no server and no Python
+
+The third implementation of the `SpeechSynthesiser` port `resolveSpeech()` returns, beside the HTTP
+`KokoroClient` and the fixture reader (`.omc/plans/ralplan-speech-onnx.md`). Kokoro-82M runs inside
+the narration worker on an ONNX Runtime `setup` acquired, with `@xplainer/render-core`'s G2P in
+front of it, so a machine narrates with **no Docker, no `--tts-url` and no Python** — and word
+timings come from the model's own per-token duration predictor rather than from an alignment
+estimate.
+
+| Module | What it owns |
+|---|---|
+| `synthesiser.ts` | The port implementation: text → phonemes → tokens → audio and word spans |
+| `timing.ts` | D6 — the duration→seconds conversion, derived per run, and the refusals over it |
+| `tokens.ts` | IPA → token ids with the character offset each came from |
+| `voice.ts` | The voice pack, and which of its 510 style rows speaks a given sentence |
+| `runtime.ts` | The ONNX Runtime as an acquired path (D7), and the four members used of it |
+| `locate.ts` | Where the three artefacts are, as a function type `setup/speech-locate.ts` fills |
+| `errors.ts` | `OnnxSpeechError`: a refusal rather than audio nobody can tell is wrong |
+
+**It may never move into `@xplainer/tts-client`.** `@xplainer/render-core` depends on that package
+for the wire types, so a synthesiser there that imported `phonemise()` would close a cycle. This app
+is downstream of both, which is why the one implementation needing them together lives here.
+
+**The duration→seconds conversion is derived per run and may never be written down.** The published
+figure for this model is `duration / 80`; the spike measured a divisor of ≈40, and the ratio then
+moves by 79% across the speaking-rate range the port accepts — 583 samples per unit at speed 0.8,
+1042 at speed 4. So `timing.ts` computes `waveform.length / Σ durations` from the run that produced
+the audio, which makes the timings agree with the audio whatever the unit means. A constant here
+would be a silent, systematic drift in every caption and every scene boundary.
+
+**The style vector is row `tokenCount - 1` of the voice pack, never the first 256 floats.** A pack
+is 510 rows of 256 float32 and the row carries the prosody of an utterance of that length. Against
+the reference implementation speaking the same phoneme string, row 0 — what the S0b prototype used —
+is 17.1% off on length and 30.6% off at worst, speaking a 112-token sentence in 4.83 s where the
+reference takes 6.95 s. Fluent, self-consistent and wrong; `voice.ts` carries the table.
+
+**A clip is returned untrimmed, and that is a known divergence from the server route rather than an
+oversight.** Kokoro-FastAPI trims; this does not, so the same sentence comes back **8–13% longer** —
+≈0.32–0.49 s of near-silence before the first phoneme and ≈0.19 s after the last. Do not add a trim
+here: the head is a noise floor below −66 dBFS rather than digital silence, the first phoneme's onset
+begins *before* the boundary the duration predictor implies, and a threshold set slightly wrong clips
+the start of the first word — unrecoverable, where untidy padding is not. Pacing is
+`render-core`'s `LEAD_IN_MS` / `GAP_MS` / `TAIL_MS`, which apply to every engine.
+**The padding does not shift the word timings**, which is what makes leaving it in safe: they are
+absolute offsets into the clip as delivered, and the first word's `start_time` lands 13–41 ms
+(mean 29 ms) after the audible onset — under a frame and a half at 30 fps, and the predictor's own
+alignment rather than an arithmetic error. `synthesiser.ts`'s docblock carries the measurements.
+
+**Every path arrives as an argument.** The model, the voice pack and the runtime location are
+options; this directory discovers nothing, reads no marker and resolves no default path. Acquisition
+is `src/setup/`'s and route selection is `workers/speech.ts`'s. `locate.ts` declares the locator as a
+**function type** for exactly that reason, and the reader that fills it —
+`setup/speech-locate.ts`'s `onnxSpeechFromToolchain`, which turns a recorded `onnx` component back
+into these three paths — lives beside the provider that wrote the record.
 
 ### `src/api/` — the client surface a GUI talks to, and what it may never become
 
@@ -307,25 +371,48 @@ archive reader between them.
 |---|---|
 | `manifest.ts` | The manifest's address, its shape, and the mirror of the pinned Remotion line's own Chrome URL selector |
 | `source.ts` | Which of the three manifest sources answered — `--manifest`, the published address, this checkout's committed copy |
-| `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, and the staging-then-`rename` commit |
+| `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, the archive-format seam, the staging-then-`rename` commit, and `acquireFile` for an artefact that is not an archive |
 | `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, and every unsafe entry refused |
+| `tar.ts` | The gzipped-tarball reader: streamed, ustar only, header checksums, and a **selector** so a package carrying five platforms lands one |
+| `acquired.ts` | The record a committed acquisition carries inside itself, and the check a warm cache passes |
 | `providers/chrome.ts` | The headless shell the pinned selector names, admitted on the manifest's **expected** digest |
-| `providers/speech.ts` | The three speech routes, their precedence, and the refusal that names all three |
+| `providers/speech.ts` | The four speech routes, their precedence, `--speech`, and the refusal that names all four |
+| `speech-locate.ts` | The marker read back as three paths: the locator `resolveSpeech()` defaults to |
 | `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
+| `providers/speech-onnx.ts` | The in-process route: the Kokoro model, one voice and this platform's ONNX Runtime, each pinned by digest and each from its own upstream home |
 | `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
 | `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
 | `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
 | `toolchain.manifest.json` | The reviewed document itself — per-platform expected digests, captured at manifest-build time |
-| `testing/` | The loopback artefact server with one route per failure, the writer for archives no archiver produces, and a real marker for the suites downstream |
+| `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, and a real marker for the suites downstream |
 
 **`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
 run to themselves; `--skip-*` flags trim the default; both together give the union. So
 `setup --workspace` is the workspace and nothing else — the form the D8 proof runs under a scrubbed
 `PATH`, which must not drag a browser download or a Docker pull in behind it — while
-`setup --skip-speech` is the browser and the workspace, which is the only form Windows has this
-phase. A partial run **exits `0`** and names what is still to acquire: `toolchain.json` records all
-three components or it is not a valid document, so an incomplete run merges into what the last one
-recorded and writes nothing until the set is complete.
+`setup --skip-speech` is the browser and the workspace, which is the form a machine takes when the
+speech acquisition is not wanted in this run. A partial run **exits `0`** and names what is still to
+acquire: `toolchain.json` records all three components or it is not a valid document, so an
+incomplete run merges into what the last one recorded and writes nothing until the set is complete.
+
+**`--speech <route>` is not part of that union**: it selects *which* speech route rather than whether
+speech is acquired, over the two routes that acquire something (`onnx`, `docker`). It exists because
+of the migration rule below — the precedence deliberately will not move a machine that already
+records a working `docker` route onto the in-process engine, so `--speech onnx` is how a user asks
+for that switch, and `--speech docker` is how `scripts/e2e/toolchain.mjs` names the provider it is
+proving. A value that is neither is a usage error, exit `1`, before anything is resolved.
+
+**The acquisition order is `--tts-url`, then `onnx`, then `docker`, then `bundle`, and a recorded,
+still-working `docker` route keeps the machine it is on.** `onnx` moved above `docker` on 2026-09-10:
+below it, every host with a container engine recorded `docker` and never took the in-process route,
+which defeats what [ADR 0028](../../docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md) exists
+for. The migration rule is the other half and is deliberately narrow — a re-run of `setup` is the
+worst moment to move narration onto a different engine, so a recorded `docker` component whose image
+`docker image inspect` can still address takes the route again and `setup` prints that it did and
+names `--speech onnx`. It is not "whatever the marker says wins": `docker` is the only provider the
+reordering can displace. Every route not taken is printed either way, and the two reasons are
+different sentences — a route *above* the winner was probed and reported itself unavailable, a route
+*below* it was never asked.
 
 **`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8), composed with
 `path.delimiter`.** npm runs lifecycle scripts through `sh -c` and third-party scripts call bare
@@ -349,9 +436,15 @@ precedence is written down rather than improvised: `XPLAINER_TTS_URL` if an oper
 `services:` block already provides one, else a container the gate starts **from the digest in the
 receipt `setup` wrote** on a port the OS chose and stops in a `finally`, else the narration leg is
 skipped with its reason printed. Owning a container for the length of one gate run is not the daemon
-owning one. On Windows the third branch is the only one there is (§2.5, P2-4), and the render half
-still runs — from `XPLAINER_TTS_FIXTURE`, after the browser-and-workspace-only
-`setup --skip-speech --workspace` — so the skip is a skip and never a pass.
+owning one. That gate **names the route it wants** — `setup --speech docker` — rather than inferring
+it from the precedence, which is what let `onnx` move above `docker`: phase 5 of the gate opens
+`marker.speech.path` *as the docker receipt*, so a bare `setup` there would have it `JSON.parse` a
+92 MB model graph. Where no such provider exists the render half still runs — from
+`XPLAINER_TTS_FIXTURE`, after the browser-and-workspace-only `setup --skip-speech --workspace` — so
+the skip is a skip and never a pass. **That skip no longer means the platform has no speech**: the
+`onnx` route runs on all three, and this gate declines it because ~204 MB from three upstream hosts
+does not belong in a proof about the browser, the workspace and the rollback rerun. `pnpm e2e:speech`
+is the proof that owns it.
 
 **`setup/testing/rollback-render.ts` is T16's sixth assertion, and it lives here because only this
 batch has a browser.** B5's boundary suite and its failure proof end every rollback with *readiness*
@@ -375,14 +468,22 @@ URL is chosen by the selector, not by the document.
 creates the bucket and the record; connecting the bucket to the custom domain and adding its Cache
 Rule are manual steps it deliberately does not manage, neither is scheduled here, and no command in
 this repository uploads a manifest — so the published address answers nothing usable, deliberately.
-`deliveryPosition()` is the paragraph `ManifestUnreachable` carries, and it is **per platform**: on
-macOS and Linux it names the two speech routes that do work (`--tts-url`, and the `docker` image
-pinned by digest); on Windows it says there is **no working speech route at all** — nothing
-published for `bundle`, a linux/amd64 image `windows-latest` has no engine for, and a `--tts-url`
-that acquires nothing — and names phase 4 as the milestone rather than offering a route that will
-not work there. That asymmetry is roadmap
-P2-4's — met on macOS and Linux, pending on Windows — and `infra/README.md` §*The delivery position,
-phase 2* is where the infrastructure half is recorded.
+`deliveryPosition()` is the paragraph `ManifestUnreachable` carries, and it is now **one message for
+every platform**: three of the four speech routes read no manifest at all (`--tts-url`, the `docker`
+image pinned by digest, and the in-process `onnx` route), only `bundle` does, and what genuinely is
+waiting on the address is the **browser's** expected digest. It used to carry a second, harder
+paragraph for Windows — no working speech route at all, phase 4 as the milestone — and the `onnx`
+route is what removed it: `win32-x64` and `win32-arm64` are both in `onnxruntime-node`'s published
+set, so the asymmetry P2-4 recorded has gone rather than merely become unreachable, and a sentence
+saying Windows has no speech would now be the most confidently wrong line in the product.
+`infra/README.md` §*The delivery position, phase 2* is where the infrastructure half is recorded.
+**`.github/workflows/e2e-toolchain.yml`'s `windows-delivery-position` job is what reads this message
+back on Windows**, and since 2026-09-10 it asserts what is true now — the delivery position, the
+`onnx` bullet by name, and the **browser's** digest as the one thing waiting on the address — with
+the three retired sentences asserted *absent* so the claim cannot come back by accident. It is
+`workflow_dispatch` only and registers from the default branch, so nothing in `pnpm verify` or in CI
+sees it first: a change to `deliveryPosition()`'s wording has to be made in that job in the same
+commit or it is discovered on the next dispatch.
 
 **The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
 `@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
@@ -420,10 +521,37 @@ never reaches a `fetch` caller — undici turns it into a network error whose `c
 redirect (the arm64 Linux build's CDN answers `307`), and the redirect policy is a pure function so
 the https-downgrade refusal is asserted rather than assumed.
 
-**The zip reader is written here rather than depended on.** A new *runtime* dependency of this
-package is a change to payload 1, to the publish contract and to every installer, which is a large
-blast radius for a fully specified format. It reads the central directory, never the local headers,
-and it refuses an entry that climbs out of the destination before anything is written.
+**Both archive readers are written here rather than depended on.** A new *runtime* dependency of
+this package is a change to payload 1, to the publish contract and to every installer, which is a
+large blast radius for two fully specified formats. The zip reader reads the central directory,
+never the local headers, and it refuses an entry that climbs out of the destination before anything
+is written. The tar reader **streams** — `gunzipSync` on `onnxruntime-node`'s tarball would hold
+111 MB compressed and 296 MB decompressed in two live Buffers — refuses every member type but a file
+and a directory (a pinned archive cannot contain one this build has not seen), checks each header's
+own checksum because that is the one way a streaming parser can go wrong, and shares `safeJoin` with
+the zip reader because that rule is the same rule. What a tar cannot promise is what a central
+directory buys: with no index, a member is judged before **that member** is opened rather than before
+the first one, and the staging-then-`rename` commit is what still makes a refusal commit nothing.
+
+**The ONNX runtime is acquired, not depended on, and the reason is measured** (D7,
+`providers/speech-onnx.ts`'s docblock carries the whole argument). `onnxruntime-node` declares no
+`optionalDependencies` and carries **five** platforms in one package — 296,273,872 bytes unpacked —
+so depending on it would put every one of them into payload 1's closure; and its `postinstall`
+fetches a **191,730,792-byte** CUDA package from `api.nuget.org` on `linux/x64`, which `AC-1d`
+forbids outright. Microsoft's per-platform release archives are not an alternative: they carry the C
+library and **no `onnxruntime_binding.node`** (listed, 2026-09-10). So `setup` fetches the npm
+tarball, keeps this platform's `bin/napi-v6` subtree plus Microsoft's own `dist/` loader, and puts
+`onnxruntime-common` where that loader's own `require` resolves it. `@xplainer/cli`'s npm tarball is
+unchanged either way — `files` is `dist/**` and a dependency is never inside a tarball.
+
+**A warm cache is re-verified, never trusted, and that is a fix rather than a feature.**
+`acquired.ts` is the record every committed acquisition carries inside the tree it commits, written
+by `acquireArtefact`'s `stage` hook *before* the `rename` so it is present exactly when the tree is.
+Until 2026-09-10 `providers/speech-bundle.ts` skipped the download **and the verification** whenever
+its destination existed and then recorded the digest it had merely been told, for a tree nothing had
+checked — and its destination was named after the *version*, so a re-published artefact was served
+from that cold cache for ever. Cache identity now binds the digest (it is in the directory name) and
+a populated destination is judged against the digest its own record says it was admitted on.
 
 ## Public surface
 

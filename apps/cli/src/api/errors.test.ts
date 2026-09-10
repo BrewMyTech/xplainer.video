@@ -3,7 +3,8 @@
  *
  * `errors.ts` matches `JobNotFoundError`, `NotAcceptingJobsError` and `LocalBackendError` by their
  * `name`, because a value import of the first two would drag `src/daemon/` into the application
- * `services/media-service` binds. That is a deliberate coupling to a string, and this file is where
+ * the hosted media service (relocated to a private repository, ADR 0023) binds. That is a
+ * deliberate coupling to a string, and this file is where
  * it is checked: the **real** classes are constructed here — a test file may import anything — and
  * asserted to still carry the names the router branches on. Rename one and this fails, rather than
  * the desktop quietly receiving a `500` where it expected a `404`.

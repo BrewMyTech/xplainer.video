@@ -4,9 +4,10 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 ## What this package is
 
-Five things that travel together: the **Remotion workspace template** under `template/`, the
+Six things that travel together: the **Remotion workspace template** under `template/`, the
 **layout of the workspace that template becomes** in `src/workspace.ts`, the **ownership-aware
-scaffold generator** under `src/scaffold/`, the **narration port** under `src/narrate/`, and the
+scaffold generator** under `src/scaffold/`, the **narration port** under `src/narrate/`, the
+**grapheme-to-phoneme port** under `src/g2p/`, and the
 **render preflight** that refuses an unrenderable job before Chrome is launched.
 
 `src/workspace.ts` is the map: `videoPaths(root, slug)` is the only place `videos/<slug>` and
@@ -18,6 +19,30 @@ The narration port is where a scene duration comes from. It synthesises each seg
 `@xplainer/tts-client`, measures the audio it got back, and writes `narration.wav`,
 `captions.json` and `timings.json` — the document the composition reads and the one thing
 `preflight()` refuses to render without.
+
+The G2P port is what an in-process synthesiser needs before it can speak: English text to
+Kokoro's IPA phoneme string, plus a character span per word so the model's own per-token duration
+predictions can be accumulated back into word timings. It is pure — no network, no ONNX, no clock,
+and no I/O beyond three committed data files under `src/g2p/data/` — and it resolves each word
+through **four layers, in this order**: the curated domain lexicon (`data/lexicon.txt`), CMUdict,
+a deterministic letter-to-sound ruleset, and a named refusal. It lives here rather than in
+`apps/cli` because it is upstream of the narration port and downstream of nothing, and because it
+is the same kind of thing this package already holds: pure arithmetic over narration, tested from
+committed data rather than from a live server.
+
+| Module | What it owns |
+|---|---|
+| `g2p/phonemise.ts` | The entry point: tokens in, one phoneme string and one span per word out |
+| `g2p/tokenise.ts` | What a word is, which punctuation survives, and which symbols are read aloud |
+| `g2p/resolve.ts` | The four layers in order, plus the possessive and compound decompositions |
+| `g2p/lexicon.ts` | Layer 1: the parser for `data/lexicon.txt` |
+| `g2p/cmudict.ts` | Layer 2: the parser for `data/cmudict.dict`, its variants and its annotations |
+| `g2p/letters.ts` | Layer 3a: letter names, and the initialism speller |
+| `g2p/lts.ts` | Layer 3b: the context-sensitive ruleset and the stress assignment over it |
+| `g2p/numbers.ts` | Digits to English words, so a number never reaches the ruleset |
+| `g2p/arpabet.ts` | ARPAbet to IPA, restricted to symbols Kokoro has a token for |
+| `g2p/vocab.ts` | The vendored 115-symbol vocabulary, and the refusal that will not drop a symbol |
+| `g2p/errors.ts` | `G2pError`: the refusal D5 requires instead of an empty string |
 
 File ownership is the idea the whole package is built around
 ([ADR 0018](../../docs/adr/0018-engine-owns-the-composition-shell.md)): the **engine** owns five
@@ -38,8 +63,13 @@ pacing constants `LEAD_IN_MS`, `GAP_MS`, `TAIL_MS`, `DEFAULT_SAMPLE_RATE`, `DEFA
 `DEFAULT_VOICE`, `NARRATION_AUDIO_FILE`, `TIMINGS_FILE`, `CAPTIONS_FILE`; and the workspace layout —
 `videoPaths`, `stillOutput`, `materialiseWorkspace`, `remotionBinary`, `isWorkspaceInstalled`,
 `workspaceNotInstalledMessage`, `listVideoSlugs`, `WORKSPACE_FILES`, `VIDEOS_DIR`, `PUBLIC_DIR`,
-`OUT_DIR`, `MEDIA_DIR`, `RENDERED_FILE`, `NARRATION_SPEC_FILE` and their types. The Remotion template
-itself is not a JavaScript export — it is files, reached through `./template/*`.
+`OUT_DIR`, `MEDIA_DIR`, `RENDERED_FILE`, `NARRATION_SPEC_FILE` and their types; and the G2P port —
+`phonemise`, `kokoroVocabulary`, `kokoroTokenIds`, `unsupportedSymbols`, `G2pError`, and the types
+`Phonemisation`, `WordSpan`,
+`DerivedPronunciation`, `PhonemeSource` and `G2pErrorCode`. The Remotion template
+itself is not a JavaScript export — it is files, reached through `./template/*`. Neither are the
+G2P data files: they are read at runtime through `import.meta.url` and shipped by
+`scripts/copy-g2p-data.mjs`.
 
 Published, emits declarations, carries `api/render-core.api.md`.
 
@@ -47,7 +77,7 @@ Published, emits declarations, carries `api/render-core.api.md`.
 
 ```bash
 pnpm --filter @xplainer/render-core test
-pnpm turbo build --filter @xplainer/render-core   # also copies the templates
+pnpm turbo build --filter @xplainer/render-core   # also copies the templates and the G2P data
 ```
 
 Then the root procedure: `pnpm verify`.
@@ -118,6 +148,49 @@ Then the root procedure: `pnpm verify`.
   template, rather than by whichever installer happens to run next. Adding a file here changes
   `WORKSPACE_FILES`, which is exported, so it changes this package's API report as well.
 
+- **Nothing the G2P emits may fall outside Kokoro's 115-symbol vocabulary.** The model has no
+  error path for an unknown symbol: it drops it, so a stray ASCII `g` where `ɡ` (U+0261) belongs
+  turns "go" into "oh" with nothing anywhere saying so. `src/g2p/vocab.test.ts` enumerates every
+  symbol every layer can produce — the ARPAbet table at each stress level, the letter names, every
+  phone the ruleset can emit, and every line of `data/lexicon.txt` — and asserts each is a key in
+  the vendored tokenizer. `kokoroTokenIds()` refuses rather than skipping, which is the last line
+  rather than the first.
+- **A word the G2P cannot pronounce is a named error, never an empty string** (plan D5). Upstream
+  Kokoro builds its G2P with `unk=` and filters the result, so an out-of-dictionary word vanishes
+  from the audio; in a product where the narration fixes every scene boundary that is a correctness
+  defect. `G2pError` carries the word as a field so the fix — one line in `data/lexicon.txt` — is
+  mechanical.
+- **A pronunciation that was derived rather than looked up is returned, not logged.**
+  `phonemise()` answers with `derived`, and the narration worker decides where those go. A pure
+  function that logs has a hidden dependency on somebody's logger, and a guess that announces
+  itself is the thing that keeps D8's fallback compatible with D5.
+- **The stress mark goes immediately before the vowel, in all four layers.** `kˈæʃt`, never
+  `ˈkæʃt`. That is misaki's convention and therefore Kokoro's, and it is what ARPAbet produces
+  naturally. `data/lexicon.txt` is written to the same convention on purpose: a term that
+  graduates from the initialism speller into the lexicon must not change how it sounds.
+- **Affricates and diphthongs are single characters, and the ARPAbet table is the only place that
+  may decide it.** `CH` is `ʧ`, `JH` is `ʤ`, and `EY`/`AY`/`OW`/`AW`/`OY` are misaki's `A`/`I`/
+  `O`/`W`/`Y`. Kokoro was trained against misaki, and it reads a two-symbol sequence as two
+  segments: measured against misaki's own string, the affricate region stretches ×1.70 in 24 of 24
+  occurrences and the diphthong ×1.66 in 18 of 18. **Never add a contraction pass over a finished
+  IPA string** — English has genuine `t`+`ʃ` and `ɔ`+`ɪ` sequences that are character-identical
+  ("nutshell" `nˈʌtʃˌɛl`, "drawing" `dɹˈɔɪŋ`), and contracting them gives "nu-chell" and
+  "droy-ing". ARPAbet still separates `CH` from `T SH`, so the table gets it right by construction.
+  `cmudict.test.ts` §"the affricate against the genuine cluster" is what fails if somebody tries.
+  The hand-written `data/lexicon.txt` is the one layer that could regress by habit, so
+  `lexicon.test.ts` forbids the sequences there outright — and forbids every upper-case letter but
+  those five, because `Q`, `S` and `T` also have token ids and would tokenise cleanly while
+  meaning something else.
+- **Layer 1 beats CMUdict, not just the fallback.** CMUdict carries `sql` and `mac`, and its
+  readings of them are not the ones a narration about software wants. The lexicon is allowed to
+  correct the dictionary and not only to extend it, which is why it is first.
+- **The G2P data files are read at runtime and must ship byte-identical.** They are resolved
+  relative to `import.meta.url`, so `scripts/copy-g2p-data.mjs` puts a copy beside
+  `dist/g2p/*.js`, `package.json`'s `files` names `dist/g2p/data/*`, and
+  `scripts/check-publish-contract.mjs` lists all four under `MUST_SHIP_FILES` with `identicalTo`.
+  `cmudict.LICENSE` is there for a different reason from the other three: CMUdict is 2-clause BSD
+  and clause 1 requires the notice to travel with the source.
+
 ## How to add
 
 **A template file:** add it under `template/` or `src/scaffold/templates/`, decide its owner, add it
@@ -137,5 +210,17 @@ server. If the change alters what is written, re-check both documents against
 `packages/protocol/schemas/{timings,captions}.json` in `build.test.ts`; those schemas, not this
 package, are the contract. A change to the pacing constants is a change to every existing video's
 timing, so it needs a changeset that says so.
+
+**A pronunciation:** put it in `src/g2p/data/lexicon.txt`, in the section it belongs to, with a
+gloss, and say the gloss out loud before you commit it. An entry that is wrong is worse than no
+entry — layer 3 would at least have reported that it was guessing. If you are correcting something
+the letter-to-sound ruleset produced, add a spot-check to `lexicon.test.ts` too, because the
+ruleset will happily keep producing it for the next word that looks the same.
+
+**A letter-to-sound rule:** add it to `RULES` in `src/g2p/lts.ts`, in its letter's group, ABOVE
+every rule it must beat — order is the whole design there, and a rule in the wrong place is not a
+syntax error, it is a rule that never fires. Assert it in `lts.test.ts` through the phones it
+produces, with a real English word a reader can say out loud, and check that no case already in
+that file changed.
 
 Finish with `pnpm verify`.

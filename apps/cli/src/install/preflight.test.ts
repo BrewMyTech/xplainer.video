@@ -35,7 +35,7 @@ import {
 } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { Toolchain } from "@xplainer/protocol";
@@ -254,6 +254,42 @@ describe("the setup marker", () => {
       exitCode: PRECONDITION_UNMET_EXIT_CODE,
     });
     expect(preflight.refusals[0]?.message).toContain("xplainer setup");
+  });
+
+  /**
+   * ADR 0020 §Ordering makes this probe "verifies the recorded paths still exist", and a component
+   * made of several files — the ONNX speech route records its model, its voice and this platform's
+   * runtime in `files` — has more than one. Checking only `path` would let an install register a
+   * daemon whose synthesiser was half cleaned away, which is the three-days-later failure the whole
+   * refusal exists to prevent.
+   */
+  it("refuses with 3 when a recorded file that is not the component's own path is gone", async () => {
+    const stateDir = stateDirectory();
+    const marker = writeMarker(stateDir);
+    const runtime = join(dirname(marker.speech.path), "speech-onnx-runtime.node");
+    writeFileSync(runtime, "a stand-in for this platform's ONNX Runtime\n");
+    writeToolchainMarker(stateDir, {
+      speech: {
+        ...marker.speech,
+        files: [
+          { path: marker.speech.path, sha256: marker.speech.sha256, bytes: 1 },
+          { path: runtime, sha256: "0".repeat(64), bytes: 44 },
+        ],
+      },
+    });
+    // Both `path` fields still exist; only the second recorded file goes.
+    rmSync(runtime);
+
+    const preflight = await preflightWithoutWriting({
+      stateDir,
+      port: 0,
+      platform: "linux",
+      run: runnerAnswering({ stdout: "running\n" }).run,
+    });
+
+    expect(preflight.toolchain.missing).toEqual([runtime]);
+    expect(preflight.refusals[0]).toMatchObject({ code: "setup-paths-gone" });
+    expect(preflight.refusals[0]?.message).toContain(runtime);
   });
 
   it("refuses with 3 when the marker cannot be parsed or is incomplete", async () => {

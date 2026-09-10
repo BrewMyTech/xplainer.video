@@ -43,7 +43,9 @@
  * The middleware is passed *in* to `createServer()` rather than switched on by a flag, which is
  * ADR 0020 §The agent path is IPC: "the TCP binding passes the loopback guard, the IPC binding
  * passes none, and at phase 3 `services/media-service` passes its OAuth guard. One place decides,
- * and the loopback Host allowlist does not have to be wrong for the hosted service."
+ * and the loopback Host allowlist does not have to be wrong for the hosted service." The record's
+ * `services/media-service` is the hosted media service, relocated to a private repository by
+ * ADR 0023; the quotation keeps the path the record wrote.
  */
 
 import { timingSafeEqual } from "node:crypto";

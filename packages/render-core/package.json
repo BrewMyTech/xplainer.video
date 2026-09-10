@@ -25,12 +25,13 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/scaffold/templates/*.txt",
+    "dist/g2p/data/*",
     "template",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-templates.mjs && xplainer-minify-dist",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-templates.mjs && node scripts/copy-g2p-data.mjs && xplainer-minify-dist",
     "prepack": "xplainer-sync-license",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",

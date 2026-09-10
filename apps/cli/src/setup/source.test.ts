@@ -187,15 +187,15 @@ describe("loadToolchainManifest", () => {
     const refusal = failure as ManifestUnreachable;
     expect(refusal).toBeInstanceOf(ManifestUnreachable);
     expect(refusal.message).toContain(deliveryPosition(darwin));
-    expect(refusal.message).toContain("two routes that work on darwin-arm64");
+    expect(refusal.message).toContain("Speech is not waiting on this address on darwin-arm64");
   });
 
   /**
-   * The same run on Windows, which is the platform §2.5 records as having no route at all. Asserted
-   * here rather than only on a Windows runner: a message a machine cannot read is a message that
-   * machine's users meet unproved.
+   * The same run on Windows, which §2.5 recorded as having no speech route at all and which the
+   * in-process ONNX route closes. Asserted here rather than only on a Windows runner: a message a
+   * machine cannot read is a message that machine's users meet unproved.
    */
-  it("tells a Windows reader there is no speech route, and names the milestone", async () => {
+  it("tells a Windows reader the same thing it tells every other platform", async () => {
     const url = await serve(500, "");
     const windows: HostProbe = { platform: "win32", arch: "x64", osRelease: null, glibc: null };
 
@@ -207,9 +207,9 @@ describe("loadToolchainManifest", () => {
     }).catch((error: unknown) => error);
 
     const refusal = failure as ManifestUnreachable;
-    expect(refusal.message).toContain("Windows has no working speech route at all this phase");
-    expect(refusal.message).toContain("The milestone that closes it is phase 4");
-    expect(refusal.message).not.toMatch(/routes that work/);
+    expect(refusal.message).not.toContain("Windows has no working speech route");
+    expect(refusal.message).toContain("Speech is not waiting on this address on win32-x64");
+    expect(refusal.message).toContain("the onnx route fetches the Kokoro model");
   });
 });
 

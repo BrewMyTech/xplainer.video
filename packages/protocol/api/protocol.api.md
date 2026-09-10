@@ -144,7 +144,7 @@ export interface Caption {
 }
 
 /**
- * Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted by max/.explainers/scripts/narrate.py:244-253 from Kokoro's word timestamps, so caption timing is measured rather than inferred.
+ * Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
  */
 export type Captions = Caption[];
 
@@ -416,7 +416,7 @@ export type JobState = "queued" | "running" | "done" | "error" | "cancelled";
 export type JobType = "explainer_narrate" | "explainer_render" | "explainer_still";
 
 /**
- * The narration spec an agent hands to explainer_narrate. Field defaults mirror max/.explainers/scripts/narrate.py:191-196, which is the implementation that consumes this document.
+ * The narration spec an agent hands to explainer_narrate. Field defaults mirror the reference implementation that consumes this document.
  */
 export interface Narration {
     /**
@@ -545,7 +545,7 @@ export interface Toolchain {
 }
 
 /**
- * One acquired binary: what it is, where it ended up, what it hashed to, and which route brought it.
+ * One acquired component: what it is, where it ended up, what it hashed to, and which route brought it. Most routes acquire one file and `path` names it. A route that acquires several — the in-process ONNX speech path needs a model graph, a voice tensor and a platform runtime, and no one of them is the component — also records `files`, so that a reader checking that what `setup` produced is still here checks all of it rather than the one artefact `path` happened to name.
  */
 export interface ToolchainComponent {
     /**
@@ -561,9 +561,31 @@ export interface ToolchainComponent {
      */
     sha256: string;
     /**
-     * Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, `docker`, `bundle` or `url` for the three speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.
+     * Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.
      */
     provider: string;
+    /**
+     * Every file this component is made of, where it is made of more than the one `path` names. Optional, and absent for every route that acquires a single artefact — which is why adding it did not move `format_version`: a build that does not read it still finds everything it needs, and a build that does reads a strictly larger set. It is a **small, named** set and never a tree inventory: the four artefacts the ONNX speech route pins, not the several thousand files inside an unpacked bundle. Its purpose is the existence check ADR 0020 §Ordering requires of `daemon install` — "verifies the recorded paths still exist" — which for a multi-file component is only meaningful if every path is recorded. The digests make the same check able to tell a replaced file from a missing one, and are what a warm cache is re-verified against instead of being trusted. It carries no `minItems`, deliberately: a provider that records the field and then leaves it empty is caught by a runtime assertion beside the provider that knows how many files its own route has, and a schema keyword would instead have made the shape depend on `provider` — a conditional, which is the one construct the codegen splitter handles badly.
+     */
+    files?: ToolchainFile[];
+}
+
+/**
+ * One file a multi-file component is made of, and the two facts that let a later run decide whether it is still the file that was acquired.
+ */
+export interface ToolchainFile {
+    /**
+     * The absolute path on this machine, resolved the same way and for the same reason as the component's own `path`.
+     */
+    path: string;
+    /**
+     * The SHA-256 of this file, lowercase hex. For a file fetched whole it is the reviewed digest it was admitted on; for a file taken out of a verified archive it is the digest of what came out, recorded so a later run can detect drift in a file whose archive is long gone.
+     */
+    sha256: string;
+    /**
+     * Its length. Recorded so a check can refuse a truncated or replaced file on a `stat` rather than by hashing a hundred megabytes, and so a report can say how much of the disk the component is.
+     */
+    bytes: number;
 }
 
 /**

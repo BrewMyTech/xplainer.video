@@ -1,0 +1,395 @@
+# The curated domain lexicon — layer 1 of four, and the highest precedence.
+#
+# WHY THIS FILE IS THE POINT. The spike that settled this design measured CMUdict
+# against two corpora: 50 of 50 on ordinary narration prose, and 5 of 47 on
+# software vocabulary. "Kubernetes", "nginx", "OAuth", "PostgreSQL",
+# "TypeScript", "idempotent", "webhook", "systemd", "npm", "gRPC", "YAML",
+# "ONNX" and "Remotion" are all absent. This product narrates software, so the
+# words it is worst at are the words it exists to say. espeak-ng guesses at
+# these too — a curated lexicon is not a workaround for a missing engine, it is
+# the only way to be reliably right about a name somebody chose.
+#
+# FORMAT. One entry per line:
+#
+#     <spelling><whitespace><IPA>[  # gloss]
+#
+# The spelling never contains whitespace, so the first run of whitespace is the
+# separator and everything after it — up to a `#`, which may not appear in IPA —
+# is the pronunciation. The pronunciation MAY contain spaces: a space is a real
+# Kokoro token (id 16) and a short pause, which is what separates "post-gres"
+# from "Q-L". A line whose first non-blank character is `#`, and a blank line,
+# are comments.
+#
+# THE GLOSS IS NOT DECORATION. It is how a human reviews this file without
+# reading IPA. If the gloss and the IPA disagree, one of them is a bug, and
+# `lexicon.test.ts` spot-checks a sample of both against what a reader would
+# say out loud.
+#
+# CASE. A spelling written in lower case matches any casing of the token —
+# `nginx`, `Nginx` and `NGINX` all resolve here. A spelling containing an
+# upper-case letter matches ONLY that exact spelling, which is the escape hatch
+# for a word whose reading depends on its case. Prefer the lower-case form; a
+# case-sensitive entry is a claim that two spellings of the same letters are two
+# different words.
+#
+# STRESS. `ˈ` (primary) and `ˌ` (secondary) go immediately BEFORE THE VOWEL of
+# the syllable they mark, after any onset consonants: `kˈæʃt`, never `ˈkæʃt`.
+# That is misaki's convention, so it is what Kokoro was trained on, and it is
+# what the CMUdict layer produces naturally because ARPAbet marks stress on the
+# vowel. All four layers agree about this or they would disagree about where a
+# word's beat falls. Every content word should carry exactly one `ˈ`.
+#
+# ALPHABET. Every symbol used here must be one of Kokoro's 115 tokens.
+# `vocab.test.ts` asserts it for every line in this file — a symbol outside the
+# vocabulary is silently DROPPED by the model, which is the failure D5 exists to
+# prevent. In particular `ɡ` is U+0261 LATIN SMALL LETTER SCRIPT G and ASCII `g`
+# is NOT in the vocabulary, so a `g` typed here would make "go" come out "oh".
+#
+# READ THIS BEFORE YOU READ A LINE. Five UPPER-CASE LETTERS in the pronunciation
+# column are PHONEMES, not letters, and they are the single most confusable thing
+# in this file:
+#
+#     A = the vowel of "day"      (not the letter A, and not "ah")
+#     I = the vowel of "my"
+#     O = the vowel of "go"
+#     W = the vowel of "now"
+#     Y = the vowel of "boy"
+#     ʧ = the "ch" of "church"    ʤ = the "j" of "judge"
+#
+# So `kˈAts` is "kates", `ˈɛnvY` is "en-voy", and `ʧˈAnʤ` is "change". These are
+# misaki's own shorthands, and they are used here rather than the sequences
+# `eɪ aɪ oʊ aʊ ɔɪ tʃ dʒ` because Kokoro was TRAINED against misaki and reads a
+# sequence as two segments: measured, the affricate region stretches ×1.70 and
+# the diphthong region ×1.66 against misaki's own spelling of the same sentence.
+# `src/g2p/arpabet.ts` carries the whole measurement, and it is that table — not
+# this file and not anything downstream — that decides the spelling for the other
+# three layers. Write these forms here so all four layers agree.
+#
+# ADDING AN ENTRY. Put it in the section it belongs to, keep the section sorted,
+# write the gloss, and say the gloss out loud before you commit it. An entry
+# that is wrong is worse than no entry: layer 3 would at least have announced
+# that it was guessing.
+#
+# LETTER NAMES, for the initialisms below and for writing new ones. `letter →
+# how it is said`, primary stress shown; the secondary form replaces `ˈ` with
+# `ˌ`. Five rows look like tautologies and are not — the right-hand `A`, `I`,
+# `O` and `W` are the PHONEMES named above, so `A → ˈA` reads "the letter A is
+# said as the vowel of day".
+#
+#   A → ˈA        B → bˈi         C → sˈi         D → dˈi
+#   E → ˈi        F → ˈɛf         G → ʤˈi         H → ˈAʧ
+#   I → ˈI        J → ʤˈA         K → kˈA         L → ˈɛl
+#   M → ˈɛm       N → ˈɛn         O → ˈO          P → pˈi
+#   Q → kjˈu      R → ˈɑɹ         S → ˈɛs         T → tˈi
+#   U → jˈu       V → vˈi         W → dˈʌbəljˌu   X → ˈɛks
+#   Y → wˈI       Z → zˈi
+#
+# An initialism the tokeniser has to spell out letter by letter does not need an
+# entry here at all — layer 3 does it, deterministically, and reports that it
+# did. An entry is worth adding when the letters are NOT how the word is said:
+# "SQL" is "S-Q-L", but "YAML" is "yam-ul" and "JSON" is "jay-son", and no rule
+# can tell those apart.
+
+
+# --- Containers, orchestration and the service managers ----------------------
+
+ansible        ˈænsɪbəl                  # AN-si-bul
+autoscaler     ˈɔtOskˌAlɚ                # AW-toh-scay-ler
+autoscaling    ˈɔtOskˌAlɪŋ               # AW-toh-scay-ling
+cgroup         sˈi ɡɹˌup                 # C-group
+consul         kˈɑnsəl                   # CON-sul
+containerd     kəntˈAnɚ dˈi              # container-D
+docker         dˈɑkɚ                     # DOCK-er
+envoy          ˈɛnvY                     # EN-voy
+etcd           ˌɛtsˌidˈi                 # et-C-D
+grafana        ɡɹəfˈɑnə                  # gra-FAH-na
+helm           hˈɛlm                     # HELM
+istio          ˈɪstiˌO                   # IST-ee-oh
+k8s            kˈAts                     # "kates"
+kibana         kɪbˈɑnə                   # ki-BAH-na
+kubectl        kjˈub kəntɹˈOl            # kube-control, as the maintainers say it
+kubelet        kˈubəlˌɛt                 # KOO-be-let
+kubernetes     ˌkubɚnˈɛtiz               # koo-ber-NET-eez
+launchd        lˈɔnʧ dˈi                 # launch-D
+nomad          nˈOmæd                    # NO-mad
+podman         pˈɑdmən                   # POD-man
+prometheus     pɹəmˈiθiəs                # pro-MEE-thee-us
+runc           ɹˈʌn sˈi                  # run-C
+selinux        ˌɛsˌi lˈɪnəks             # S-E-linux
+sidecar        sˈIdkˌɑɹ                  # SIDE-car
+systemctl      sˈɪstəm sˌitˌiˈɛl         # system-C-T-L
+systemd        sˈɪstəm dˈi               # system-D
+terraform      tˈɛɹəfˌɔɹm                # TERR-a-form
+vault          vˈɔlt                     # VAWLT
+
+
+# --- Web servers, protocols and networking -----------------------------------
+
+apache         əpˈæʧi                    # a-PATCH-ee
+cidr           sˈIdɚ                     # "cider"
+cors           kˈɔɹz                     # "cores"
+curl           kˈɚl                      # "curl"
+dhcp           dˌiˌAʧsˌipˈi              # D-H-C-P
+dns            dˌiɛnˈɛs                  # D-N-S
+haproxy        ˌAʧˌA pɹˈɑksi             # H-A-proxy
+hostname       hˈOstnˌAm                 # HOST-name
+http           ˌAʧtˌitˌipˈi              # H-T-T-P
+https          ˌAʧtˌitˌipˌiˈɛs           # H-T-T-P-S
+ipv4           ˌIpˌivˌi fˈɔɹ             # I-P-V-four
+ipv6           ˌIpˌivˌi sˈɪks            # I-P-V-six
+localhost      lˈOkəlhˌOst               # LOCAL-host
+loopback       lˈupbˌæk                  # LOOP-back
+nat            nˈæt                      # "nat"
+nginx          ˈɛnʤɪn ˌɛks               # engine X
+quic           kwˈɪk                     # "quick"
+ssh            ˌɛsˌɛsˈAʧ                 # S-S-H
+ssl            ˌɛsˌɛsˈɛl                 # S-S-L
+tcp            tˌisˌipˈi                 # T-C-P
+tcpdump        tˌisˌipˈi dˌʌmp           # T-C-P-dump
+tls            tˌiɛlˈɛs                  # T-L-S
+udp            jˌudˌipˈi                 # U-D-P
+uri            jˌuˌɑɹˈI                  # U-R-I
+url            jˌuˌɑɹˈɛl                 # U-R-L
+webhook        wˈɛbhˌʊk                  # WEB-hook
+websocket      wˈɛbsˌɑkɪt                # WEB-socket
+
+
+# --- Data stores and the query languages -------------------------------------
+
+binlog         bˈɪnlˌɔɡ                  # BIN-log
+cassandra      kəsˈændɹə                 # ka-SAN-dra
+clickhouse     klˈɪkhˌWs                 # CLICK-house
+dynamodb       dInˈæmO dˌibˈi            # dynamo-D-B
+elasticsearch  ɪlˈæstɪk sˌɚʧ             # elastic-search
+kafka          kˈæfkə                    # KAF-ka
+mariadb        məɹˈiə dˌibˈi             # maria-D-B
+memcached      mˈɛmkˌæʃt                 # "mem-cashed"
+mongodb        mˈɑŋɡO dˌibˈi             # mongo-D-B
+mysql          mˌIˌɛskjˌuˈɛl             # my-S-Q-L
+nosql          nˌO sˈikwəl               # "no sequel"
+orm            ˌOˌɑɹˈɛm                  # O-R-M
+postgres       pˈOstɡɹɛs                 # POST-gres
+postgresql     pˈOstɡɹɛs kjˌuˈɛl         # post-gres-Q-L
+redis          ɹˈɛdɪs                    # RED-iss
+rocksdb        ɹˈɑks dˌibˈi              # rocks-D-B
+sql            ˌɛskjˌuˈɛl                # S-Q-L
+sqlalchemy     ˌɛskjˌuˌɛl ˈælkəmi        # S-Q-L-alchemy
+sqlite         ˌɛskjˌuˌɛlˈIt             # S-Q-L-ite
+wal            wˈɔl                      # "wall", the write-ahead log
+
+
+# --- Languages, runtimes and the tools that build them -----------------------
+
+args           ˈɑɹɡz                     # ARGZ
+argv           ˈɑɹɡ vˈi                  # arg-V
+async          ˈAsɪŋk                    # AY-sink
+await          əwˈAt                     # a-WAIT
+biome          bˈIOm                     # BY-ome
+boolean        bˈuliən                   # BOO-lee-un
+bytecode       bˈItkˌOd                  # BYTE-code
+clojure        klˈOʒɚ                    # CLO-zher
+codec          kˈOdɛk                    # CO-deck
+deno           dˈinO                     # DEE-no
+django         ʤˈæŋɡO                    # JANG-go
+elixir         ɪlˈɪksɚ                   # e-LIX-er
+enum           ˈinʌm                     # EE-num
+erlang         ˈɚlæŋ                     # ER-lang
+esbuild        ˈi bˌɪld                  # E-build
+eslint         ˌɛslˈɪnt                  # ES-lint
+fastapi        fˈæst ˌApˌiˈI             # fast-A-P-I
+gcc            ʤˌisˌiˈsi                 # G-C-C
+golang         ɡˈOlˌæŋ                   # GO-lang
+goroutine      ɡˈOɹutˌin                 # GO-rou-teen
+gunicorn       ʤˈunɪkˌɔɹn                # JOO-ni-corn
+haskell        hˈæskəl                   # HAS-kul
+javascript     ʤˈɑvəskɹˌɪpt              # JAH-va-script
+jsx            ʤˌAˌɛsˈɛks                # J-S-X
+jvm            ʤˌAvˌiˈɛm                 # J-V-M
+kotlin         kˈɑtlɪn                   # COT-lin
+kwargs         kˈAwˌɑɹɡz                 # KAY-wargs
+llvm           ˌɛlˌɛlvˌiˈɛm              # L-L-V-M
+mutex          mjˈutɛks                  # MYOO-tex
+nodejs         nˈOd ʤˌAˈɛs               # node-J-S
+npm            ˌɛnpˌiˈɛm                 # N-P-M
+numpy          nˈʌmpˌI                   # NUM-pie
+ocaml          ˌOkˈæməl                  # oh-CAM-ul
+pipenv         pˈIp ˌɛnv                 # pipe-env
+pnpm           pˌiˌɛnpˌiˈɛm              # P-N-P-M
+posix          pˈɑzɪks                   # POZ-icks
+protobuf       pɹˈOtObˌʌf                # PRO-toh-buff
+pytest         pˈItˌɛst                  # PIE-test
+python         pˈIθˌɑn                   # PIE-thon
+pytorch        pˈItˌɔɹʧ                  # PIE-torch
+redux          ɹˈidʌks                   # REE-dux
+regex          ɹˈɛʤɛks                   # REJ-ex
+regexp         ɹˈɛʤɛksp                  # REJ-exp
+repl           ɹˈɛpəl                    # REP-ul
+scala          skˈɑlə                    # SKAH-la
+stderr         ˌɛstˌidˌiˈɛɹ              # S-T-D-err
+stdin          ˌɛstˌidˌiˈɪn              # S-T-D-in
+stdlib         stˈændɚd lˈɪb             # standard-lib
+stdout         ˌɛstˌidˌiˈWt              # S-T-D-out
+struct         stɹˈʌkt                   # STRUCKT
+svelte         svˈɛlt                    # SVELT
+tokio          tˈOkiˌO                   # TOH-kee-oh
+tsc            tˌiˌɛs sˈi                # T-S-C
+typescript     tˈIpskɹˌɪpt               # TYPE-script
+uvicorn        jˈuvɪkˌɔɹn                # YOO-vi-corn
+venv           vˌiˈɛnv                   # V-env
+vite           vˈit                      # "veet"
+vue            vjˈu                      # "view"
+wasm           wˈɑzəm                    # WOZ-um
+webassembly    wˈɛb əsˌɛmbli             # web-assembly
+webpack        wˈɛbpˌæk                  # WEB-pack
+
+
+# --- Cloud, identity and the wire formats ------------------------------------
+
+api            ˌApˌiˈI                   # A-P-I
+ascii          ˈæski                     # ASK-ee
+aws            ˌAdˌʌbəljˌuˈɛs            # A-W-S
+azure          ˈæʒɚ                      # AZH-er
+cd             sˌidˈi                    # C-D
+ci             sˌiˈI                     # C-I
+cli            sˌiˌɛlˈI                  # C-L-I
+cloudflare     klˈWdflˌɛɹ                # CLOUD-flare
+cpu            sˌipˌiˈju                 # C-P-U
+csv            sˌiˌɛsvˈi                 # C-S-V
+css            sˌiˌɛsˈɛs                 # C-S-S
+devops         dˈɛvˌɑps                  # DEV-ops
+dom            dˈɑm                      # DOM
+ec2            ˌiˌsi tˈu                 # E-C-two
+gcp            ʤˌisˌipˈi                 # G-C-P
+gid            ʤˌiˌIdˈi                  # G-I-D
+gpu            ʤˌipˌiˈju                 # G-P-U
+graphql        ɡɹˈæf kjˌuˈɛl             # graph-Q-L
+grpc           ʤˌiˌɑɹpˌisˈi              # G-R-P-C
+guid           ɡˈuɪd                     # GOO-id
+html           ˌAʧtˌiɛmˈɛl               # H-T-M-L
+iam            ˌIˌAˈɛm                   # I-A-M
+ide            ˌIdˌiˈi                   # I-D-E
+io             ˌIˈO                      # I-O
+ios            ˌIˌOˈɛs                   # i-O-S
+json           ʤˈAsən                    # JAY-son
+jwt            ʤˌAdˌʌbəljˌutˈi           # J-W-T
+oauth          ˌOˈɔθ                     # oh-AWTH
+rbac           ˈɑɹbˌæk                   # AR-back
+saml           sˈæməl                    # SAM-ul
+sdk            ˌɛsdˌikˈA                 # S-D-K
+sla            ˌɛsˌɛlˈA                  # S-L-A
+slo            ˌɛsˌɛlˈO                  # S-L-O
+sre            ˌɛsˌɑɹˈi                  # S-R-E
+sso            ˌɛsˌɛsˈO                  # S-S-O
+toml           tˈɑməl                    # TOM-ul
+ttl            tˌitˌiˈɛl                 # T-T-L
+ui             jˌuˈI                     # U-I
+uid            jˌuˌIdˈi                  # U-I-D
+uuid           jˌuˌjuˌIdˈi               # U-U-I-D
+utf            ˌjutˌiˈɛf                 # U-T-F
+ux             jˌuˈɛks                   # U-X
+xml            ˌɛksˌɛmˈɛl                # X-M-L
+yaml           jˈæməl                    # YAM-ul
+
+
+# --- Platforms, and this product's own toolchain -----------------------------
+
+cuda           kˈudə                     # KOO-da
+debian         dˈɛbiən                   # DEB-ee-un
+ffmpeg         ˌɛfˌɛf ɛmpˈɛɡ             # F-F-M-peg
+ffprobe        ˌɛfˌɛf pɹˈOb              # F-F-probe
+kokoro         kˈOkɚˌO                   # KO-ko-ro
+linux          lˈɪnəks                   # LIN-ux
+macos          mˈæk ˌOˈɛs                # mac-O-S
+onnx           ˈɑnɪks                    # ON-nix
+remotion       ɹɪmˈOʃən                  # ri-MO-shun
+tensorflow     tˈɛnsɚflˌO                # TEN-ser-flow
+ubuntu         ʊbˈuntu                   # oo-BOON-too
+xplainer       ɪksplˈAnɚ                 # "explainer"
+
+
+# --- Version control and the shell -------------------------------------------
+
+awk            ˈɔk                       # AWK
+bash           bˈæʃ                      # BASH
+bazel          bˈAzəl                    # BAY-zul
+dotfile        dˈɑtfˌIl                  # DOT-file
+emacs          ˈimæks                    # EE-macks
+git            ɡˈɪt                      # GIT
+github         ɡˈɪthˌʌb                  # GIT-hub
+gitlab         ɡˈɪtlˌæb                  # GIT-lab
+gradle         ɡɹˈAdəl                   # GRAY-dul
+graphviz       ɡɹˈæfvˌɪz                 # GRAF-viz
+grep           ɡɹˈɛp                     # GREP
+gzip           ɡˈizˌɪp                   # G-zip
+jenkins        ʤˈɛŋkɪnz                  # JENK-inz
+jira           ʤˈiɹə                     # JEE-ra
+jq             ʤˈA kjˌu                  # J-Q
+lockfile       lˈɑkfˌIl                  # LOCK-file
+markdown       mˈɑɹkdˌWn                 # MARK-down
+rsync          ˈɑɹ sˌɪŋk                 # R-sync
+sed            sˈɛd                      # SED
+sudo           sˈudO                     # SOO-doh
+symlink        sˈɪmlˌɪŋk                 # SIM-link
+tarball        tˈɑɹbˌɔl                  # TAR-ball
+tmux           tˈimʌks                   # TEE-mux
+vim            vˈɪm                      # VIM
+zsh            zˌiˌɛsˈAʧ                 # Z-S-H
+
+
+# --- The jargon itself -------------------------------------------------------
+
+backend        bˈækˌɛnd                  # BACK-end
+backpressure   bˈækpɹˌɛʃɚ                # BACK-pressure
+callback       kˈɔlbˌæk                  # CALL-back
+callbacks      kˈɔlbˌæks                 # CALL-backs
+changeset      ʧˈAnʤsˌɛt                 # CHANGE-set
+checksum       ʧˈɛksˌʌm                  # CHECK-sum
+codebase       kˈOdbˌAs                  # CODE-base
+config         kənfˈɪɡ                   # con-FIG
+configs        kənfˈɪɡz                  # con-FIGZ
+crud           kɹˈʌd                     # CRUD
+dataset        dˈAtəsˌɛt                 # DAY-ta-set
+datasets       dˈAtəsˌɛts                # DAY-ta-sets
+deduplicate    didˈuplɪkˌAt              # dee-DOO-pli-cate
+deserialise    dˌisˈɪɹiəlˌIz             # dee-SEER-ee-a-lize
+deserialize    dˌisˈɪɹiəlˌIz             # dee-SEER-ee-a-lize
+downstream     dˈWnstɹˌim                # DOWN-stream
+filesystem     fˈIlsˌɪstəm               # FILE-system
+frontend       fɹˈʌntˌɛnd                # FRONT-end
+fullstack      fˈʊlstˌæk                 # FULL-stack
+grapheme       ɡɹˈæfim                   # GRAF-eem
+hashmap        hˈæʃmˌæp                  # HASH-map
+idempotency    Idˈɛmpətənsi              # eye-DEM-po-ten-see
+idempotent     Idˈɛmpətənt               # eye-DEM-po-tent
+lru            ˌɛlˌɑɹˈju                 # L-R-U
+microservice   mˈIkɹOsˌɚvɪs              # MY-cro-service
+microservices  mˈIkɹOsˌɚvɪsɪz            # MY-cro-services
+middleware     mˈɪdəlwˌɛɹ                # MID-ul-ware
+monorepo       mˈɑnOɹˌipO                # MON-oh-ree-po
+mtu            ˌɛmtˌiˈju                 # M-T-U
+multitenant    mˌʌltitˈɛnənt             # mul-tee-TEN-ant
+namespace      nˈAmspˌAs                 # NAME-space
+observability  əbzˌɚvəbˈɪlɪti            # ob-zer-va-BIL-i-tee
+phoneme        fˈOnim                    # FOH-neem
+phonemes       fˈOnimz                   # FOH-neemz
+phonemise      fˈOnɪmˌIz                 # FOH-ni-mize
+pubsub         pˈʌbsˌʌb                  # PUB-sub
+refactor       ɹifˈæktɚ                  # ree-FAK-ter
+refactoring    ɹifˈæktɚɪŋ                # ree-FAK-ter-ing
+repo           ɹˈipO                     # REE-po
+rollback       ɹˈOlbˌæk                  # ROLL-back
+rollout        ɹˈOlˌWt                   # ROLL-out
+runtime        ɹˈʌntˌIm                  # RUN-time
+serialise      sˈɪɹiəlˌIz                # SEER-ee-a-lize
+serverless     sˈɚvɚləs                  # SERV-er-less
+sha            ʃˈɑ                       # SHAH
+subcommand     sˈʌbkəmˌænd               # SUB-com-mand
+subprocess     sˈʌbpɹˌɑsɛs               # SUB-pro-cess
+syscall        sˈɪskˌɔl                  # SIS-call
+throughput     θɹˈuˌpʊt                  # THROO-put
+timestamp      tˈImstˌæmp                # TIME-stamp
+tokeniser      tˈOkənˌIzɚ                # TOH-ken-eye-zer
+tokenizer      tˈOkənˌIzɚ                # TOH-ken-eye-zer
+toolchain      tˈulʧˌAn                  # TOOL-chain
+upstream       ˈʌpstɹˌim                 # UP-stream
+workspace      wˈɚkspˌAs                 # WORK-space

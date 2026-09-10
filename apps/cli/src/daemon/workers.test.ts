@@ -342,6 +342,25 @@ describe("the narrate worker", () => {
     expect(new URL(String(args[1])).protocol).toBe("file:");
   });
 
+  /**
+   * The worker resolves its speech route out of `<state>/toolchain.json` (`workers/speech.ts`), and
+   * the state directory is a *setting* rather than a fact about the machine: `serve --state-dir`
+   * moves it, and all three settings travel in argv on every platform because Task Scheduler's
+   * `<Exec>` action has no environment map. So the daemon has to tell the worker where its own state
+   * is — a worker left to resolve it would read the platform-default marker on exactly the
+   * supervised machines the flag exists for, and narrate against a container while a daemon two
+   * directories away had acquired an engine.
+   */
+  it("tells the narration worker which state directory this daemon is using", () => {
+    writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: false });
+
+    const spec = createWorkerRegistry({ root, stateDir }).explainer_narrate?.(
+      record(4, "explainer_narrate", "demo"),
+    );
+
+    expect(spec?.env).toEqual({ XPLAINER_STATE_DIR: stateDir });
+  });
+
   it("needs no installed workspace: narration is this package's own code, not Remotion", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
 

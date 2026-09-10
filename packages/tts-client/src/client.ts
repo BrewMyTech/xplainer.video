@@ -2,8 +2,8 @@
  * A Kokoro-FastAPI client: request shaping in, parsed envelope out
  * (plan §4 S2.3; deviation D-6).
  *
- * The contract it pins comes from `max/.explainers/scripts/narrate.py`, which
- * is where this product's TTS integration currently lives:
+ * The contract it pins comes from the reference implementation's `narrate.py`,
+ * which is where this product's TTS integration currently lives:
  *
  *   * `GET  /v1/audio/voices`      — `narrate.py:126-131`
  *   * `POST /dev/captioned_speech` — `narrate.py:147-162`

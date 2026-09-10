@@ -21,5 +21,29 @@ fetches it under Remotion's terms. Depending on the size of your company and how
 you use it, you may need your own Remotion licence. See
 https://remotion.pro/license.
 
+`@xplainer/render-core` redistributes the CMU Pronouncing Dictionary
+(`cmudict.dict`), Copyright (C) 1993-2015 Carnegie Mellon University, under the
+2-clause BSD licence reproduced verbatim beside it at
+`packages/render-core/src/g2p/data/cmudict.LICENSE` and shipped in the package
+at `dist/g2p/data/cmudict.LICENSE`. That licence's clause 1 requires the notice
+and the disclaimer to travel with the source, which is why the file is copied
+into the tarball rather than referenced.
+
+`@xplainer/render-core` also redistributes the tokenizer of
+`onnx-community/Kokoro-82M-v1.0-ONNX-timestamped` (`kokoro-tokenizer.json`),
+Apache-2.0, as the authoritative list of the symbols the speech model accepts.
+The model weights themselves are neither bundled nor redistributed here; they
+are fetched from their upstream home, pinned by revision and digest.
+
+`xplainer setup` fetches two more components onto the machine it runs on, and
+neither is bundled in or redistributed by any package here. The speech model
+weights and voice pack of `onnx-community/Kokoro-82M-v1.0-ONNX-timestamped` are
+Apache-2.0 and come from that repository, pinned by revision and digest. ONNX
+Runtime (`onnxruntime-node` and `onnxruntime-common`, Copyright (c) Microsoft
+Corporation) is MIT and comes from the npm registry, pinned by version and
+digest; only the host platform's build is kept. `setup` is the one command that
+downloads, it says what it is fetching and what each artefact must hash to, and
+nothing is installed behind your back.
+
 Apache-2.0 governs this software. It does not govern Remotion, and nothing here
 grants you any right to Remotion.

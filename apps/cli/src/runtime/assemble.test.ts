@@ -225,7 +225,13 @@ describe("assembleRuntime — the payload runs with no node on PATH", () => {
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe("fixture lib-1.0.0 a-1.0.0");
-  });
+    // Both this case and the `files`-allowlist refusal below assemble a real payload and spawn a
+    // real interpreter out of it, and vitest's default per-case budget is 5 s. Measured on this
+    // machine, alone: 2278 ms and 1064 ms. That margin is comfortable until the file runs beside
+    // the rest of the suite, where the same two lost it and timed out — three times in a row on
+    // 2026-09-09, on a tree whose diff touched neither this file nor `assemble.ts`. The work is
+    // not slow; it is contended, so the budget says so rather than the machine deciding.
+  }, 30_000);
 
   it("runs the npm it carries — the D3 assertion, in miniature", () => {
     const result = spawnSync(
@@ -300,7 +306,7 @@ describe("assembleRuntime — what it refuses", () => {
         rootPackage: ROOT,
       }),
     ).toThrowError(/declares no `files` allowlist/);
-  });
+  }, 30_000);
 
   it("refuses a root package whose entry was never built, naming the build command", () => {
     const unbuilt = buildCheckout(join(scratch, "unbuilt"), { dropEntry: true });
