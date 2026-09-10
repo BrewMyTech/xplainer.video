@@ -47,18 +47,34 @@
  * `existsSync` could see the file, which is how the Windows alias is caught saying one thing to a
  * scan and another to a spawn.
  *
- * **On Windows, reachability is a question only `spawn` can answer, and `stat` answers it wrongly.**
- * This is the general rule the alias taught and it is worth more than the fix it caused, because
- * anything in this repository that decides "is this executable on this machine" will meet it.
- * `%LOCALAPPDATA%\Microsoft\WindowsApps` holds *app execution aliases* — `APPEXECLINK` reparse
- * points that Windows ships for `python.exe` and `python3.exe` whether or not any Python is
- * installed. `existsSync` (and every `stat`, `lstat` and `realpath` under it) reports such a path as
- * **absent**; `CreateProcess`, and therefore `spawn`, launches it. Measured on `windows-latest`,
- * run 34490218766: the audit reaches `python` and `python3` through that directory and sees no file
- * at either name. So a `PATH` scan is not a weaker version of the real check, it is a **different
- * answer** — which is why the three ENOENT assertions here spawn, why the audit reports both
- * answers side by side, and why no future gate in this tree should decide an executable's presence
- * from the filesystem.
+ * **On Windows, reachability is a question only `spawn` can answer, and `stat` answers it wrongly —
+ * in both directions.** This is the general rule, it is worth more than either fix that taught it,
+ * and anything in this repository that decides "can this file be executed on this machine" will meet
+ * it. Two measured instances, and they fail *opposite* ways, which is what makes the rule a rule
+ * rather than a workaround for one platform quirk:
+ *
+ * - **Absent to `stat`, runnable by `spawn`.** `%LOCALAPPDATA%\Microsoft\WindowsApps` holds *app
+ *   execution aliases* — `APPEXECLINK` reparse points that Windows ships for `python.exe` and
+ *   `python3.exe` whether or not any Python is installed. `existsSync` (and every `stat`, `lstat`
+ *   and `realpath` under it) reports such a path as **absent**; `CreateProcess`, and therefore
+ *   `spawn`, launches it. Measured on `windows-latest`, run 34490218766: the audit reaches `python`
+ *   and `python3` through that directory and sees no file at either name. A subtractive `PATH`
+ *   filter could therefore never have removed them.
+ * - **Present to `stat`, unspawnable.** npm writes **three** files per binary into
+ *   `node_modules/.bin` on Windows — `remotion`, `remotion.cmd` and `remotion.ps1` — and the
+ *   extensionless one is a `#!/bin/sh` script. `existsSync` says yes and `CreateProcess` refuses it,
+ *   so `spawnSync` returns with no `status`, no `signal` and neither stream: **no process was
+ *   created**. Measured on `windows-latest`, run 34492604497, where an `existsSync` gate on that
+ *   exact path passed and the spawn 320 lines later died as `control exited null`. And the shim with
+ *   the extension is no answer either — a `.cmd` is what libuv refuses without `shell: true` since
+ *   the CVE-2024-27980 fix, which is the defect `apps/cli/src/setup/providers/workspace.ts` was
+ *   fixed for one layer down. What is spawnable on every platform is a **script under an explicit
+ *   interpreter**, which is why the control render below runs the manifest's own `remotion_entry`
+ *   under `process.execPath`, exactly as `toolchain.mjs` and `runtime.mjs` do.
+ *
+ * So a filesystem check is not a weaker version of the real check, it is a **different answer**.
+ * Probe executable reachability by spawning; where a gate must be a `stat`, make it a `stat` of the
+ * file that will actually be spawned, so the arrangement fails on the arrangement.
  *
  * **2 — the acquisition.** A real `xplainer setup` in a scratch state directory, with the reviewed
  * manifest this checkout commits (nothing is published to the address `setup` would otherwise read,
@@ -497,6 +513,17 @@ function run(command, args, options = {}) {
  *
  * `execFileSync` forwards a child's stderr to this process's own, which leaves it out of the log
  * file — and the log file is the artefact. Anything whose output is evidence goes through here.
+ *
+ * **`result.error` is read, and that is a correction rather than a nicety.** A child that never
+ * started has no `status`, no `signal` and neither stream, so every field this helper used to look
+ * at is empty and `result.error` is the only one holding the answer. Leaving it unread made a
+ * `CreateProcess` refusal on Windows report itself as `control exited null:` with nothing after the
+ * colon — a failure that names neither the errno nor the argv, over a transcript with no line about
+ * the child at all (run 34492604497). It is now both appended to the transcript and put in the
+ * thrown message, and a child that never started says so in those words rather than borrowing the
+ * vocabulary of one that ran and exited. `runtime.mjs` and `toolchain.mjs` do the transcript half of
+ * this in their own `spawnLogged`; `render.mjs` does neither, and its `.bin` spawn is the same
+ * arrangement this file has just stopped using.
  */
 function runLogged(label, command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -514,9 +541,14 @@ function runLogged(label, command, args, options = {}) {
       }
     }
   }
+  if (result.error !== undefined) {
+    appendFileSync(LOG_PATH, `  [${label} error] ${result.error.message}\n`);
+  }
   if (result.status !== 0) {
     throw new Error(
-      `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`,
+      result.error === undefined
+        ? `${label} exited ${result.status ?? result.signal}: ${(result.stderr ?? "").trim().slice(-800)}`
+        : `${label} never started: ${result.error.message} — the command was ${command} ${args.join(" ")}`,
     );
   }
   return result.stdout ?? "";
@@ -591,7 +623,7 @@ function allowList() {
         spawnedAs: "node",
         target: process.execPath,
         probe: ["--version"],
-        why: "esbuild's postinstall calls bare `node`, and `.bin/remotion.cmd` falls back to it",
+        why: "esbuild's postinstall calls bare `node`, reached through PATHEXT as node.exe",
       },
       {
         file: "npm.cmd",
@@ -599,7 +631,11 @@ function allowList() {
         target: fromParentPath("npm", join(dirname(process.execPath), "npm.cmd")),
         probe: ["--version"],
         forward: true,
-        why: "`installCommand(null)` spawns `npm.cmd`, which is the workspace resolve route",
+        why:
+          "npm's own lifecycle scripts may invoke `npm` by name. The product no longer does — the " +
+          "resolve route spawns `<interpreter> npm-cli.js` since the EINVAL fix — and this entry " +
+          "is kept rather than dropped because no run has ever been made without it, so its " +
+          "necessity is untested either way and a 2x runner is the wrong place to find out",
       },
       {
         file: "cmd.exe",
@@ -640,14 +676,17 @@ function allowList() {
       spawnedAs: "node",
       target: process.execPath,
       probe: ["--version"],
-      why: "esbuild's postinstall calls bare `node`, and every `#!/usr/bin/env node` shim in the workspace's `.bin` resolves it through PATH",
+      why: "esbuild's postinstall calls bare `node`, and every `#!/usr/bin/env node` shim npm links into the workspace's `.bin` resolves it through PATH",
     },
     {
       file: "npm",
       spawnedAs: "npm",
       target: fromParentPath("npm", join(dirname(process.execPath), "npm")),
       probe: ["--version"],
-      why: "`installCommand(null)` spawns bare `npm`, which is the workspace resolve route",
+      why:
+        "npm's own lifecycle scripts may invoke `npm` by name. The product no longer does — the " +
+        "resolve route spawns `<interpreter> npm-cli.js` on every platform now — and this entry is " +
+        "kept because no run has ever been made without it",
     },
     {
       file: "sh",
@@ -1361,14 +1400,42 @@ async function main() {
     existsSync(marker.chrome.path),
     `the browser it recorded is on this machine at ${marker.chrome.path}`,
   );
+  const workspaceManifest = join(workspace, "workspace.manifest.json");
   check(
-    existsSync(join(workspace, "workspace.manifest.json")),
+    existsSync(workspaceManifest),
     "the workspace describes what it resolved, which is the half of the render gate a borrowed " +
       "node_modules can never satisfy",
   );
+  // The shim and the entry it points at are two different assertions, and this proof needs both.
+  //
+  // The **shim** is what says npm *linked* the CLI rather than merely unpacking it, which is the
+  // property `providers/workspace.ts` requires of both its routes — and it is spelled `remotion.cmd`
+  // on Windows. Asking for the extensionless name there is not a harmless simplification: npm writes
+  // that file too, as a `#!/bin/sh` script, so the check passed on `windows-latest` and proved
+  // nothing about the shim npm had actually generated.
+  //
+  // The **entry** is the file the burned-captions section spawns, and it is checked here so a
+  // missing one fails in the section that is about the workspace rather than 300 lines later in the
+  // section that is about captions. It is also the only one of the two that is spawnable on all
+  // three platforms; the docblock's second bullet is why.
+  const remotionShim = join(
+    workspace,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "remotion.cmd" : "remotion",
+  );
   check(
-    existsSync(join(workspace, "node_modules", ".bin", "remotion")),
-    "and node_modules/.bin/remotion resolves in it",
+    existsSync(remotionShim),
+    `and ${remotionShim} resolves in it, which is what says npm linked the CLI`,
+  );
+  const remotionEntry = join(
+    workspace,
+    ...JSON.parse(readFileSync(workspaceManifest, "utf8")).remotion_entry.split("/"),
+  );
+  check(
+    existsSync(remotionEntry),
+    `…and so does ${remotionEntry}, the entry its own manifest names and the file the control ` +
+      "render below is actually spawned as",
   );
 
   // The three artefacts the synthesiser needs, derived from the layout
@@ -1681,6 +1748,15 @@ async function main() {
   // because the daemon restores an engine-owned file before every render. It runs under the same
   // composed environment as everything else, so the render half of this proof needs no more of a
   // machine than the narration half did.
+  //
+  // **The CLI is spawned as a script under `process.execPath`, never through `node_modules/.bin`.**
+  // Neither file in `.bin` can be spawned on Windows — the extensionless one is a `#!/bin/sh`
+  // script `CreateProcess` refuses, and the `.cmd` is what libuv refuses without `shell: true` —
+  // and `shell: true` would hand this argv, which carries absolute paths under
+  // `C:\Users\RUNNER~1\…`, to `cmd.exe` to re-parse. `toolchain.mjs` and `runtime.mjs` both already
+  // spawn the manifest's `remotion_entry` under an explicit interpreter for exactly this reason, so
+  // the three proofs now agree. The interpreter is this process's own because this proof runs from a
+  // checkout and there is no payload to take one from.
   const controlSource = join(workspace, "videos", CONTROL_SLUG);
   const controlPublic = join(workspace, "public", CONTROL_SLUG);
   cpSync(join(workspace, "videos", SLUG), controlSource, { recursive: true });
@@ -1689,8 +1765,9 @@ async function main() {
   const controlPng = join(workspace, "out", `${CONTROL_SLUG}.png`);
   runLogged(
     "control",
-    join(workspace, "node_modules", ".bin", "remotion"),
+    process.execPath,
     [
+      remotionEntry,
       "still",
       `videos/${CONTROL_SLUG}/index.ts`,
       "Explainer",
