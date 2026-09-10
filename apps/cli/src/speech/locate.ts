@@ -6,14 +6,23 @@
  * `setup` does — it acquires the model, the voice pack and the host's ONNX Runtime, and records
  * them in `toolchain.json` (plan S2). That marker's reader lives in `src/setup/`, so this module is
  * a **function type** rather than a second reader: `resolveSpeech()` takes an
- * {@link OnnxSpeechLocator} and the acquisition lane supplies the one that reads the marker.
+ * {@link OnnxSpeechLocator} and the acquisition lane supplies the one that reads the marker —
+ * `setup/speech-locate.ts`'s `onnxSpeechFromToolchain`, which is what `resolveSpeech()` now
+ * defaults to (plan S5).
  *
- * {@link onnxSpeechFromEnvironment} is the locator in the meantime, and it is not scaffolding — it
- * is the same seam every other part of this file's route selection uses, and it is what lets the
- * proof and the gated test point at a model without a `setup` run. It answers `null` unless all
- * three variables are set, because a partially configured route must fall through to the server
- * rather than fail: two of three paths is somebody mid-experiment, not somebody asking for this
- * engine.
+ * {@link onnxSpeechFromEnvironment} is the **override above** that reader rather than a stand-in
+ * for it. It is what points the engine at a model no `setup` on this machine acquired — a spike, a
+ * comparison against another export, a gated test — and it is asked first for the same reason
+ * `XPLAINER_TTS_URL` beats the marker one level up: somebody who named three paths meant them. It
+ * answers `null` unless all three variables are set, because a partially configured route must fall
+ * through to the marker rather than fail: two of three paths is somebody mid-experiment, not
+ * somebody asking for this engine.
+ *
+ * **Every locator says where it looked.** {@link OnnxSpeechPaths.origin} is not decoration: the
+ * narration worker logs one line naming where its speech came from, and "the in-process engine" is
+ * two different facts — the engine this machine acquired, and an engine somebody pointed three
+ * variables at. A transcript that cannot tell them apart cannot prove that route selection works,
+ * which is precisely what `pnpm e2e:speech` asserts on that line.
  */
 
 import { basename, extname } from "node:path";
@@ -37,12 +46,19 @@ export const ONNX_RUNTIME_ENV = "XPLAINER_ONNX_RUNTIME";
  */
 export const ONNX_VOICE_NAME_ENV = "XPLAINER_ONNX_VOICE_NAME";
 
-/** The three paths, and the voice the pack speaks. */
+/** The three paths, the voice the pack speaks, and which seam produced them. */
 export type OnnxSpeechPaths = {
   readonly modelPath: string;
   readonly voicePath: string;
   readonly voice: string;
   readonly runtimeLocation: string;
+  /**
+   * Where these paths came from, in the words the worker's provenance line uses.
+   *
+   * Required rather than optional, so a locator cannot answer without saying which of the two seams
+   * it is — see the docblock. It is prose for a log line and never branched on.
+   */
+  readonly origin: string;
 };
 
 /** How `resolveSpeech()` asks whether this machine has an in-process speech engine. */
@@ -80,5 +96,6 @@ export const onnxSpeechFromEnvironment: OnnxSpeechLocator = (env) => {
     voicePath,
     runtimeLocation,
     voice: trimmed(env[ONNX_VOICE_NAME_ENV]) ?? voiceFromPackPath(voicePath),
+    origin: `${ONNX_MODEL_ENV}, ${ONNX_VOICE_ENV} and ${ONNX_RUNTIME_ENV}`,
   };
 };

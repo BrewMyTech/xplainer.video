@@ -39,5 +39,30 @@ Two consequences worth knowing before this is switched on:
 
 Nothing is added to this package's public surface: `src/speech/` is internal, like `src/daemon/`.
 The ONNX Runtime is an acquired toolchain component rather than an npm dependency — one
-`onnxruntime-node` package carries all three platforms' binaries at 285 MB — so the published
+`onnxruntime-node` package carries all five platforms' binaries at 296 MB — so the published
 tarball and payload 1 are unchanged.
+
+**The product selects this route itself, and `onnx` now sits above `docker` in `setup`.** Both are
+part of switching it on rather than refinements of it. `resolveSpeech()` reads
+`<state>/toolchain.json`, so a daemon on a machine that has run `setup` finds the engine `setup`
+acquired: before this it defaulted to reading `XPLAINER_ONNX_MODEL`, `XPLAINER_ONNX_VOICE` and
+`XPLAINER_ONNX_RUNTIME`, so the engine spoke only for a caller who exported three variables. Those
+three still work, above the marker, as the way to point it at a model no `setup` acquired.
+
+`setup`'s acquisition order is now `--tts-url`, `onnx`, `docker`, `bundle`. Below `docker`, every
+machine with a container engine recorded `docker` and never took the in-process route — which is the
+machine class this work exists for, since the point is that a voiceover needs no Docker. Three
+things come with the swap:
+
+- **`xplainer setup --speech <onnx|docker>`** pins a route and does not walk the precedence. A route
+  somebody named is an instruction, so a named route that is unavailable is a refusal naming why
+  rather than a fall-through to something else. `--tts-url` still wins outright.
+- **A machine that already records a working `docker` route keeps it.** `setup` is re-runnable by
+  design, and a re-run is the worst moment to move narration onto a different engine: the container
+  is running, it is what every previous narration was spoken by, and switching would fetch ~204 MB
+  to replace something that works. So a recorded `docker` component whose image Docker can still
+  address takes the route again, and `setup` prints that it did and names `--speech onnx`. A machine
+  that has *lost* its engine falls through and gets the in-process route.
+- **`setup` prints which route it took and why the others were not**, and distinguishes the two
+  reasons: a route above the one taken was probed and reported itself unavailable, a route below it
+  was never asked at all.

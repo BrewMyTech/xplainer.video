@@ -68,6 +68,7 @@ import { findInstalledPackage, type NodeEntry, resolveNodeEntry } from "../runti
 import { assertToolchainReady } from "../setup/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
+import { STATE_DIR_ENV } from "./state-dir.js";
 import { acquireVideoWriteLock } from "./video-lock.js";
 
 /** What {@link createWorkerRegistry} needs. */
@@ -204,6 +205,16 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
         command,
         args: [...args, root, String(record.job_id)],
         cwd: root,
+        // **The state directory travels to the worker, because the worker resolves the speech
+        // route out of `toolchain.json`** (`workers/speech.ts`, plan S5). This registry already
+        // takes `stateDir` as an argument for the reason above — `serve --state-dir` moves it, and
+        // all three settings travel in argv on every platform because Task Scheduler's `<Exec>`
+        // has no environment map — so a worker left to resolve it for itself would read the
+        // *platform default* marker on exactly the supervised machines the flag exists for, and
+        // narrate against a container while a daemon two directories away had acquired an engine.
+        // This is not the `PATH` injection D1 refuses: that leaks an interpreter onto the `PATH` of
+        // everything a worker spawns, and the narration worker spawns nothing.
+        env: { [STATE_DIR_ENV]: stateDir },
         release: lockVideo(slug, "explainer_narrate", record.job_id),
       };
     },

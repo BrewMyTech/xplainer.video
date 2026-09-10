@@ -206,9 +206,19 @@ export const ONNX_RUNTIME_PLATFORMS: readonly string[] = [
 
 /** Where each acquisition lands under the component directory, `/`-separated. */
 const MODEL_FILE = "model_quantized.onnx";
-const VOICES_DIR = "voices";
-const RUNTIME_NODE_DIR = "runtime/onnxruntime-node";
 const RUNTIME_COMMON_DIR = "runtime/node_modules/onnxruntime-common";
+
+/**
+ * The two locations a **reader** of the marker has to know, exported for that one caller.
+ *
+ * `setup/speech-locate.ts` turns a recorded `onnx` component back into the three paths the
+ * synthesiser takes, and the marker records only the model as `path` — so the voice pack and the
+ * runtime are found by this layout. They are exported rather than restated there because a layout
+ * written down twice is a layout that drifts: this module is what puts the files here, and a rename
+ * of either directory then breaks the reader at compile time instead of at the first narration.
+ */
+export const ONNX_VOICES_DIR = "voices";
+export const ONNX_RUNTIME_DIR = "runtime/onnxruntime-node";
 
 /** The loader's own entry, and the witness for the tree it is in. */
 const RUNTIME_NODE_ENTRY = "dist/index.js";
@@ -324,11 +334,11 @@ export async function acquireSpeechOnnx(options: AcquireOnnxOptions): Promise<Ac
   fetched = (await admitFile(pins.model, modelPath, "model", workDir, log, files)) || fetched;
 
   for (const [name, voice] of Object.entries(pins.voices)) {
-    const voicePath = join(destination, VOICES_DIR, name);
+    const voicePath = join(destination, ONNX_VOICES_DIR, name);
     fetched = (await admitFile(voice, voicePath, `voice ${name}`, workDir, log, files)) || fetched;
   }
 
-  const runtimeRoot = join(destination, ...RUNTIME_NODE_DIR.split("/"));
+  const runtimeRoot = join(destination, ...ONNX_RUNTIME_DIR.split("/"));
   const nativeDir = `bin/napi-v6/${platform}`;
   fetched =
     (await admitTree({

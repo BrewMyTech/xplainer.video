@@ -16,12 +16,21 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ToolchainComponent } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseToolchainManifest, type ToolchainManifest } from "../manifest.js";
 import { committedManifestPath } from "../source.js";
 import { ARTEFACT_ROUTES, type ArtefactServer } from "../testing/artefact-server.js";
 import { startOnnxArtefacts } from "../testing/onnx-artefacts.js";
-import { acquireSpeech, EXTERNAL_VERSION, SpeechRefusal, URL_PROVIDER } from "./speech.js";
+import {
+  acquireSpeech,
+  EXTERNAL_VERSION,
+  isSpeechRoute,
+  PINNABLE_SPEECH_ROUTES,
+  recordExternal,
+  SpeechRefusal,
+  URL_PROVIDER,
+} from "./speech.js";
 import {
   acquireSpeechImage,
   DOCKER_PROVIDER,
@@ -226,28 +235,57 @@ describe("acquireSpeech", () => {
       },
       toolchainDir: temporaryDirectory("xplainer-toolchain-"),
       runDocker: dockerWith(true),
+      // darwin-x64 has no ONNX binding, which is how the walk reaches docker with no pins to
+      // point at loopback — see the reordering test below. A host that *does* have one would take
+      // the onnx route here and fetch 204 MB from HuggingFace inside a unit test.
+      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
     });
 
     expect(pulled.provider).toBe(DOCKER_PROVIDER);
   });
 
-  it("falls to docker when no URL was given", async () => {
+  it("falls to docker when there is no URL and no ONNX binding for this host", async () => {
     const acquired = await acquireSpeech({
       manifest: async () => manifest(),
       toolchainDir: temporaryDirectory("xplainer-toolchain-"),
       runDocker: dockerWith(true),
+      // darwin-x64 is the one host `onnxruntime-node` publishes no binding for, so it is the only
+      // way to reach the docker route without a `--speech` flag — which is the whole content of the
+      // reordering below.
+      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
     });
 
     expect(acquired.provider).toBe(DOCKER_PROVIDER);
+    expect(acquired.skipped.onnx).toContain("no darwin/x64");
   });
 
   /**
-   * With Docker absent, the `onnx` route is the one that runs — and it is the one that closes the
-   * machines the other three never covered. Asserted with pins pointed at loopback rather than at
+   * The reordering, and the reason for it: a machine with a container engine used to record
+   * `docker` and never take the in-process route, which defeats what ADR 0028 exists for — a user
+   * should not need Docker for a voiceover. Asserted with pins pointed at loopback rather than at
    * HuggingFace and the npm registry, because the decision under test is the *precedence* and not
    * the two hundred megabytes.
    */
-  it("falls to the in-process ONNX route when there is no URL and no Docker", async () => {
+  it("takes onnx above docker, so a machine with an engine still gets the better route", async () => {
+    const artefacts = await startOnnxArtefacts();
+    servers.push(...artefacts.servers);
+
+    const acquired = await acquireSpeech({
+      manifest: () => {
+        throw new Error("the manifest must not be fetched for the onnx route");
+      },
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      runDocker: dockerWith(true),
+      onnxPins: artefacts.pins,
+    });
+
+    expect(acquired.provider).toBe(ONNX_PROVIDER);
+    expect(acquired.component.files?.length).toBeGreaterThan(3);
+    // Nothing was pulled: the docker route is below this one now, so it is never even probed.
+    expect(acquired.skipped.docker).toBeUndefined();
+  });
+
+  it("takes onnx on a machine with no Docker at all, which is the host it was written for", async () => {
     const artefacts = await startOnnxArtefacts();
     servers.push(...artefacts.servers);
 
@@ -261,31 +299,234 @@ describe("acquireSpeech", () => {
     });
 
     expect(acquired.provider).toBe(ONNX_PROVIDER);
-    expect(acquired.component.files?.length).toBeGreaterThan(3);
   });
 
   /**
-   * Docker keeps every machine that has an engine, and that is deliberate rather than incidental:
-   * `scripts/e2e/toolchain.mjs` decides its own plan from `docker version`, runs `setup` with no
-   * `--tts-url` when that answers, and then opens `marker.speech.path` **as the docker receipt** to
-   * read `receipt.image`. An `onnx`-first order would have that gate `JSON.parse` a 92 MB model.
+   * Every route not taken is reported on a *successful* run too, which is the half that was
+   * missing: the reasons were collected for the refusal and thrown away when a route worked, so the
+   * one line `setup` printed could not answer "why this one?".
    */
-  it("keeps docker above onnx, so no machine with an engine changes route", async () => {
+  it("says why each route it walked past was not taken", async () => {
+    const acquired = await acquireSpeech({
+      manifest: async () => manifest(),
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      runDocker: noDocker,
+      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+    }).catch((error: unknown) => error);
+
+    // darwin-x64 has none of the four, so the walk is visible end to end in one value.
+    expect(acquired).toBeInstanceOf(SpeechRefusal);
+    expect(Object.keys((acquired as SpeechRefusal).routes)).toEqual([
+      "--tts-url <url>",
+      ONNX_PROVIDER,
+      DOCKER_PROVIDER,
+      "bundle",
+    ]);
+  });
+});
+
+/**
+ * The migration case: a machine that already records a working `docker` route keeps it.
+ *
+ * This is the one thing `recorded` is used for and it is deliberately narrow. `setup` is
+ * re-runnable by design, and a re-run is the worst moment to move a machine's narration onto a
+ * different engine — the container is running, it is what every previous narration was spoken by,
+ * and the switch would fetch ~204 MB to replace something that works. `--speech onnx` is how a user
+ * asks for it, and the only way it happens.
+ */
+describe("acquireSpeech and a machine that has already run setup", () => {
+  /** The `speech` component a previous `setup` recorded for the docker route. */
+  function recordedDocker(toolchainDir: string): ToolchainComponent {
+    return acquireSpeechImage({ toolchainDir, run: dockerWith(true) }).component;
+  }
+
+  it("keeps a recorded docker route rather than switching the engine under it", async () => {
+    const toolchainDir = temporaryDirectory("xplainer-toolchain-");
     const artefacts = await startOnnxArtefacts();
     servers.push(...artefacts.servers);
 
     const acquired = await acquireSpeech({
-      manifest: async () => manifest(),
-      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      manifest: () => {
+        throw new Error("the manifest must not be fetched for the docker route");
+      },
+      toolchainDir,
       runDocker: dockerWith(true),
       onnxPins: artefacts.pins,
+      recorded: recordedDocker(toolchainDir),
     });
 
     expect(acquired.provider).toBe(DOCKER_PROVIDER);
+    // And not a byte of the 204 MB was fetched to sit unused beside the container.
     expect(artefacts.model.requests).toHaveLength(0);
     expect(artefacts.runtime.requests).toHaveLength(0);
   });
 
+  it("says it kept it, and names the command that switches", async () => {
+    const toolchainDir = temporaryDirectory("xplainer-toolchain-");
+    const lines: string[] = [];
+
+    await acquireSpeech({
+      manifest: async () => manifest(),
+      toolchainDir,
+      runDocker: dockerWith(true),
+      recorded: recordedDocker(toolchainDir),
+      log: (line) => lines.push(line),
+    });
+
+    const said = lines.join("\n");
+    expect(said).toContain("kept the docker route this machine already records");
+    expect(said).toContain(`xplainer setup --speech ${ONNX_PROVIDER}`);
+    // And it says why the route it would otherwise have taken was not tried, rather than leaving
+    // "recorded the docker route" to be read as "this machine has no ONNX binding".
+    expect(said).toContain("not the onnx route — not tried");
+  });
+
+  /**
+   * A machine that has *lost* its engine is not a machine to keep on the docker route: the recorded
+   * route is asked of Docker rather than believed, so this falls through and the host gets the
+   * in-process engine — which is the migration the reordering is for, arriving when the container
+   * has stopped being the answer.
+   */
+  it("falls through to onnx when the recorded route no longer works here", async () => {
+    const toolchainDir = temporaryDirectory("xplainer-toolchain-");
+    const recorded = recordedDocker(toolchainDir);
+    const artefacts = await startOnnxArtefacts();
+    servers.push(...artefacts.servers);
+
+    const acquired = await acquireSpeech({
+      manifest: () => {
+        throw new Error("the manifest must not be fetched for the onnx route");
+      },
+      toolchainDir,
+      runDocker: noDocker,
+      onnxPins: artefacts.pins,
+      recorded,
+    });
+
+    expect(acquired.provider).toBe(ONNX_PROVIDER);
+    expect(acquired.skipped["recorded docker"]).toContain("no longer usable here");
+  });
+
+  /** A recorded `url` or `onnx` component is not part of the rule, and does not freeze the walk. */
+  it("keeps nothing but docker, because docker is the only route the reordering displaces", async () => {
+    const artefacts = await startOnnxArtefacts();
+    servers.push(...artefacts.servers);
+    const toolchainDir = temporaryDirectory("xplainer-toolchain-");
+
+    const acquired = await acquireSpeech({
+      manifest: () => {
+        throw new Error("the manifest must not be fetched for the onnx route");
+      },
+      toolchainDir,
+      runDocker: dockerWith(true),
+      onnxPins: artefacts.pins,
+      recorded: recordExternal(toolchainDir, "http://127.0.0.1:8880"),
+    });
+
+    expect(acquired.provider).toBe(ONNX_PROVIDER);
+  });
+});
+
+describe("acquireSpeech and --speech <route>", () => {
+  it("takes the route it names and walks no precedence at all", async () => {
+    const artefacts = await startOnnxArtefacts();
+    servers.push(...artefacts.servers);
+
+    const pinned = await acquireSpeech({
+      manifest: () => {
+        throw new Error("a pinned route needs no manifest");
+      },
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      // Docker answers and a docker route is recorded, and neither wins: the flag did.
+      runDocker: dockerWith(true),
+      recorded: acquireSpeechImage({
+        toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+        run: dockerWith(true),
+      }).component,
+      onnxPins: artefacts.pins,
+      route: ONNX_PROVIDER,
+    });
+
+    expect(pinned.provider).toBe(ONNX_PROVIDER);
+    expect(pinned.skipped).toEqual({});
+  });
+
+  /**
+   * `--speech docker` is what `scripts/e2e/toolchain.mjs` passes, so that the gate names the route
+   * it is proving instead of inferring it from a precedence it does not own — which is what let the
+   * product put `onnx` first at all.
+   */
+  it("pins docker on a host where onnx would otherwise win", async () => {
+    const artefacts = await startOnnxArtefacts();
+    servers.push(...artefacts.servers);
+
+    const pinned = await acquireSpeech({
+      manifest: async () => manifest(),
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      runDocker: dockerWith(true),
+      onnxPins: artefacts.pins,
+      route: DOCKER_PROVIDER,
+    });
+
+    expect(pinned.provider).toBe(DOCKER_PROVIDER);
+    expect(artefacts.model.requests).toHaveLength(0);
+  });
+
+  /** A route somebody named is an instruction, so an unavailable one refuses rather than falls. */
+  it("refuses a named route this machine does not have, naming that route and nothing else", async () => {
+    const failure = await acquireSpeech({
+      manifest: async () => manifest(),
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      runDocker: noDocker,
+      route: DOCKER_PROVIDER,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(SpeechRefusal);
+    const refusal = failure as SpeechRefusal;
+    expect(refusal.exitCode).toBe(3);
+    expect(Object.keys(refusal.routes)).toEqual([DOCKER_PROVIDER]);
+    expect(refusal.message).toContain("`--speech docker` names a route this machine does not have");
+    expect(refusal.message).toContain("Nothing was written");
+    expect(refusal.message).toContain(ONNX_PROVIDER);
+  });
+
+  /** `--tts-url` wins outright: a URL is a server to talk to, a route is something to acquire. */
+  it("loses to --tts-url, and says so rather than quietly ignoring one of them", async () => {
+    const lines: string[] = [];
+
+    const acquired = await acquireSpeech({
+      manifest: () => {
+        throw new Error("the manifest must not be fetched for the --tts-url route");
+      },
+      toolchainDir: temporaryDirectory("xplainer-toolchain-"),
+      ttsUrl: "http://127.0.0.1:8880",
+      runDocker: noDocker,
+      route: DOCKER_PROVIDER,
+      log: (line) => lines.push(line),
+    });
+
+    expect(acquired.provider).toBe(URL_PROVIDER);
+    expect(lines.join("\n")).toContain("--tts-url names a server outright");
+  });
+});
+
+describe("isSpeechRoute", () => {
+  it("admits the two routes that acquire something and nothing else", () => {
+    expect(PINNABLE_SPEECH_ROUTES).toEqual([ONNX_PROVIDER, DOCKER_PROVIDER]);
+    expect(isSpeechRoute(ONNX_PROVIDER)).toBe(true);
+    expect(isSpeechRoute(DOCKER_PROVIDER)).toBe(true);
+    // `url` needs a value and has `--tts-url`; `bundle` reads an address nothing is published to.
+    expect(isSpeechRoute(URL_PROVIDER)).toBe(false);
+    expect(isSpeechRoute("bundle")).toBe(false);
+    expect(isSpeechRoute("")).toBe(false);
+  });
+});
+
+/**
+ * Plan D5's rule at the acquisition end: an *absent* route falls through, a route that **failed** is
+ * raised, and nothing is ever silently substituted for what was asked for.
+ */
+describe("acquireSpeech refusals", () => {
   /**
    * A route that is available and *fails* is raised, and this is the case that proves `onnx` sits
    * **above** `bundle` in the fall-through: a 404 on the model must not be replaced by a message
@@ -353,6 +594,11 @@ describe("acquireSpeech", () => {
         manifest: async () => manifest(),
         toolchainDir: temporaryDirectory("xplainer-toolchain-"),
         runDocker: brokenPull,
+        // The claim is about the *walk*, so the docker route has to be reached by falling through
+        // rather than by `--speech docker`: darwin-x64 is the host with no ONNX binding, so `onnx`
+        // reports itself absent, docker is tried, and its failure must not become a message about
+        // the bundle below it.
+        probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
       }),
     ).rejects.toThrow(/no space left on device/);
   });
