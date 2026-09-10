@@ -516,6 +516,17 @@ the three retired sentences asserted *absent* so the claim cannot come back by a
 sees it first: a change to `deliveryPosition()`'s wording has to be made in that job in the same
 commit or it is discovered on the next dispatch.
 
+**That job's green square proves less than it looks like it does, and the reason is worth keeping in
+view.** It is the one place in this repository that runs `xplainer setup` from a **checkout** on
+Windows — no staged payload 1, so `hostRuntimeDir()` answers `null` — which is precisely the
+configuration that could not work at all until 2026-09-10 (see the `npm-cli.js` paragraph above). It
+stayed green because it refuses at the **browser**, and `setup`'s component order is browser, then
+speech, then workspace: the job asserts a *refusal* and never reaches the second component, let
+alone the third. So it was one gate away from catching a shipped Windows defect from B6 onward, and
+it caught nothing. Anything added here that widens what it reaches — a manifest it can actually read,
+a `--skip-*` that lets it past the browser — is a job whose meaning has changed, and worth saying so
+in the same commit.
+
 **The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
 `@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
 whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
