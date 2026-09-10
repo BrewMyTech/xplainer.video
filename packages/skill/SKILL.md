@@ -25,7 +25,7 @@ can open. If none is registered, say so and stop — there is no second route to
 reach for.
 
 Rendering uses Remotion. Depending on the size of the user's company and how
-they use it they may need their own Remotion licence — see
+they use it, they may need their own Remotion licence — see
 <https://remotion.pro/license>.
 
 ## Nothing to install

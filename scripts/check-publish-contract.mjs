@@ -144,6 +144,14 @@ const PRIVATE_REPOSITORY_NAME = "xplainer-hosted";
  * Anchored on a token boundary so `minmax/`, `@scope/max/` and the like are not
  * matches, and written as a pattern rather than a literal because the leak is
  * the shape `max/<anything>`, not one file that happened to be cited twice.
+ *
+ * It fails CLOSED, and the cases where that is wrong are known rather than
+ * discovered: `Math.max/2`, `the max/min ratio` and `throughput in max/sec` all
+ * match and none is a leak. A minified bundle dividing by a `.max` property is
+ * the one that could redden a correct publish. That is a spurious red, not a
+ * missed leak, and `EXEMPTIONS` is where it is answered — deliberately, with the
+ * path written down, rather than by loosening the pattern until it stops
+ * catching the thing it exists for.
  */
 const PRIVATE_REFERENCE_PATH = /(^|[^A-Za-z0-9_@/-])max\/[A-Za-z0-9_.-]/;
 

@@ -472,7 +472,7 @@ describe("xplainer connect codex", () => {
       'model = "gpt-6-astra"',
       "",
       "# the servers I already had",
-      '[projects."/Users/me/projects/max"]',
+      '[projects."/Users/me/projects/acme"]',
       'trust_level = "trusted"',
       "",
       "[mcp_servers.other]",
@@ -499,7 +499,7 @@ describe("xplainer connect codex", () => {
       mcp_servers: Record<string, { command: string; args: string[] }>;
     };
     expect(document.model).toBe("gpt-6-astra");
-    expect(document.projects["/Users/me/projects/max"]).toEqual({ trust_level: "trusted" });
+    expect(document.projects["/Users/me/projects/acme"]).toEqual({ trust_level: "trusted" });
     expect(document.mcp_servers.other).toEqual({ command: "other", args: ["serve"] });
     expect(document.mcp_servers.xplainer).toEqual({
       command: "xplainer",

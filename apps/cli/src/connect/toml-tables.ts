@@ -13,7 +13,7 @@
  * would be silent rather than loud:
  *
  * - **Quoted keys are understood**, because they are real: a `config.toml` on this machine holds
- *   `[projects."/Users/…/projects/max"]`, and splitting a header on `.` without respecting quotes
+ *   `[projects."/Users/…/projects/acme"]`, and splitting a header on `.` without respecting quotes
  *   would read that as five key segments.
  * - **Multi-line strings are tracked**, so a `[` that is the first character of a line *inside* a
  *   `"""…"""` value is never mistaken for a table header.

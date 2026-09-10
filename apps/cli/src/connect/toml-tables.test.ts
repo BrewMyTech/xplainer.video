@@ -21,9 +21,9 @@ function lines(document: string): string[] {
 describe("parseDottedKey", () => {
   it("splits on unquoted dots and keeps quoted ones", () => {
     expect(parseDottedKey("mcp_servers.xplainer")).toEqual(["mcp_servers", "xplainer"]);
-    expect(parseDottedKey(' projects."/Users/me/projects/max" ')).toEqual([
+    expect(parseDottedKey(' projects."/Users/me/projects/acme" ')).toEqual([
       "projects",
-      "/Users/me/projects/max",
+      "/Users/me/projects/acme",
     ]);
     expect(parseDottedKey("a . b")).toEqual(["a", "b"]);
     expect(parseDottedKey("'a.b'")).toEqual(["a.b"]);

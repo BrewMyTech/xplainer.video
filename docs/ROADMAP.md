@@ -42,7 +42,7 @@ close to irreversible and is a decision rather than a task.
    does. Fixing the schema descriptions requires re-running
    `pnpm --filter @xplainer/protocol codegen` in the same commit, or CI's staleness check
    (AC-9c) goes red.
-   - *Closed 2026-09-09, and it took two passes rather than one.* The hosted repository's own
+   - *Closed 2026-09-09, and it took two passes rather than one. The hosted repository's own
      name went earlier. What outlived it was the **other** private path: `captions.json` and
      `narration.json` cited `max/.explainers/scripts/narrate.py` by file and line, and
      `packages/protocol` ships `schemas`, `python/**/*.py` and `dist/**/*.d.ts`, so that citation
@@ -108,8 +108,10 @@ close to irreversible and is a decision rather than a task.
    - *Closed 2026-09-09. The section is now "One tool set, and it runs on this machine" and says
      what is true today: one runtime, on the user's own machine, and no second route to reach for.
      `build.test.ts` needed no change — the literal sentence it pins, "Prefer the local tools when
-     they are present", survives the rewrite, and all eight `explainer_*` names are still
-     mentioned exactly once each.*
+     they are present", survives the rewrite, and the **set** of `explainer_*` names the document
+     mentions still equals `TOOL_NAMES`. Set equality is what that assertion measures: it
+     de-duplicates before comparing, so what it forbids is a name the contract does not have and a
+     contract name the document never mentions, not a second mention of `explainer_create`.*
 
 **Judged by** the surviving phase-5 criteria, which kept their ids — see
 [Phase 5](#phase-5--the-split-what-is-discharged-and-what-is-not) at the foot of this file.
