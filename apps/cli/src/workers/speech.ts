@@ -1,16 +1,34 @@
 /**
  * Where the narration worker's speech comes from.
  *
- * Two sources, chosen by the environment and never by a flag an agent can set:
+ * **Three sources, and an agent chooses none of them.** Two are environment variables an operator
+ * or a workflow sets; the third is what `xplainer setup` acquired on this machine. A tool call
+ * carries no flag that reaches here, which is the property to preserve — the daemon speaking with
+ * whatever this machine has is not the same thing as a caller picking an engine per request:
  *
- * - **A Kokoro server**, which is the product. `XPLAINER_TTS_URL` names it; without that,
- *   `@xplainer/tts-client`'s own resolution applies (`KOKORO_URL`, then its default), so a
- *   developer who already exported that variable for the reference implementation keeps working.
+ * - **The in-process ONNX engine**, when this machine has one, which is the product from plan
+ *   P2-4 on (`.omc/plans/ralplan-speech-onnx.md`). Kokoro-82M runs inside the narration worker
+ *   through the ONNX Runtime `setup` acquired, with the G2P in `@xplainer/render-core` in front of
+ *   it, so a machine needs no Docker, no `--tts-url` and no Python. Word timings come from the
+ *   model's own per-token duration predictor rather than from an alignment estimate.
+ * - **A Kokoro server**, which is what the ONNX engine replaces and what still answers when one is
+ *   configured. `XPLAINER_TTS_URL` names it; without that, `@xplainer/tts-client`'s own resolution
+ *   applies (`KOKORO_URL`, then its default), so a developer who already exported that variable for
+ *   the reference implementation keeps working.
  * - **A fixture directory**, when `XPLAINER_TTS_FIXTURE` names one. Each segment's audio and word
  *   spans are read from files that were recorded once, so a test — or a machine with no container
  *   running — gets *measured* timings from real WAV frames rather than the estimates a dry run
  *   invents. This is not a mock of the client: it is a stand-in for the **server**, and everything
  *   below it (decoding, measuring, planning, concatenating, writing) is the shipping code path.
+ *
+ * **The precedence is fixture, then URL, then ONNX, then the tts-client's own default**, and each
+ * step of it is deliberate. A fixture wins over everything because a test environment must not
+ * reach a developer's running container *or* spend six seconds a segment in a real model. An
+ * explicit `XPLAINER_TTS_URL` beats the local engine because someone who named a server meant it —
+ * a hosted voice, a variant, a comparison against the reference implementation — and a machine that
+ * has run `setup` is exactly the machine where that intent would otherwise be silently overridden.
+ * ONNX then beats the tts-client's default, which is a `localhost:8880` guess at a container that
+ * is usually not running.
  *
  * A fixture is matched by the exact text the narration port asks for, which is the segment text
  * after whitespace collapsing. Matching on text rather than on position is what makes a fixture
@@ -23,12 +41,18 @@ import { join } from "node:path";
 import process from "node:process";
 import type { SpeechSynthesiser } from "@xplainer/render-core";
 import {
+  BASE_URL_ENV_VAR,
   type CaptionedSpeechRequest,
   type CaptionedSpeechResponse,
   KokoroClient,
   resolveBaseUrl,
   type WordTimestamp,
 } from "@xplainer/tts-client";
+import {
+  createOnnxSynthesiser,
+  type OnnxSpeechLocator,
+  onnxSpeechFromEnvironment,
+} from "../speech/index.js";
 
 /** Names the Kokoro server this daemon narrates against. */
 export const TTS_URL_ENV = "XPLAINER_TTS_URL";
@@ -144,11 +168,35 @@ export function createFixtureSynthesiser(dir: string): SpeechSynthesiser {
 }
 
 /**
+ * The server this environment *names*, or `null` when it names none.
+ *
+ * Both variables are read here rather than left to `resolveBaseUrl()`, which cannot distinguish
+ * "`KOKORO_URL` is set" from "nothing is set, so here is the default". That distinction is the
+ * whole of the ONNX route's precedence: a server someone typed beats the local engine, and a
+ * `localhost:8880` guess does not.
+ */
+function namedServer(env: SpeechEnvironment): string | null {
+  for (const variable of [TTS_URL_ENV, BASE_URL_ENV_VAR]) {
+    const value = env[variable];
+    if (value !== undefined && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+/**
  * Decide where this narration run's speech comes from.
  *
  * @param env the environment to read; defaults to this process's
+ * @param locateOnnx how to ask whether this machine has an in-process engine. Defaults to reading
+ *   the three `XPLAINER_ONNX_*` variables; the acquisition lane's `toolchain.json` reader goes here
+ *   (`src/speech/locate.ts`), which is why it is an argument and not a call.
  */
-export function resolveSpeech(env: SpeechEnvironment = process.env): ResolvedSpeech {
+export function resolveSpeech(
+  env: SpeechEnvironment = process.env,
+  locateOnnx: OnnxSpeechLocator = onnxSpeechFromEnvironment,
+): ResolvedSpeech {
   const fixtureDir = env[TTS_FIXTURE_ENV];
   if (fixtureDir !== undefined && fixtureDir.trim() !== "") {
     const dir = fixtureDir.trim();
@@ -157,9 +205,21 @@ export function resolveSpeech(env: SpeechEnvironment = process.env): ResolvedSpe
       source: `recorded speech from ${dir} (${TTS_FIXTURE_ENV})`,
     };
   }
-  const configured = env[TTS_URL_ENV];
-  const baseUrl =
-    configured !== undefined && configured.trim() !== "" ? configured.trim() : resolveBaseUrl(env);
+
+  const named = namedServer(env);
+  if (named !== null) {
+    return { synthesiser: new KokoroClient({ baseUrl: named }), source: `kokoro at ${named}` };
+  }
+
+  const onnx = locateOnnx(env);
+  if (onnx !== null) {
+    return {
+      synthesiser: createOnnxSynthesiser(onnx),
+      source: `kokoro in this process, voice ${onnx.voice} (${onnx.modelPath})`,
+    };
+  }
+
+  const baseUrl = resolveBaseUrl(env);
   return {
     synthesiser: new KokoroClient({ baseUrl }),
     source: `kokoro at ${baseUrl}`,
