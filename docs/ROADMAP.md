@@ -569,8 +569,24 @@ pending on Windows, **P2-6** is not met as this roadmap words it and names a sub
 place, and **P2-7** is pending for as long as the artifact upload fails. **P2-8** is human-evidenced
 and no transcript exists yet, so it is pending too.
 
-**One fact every "pending on a runner" line below shares, and it is not a code problem.** GitHub
-Actions is **billing-blocked for this organisation**. Every job dispatched on `d376533` on
+*Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): the count
+above is now two rather than three.* **P2-4's Windows half no longer waits on an artefact nobody has
+published** — a fourth speech route acquires an in-process engine from its components' own upstream
+homes and reaches every platform ONNX Runtime publishes a binding for. That row's own note of this
+date says exactly what is proven and on which platform, and it does not claim a Windows run.
+**P2-6, P2-7 and P2-8 are unchanged**, and so is the billing paragraph below: what changed is a
+missing route, not the runner situation.
+
+*Amended 2026-09-09: RESOLVED. The paragraph below is kept as the record of why every
+"pending on a runner" line was stuck, and it is no longer the current state.* Making the repository
+public moved it to free standard runners, and on 2026-09-09 every Phase 2 proof was dispatched and
+went green on ubuntu, macOS and Windows — the twelve workflows behind `main` at `0cde7d6`. A
+"pending on a runner" line below that still reads as blocked is stale; the constraint now is only
+that a **new** proof workflow must reach the default branch before `workflow_dispatch` can register
+it.
+
+**One fact every "pending on a runner" line below shared, and it was not a code problem.** GitHub
+Actions was **billing-blocked for this organisation**. Every job dispatched on `d376533` on
 2026-09-08 at 12:08Z was refused before it started with *"The job was not started because recent
 account payments have failed or your spending limit needs to be increased"* — runs `34224329592`
 (`ci`), `34224329595` (`desktop`), `34224368464` (`daemon-windows`), `34224371557`, `34224375439`,
@@ -744,6 +760,45 @@ owner's, and it is what turns those lines from pending into met or into defects.
     same run, the `windows-latest` job's **setup refuses and names no working speech route** step
     passed and only its upload step failed — which is the refusal being correct, not the criterion
     being met.
+  - *Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): **the
+    Windows half is no longer waiting on a phase-4 artefact. A fourth speech route reaches every
+    platform ONNX Runtime publishes a binding for, so what is left of this row on Windows is
+    evidence rather than a route.*** `setup` now acquires an **in-process** speech engine: the
+    Kokoro-82M ONNX graph and one voice pack from the HuggingFace repository they live in, and this
+    platform's ONNX Runtime from the npm registry — four artefacts, each pinned by digest, each
+    verified before use, each committed by one `rename`, measured at **39.7 s** for all four on
+    darwin arm64. **Nothing has to be published for it to work**, which is the whole of the change:
+    the three sentences above about `cdn.xplainer.video`, the connected custom domain and its Cache
+    Rule are still true and no longer stand between any platform and speech, because this route
+    reads no manifest of ours at all. `win32-x64` and `win32-arm64` are both in `onnxruntime-node`'s
+    published set, so `deliveryPosition()` has lost its Windows paragraph and the sentence saying
+    Windows has no working speech route is now false rather than merely unhelpful. Three things this
+    row must not be read as claiming. **It has not been run on Windows or Linux** — the numbers
+    above are darwin arm64's, and Actions is still billing-blocked for this organisation, so the
+    runner halves named in the note at the head of this list are unchanged. **`darwin-x64` is
+    refused by name**: `onnxruntime-node` ships no Intel-Mac binding, so that platform keeps the two
+    routes it already had and is now the one with no in-process engine. And the *corrupted-download*
+    half of this criterion got stronger rather than staying level — `providers/speech-bundle.ts`
+    used to skip the download **and the verification** whenever its destination existed, so a warm
+    cache defeated verify-before-install; cache identity now binds the digest and every committed
+    acquisition re-verifies a record written inside the tree it commits.
+  - *Amended 2026-09-10, later the same day
+    ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md) §Note): **the product now
+    selects the route it acquired, which the amendment above did not yet claim.*** Two halves.
+    `resolveSpeech()` reads `<state>/toolchain.json`, so a daemon on a machine that has run `setup`
+    finds its own engine — until this, the locator defaulted to the three `XPLAINER_ONNX_*`
+    variables and `pnpm e2e:speech` supplied them by hand out of the marker it had just read, which
+    means the acquisition worked and no ordinary machine used it. And `onnx` moved **above**
+    `docker`, because below it every host with a container engine recorded `docker` and never took
+    the in-process route — the one machine class the work exists for. `scripts/e2e/toolchain.mjs`
+    now names the provider it proves (`setup --speech docker`) instead of inferring it from that
+    order, `--speech <route>` is how a user pins one, and a recorded, still-working `docker` route
+    keeps the machine it is on so a re-run of `setup` never moves narration onto a different engine
+    unasked. The proof's three lines are deleted and it asserts the marker's own path on the
+    worker's provenance line instead. `.github/workflows/e2e-toolchain.yml`'s
+    `windows-delivery-position` job now reads back what `deliveryPosition()` says today, with the
+    three retired sentences asserted absent; it is `workflow_dispatch` only and, per the note at the
+    head of this list, has not been dispatched.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
   - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
@@ -1188,6 +1243,21 @@ capability, and it already has a decision record behind it.
     ships a refusal that says all of this in the message a user meets; what it cannot do is publish.
     Windows has no other route — the pinned Kokoro-FastAPI image is linux/amd64 and `--tts-url`
     records a server somebody else already runs — so this bullet is the whole of the closure.
+  - *Amended 2026-09-10 ([ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)): **this
+    sub-bullet is obsolete, and it stays here saying why rather than being deleted.*** Its last
+    sentence — "Windows has no other route … so this bullet is the whole of the closure" — is now
+    false. Windows has a route, it is the **same** route every other platform uses, and it needs
+    nothing published: `setup` acquires the Kokoro-82M ONNX graph, a voice pack and this platform's
+    ONNX Runtime from their own upstream homes, each pinned by digest, and speech then runs inside
+    the narration worker. So **a native speech bundle per platform is no longer phase-4 work at
+    all** — not deferred, not descoped, but unnecessary, and the four-platform build matrix,
+    standalone CPython, the wheel closure and the relocation tooling it implied are unnecessary with
+    it. This phase keeps the two things this sub-bullet was attached to and that are still owed: the
+    **update feed** and the **version-and-checksum manifest**, which remain infrastructure for the
+    browser's expected digest, for the `bundle` route that still reads one, and for
+    `electron-updater`. What made the bundle avoidable was a licence problem rather than a
+    packaging one — the phonemizer every route to Kokoro's Python stack reaches is GPL, and removing
+    it deletes words from the audio — and ADR 0028 carries that argument.
 - **Code signing and notarisation for macOS and Windows.** Phases 0 and 2 ship unsigned
   artefacts by design. This is also what makes the standalone binary a **recommended** way to
   install the always-on daemon: an npm-delivered CLI carries no `com.apple.quarantine`, so

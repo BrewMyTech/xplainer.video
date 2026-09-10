@@ -96,3 +96,54 @@ caller.
   concatenation, `timings.json` and `captions.json` generation — is not ported in this
   phase.** It is narration logic and §Non-Goals forbids it; it lands at roadmap phase 1
   as a port of `narrate.py`.
+
+## Note, 2026-09-10: the reason this had to be a *network* contract no longer holds, and one route is now a library call
+
+Added as a dated note rather than a rewrite. Nothing above is changed and this record stays
+`accepted`. [ADR 0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) is the decision that made
+the note necessary, and its body carries the argument.
+
+**Which sentence this note amends.** The second Decision Driver: *"The same contract must be
+satisfiable by a hosted container and by a per-OS local install, so it has to be a **network
+contract**, not a library API."* Both halves of that premise have since gone. The hosted container
+**relocated to a private repository** ([ADR 0023](0023-split-the-repository.md)), so there is no
+second backend in this repository to be satisfiable by the same contract; and as of ADR 0028 the
+local tier's third speech route runs **in the narration worker's own process** — Kokoro-82M on an
+ONNX Runtime, with a grapheme-to-phoneme layer this repository owns — which is a library API and
+not a network one. So an in-process implementation is now reasonable where this driver said it
+could not be, and that is a change in the reasoning rather than a change in the decision.
+
+**What is untouched, and it is the load-bearing half.** The first driver — *"word-level timestamps
+are non-negotiable; without them `timings.json` cannot be computed and captions cannot be
+aligned"* — stands exactly as written, and it is **why ADR 0028 chose the engine it chose**. The
+model is `onnx-community/Kokoro-82M-v1.0-ONNX-timestamped`, and it was chosen over another Kokoro
+ONNX conversion for the one thing the `-timestamped` export adds: a per-token duration array beside
+the audio. Accumulated across each word's token span it yields word start and end times from the
+model's own duration predictor — the same mechanism Kokoro-FastAPI uses internally to build the
+`timestamps` array this record pinned. This record's requirement selected that model; it was not
+outgrown by it.
+
+**And the contract is still the contract.** Three of the four speech routes `setup` knows speak it —
+a server the user names with `--tts-url`, the `docker` route's pinned
+`ghcr.io/remsky/kokoro-fastapi-cpu` image, and the `bundle` route that still has nothing published
+to fetch — all unchanged, none deprecated. Only the new `onnx` route does not.
+`packages/tts-client` still pins the payload, `stream: false` and `return_timestamps: true` are
+still asserted by the test this record argues for, the digest pin still bounds the upstream risk,
+and anything that answers those two endpoints is still a valid backend. What ADR 0028 changes is
+that the HTTP contract is no longer the **only** interface, and the reason given above for its being
+the only possible shape is no longer true.
+
+**Option 3 was left open as a spike, and this is how that spike came out.** This record's third
+option was *"a slimmer `kokoro-onnx` in-process path with forced alignment (WhisperX or `aeneas`) to
+recover word timings"*, kept open on a stated objection: *"forced alignment adds a second model and
+a second failure mode to the one number the whole render depends on."* ADR 0028 takes option 3's
+**shape** — in-process, no server, a much smaller footprint — and defeats the objection by removing
+its cause rather than accepting it: the timestamps come from the model that produced the audio, so
+there is no aligner and no second model. The objection was also correct on its own terms. CTC forced
+alignment over `wav2vec2-base-960h` was measured at **47–49 ms** word-boundary error against exact
+model durations, about a frame and a half at 30 fps, and is recorded in ADR 0028 as the fallback
+rather than the choice. And one of the two aligners this record named by hand could not have shipped
+at all: `aeneas` is **AGPL**. The larger thing option 3 did not see is that a slimmer *Python*
+in-process path would still have needed a phonemizer, and in this ecosystem the route to one runs
+through espeak-ng, which is GPL-3.0-or-later — the licence problem ADR 0028 exists to solve, and one
+this record had no reason to look for in 2026-09.
