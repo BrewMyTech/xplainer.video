@@ -24,21 +24,33 @@
  * engine, and a `KOKORO_URL` a developer exported months ago for the reference implementation would
  * silently win. The transcript prints what it checked and what it dropped to check it.
  *
- * **Why the `PATH` is filtered rather than composed.** `scripts/e2e/toolchain.mjs` proves D8 by
- * *building* a `PATH` — `/usr/bin:/bin`, a shell and no interpreter — and that form cannot work
- * here: this proof needs `node` and `npm` on the child's `PATH`, because the workspace route runs
- * `npm ci` and `esbuild`'s `postinstall` calls bare `node`, and on macOS `/usr/bin` itself resolves
- * `python3` (an Xcode stub, but a file that `spawn` finds). So every directory of the parent's
- * `PATH` that resolves any of the three is dropped **whole**, and the transcript names each one and
- * which executable cost it its place. Measured here on 2026-09-10: that removes five directories,
- * `/usr/bin`, `/opt/homebrew/bin` and `/usr/local/bin` among them, and `npm ci` still resolves the
- * template's whole dependency tree in 11 s from what is left. A filter that leaves no `node` is a
- * refusal rather than a run, because the whole point is that what remains is a working machine.
+ * **Why the `PATH` is composed rather than filtered, which is a correction.** This proof first
+ * *subtracted*: it dropped every directory of the parent's `PATH` that resolved any of the three
+ * whole, since a directory is the only unit a `PATH` has. That form passed on macOS by luck of
+ * layout and failed on both other platforms inside its own arrangement — workflow run 34488355426
+ * is the record. On Linux `/usr/bin` resolves `python3`, so it was dropped, and it took **`sh`**
+ * with it; `npm ci` then died in `esbuild`'s `postinstall` with `npm error syscall spawn sh` and
+ * exit `254`, which is the exact hazard `apps/cli/AGENTS.md` §`src/setup/` documents for D8. On
+ * Windows it dropped `C:\Windows\system32`, where nearly every system tool lives, and *still* found
+ * `python` afterwards, because a Windows Store execution alias is a reparse point `existsSync`
+ * cannot see and `spawn` launches anyway. A subtraction therefore removed what the run needed and
+ * missed what it was for, in one go.
+ *
+ * So the child's `PATH` is **one directory this proof creates and fills**, holding nothing but the
+ * executables named in {@link allowList} — a symlink where the platform allows one, a hard link or
+ * a copy where it does not, and a forwarding `.cmd` for the one Windows entry that reads its own
+ * location. A forbidden binary cannot resolve because nothing ever put it within reach, and nothing
+ * essential can go missing because the list is explicit, printed with the reason each entry is on
+ * it, and asserted twice: every name on it must resolve in the child, and the directory must
+ * contain nothing else. The parent's `PATH` is then audited for the record — every directory
+ * `spawn` can still reach `docker`, `python` or `python3` through is named, and so is whether
+ * `existsSync` could see the file, which is how the Windows alias is caught saying one thing to a
+ * scan and another to a spawn.
  *
  * **2 — the acquisition.** A real `xplainer setup` in a scratch state directory, with the reviewed
  * manifest this checkout commits (nothing is published to the address `setup` would otherwise read,
  * `docs/ROADMAP.md` §2.5) and **no `--tts-url`**. `providers/speech.ts` then walks its four routes
- * in order: `--tts-url` is not given, `docker` is unavailable — which is what the scrubbed `PATH`
+ * in order: `--tts-url` is not given, `docker` is unavailable — which is what the composed `PATH`
  * is *for*, and not a side effect of it — and `onnx` acquires the model graph, one voice and this
  * platform's ONNX Runtime, each pinned by digest and each from its own upstream home. That is
  * ~204 MB across two hosts (HuggingFace twice, the npm registry twice), on top of the ~100 MB
@@ -121,6 +133,7 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -517,34 +530,193 @@ function onPath(pathValue, stem) {
   return null;
 }
 
+/** `%SystemRoot%\System32`, where every bare-named Windows tool below actually lives. */
+function system32() {
+  return join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+}
+
+/** The first `stem` the parent's own `PATH` resolves, or `fallback` when it resolves none. */
+function fromParentPath(stem, fallback) {
+  return onPath(process.env.PATH ?? "", stem) ?? fallback;
+}
+
 /**
- * The parent's `PATH` with every directory that resolves a hidden executable removed.
+ * Every executable the child is allowed to resolve, and the reason each one is on the list.
  *
- * Whole directories, because that is the only unit a `PATH` has: there is no way to say "this
- * directory, but not the `python3` in it". The dropped set is returned rather than only the string,
- * so the transcript can name each directory and the executable that cost it its place — a proof
- * that hides what it removed is a proof nobody can check.
+ * This *is* the child's `PATH` — one directory, this many files — so the list is the whole security
+ * argument and every entry has to earn its place out of something the product genuinely spawns by
+ * name. Read as a table:
+ *
+ * - `file` is what lands in the toolbox directory, and `spawnedAs` is the string the product hands
+ *   to `spawn`. They differ only on Windows, where `node` is reached through `PATHEXT` and
+ *   `installCommand()` spells npm's `.cmd` out in full.
+ * - `target` is the real executable on this machine, taken from the parent's own `PATH` wherever
+ *   there is one to take it from, so the child runs the same `node` and the same `npm` the run
+ *   itself is using rather than some other copy.
+ * - `probe` is an argv that is cheap and cannot hang, used only to ask whether `spawn` resolves the
+ *   name at all. Its exit status is not asserted — `sh -c 'exit 0'` and `icacls /?` do not agree
+ *   about what success looks like, and the question here is resolution.
+ *
+ * What is deliberately **not** here: `git` and `ffmpeg`. The subtractive form of this proof dropped
+ * `/usr/bin`, `/usr/local/bin` and `/opt/homebrew/bin` on macOS — which is every `git` and every
+ * `ffmpeg` on that machine — and `npm ci` still resolved the template's 247 packages and both
+ * renders still came out, so neither is something this run needs. The template's lockfile carries
+ * no `git+` dependency and Remotion bundles its own ffmpeg; the `ffmpeg` and `ffprobe` this script
+ * runs are the **parent's**, resolved by {@link resolveTool} outside the child entirely.
  */
-function scrubbedPath(pathValue) {
-  const kept = [];
-  const dropped = [];
-  for (const directory of pathValue.split(delimiter)) {
-    if (directory.trim() === "" || kept.includes(directory)) {
-      continue;
-    }
-    const found = HIDDEN_EXECUTABLES.map((stem) => ({
-      stem,
-      at: executableNames(stem)
-        .map((name) => join(directory, name))
-        .find((candidate) => existsSync(candidate)),
-    })).find((probe) => probe.at !== undefined);
-    if (found === undefined) {
-      kept.push(directory);
-    } else {
-      dropped.push({ directory, stem: found.stem, at: found.at });
+function allowList() {
+  if (process.platform === "win32") {
+    return [
+      {
+        file: "node.exe",
+        spawnedAs: "node",
+        target: process.execPath,
+        probe: ["--version"],
+        why: "esbuild's postinstall calls bare `node`, and `.bin/remotion.cmd` falls back to it",
+      },
+      {
+        file: "npm.cmd",
+        spawnedAs: "npm.cmd",
+        target: fromParentPath("npm", join(dirname(process.execPath), "npm.cmd")),
+        probe: ["--version"],
+        forward: true,
+        why: "`installCommand(null)` spawns `npm.cmd`, which is the workspace resolve route",
+      },
+      {
+        file: "cmd.exe",
+        spawnedAs: "cmd.exe",
+        target: process.env.ComSpec ?? join(system32(), "cmd.exe"),
+        probe: ["/c", "exit 0"],
+        why: "npm runs every lifecycle script through it, and libuv runs every `.cmd` through it",
+      },
+      {
+        file: "powershell.exe",
+        spawnedAs: "powershell.exe",
+        target: fromParentPath(
+          "powershell",
+          join(system32(), "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ),
+        probe: ["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+        why: "the daemon's Job Object keeper, its pipe descriptor and worker-identity all use it",
+      },
+      {
+        file: "taskkill.exe",
+        spawnedAs: "taskkill",
+        target: fromParentPath("taskkill", join(system32(), "taskkill.exe")),
+        probe: ["/?"],
+        why: "`treeKillCommand()`, the teardown a worker with no Job Object keeper falls back to",
+      },
+      {
+        file: "icacls.exe",
+        spawnedAs: "icacls",
+        target: fromParentPath("icacls", join(system32(), "icacls.exe")),
+        probe: ["/?"],
+        why: "`windows-acl.ts` restricts the state directory and the token to their owner with it",
+      },
+    ];
+  }
+  const posix = [
+    {
+      file: "node",
+      spawnedAs: "node",
+      target: process.execPath,
+      probe: ["--version"],
+      why: "esbuild's postinstall calls bare `node`, and every `#!/usr/bin/env node` shim in the workspace's `.bin` resolves it through PATH",
+    },
+    {
+      file: "npm",
+      spawnedAs: "npm",
+      target: fromParentPath("npm", join(dirname(process.execPath), "npm")),
+      probe: ["--version"],
+      why: "`installCommand(null)` spawns bare `npm`, which is the workspace resolve route",
+    },
+    {
+      file: "sh",
+      spawnedAs: "sh",
+      target: fromParentPath("sh", "/bin/sh"),
+      probe: ["-c", "exit 0"],
+      why: "npm runs every lifecycle script through `sh -c`, so a PATH with no shell fails at `spawn sh ENOENT` before an interpreter could be looked for at all",
+    },
+  ];
+  if (process.platform === "darwin") {
+    posix.push(
+      {
+        file: "ps",
+        spawnedAs: "ps",
+        target: fromParentPath("ps", "/bin/ps"),
+        probe: ["-o", "pid=", "-p", String(process.pid)],
+        why: "`processStartToken()` reads a worker's start time from it on darwin (linux uses /proc)",
+      },
+      {
+        file: "sysctl",
+        spawnedAs: "sysctl",
+        target: fromParentPath("sysctl", "/usr/sbin/sysctl"),
+        probe: ["-n", "kern.boottime"],
+        why: "`machineBootId()` reads kern.boottime from it on darwin (linux uses /proc)",
+      },
+    );
+  }
+  return posix;
+}
+
+/**
+ * `base` with every spelling of `PATH` removed and exactly one put back.
+ *
+ * Windows environment names are case-insensitive and the parent's is spelled `Path`, so a filtered
+ * copy of `process.env` that then assigns `PATH` hands the child **two** of them — and which one a
+ * lookup answers with is settled by a `qsort` over keys libuv compares case-insensitively, not by
+ * anything written here. Dropping every variant first is what makes the composed `PATH` the child's
+ * only one. `PATHEXT` is not a variant and is left alone: Windows needs it to resolve `node` from
+ * `node.exe` at all.
+ */
+function withPath(base, value) {
+  const env = {};
+  for (const [name, existing] of Object.entries(base)) {
+    if (name.toLowerCase() !== "path") {
+      env[name] = existing;
     }
   }
-  return { path: kept.join(delimiter), kept, dropped };
+  env.PATH = value;
+  return env;
+}
+
+/**
+ * Put one allow-list entry in the toolbox, by the cheapest mechanism the platform allows.
+ *
+ * A symlink where there is one to be had, a hard link where a symlink needs a privilege the runner
+ * may not have — Windows — and a copy where neither works. All three are equivalent for the entries
+ * here, because every one of them is either a self-contained executable or a script that locates
+ * its own package through the parent directory of its *real* path.
+ *
+ * The exception is `npm.cmd`, and it is why `forward` exists. That file reads `%~dp0` to find
+ * `node_modules\npm\bin\npm-cli.js` beside itself, so a link or a copy of it in a directory holding
+ * six files looks for npm inside the toolbox and does not find it. A two-line forwarding shim keeps
+ * the real one in the place it can still read.
+ */
+function place(directory, entry) {
+  const destination = join(directory, entry.file);
+  if (entry.forward === true) {
+    writeFileSync(
+      destination,
+      `@ECHO OFF\r\nCALL "${entry.target}" %*\r\nEXIT /B %ERRORLEVEL%\r\n`,
+      "utf8",
+    );
+    return `a forwarding .cmd shim to ${entry.target}`;
+  }
+  const failures = [];
+  for (const [how, attempt] of [
+    ["symlinked", () => symlinkSync(entry.target, destination)],
+    ["hard-linked", () => linkSync(entry.target, destination)],
+    ["copied", () => copyFileSync(entry.target, destination)],
+  ]) {
+    try {
+      attempt();
+      return `${how} from ${entry.target}`;
+    } catch (error) {
+      failures.push(`${how}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`${entry.file} could not be placed in ${directory} — ${failures.join("; ")}`);
 }
 
 /**
@@ -552,11 +724,18 @@ function scrubbedPath(pathValue) {
  *
  * `setup/providers/speech-docker.ts` decides whether this machine has an engine with
  * `spawnSync("docker", …)` and treats an `ENOENT` as "no docker here". So the assertion is that
- * exact spawn, under the exact environment the artefact will run in — not a `PATH` scan, which
- * would be this proof checking its own arithmetic instead of the mechanism.
+ * exact spawn, under the exact environment and the exact cwd the artefact will run in — not a
+ * `PATH` scan, which would be this proof checking its own arithmetic instead of the mechanism, and
+ * which is precisely the check a Windows execution alias walks past.
  */
-function spawnFinds(stem, env) {
-  const result = spawnSync(stem, ["--version"], { env, encoding: "utf8", timeout: 30_000 });
+function spawnFinds(stem, argv, env) {
+  const result = spawnSync(stem, argv, {
+    cwd: REPO,
+    env,
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+  });
   if (result.error !== undefined && result.error.code === "ENOENT") {
     return null;
   }
@@ -565,6 +744,42 @@ function spawnFinds(stem, env) {
     error: result.error === undefined ? null : result.error.code,
     said: (result.stdout ?? "").trim().split("\n")[0] ?? "",
   };
+}
+
+/**
+ * Every directory of the parent's `PATH` a hidden executable is still reachable through, and how.
+ *
+ * Not used to build anything — the child's `PATH` is composed and this audit changes none of it.
+ * It is the evidence, and it earns its place by reporting **two** answers per hit: what `existsSync`
+ * can see, and what `spawn` can reach. Those disagree on Windows, where an execution alias under
+ * `%LOCALAPPDATA%\Microsoft\WindowsApps` is a reparse point `stat` reports as absent and
+ * `CreateProcess` launches happily — the thing that made the subtractive form of this proof fail
+ * its own assertion. Each directory is probed with a `PATH` of exactly itself, so a hit names the
+ * directory responsible rather than the first one in the list.
+ */
+function parentPathReach(pathValue) {
+  const reach = [];
+  for (const directory of pathValue.split(delimiter)) {
+    if (directory.trim() === "") {
+      continue;
+    }
+    for (const stem of HIDDEN_EXECUTABLES) {
+      const visible =
+        executableNames(stem)
+          .map((name) => join(directory, name))
+          .find((candidate) => existsSync(candidate)) ?? null;
+      // Only the invisible case is spawned. Where the file is there to be seen the answer is
+      // already known, and running `docker --version` once per directory that has one is the
+      // expensive half of this audit for no extra evidence.
+      const found =
+        visible !== null ||
+        spawnFinds(stem, ["--version"], withPath(process.env, directory)) !== null;
+      if (found) {
+        reach.push({ directory, stem, visible });
+      }
+    }
+  }
+  return reach;
 }
 
 /** The first of `candidates` that exists, or the bare name for whatever is on `PATH`. */
@@ -966,21 +1181,34 @@ async function main() {
   say(`  state dir:   ${stateDir}`);
   say(`  workspace:   ${workspace}`);
 
-  const scrub = scrubbedPath(process.env.PATH ?? "");
-  for (const gone of scrub.dropped) {
-    say(`  dropped from PATH: ${gone.directory} — it resolves ${gone.stem} at ${gone.at}`);
+  // THE CHILD'S `PATH` IS BUILT, NOT FILTERED. One directory, filled with the executables
+  // `allowList()` names and nothing else, so `docker`, `python` and `python3` are unreachable
+  // because no directory that holds one is on it — and `sh` cannot go missing on the way, which is
+  // how the subtractive form of this arrangement broke Linux.
+  const toolbox = join(scratch, "path");
+  mkdirSync(toolbox, { recursive: true });
+  const allowed = allowList();
+  for (const entry of allowed) {
+    check(
+      existsSync(entry.target),
+      `the ${entry.spawnedAs} this run is itself using is at ${entry.target}, so the child can ` +
+        "have the same one",
+    );
   }
-  say(`  ${scrub.kept.length} directories kept, ${scrub.dropped.length} dropped`);
+  for (const entry of allowed) {
+    say(`  PATH/${entry.file}: ${place(toolbox, entry)}`);
+    say(`    ${entry.why}`);
+  }
 
-  const env = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    if (!SCRUBBED_VARIABLES.includes(name)) {
-      env[name] = value;
-    }
-  }
-  env.PATH = scrub.path;
+  const env = withPath(
+    Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !SCRUBBED_VARIABLES.includes(name)),
+    ),
+    toolbox,
+  );
   env.XPLAINER_STATE_DIR = stateDir;
   env.XPLAINER_VIDEOS_DIR = workspace;
+  say(`  the child's whole PATH is ${toolbox}`);
 
   for (const variable of SCRUBBED_VARIABLES) {
     check(
@@ -990,12 +1218,25 @@ async function main() {
     );
   }
 
+  // What is in the directory *is* the allow-list, so the directory is read back rather than
+  // trusted. An extra file here would be an extra executable the child can reach, and the one
+  // mechanism this arrangement rests on is that there is no such thing.
+  const placed = readdirSync(toolbox).sort();
+  const wanted = allowed.map((entry) => entry.file).sort();
+  check(
+    placed.join(", ") === wanted.join(", "),
+    `the child's PATH is one directory holding exactly the ${wanted.length} executables this proof ` +
+      `put there — ${placed.join(", ")} — so a forbidden binary cannot resolve because nothing ` +
+      "ever put it within reach",
+  );
+
   // The negative, asked the way the product asks it. `spawnSync(stem)` is `speech-docker.ts`'s own
   // probe, so an `ENOENT` here is the same `ENOENT` that makes route 2 unavailable — and a route
   // this proof believed unavailable while `docker` answered would produce a green run about a
-  // container.
+  // container. A `PATH` scan would not do: on Windows it says a Store execution alias is not there
+  // and `spawn` launches it anyway, which is what the audit below reports.
   for (const stem of HIDDEN_EXECUTABLES) {
-    const found = spawnFinds(stem, env);
+    const found = spawnFinds(stem, ["--version"], env);
     check(
       found === null,
       `spawning ${stem} in the child environment fails with ENOENT — the way ` +
@@ -1004,15 +1245,30 @@ async function main() {
     );
   }
 
-  // …and the positive, because a machine that can no longer install anything would fail this proof
-  // for a reason that has nothing to do with speech. `npm ci` is what the workspace route runs and
-  // `esbuild`'s postinstall calls bare `node`.
-  for (const stem of ["node", "npm"]) {
-    const resolved = onPath(scrub.path, stem);
+  // …and the positive, for every name on the list rather than for the two someone remembered. A
+  // machine that can no longer install anything would fail this proof minutes later, inside npm,
+  // for a reason that has nothing to do with speech; this is where a missing `sh` is caught.
+  for (const entry of allowed) {
+    const found = spawnFinds(entry.spawnedAs, entry.probe, env);
     check(
-      resolved !== null,
-      `${stem} still resolves on the scrubbed PATH, at ${String(resolved)}, so the workspace ` +
-        "route can still install",
+      found !== null,
+      `spawning ${entry.spawnedAs} in the child environment resolves ${entry.file}` +
+        `${found === null ? "" : ` (${found.said === "" ? `exit ${String(found.status)}` : found.said})`}`,
+    );
+  }
+
+  // The audit: not used to build anything, and printed because "no Python" is only as good as the
+  // evidence that there was a Python to hide. It is also the record of what a subtractive filter
+  // would have had to catch, and of the one case it provably cannot.
+  const reach = parentPathReach(process.env.PATH ?? "");
+  say(`  the parent's PATH reaches a hidden executable through ${reach.length} directory/ies:`);
+  for (const hit of reach) {
+    say(
+      `    ${hit.stem} through ${hit.directory} — ` +
+        (hit.visible === null
+          ? "and existsSync sees no such file there, so spawn reaches it through an execution " +
+            "alias or an extension this scan does not spell: a subtractive filter cannot drop it"
+          : `existsSync sees it at ${hit.visible}`),
     );
   }
 
@@ -1139,7 +1395,7 @@ async function main() {
   }
 
   section("daemon");
-  // NO COORDINATE IS SUPPLIED. `env` is the scrubbed environment and nothing else: no
+  // NO COORDINATE IS SUPPLIED. `env` is the composed environment and nothing else: no
   // `XPLAINER_ONNX_*`, no `XPLAINER_TTS_*`, and `XPLAINER_STATE_DIR` naming the directory `setup`
   // has just written its marker into. Everything the narration worker needs to find the engine it
   // is about to speak with, it reads out of that marker — which is claim 5, and which is asserted
@@ -1404,7 +1660,7 @@ async function main() {
   // The control: the same sources, the same measured narration, the same frame — with the caption
   // component replaced by one that draws nothing. Rendered by the pinned Remotion CLI directly,
   // because the daemon restores an engine-owned file before every render. It runs under the same
-  // scrubbed environment as everything else, so the render half of this proof needs no more of a
+  // composed environment as everything else, so the render half of this proof needs no more of a
   // machine than the narration half did.
   const controlSource = join(workspace, "videos", CONTROL_SLUG);
   const controlPublic = join(workspace, "public", CONTROL_SLUG);
