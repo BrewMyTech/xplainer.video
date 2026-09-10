@@ -423,6 +423,37 @@ reopen D1: D1 refused `PATH` injection for *render workers* because it leaks an 
 `npm ci`, never `npm install`, and never `--ignore-scripts` — which also exits `0` today and makes
 the workspace's completeness depend on no package in that tree ever needing its install script.
 
+**npm is spawned as a *script* under an explicit *interpreter*, on both routes and on all three
+platforms — never as a launcher, and never with `shell: true`.** The payload route always did:
+`<runtime>/bin/node[.exe]` plus `lib/node_modules/npm/bin/npm-cli.js`. The resolve route did not —
+it returned `npm` or `npm.cmd` by platform — and so **`setup` had never once worked on Windows
+without a staged payload 1**, from the day `providers/workspace.ts` was written until 2026-09-10.
+Since the CVE-2024-27980 fix (Node ≥18.20.2/20.12.2/21.7.3) libuv's `uv_spawn` refuses a
+`.bat`/`.cmd` application outright unless `UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS` is set, and Node
+sets that only for `shell: true` or `windowsVerbatimArguments: true`. The refusal is libuv's rather
+than JS's, so it arrived as `spawnSync npm.cmd EINVAL` with **no `status` and no `signal`** — no
+process was created — and `WorkspaceRefusal("install-failed")` mapped it to exit **70**, the
+unexpected-throw bucket, which is itself the tell that nobody expected this branch to run.
+`shell: true` is not the alternative: it hands the argv to `cmd.exe` to re-parse, which is the
+quoting hazard the CVE fix exists for and which any workspace path holding a space walks into. So
+`locateNpmCli()` finds an `npm-cli.js` — beside `process.execPath` first, because the route now
+supplies the interpreter and that is the pair which shipped together, then beside any `npm` on
+`PATH`, following a POSIX `npm` symlink onto the script and rejecting a launcher that is not one —
+and **refuses by name** (`no-package-manager`, exit `3`) rather than falling back to a launcher one
+platform cannot spawn.
+
+**Nothing anywhere had run that branch on Windows, which is why it survived.**
+`e2e-toolchain.yml`'s Windows leg is green and its D8 phase does run `setup --workspace`, but out of
+a **relocated payload 1**, so `hostRuntimeDir()` answers and it takes the interpreter-plus-script
+form; its phase 4 sets `XPLAINER_WORKSPACE_PAYLOAD` and takes the `copy` route, which spawns
+nothing. That workflow's `windows-delivery-position` job does run the CLI from the checkout, but it
+refuses at the **browser** — `setup`'s order is browser, speech, workspace — and never reaches the
+provider. The unit test asserted the launcher rather than questioning it. `pnpm e2e:speech` is the
+first thing in this repository to run the resolve route on Windows, and it is what found this.
+`InstallHost` — `platform`, `execPath` and `path` as arguments, the same seam
+`install/supervisors/`'s three renderers take — is what makes the `win32` argv assertable from a
+suite on the other two platforms, since this package mocks nothing.
+
 **The daemon never starts a speech container.** `setup` pulls the pinned image, the user or the
 supervisor runs it, and the daemon reports its absence with the command that starts it
 (`speechContainerCommand()`). What `toolchain.json` records for that route is a **receipt** — a

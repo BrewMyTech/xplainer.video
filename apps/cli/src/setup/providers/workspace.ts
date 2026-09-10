@@ -6,8 +6,9 @@
  * - **copy** — a payload 2 already staged on this machine (`xplainer runtime build --workspace`) is
  *   copied into the workspace. Offline and fast; the route a checkout or a CI runner takes.
  * - **resolve** — `template/package.json` and the lockfile committed beside it are installed with
- *   the npm payload 1 carries. Needs a network; the route a desktop user's first run takes, on a
- *   machine whose whole premise is that it has no Node.
+ *   the npm payload 1 carries, or with this machine's own where there is no payload. Needs a
+ *   network; the route a desktop user's first run takes, on a machine whose whole premise is that
+ *   it has no Node.
  *
  * Round 3 named the second route and shipped no package manager, so it did not exist. Payload 1
  * now carries npm (D3, 17 MB measured), and the two ends of the pinned resolution run the **same
@@ -20,6 +21,21 @@
  * the template — `package-lock.json` is a member of `WORKSPACE_FILES` for exactly this reason — and
  * this module refuses to spawn npm if either file is somehow absent, rather than letting npm report
  * a usage error a user cannot act on.
+ *
+ * **npm is spawned as a *script* under an explicit *interpreter*, on both routes and on every
+ * platform.** The payload route has always done that — `<runtime>/bin/node` plus `npm-cli.js` — and
+ * the resolve route used to spawn npm's own launcher instead, `npm` or `npm.cmd` according to the
+ * platform. On Windows that never worked *at all*: since the CVE-2024-27980 fix (Node
+ * ≥18.20.2/20.12.2/21.7.3, so every version this build supports) libuv's `uv_spawn` refuses a
+ * `.bat`/`.cmd` application outright unless `UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS` is set, and
+ * Node sets that only for `shell: true` or `windowsVerbatimArguments: true`. The rejection is in
+ * libuv rather than in JS, which is why `spawnSync("npm.cmd", …)` came back as `EINVAL` carrying
+ * neither a `status` nor a `signal` — **no process was created** — and why `setup` then exited `70`,
+ * the unexpected-throw bucket. `shell: true` is not the fix: it hands the whole argv to `cmd.exe` to
+ * re-parse, which is the quoting hazard the CVE fix exists for and which any workspace path holding
+ * a space walks straight into. So the resolve route *locates* an `npm-cli.js` too
+ * ({@link locateNpmCli}) and refuses by name when it cannot find one, rather than spawning a
+ * launcher that one of the three platforms cannot spawn.
  *
  * **`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8).** Measured by
  * both reviewers: `npm ci` from payload 1 under a scrubbed `PATH` exits **127**, because npm runs
@@ -48,10 +64,11 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { materialiseWorkspace } from "@xplainer/render-core";
@@ -66,7 +83,6 @@ import {
   type ManifestFile,
   type ManifestLink,
   PAYLOAD_BIN_DIR,
-  PAYLOAD_LIB_DIR,
   PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   scanTree,
@@ -83,6 +99,12 @@ export const INSTALL_INPUTS = ["package.json", "package-lock.json"] as const;
 
 /** The command, spelled once. `ci`, never `install` (D11). */
 export const INSTALL_SUBCOMMAND = "ci";
+
+/** npm's own CLI script, spelled once. This is what gets spawned; a launcher never does. */
+export const NPM_CLI_FILE = "npm-cli.js";
+
+/** Where an npm install puts that script, relative to the directory holding its `node_modules`. */
+const NPM_CLI_IN_MODULES = ["node_modules", "npm", "bin", NPM_CLI_FILE] as const;
 
 /** Which of the two routes produced a workspace. Recorded, because they are not interchangeable. */
 export type WorkspaceRoute = "copy" | "resolve";
@@ -149,8 +171,8 @@ export type MaterialiseOptions = {
    *
    * `undefined` resolves to {@link hostRuntimeDir}, which is the payload this process is running
    * out of — the one case that matters on a user's machine. In a checkout there is none, and the
-   * install falls back to whatever `npm` is on `PATH`, which is the checkout-or-runner half of the
-   * same decision.
+   * install runs this process's own interpreter over the `npm-cli.js` {@link locateNpmCli} finds,
+   * which is the checkout-or-runner half of the same decision.
    */
   runtimeDir?: string | undefined;
   /** The environment the install subprocess inherits. Defaults to this process's. */
@@ -300,6 +322,16 @@ function copyStagedPayload(root: string, payloadDir: string, log: (line: string)
  *   cwd: <workspace>
  *   env: { ...parent, PATH: `<runtime>/bin` + path.delimiter + parent.PATH }
  * ```
+ *
+ * With no payload it is the **same shape** over this machine's own two pieces — the interpreter
+ * already running this code, and whichever `npm-cli.js` {@link locateNpmCli} found beside it — and
+ * the environment is the parent's, untouched. Same shape rather than a launcher, because one of the
+ * three platforms cannot spawn a launcher at all; the module docblock carries that measurement.
+ *
+ * ```
+ * <process.execPath> <…>/npm/bin/npm-cli.js ci
+ *   cwd: <workspace>
+ * ```
  */
 function resolveTemplate(
   root: string,
@@ -324,19 +356,60 @@ function resolveTemplate(
         `${String(result.status ?? result.signal ?? "without running")}:\n${detail}`,
     );
   }
-  writeWorkspaceManifest(root, runtimeDir, install);
+  writeWorkspaceManifest(root, install);
 }
 
-/** The interpreter and argv the install runs as, from a payload where there is one. */
-export function installCommand(runtimeDir: string | null): {
+/**
+ * What the resolve route is allowed to assume about the machine it runs on, as arguments.
+ *
+ * Every field defaults to this process's own answer, and every field exists so that the win32
+ * spelling is assertable from a suite running on the other two platforms — the same reason
+ * `install/supervisors/`'s three renderers take a platform. The bug this seam was added for
+ * reproduced on `win32` and nowhere else, and this package mocks nothing.
+ */
+export type InstallHost = {
+  /** The platform whose spelling of the interpreter is wanted. Defaults to this process's. */
+  platform?: NodeJS.Platform | undefined;
+  /** The interpreter the resolve route runs npm under. Defaults to `process.execPath`. */
+  execPath?: string | undefined;
+  /** The `PATH` npm is looked for on, after the interpreter's own layout. Defaults to this process's. */
+  path?: string | undefined;
+};
+
+/**
+ * The interpreter and argv the install runs as: the payload's pair where there is a payload, and
+ * this process's own interpreter over a located `npm-cli.js` where there is not.
+ *
+ * One shape, two sources. The first argument is always npm's CLI script and the command is always
+ * an interpreter, because a launcher is not spawnable on Windows and `shell: true` is not an answer
+ * — the module docblock carries that measurement.
+ */
+export function installCommand(
+  runtimeDir: string | null,
+  host: InstallHost = {},
+): {
   command: string;
   args: string[];
 } {
   const args = [INSTALL_SUBCOMMAND, "--no-audit", "--no-fund"];
   if (runtimeDir === null) {
-    return { command: process.platform === "win32" ? "npm.cmd" : "npm", args };
+    const execPath = host.execPath ?? process.execPath;
+    const npmCli = locateNpmCli(host);
+    if (npmCli === null) {
+      throw new WorkspaceRefusal(
+        "no-package-manager",
+        `no ${NPM_CLI_FILE} could be found for the resolve route: not beside the interpreter at ` +
+          `${execPath}, and not beside any \`npm\` on \`PATH\`. The route spawns npm as ` +
+          `\`<interpreter> ${NPM_CLI_FILE} ${INSTALL_SUBCOMMAND}\` — an explicit script under an ` +
+          "explicit interpreter — because npm's own launcher cannot be spawned on Windows at all: " +
+          "libuv refuses a `.cmd` application without `shell: true`, and `shell: true` re-opens " +
+          "the quoting hazard CVE-2024-27980's fix exists for. Install npm beside this " +
+          "interpreter, or stage a runtime payload, which carries its own (D3).",
+      );
+    }
+    return { command: execPath, args: [npmCli, ...args] };
   }
-  const interpreter = join(runtimeDir, PAYLOAD_BIN_DIR, interpreterName());
+  const interpreter = join(runtimeDir, PAYLOAD_BIN_DIR, interpreterName(host.platform));
   const npmCli = join(runtimeDir, ...PAYLOAD_NPM_CLI.split("/"));
   for (const file of [interpreter, npmCli]) {
     if (!existsSync(file)) {
@@ -351,9 +424,79 @@ export function installCommand(runtimeDir: string | null): {
   return { command: interpreter, args: [npmCli, ...args] };
 }
 
+/**
+ * The `npm-cli.js` this machine has, or `null` when it has none.
+ *
+ * **The interpreter's own npm is asked for first, and `PATH` is the fallback.** The route supplies
+ * the interpreter explicitly now, so the npm that shipped beside that interpreter is the pair which
+ * was tested together — and it is the answer that does not depend on a `PATH` this very route is
+ * proved under a scrubbed copy of (D8). `PATH` is still searched, because a Node installed without
+ * its own npm is a real machine and a refusal there would be a refusal over something the host can
+ * plainly do.
+ *
+ * Two layouts are tried per directory, and between them they are every npm install this code will
+ * meet: `<dir>/node_modules/npm/…`, which is Windows's, and `<dir>/../lib/node_modules/npm/…`,
+ * which is the POSIX prefix's. A launcher on `PATH` is also **followed**, because on POSIX `npm` is
+ * a symlink onto the script itself and that is the shortest true answer; a launcher whose real path
+ * is not the script — a `.cmd`, a Volta or Corepack shim — is rejected rather than spawned, and its
+ * directory is searched for the two layouts instead.
+ */
+export function locateNpmCli(host: InstallHost = {}): string | null {
+  for (const candidate of npmCliCandidates(host)) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** Every `npm-cli.js` worth asking about, in the order the answer is taken from. */
+function npmCliCandidates(host: InstallHost): string[] {
+  const platform = host.platform ?? process.platform;
+  const execPath = host.execPath ?? process.execPath;
+  const pathValue = host.path ?? process.env.PATH ?? process.env.Path ?? "";
+  const candidates = npmInstallsBeside(dirname(execPath));
+  for (const directory of pathValue.split(delimiter)) {
+    if (directory.trim() === "") {
+      continue;
+    }
+    for (const name of npmLauncherNames(platform)) {
+      const launcher = join(directory, name);
+      if (!existsSync(launcher)) {
+        continue;
+      }
+      const real = realPath(launcher);
+      if (real !== null && basename(real) === NPM_CLI_FILE) {
+        candidates.push(real);
+      }
+      candidates.push(...npmInstallsBeside(directory));
+    }
+  }
+  return candidates;
+}
+
+/** The two layouts an npm install takes beside a directory holding an interpreter's launchers. */
+function npmInstallsBeside(binDir: string): string[] {
+  return [join(binDir, ...NPM_CLI_IN_MODULES), join(binDir, "..", "lib", ...NPM_CLI_IN_MODULES)];
+}
+
+/** The names an `npm` launcher goes by — which is where Windows differs, and why this mattered. */
+function npmLauncherNames(platform: NodeJS.Platform): readonly string[] {
+  return platform === "win32" ? ["npm.cmd", "npm.exe", "npm.bat", "npm"] : ["npm"];
+}
+
+/** `realpathSync` as an answer rather than a throw, for a link this code did not create. */
+function realPath(file: string): string | null {
+  try {
+    return realpathSync(file);
+  } catch {
+    return null;
+  }
+}
+
 /** `node` or `node.exe`, which is the only place this build spells the difference. */
-function interpreterName(): string {
-  return process.platform === "win32" ? "node.exe" : "node";
+function interpreterName(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "node.exe" : "node";
 }
 
 /**
@@ -421,11 +564,7 @@ export function remotionShimPath(root: string): string | null {
  * update`'s compatibility check and `runtime verify --workspace` read whichever of the two routes
  * produced the workspace and must not be able to tell them apart.
  */
-function writeWorkspaceManifest(
-  root: string,
-  runtimeDir: string | null,
-  install: { command: string; args: string[] },
-): void {
+function writeWorkspaceManifest(root: string, install: { command: string; args: string[] }): void {
   const remotionEntry = remotionEntryPath(root);
   if (remotionEntry === null) {
     throw new WorkspaceRefusal(
@@ -442,7 +581,7 @@ function writeWorkspaceManifest(
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: npmVersionOf(runtimeDir, install),
+    npm_version: npmVersionOf(install),
     installer: `npm ${INSTALL_SUBCOMMAND}`,
     pins: readTemplatePins(),
     resolved: resolvedVersions(join(root, "node_modules")),
@@ -486,23 +625,26 @@ function scanWorkspacePayload(root: string): { files: ManifestFile[]; links: Man
   return { files, links };
 }
 
-/** The npm that ran the install, by version, read from wherever it came from. */
-function npmVersionOf(
-  runtimeDir: string | null,
-  install: { command: string; args: string[] },
-): string {
-  if (runtimeDir !== null) {
-    const manifestFile = join(runtimeDir, ...PAYLOAD_LIB_DIR.split("/"), "npm", "package.json");
-    if (existsSync(manifestFile)) {
-      const version = readJson(manifestFile).version;
-      if (typeof version === "string") {
-        return version;
-      }
-    }
+/**
+ * The npm that ran the install, by version, read off the package the script belongs to.
+ *
+ * One reader for both routes, because both now spawn a `npm-cli.js` and `<…>/npm/bin/npm-cli.js`
+ * always has npm's own `package.json` two directories up. It used to be two readers, and the second
+ * was `spawnSync(install.command, ["--version"])` — a second instance of the bug this file was
+ * fixed for on the resolve route, and a second `npm.cmd` that `EINVAL`ed on Windows into a recorded
+ * `"unknown"`. There is no spawn here now, which is also 0 ms rather than npm's start-up.
+ */
+function npmVersionOf(install: { command: string; args: string[] }): string {
+  const npmCli = install.args[0];
+  if (npmCli === undefined) {
     return "unknown";
   }
-  const probe = spawnSync(install.command, ["--version"], { encoding: "utf8" });
-  return probe.status === 0 ? (probe.stdout ?? "").trim() : "unknown";
+  const manifestFile = join(dirname(dirname(npmCli)), "package.json");
+  if (!existsSync(manifestFile)) {
+    return "unknown";
+  }
+  const version = readJson(manifestFile).version;
+  return typeof version === "string" ? version : "unknown";
 }
 
 /**
