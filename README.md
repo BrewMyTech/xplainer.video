@@ -129,18 +129,29 @@ exposing the daemon beyond this machine, and the self-supervision recipes for a 
 user-scope supervisor (Docker `--restart unless-stopped`, OpenRC `supervise-daemon`), each with the
 caveats measured rather than assumed.
 
-**Text-to-speech runs in a container next to it**, on `http://localhost:8880`:
+**Text-to-speech needs no container and no Python.** `xplainer setup` acquires an in-process
+engine — the Kokoro-82M ONNX graph, one voice and this platform's ONNX Runtime, each pinned by
+digest and each fetched from its own upstream home — and narration then runs inside the daemon's own
+worker, with word timings taken from the model's own per-token duration predictor
+([ADR 0028](docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)). Nothing has to be started,
+and nothing has to be published for it to work. Intel Macs are the one exception:
+`onnxruntime-node` ships no `darwin/x64` binding, so those keep the two routes below.
+
+A **Kokoro-FastAPI server is still a supported route**, and it wins when you name one — a container
+you already run, a hosted voice, or a comparison against the reference implementation:
 
 ```bash
-docker compose -f infra/docker-compose.tts.yml up --build
+docker compose -f infra/docker-compose.tts.yml up --build   # on http://localhost:8880
+xplainer setup --tts-url http://localhost:8880              # record it, download nothing
 ```
 
-That is the Kokoro-FastAPI contract `packages/tts-client` is pinned against
-([ADR 0006](docs/adr/0006-kokoro-fastapi-http-contract-as-tts-interface.md)) — chosen because
-it returns word-level timestamps, which is what makes every scene duration derivable rather
-than hand-written. From phase 2, `xplainer setup` downloads a standalone build of the same
-thing and Docker stops being a requirement
-([ADR 0005](docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)).
+That is the contract `packages/tts-client` is pinned against
+([ADR 0006](docs/adr/0006-kokoro-fastapi-http-contract-as-tts-interface.md)) — chosen because it
+returns word-level timestamps, which is what makes every scene duration derivable rather than
+hand-written, and it is still the contract for anything that speaks over a network.
+`xplainer setup --speech docker` pulls the pinned image instead of acquiring the in-process engine;
+a machine that already recorded that route keeps it on a re-run, and `--speech onnx` is how it
+switches.
 
 **`apps/desktop` is an optional GUI client**, not a second implementation. It bundles and
 spawns the CLI, or attaches to a daemon running somewhere else, and it contains no render or

@@ -1,0 +1,254 @@
+# The `[runner]` half of the ONNX speech proof: `scripts/e2e/speech.mjs` on a
+# machine nobody owns.
+#
+# WHAT IT CLOSES. `pnpm e2e:speech` proves the plan's central claim — speech with
+# no Docker, no `--tts-url`, no server and no Python — on a developer's macOS
+# machine, and that machine is the worst possible place to prove it: it is the
+# machine where the model, the voice pack and the ONNX Runtime are already in
+# somebody's download cache and where the interpreter the proof hides was hidden
+# by hand. Here the checkout is clean, the state is empty, the ~304 MB is fetched
+# from its three upstream hosts for real, and the `PATH` filter is applied to a
+# runner's `PATH` rather than to one shell profile's.
+#
+# THREE OPERATING SYSTEMS, AND ALL THREE ARE MEANINGFUL. `onnxruntime-node` 1.29.0
+# publishes a binding for `darwin/arm64`, `linux/x64`, `linux/arm64`, `win32/x64`
+# and `win32/arm64`, so every runner GitHub offers has one — which is the whole
+# point of this route and the reason §2.5's "Windows has no speech route this
+# phase" stopped being true. Two of the legs carry something the others cannot:
+#
+#   * ubuntu-latest  — the runner with a real Docker engine, which makes this the
+#     one leg where the `PATH` filter is doing load-bearing work rather than
+#     asserting an absence. `providers/speech.ts` puts `onnx` BELOW `docker`, so
+#     a run whose filter failed would record `docker`, pull half a gigabyte of
+#     container and prove the opposite of what it was dispatched for. The proof
+#     asserts `setup` took the ONNX route by the line it printed.
+#   * windows-latest — the platform that had no speech at all before this plan,
+#     and the one whose `PATH` semantics are different in kind: `PATHEXT`, and a
+#     `python3.exe` that lives in the image's tool cache rather than in
+#     `/usr/bin`. `executableNames()` in the proof is what carries that.
+#   * macos-latest   — Apple silicon, no container engine, and the platform the
+#     local run already covers. It is here for the runner-vs-developer-machine
+#     difference and nothing else, which is why it defaults to off at 10x.
+#
+# WHY workflow_dispatch AND NOTHING ELSE. One run downloads a 92 MB model graph, a
+# 111 MB runtime tarball, a ~100 MB browser and the render workspace's whole
+# dependency tree from the registry, then renders a video twice. On `push` that
+# is three runners' worth of it on every commit, from three hosts none of which
+# this repository controls. `ci.yml` is the gate that runs on every push; this is
+# the proof, and a proof is run when you want the proof. It is the same argument
+# that keeps `pnpm e2e:speech` out of `pnpm verify`.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
+# branch**: until this file is on `main` the API answers a dispatch of it with
+# 422 whatever `--ref` says, which is GitHub's own rule and not a repository
+# setting. Once it is there, `--ref` chooses which branch's code the run
+# executes.
+#
+#   gh workflow run e2e-speech.yml --ref "$(git branch --show-current)" -f windows=true
+#   gh run watch "$(gh run list --workflow e2e-speech.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+#
+# The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`: a
+# bare dispatch allocates the 1x Linux runner and nothing else, and the line
+# above adds the Windows leg. Select all three for the run that is offered as
+# full platform coverage, and record the SHA and the selection beside its result.
+
+name: e2e-speech
+
+on:
+  # ONE CHECKBOX PER OPERATING SYSTEM. Every leg still exists and none of them is
+  # weakened; what the booleans decide is which of them a given dispatch pays
+  # for. Linux is on by default because it is the 1x runner and because it is the
+  # leg with the Docker engine; macOS bills at 10x and Windows at 2x.
+  workflow_dispatch:
+    inputs:
+      linux:
+        description: Run the Linux leg (ubuntu-latest).
+        type: boolean
+        default: true
+      macos:
+        description: Run the macOS leg (macos-latest, bills at 10x).
+        type: boolean
+        default: false
+      windows:
+        description: Run the Windows leg (windows-latest, bills at 2x).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # A dispatch supersedes an in-flight dispatch of the same ref and the same
+  # selection — a re-run of the same request — and leaves one that asked for
+  # different operating systems running.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  speech:
+    name: speech end-to-end (${{ matrix.os }})
+    # A dispatch that ticked nothing has asked for nothing.
+    if: ${{ inputs.linux || inputs.macos || inputs.windows }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Three answers, not one verdict: a Windows failure must not cancel the
+      # macOS and Linux legs that are the evidence for the other two thirds.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # `unused` matches no entry in the vector above, so a selected operating
+        # system is excluded by nothing and an unselected one is removed before a
+        # runner is allocated — which is where the saving is. A job that starts
+        # and then skips its steps has already been billed for the runner it
+        # booted.
+        exclude:
+          - os: ${{ inputs.linux && 'unused' || 'ubuntu-latest' }}
+          - os: ${{ inputs.macos && 'unused' || 'macos-latest' }}
+          - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
+    # The proof itself is minutes of work. The budget is for everything around it
+    # on a cold runner, each paid in full on every run: the install, a full
+    # `turbo build` with no cache, ~304 MB from three upstream hosts, the
+    # workspace's `npm ci`, Remotion's own Chrome download — a runner has no
+    # `node_modules/.remotion` for the proof to borrow — and then two renders.
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node from .node-version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Enable corepack
+        run: corepack enable
+
+      # `resolveTool()` in the proof takes `ffmpeg` and `ffprobe` off `PATH` (or
+      # from `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`), and it needs them on every
+      # runner: the still's dimensions and the MP4's streams are read with
+      # `ffprobe`, and the frame comparison pipes through `ffmpeg`. None of the
+      # three images ships them, and each package manager is the one that image
+      # already has — no third-party action is introduced for two binaries.
+      #
+      # This installs them for the PARENT process only, which is the one that
+      # runs them. The proof's own child environment drops whole `PATH`
+      # directories, and dropping the one ffmpeg is in would cost it nothing.
+      - name: Install ffmpeg and ffprobe
+        run: |
+          set -euo pipefail
+          if command -v ffprobe >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+            echo "already present: $(command -v ffmpeg), $(command -v ffprobe)"
+            exit 0
+          fi
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg ;;
+            macOS) brew install ffmpeg ;;
+            Windows)
+              choco install ffmpeg --yes --no-progress
+              # A step's environment is captured before it runs, so a machine
+              # `PATH` chocolatey edits mid-job reaches the next step only
+              # through `$GITHUB_PATH`.
+              printf '%s\n' 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+              ;;
+            *) echo "unknown runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+
+      # The Chrome headless shell `setup` downloads is a binary, not a bundle: it
+      # links against the system's own X, GTK and audio libraries, and a runner
+      # image carries only some of them. Four of the names moved in Ubuntu's
+      # 64-bit time_t transition and the runner image is pinned by GitHub rather
+      # than by us, so each of those is tried in its new spelling and then in its
+      # old one instead of hard-coding a guess. macOS and Windows need none of
+      # this: their Chrome builds link against the OS.
+      - name: Install the Chrome headless shell libraries (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          packages=(
+            fonts-liberation
+            libcairo2
+            libdbus-1-3
+            libdrm2
+            libgbm1
+            libnss3
+            libpango-1.0-0
+            libxcomposite1
+            libxdamage1
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+          )
+          for base in libasound2 libatk1.0-0 libatk-bridge2.0-0 libcups2; do
+            if apt-cache show "${base}t64" >/dev/null 2>&1; then
+              packages+=("${base}t64")
+            else
+              packages+=("$base")
+            fi
+          done
+          sudo apt-get install -y -qq "${packages[@]}"
+
+      # The engine this proof exists to do without, named out loud on the one
+      # runner that has one. If the `PATH` filter ever stopped working, this line
+      # is the evidence that there was something to filter — and on the other two
+      # legs the absence is the image's, which the proof's own ENOENT assertion
+      # reports either way.
+      - name: Show the Docker engine the proof must do without (Linux only)
+        if: runner.os == 'Linux'
+        run: docker version --format '{{.Server.Version}}'
+
+      - name: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      # The proof runs `pnpm turbo build` itself, so this step is not what makes
+      # the CLI current — it is what separates a build failure from a proof
+      # failure in the job summary.
+      - name: Build every member
+        run: pnpm turbo build
+
+      # No `env:` block at all, and that is the point of this proof: it must
+      # narrate with nothing configured. `XPLAINER_TTS_URL`,
+      # `XPLAINER_TTS_FIXTURE`, `KOKORO_URL` and the `XPLAINER_ONNX_*` set are
+      # removed from the child environment by the script and asserted absent, so
+      # setting one here would be caught rather than honoured.
+      #
+      # `COLLIE_ARTIFACTS_DIR` is left unset too: the script's own default is
+      # `<repo>/.session/artifacts`, the repository is the workspace, and the
+      # upload below names those paths.
+      - name: Speech end-to-end — setup, then narrate, still and render (AC 1–3)
+        run: pnpm e2e:speech
+
+      # `always()`, because the transcript of a failed run is the thing worth
+      # downloading — the proof names its failed assertion on the last line of
+      # it. `if-no-files-found: error` then keeps a run that produced nothing at
+      # all from reporting a green upload over an empty artifact. The name
+      # carries the OS because upload-artifact refuses a name two jobs share.
+      #
+      # The WAV is uploaded beside the MP4 deliberately: "every word in the
+      # script is audible" is asserted mechanically here, and the only way a
+      # human confirms the assertion means what it says is by listening to the
+      # narration this run produced.
+      - name: Upload the transcript, the MP4 and the narration
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-speech-${{ matrix.os }}
+          path: |
+            .session/artifacts/e2e-speech.log
+            .session/artifacts/e2e-speech.mp4
+            .session/artifacts/e2e-speech-narration.wav
+            .session/artifacts/e2e-speech-still.png
+            .session/artifacts/e2e-speech-frame-captioned.png
+            .session/artifacts/e2e-speech-frame-nocaptions.png
+          if-no-files-found: error
+          # A log, an MP4 and a WAV, all reproducible by re-running the workflow,
+          # times three runners per dispatch. `desktop.yml` filled this
+          # repository's artifact quota at the 90-day default on 2026-09-07 and
+          # every upload in every workflow failed until it was cleared; fourteen
+          # days is what `e2e-linux.yml` gives the same kind of evidence.
+          retention-days: 14

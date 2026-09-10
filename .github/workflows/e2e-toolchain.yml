@@ -8,28 +8,38 @@
 # `.node-version` pins, no state, and — on `ubuntu-latest` — a real Docker
 # engine, which is the only runner of the three that has one.
 #
-# THE THREE SPEECH ROUTES, ONE PER RUNNER, WHICH IS THE POINT OF THE MATRIX.
-# `speechPlan()` in the gate decides in a fixed precedence, and each runner
-# lands on a different branch of it without this file having to say so:
+# THE SPEECH PROVIDER, ONE ANSWER PER RUNNER, WHICH IS THE POINT OF THE MATRIX.
+# `speechPlan()` in the gate looks for a provider whose **lifetime this gate can
+# own** — a server somebody else runs, or a container it can start on a free
+# port and stop in a `finally` — and each runner lands on a different branch of
+# it without this file having to say so:
 #
 #   * ubuntu-latest  — `XPLAINER_TTS_URL` is deliberately NOT set, so the gate
-#     falls through to the **docker** route: `setup` pulls the pinned
+#     takes the **docker** route: `setup --speech docker` pulls the pinned
 #     Kokoro-FastAPI image by digest with the runner's own `/usr/bin/docker`,
 #     the gate then starts a container from that digest on a port the OS chose
 #     and stops it in a `finally`. That is T19's docker provider exercised end
 #     to end, and `/usr/bin/docker` resolves under the gate's scrubbed `PATH`
 #     without the client-directory fallback macOS needs, so the D8 claim is
-#     untouched.
-#   * macos-latest   — no speech route, and the narration leg is skipped with
+#     untouched. The flag is required rather than tidy: `onnx` sits above
+#     `docker` in `setup`'s own precedence since 2026-09-10, and phase 5 of the
+#     gate opens `marker.speech.path` as the docker receipt.
+#   * macos-latest   — no such provider, and the narration leg is skipped with
 #     its reason. GitHub's `services:` blocks — the way `e2e-linux.yml` supplies
 #     Kokoro — **only run on Linux runners**, and `macos-latest` is an Apple
-#     silicon host with no container engine, so neither route 1 nor route 2 is
-#     available to it. The gate says so in the transcript and renders from T3's
-#     fixture audio instead; what macOS proves here is the browser acquisition,
-#     the workspace, the degraded `/healthz`, the render and the rollback rerun.
-#   * windows-latest — no speech route either, and by design rather than by
-#     accident: §2.5 and P2-4 record that Windows has none this phase. The gate
-#     prints that as a skip and never as a pass.
+#     silicon host with no container engine. The gate says so in the transcript
+#     and renders from T3's fixture audio instead; what macOS proves here is the
+#     browser acquisition, the workspace, the degraded `/healthz`, the render
+#     and the rollback rerun.
+#   * windows-latest — no such provider either, for the same reason.
+#
+# NEITHER SKIP MEANS "NO SPEECH ON THAT PLATFORM" ANY MORE. Every platform has
+# a working route: the in-process `onnx` synthesiser runs on all three, needs no
+# container and no server, and `pnpm e2e:speech` is the proof that owns it. This
+# gate does not take it, deliberately — ~204 MB from three upstream hosts, in a
+# proof whose subject is the browser, the workspace and the rollback rerun — so
+# the skip here is about what this gate exercises and never about what the
+# product can do.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. One run of this gate copies ~147 MB of
 # payload out of the checkout, installs the ~234 MB render workspace from the
@@ -243,7 +253,7 @@ jobs:
           retention-days: 5
 
   windows-delivery-position:
-    name: setup names no speech route (windows, T20 criterion 3)
+    name: setup names the delivery position (windows, T20 criterion 3)
     if: ${{ inputs.windows }}
     runs-on: windows-latest
     # A `setup` that refuses in its first phase, and a build to reach it.
@@ -268,22 +278,35 @@ jobs:
         run: pnpm turbo build
 
       # T20's third criterion, on the platform it is about. Nothing is published
-      # to the manifest host this phase, so a plain `setup` fails at the browser
-      # phase and `deliveryPosition()` is what it prints. On macOS and Linux
-      # that message names the two speech routes that DO work; on Windows all
-      # three are unavailable, and the criterion is that the message says so
-      # rather than offering a route the user would then watch fail.
+      # to the manifest host this phase, so a plain `setup` fails at the
+      # **browser** phase and `deliveryPosition()` is what it prints.
       #
-      # The assertions are on both directions, because "names neither as
-      # available" is a claim about what is absent: the Windows paragraph and
-      # the phase-4 milestone must be there, and the two sentences that OFFER
-      # `--tts-url` and the docker pull — the ones the macOS and Linux message
-      # carries verbatim — must not be.
+      # WHAT THIS JOB USED TO ASSERT, AND WHY IT NO LONGER CAN. Until the
+      # in-process `onnx` route landed, `deliveryPosition()` carried a second,
+      # harder paragraph for `win32`: that all three speech routes were
+      # unavailable there and that phase 4 was the milestone which would close
+      # it. This job read that paragraph back word for word — "Windows has no
+      # working speech route at all this phase" — and it was the only thing in
+      # the repository that did. The `onnx` route closes the gap instead, and
+      # closes it now: `win32-x64` and `win32-arm64` are both in
+      # `onnxruntime-node`'s published set, so `setup` on this runner acquires
+      # the model, a voice and that platform's runtime from their own upstream
+      # homes and narration works with no container and no server. A grep for
+      # the retired sentence would now be asserting the one claim the product
+      # most confidently does not make.
+      #
+      # WHAT IT ASSERTS INSTEAD, which is what is true on this platform now:
+      # that the refusal is the **browser's** and says so, that the delivery
+      # position is stated as the expected state rather than as an outage, and
+      # that speech is named as NOT waiting on the address — with the `onnx`
+      # bullet present by name, because that bullet is the sentence a Windows
+      # user acts on. The retired sentences are asserted **absent**, so the
+      # claim cannot come back by accident.
       #
       # `shell: bash` for this one step: the whole step is string matching over
       # captured output, and Git Bash is on every windows runner. The command
       # under test is `node` either way.
-      - name: setup refuses and names no working speech route
+      - name: setup refuses at the browser and names the delivery position
         run: |
           set -uo pipefail
           state="${RUNNER_TEMP}/xplainer-t20-state"
@@ -300,7 +323,7 @@ jobs:
           fi
           require_absent() {
             if grep -qF "$1" setup.out; then
-              echo "FAIL: the message offers a route Windows does not have: $1" >&2
+              echo "FAIL: the message still says something the product no longer claims: $1" >&2
               exit 1
             fi
             echo "ok  absent: $1"
@@ -312,12 +335,15 @@ jobs:
             fi
             echo "ok  present: $1"
           }
-          require_present "Windows has no working speech route at all this phase"
-          require_present "None of the three is available here"
-          require_present "The milestone that closes it is phase 4"
-          require_absent "Speech still has two routes that work"
-          require_absent "records a Kokoro-FastAPI server you already run"
-          require_absent "the docker route pulls the pinned Kokoro-FastAPI image by digest"
+          require_present "an address that answers nothing is the expected state rather than an outage"
+          require_present "no command in this repository uploads a manifest"
+          require_present "Speech is not waiting on this address on win32-"
+          require_present "the onnx route fetches the Kokoro model, one voice and this platform's ONNX Runtime"
+          require_present "Only the bundle route reads this manifest"
+          require_present "all this manifest contributes is the expected digest for that exact URL"
+          require_absent "Windows has no working speech route at all this phase"
+          require_absent "None of the three is available here"
+          require_absent "The milestone that closes it is phase 4"
 
       - name: Upload the refusal
         if: always()
