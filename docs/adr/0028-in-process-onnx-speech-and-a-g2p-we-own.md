@@ -420,3 +420,44 @@ the platform default on exactly the supervised machines `serve --state-dir` exis
 settings travel in argv on every platform because Task Scheduler's `<Exec>` action has no
 environment map — and would narrate against a container while a daemon two directories away had
 acquired an engine.
+
+## Note, 2026-09-11: the platform evidence exists, and the Docker route is not retired
+
+Two consequences above are answered rather than amended, and one decision that this record implies
+without stating is stated, because the plan behind this work booked the opposite of it.
+
+**"The route exists; the platform evidence does not" is discharged.** The consequence
+*Windows has a speech route for the first time* said the route had not been run there, and named the
+gap exactly: `e2e-speech.yml` had to reach `main` before `workflow_dispatch` could register it. It
+did, and the dispatch happened. **`pnpm e2e:speech` is green on all three platforms** in run
+`34496585851` (2026-09-10) — 93 assertions on `windows-latest`, 90 on `macos-latest`, 86 on
+`ubuntu-latest`, each ending `SPEECH END-TO-END PASSED`. On each platform the child's `PATH` holds
+only the executables the proof put there and `docker`, `python` and `python3` all fail with `ENOENT`
+by the same call `providers/speech-docker.ts` makes, so *no Docker, no server, no Python* is proved
+rather than arranged; `setup` acquires the four artefacts on the digests it printed first; and
+`narrate → still → render` produces a 1920×1080 `30/1` h264 MP4 with an `aac` stream whose
+`timings.json` total matches the WAV within 0.000 ms, with all 58 script words present in
+`captions.json` and `frobnicator` among them by name. `docs/ROADMAP.md`'s **P2-4** row carries the
+per-platform numbers, as the consequence above says it should.
+
+**The 747 MB / 2.6×-realtime budget is still one platform's.** That consequence says Windows and
+Linux are unmeasured, and the proof above does **not** discharge it: `e2e:speech` asserts what comes
+out, not RSS or realtime factor. The plan's AC 6 is still owed on those two platforms.
+
+**The `docker` route stays, and its retirement is conditioned on `darwin-x64` rather than on the
+platform proofs.** The plan this record supersedes booked "retire the docker speech route once the
+platforms are proven". The platforms are now proven and **the route is kept**, because that
+condition was the wrong one. The consequence *An Intel Mac is refused by name* is why:
+`onnxruntime-node` publishes no `darwin/x64` binding, so `runtimePlatformKey()` reports the `onnx`
+route unavailable there and `providers/speech.ts` walks past it. Since this record's note of
+2026-09-10 moved `onnx` **above** `docker`, that walk is the only way `docker` is ever reached — so
+the route has stopped being the common case and become the route of exactly one platform. Retiring
+it would leave `darwin-x64` with `--tts-url` alone, which is "run your own Kokoro server", on the
+platform that `P2-2` already records as having no supported desktop installer either. So the
+consequence *`services/tts-sidecar` and `@xplainer/tts-client` keep their jobs* — "This adds a
+route; it retires none" — is not merely a statement about this change's blast radius; it is the
+standing position until an Intel Mac has an in-process engine of its own. That closure is phase-4
+work and needs a darwin-x64 runtime from somewhere other than `onnxruntime-node`'s published set,
+which is a different job from the per-architecture **payload** build that closes P2-2's installer
+gap; `docs/ROADMAP.md`'s phase-4 entry carries the argument, and `apps/cli/AGENTS.md` §`src/setup/`
+says it beside the four routes so it is read before the route is proposed for deletion.

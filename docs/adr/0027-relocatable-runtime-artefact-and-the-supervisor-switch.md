@@ -682,3 +682,44 @@ the Linux one.
 4. Per-architecture payload builds wired to electron-builder's per-arch `extraResources`, which is
    what an Intel Mac installer needs.
 5. A monotonic clock for the breaker's interval, which closes the one residual D6 states.
+
+## Note, 2026-09-11: the runner situation is over, and follow-up 3 is not what closes Windows speech
+
+Added as a dated note rather than a rewrite. Nothing this record decides changes; three of its
+**dated context** statements have been answered by runs, and one of its follow-ups turned out to
+name the wrong condition.
+
+**The billing block and the artifact quota are both gone.** §*Not proven, and why* and the paragraph
+after it describe a dispatch queue that could not run. It ran. On **2026-09-09** every Phase 2 proof
+workflow was dispatched on `phase-2` at `fe67b3e` — which contains `d376533`, the commit that
+paragraph says nothing had moved since — and **all twelve went green**, with **every upload step in
+the four workflows that have one succeeding**: `e2e-linux` `34364354535`, `e2e-runtime`
+`34364358658`, `e2e-toolchain` `34364362924`,
+`phase-2 proofs` `34364366726`, `daemon lifecycle` `34364371567`, `daemon restart` `34364376444`,
+`daemon breaker` `34364380810`, `daemon update` `34364384414`, `daemon identity` `34364389162`,
+`daemon remote` `34364393120` (which §*Not proven* records as never having run at all),
+`daemon-windows` `34364397390`, and `desktop` `34364401949`. So each leg that paragraph lists as
+red — the standard-user registration, the four-sentence lifecycle, the drain-route and `serve`
+suites, the three Task Scheduler adapter proofs, the update failure injection, the desktop
+main-process unit tests, and the ubuntu rollback rerun — is green on the merged commit, and the
+criterion that asks for *produced installers* is met, because *Upload unsigned installers* succeeded
+on all three runners. `docs/ROADMAP.md`'s phase-2 rows carry the per-row evidence.
+
+**§*One criterion is not machine-checkable here at all* is unchanged and is still owed.** The reboot
+with nobody logged in, the real macOS login and the real Windows logon are still transcripts from a
+human, and none exists. The phase is still not complete without the Linux one. Nothing above touches
+this.
+
+**Follow-up 3 is no longer the condition that closes the Windows speech route, and neither is the
+bullet in §*What this record does not decide* that says the same thing.**
+[ADR 0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) added a fourth route that acquires an
+in-process ONNX engine from its components' own upstream homes and **publishes nothing**, so Windows
+has a working speech route without the bucket, the custom domain or the Cache Rule — proved on
+`windows-latest` on 2026-09-10 in `e2e-speech` run `34496585851`. Publishing toolchain artefacts
+stays phase-4 work for the reasons this record gives (the browser's expected digest, the `bundle`
+route, `electron-updater`); what it no longer is, is the thing standing between a Windows user and a
+voiceover. **Follow-up 4 gained a second job it does not currently name**: `onnxruntime-node`
+publishes no `darwin/x64` binding, so `darwin-x64` is now the one platform with no in-process engine
+and its only acquiring route is `docker` — which is therefore **not retired**, and whose retirement
+is booked behind closing that platform. The argument is in `docs/ROADMAP.md`'s phase-4 entry and in
+ADR 0028's note of this date.

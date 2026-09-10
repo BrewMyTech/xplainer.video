@@ -414,6 +414,23 @@ reordering can displace. Every route not taken is printed either way, and the tw
 different sentences — a route *above* the winner was probed and reported itself unavailable, a route
 *below* it was never asked.
 
+**The `docker` route is load-bearing for exactly one platform, and it must not be retired.** Now
+that `onnx` is above it, `docker` is only ever reached where the in-process route reports itself
+**unavailable** — and there is one platform where that is structural rather than a transient
+failure. `onnxruntime-node` ships five `<platform>/<arch>` subtrees and **`darwin/x64` is not one of
+them**: `ONNX_RUNTIME_PLATFORMS` lists them, `runtimePlatformKey()` refuses an Intel Mac by name
+(*"notably no darwin/x64 — so the in-process speech path cannot run here at all, rather than running
+slowly"*), and `providers/speech.ts` treats that as an absence and walks on. So `darwin-x64`'s only
+acquiring route is `docker`, and deleting it would leave that platform with `--tts-url` alone —
+"run your own Kokoro server" — on the platform that also has no supported desktop installer
+(`P2-2`). The plan behind [ADR 0028](../../docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)
+booked "retire the docker route once the platforms are proven"; the platforms **were** proven on
+2026-09-10 (`pnpm e2e:speech` green on all three, run `34496585851`) and the route was **kept**,
+with its retirement re-booked behind phase 4 closing `darwin-x64`. ADR 0028's own consequence says
+it in one line — *"This adds a route; it retires none"* — and `docs/ROADMAP.md`'s phase-4 entry
+carries the argument. Anything here that touches `providers/speech-docker.ts`,
+`services/tts-sidecar` or the pinned `linux/amd64` image is touching Intel-Mac speech.
+
 **`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8), composed with
 `path.delimiter`.** npm runs lifecycle scripts through `sh -c` and third-party scripts call bare
 `node` — `esbuild`'s `postinstall`, reached through the Remotion tree's 268 packages — so an install
