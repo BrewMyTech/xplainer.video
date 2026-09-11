@@ -23,7 +23,7 @@
  */
 
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -35,8 +35,24 @@ import { afterEach, describe, expect, it } from "vitest";
 /** This package's own entry, as source. */
 const ENTRY = fileURLToPath(new URL("./bin.ts", import.meta.url));
 
-/** The version both this package and the one it forwards to carry. */
-const VERSION = "0.0.1";
+/**
+ * The version both this package and the one it forwards to carry, **read rather than pinned**.
+ *
+ * It was the literal `"0.0.1"`, which made every release break this suite: `changeset version`
+ * bumps the manifests and the assertion still expected the version before the bump, so the first
+ * thing a release did was turn the gate red on correct code. Measured on the `0.0.2` bump —
+ * `expected '0.0.2\n' to be '0.0.1\n'`, twice.
+ *
+ * Reading it from this package's own manifest is also the stronger assertion, because the property
+ * is *agreement* rather than any particular number: `packages/alias` is one pinned dependency on
+ * `@xplainer/cli`, and what these cases check is that the forwarder announces the version of the
+ * CLI it actually resolved. A literal cannot tell a matching pair from a stale expectation.
+ */
+const VERSION = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 const scratch: string[] = [];
 const children: ChildProcessWithoutNullStreams[] = [];

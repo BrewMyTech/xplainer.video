@@ -68,9 +68,15 @@ Then the root procedure: `pnpm verify`.
 ## Invariants
 
 - **One dependency, pinned to one exact version.** `@xplainer/cli` is spelled
-  `workspace:0.0.1`, which pnpm rewrites to `0.0.1` in the published manifest. A range would let
-  `xplainer@0.0.1` install a CLI it was never tested against, and the alias has no behaviour of its
-  own to absorb the difference. Bump it with the CLI, in the same changeset.
+  `workspace:<the CLI's exact version>`, which pnpm rewrites to that version in the published
+  manifest. A range would let a published `xplainer` install a CLI it was never tested against, and
+  the alias has no behaviour of its own to absorb the difference. `changeset version` moves both
+  together, so the pin is not maintained by hand — but write the changeset so it covers both
+  packages, or the CHANGELOGs disagree about the same release. **Do not write the version into a
+  sentence or a test.** This paragraph said `workspace:0.0.1` until the `0.0.2` release made it
+  false, and `src/bin.test.ts` held the same literal and turned the gate red on the first correct
+  release: the suite now reads the version out of this package's manifest, which asserts the
+  property that actually matters — that the forwarder announces the version of the CLI it resolved.
 - **Nothing is ever written to stdout.** Not a banner, not a warning, not a refusal.
   `xplainer mcp` is configured into an agent as a stdio MCP server, so this command's stdout *is* a
   JSON-RPC stream — `apps/cli/AGENTS.md`: "a shim's stdout is the JSON-RPC stream… one stray line
