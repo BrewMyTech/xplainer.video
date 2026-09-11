@@ -40,8 +40,19 @@ async function queue(harness: ApiHarness, slug: string): Promise<ApiJobQueued> {
 
 describe("GET /api/jobs/:id/events", () => {
   it("reports a job from queued to done and then closes by itself", async () => {
+    // **400 ms, and the number is a margin rather than a taste.** `running` is observed only if
+    // some poll lands inside the worker's life, so the margin is `lifeMs / pollIntervalMs`: at the
+    // original 80 ms that was ~5 polls, and this case timed out a `pnpm verify` run — not because
+    // the claim is wrong but because the machine took longer than 80 ms between two polls. There is
+    // no `maxWorkers` in this member, so 85 test files run at full concurrency while several copy
+    // ~134 MB, and an >80 ms scheduling gap is ordinary under that. 400 ms takes the margin to ~26
+    // polls for ~320 ms once, against 22 s cases elsewhere in this suite.
+    //
+    // **Widening the window, never loosening the assertion.** The alternative was to stop requiring
+    // that `running` be seen, and that would delete the only check that this surface reports
+    // intermediate states at all — which is the thing a client polling `/events` depends on.
     const harness = await startApiHarness({
-      workers: fakeWorkerRegistry({ lines: 2, lifeMs: 80 }),
+      workers: fakeWorkerRegistry({ lines: 2, lifeMs: 400 }),
       pollIntervalMs: 15,
     });
     const queued = await queue(harness, "watched");
@@ -57,7 +68,8 @@ describe("GET /api/jobs/:id/events", () => {
     const states = documents.map((frame) => (JSON.parse(frame.data) as { status: string }).status);
     // The states the job passed through *while this client was watching*, in lifecycle order: a
     // client that subscribed after the worker had already started sees the stream from there.
-    // `running` is always among them — the worker lives 80 ms — and `done` is always last.
+    // `running` is among them because the worker's 400 ms life spans ~26 polls at 15 ms — see the
+    // margin note on the harness above, which is where that number is kept — and `done` is last.
     const lifecycle = ["queued", "running", "done"];
     expect(states).toContain("running");
     expect(states.at(-1)).toBe("done");
