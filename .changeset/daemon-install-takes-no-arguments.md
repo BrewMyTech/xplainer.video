@@ -53,6 +53,13 @@ Two adjacent things this reached:
   "not `runtime-dir`" while the fourth value was unreachable, so making it reachable would otherwise
   have closed updates for every npm-installed machine — on the route this change exists to enable.
 
+**A payload that will not build is a refusal that rolls back.** Building at phase 3 put the build
+*after* the phase that enables lingering, so a machine that could not assemble — out of disk, a
+partial npm tree — was told the install had refused while the linger marker it had just created
+stayed enabled, and with it nothing recorded that would let `uninstall` remove it later. The build
+happens inside the same `try` as the staging now, so every failure from there reports what it undid:
+exit `3`, the assembler's own sentence, and `rolled back: disabled lingering for <user>`.
+
 **Held at `patch` deliberately.** This adds a capability and on a `0.0.x` line a `minor` marker
 produces `0.1.0`, which is a release decision rather than a changelog one. Nothing here is breaking:
 every existing invocation resolves exactly as it did.
