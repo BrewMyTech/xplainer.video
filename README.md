@@ -18,8 +18,23 @@ Three commands, then ask for a video. Works on macOS, Linux and Windows.
 ```bash
 npm i -g xplainer          # the unscoped alias; forwards to @xplainer/cli
 xplainer setup             # browser + a speech route + the render workspace (~2 min, once)
-xplainer connect claude    # the MCP entry AND the skill an agent reads before driving it
+xplainer connect claude --spawn   # the MCP entry AND the skill an agent reads before driving it
 ```
+
+**Or, with the daemon**, if you would rather one long-lived service answered every agent session
+than a fresh set of tools per session:
+
+```bash
+xplainer daemon install    # a real service under launchd, systemd or Task Scheduler
+xplainer connect claude    # no --spawn: this entry ATTACHES to that service
+```
+
+Either route gives an agent the same eight tools, and you do not need both. `--spawn` needs nothing
+running and is the right default; the daemon costs one resident process and earns it back when
+several agents are connected at once, because they share one copy of the render and speech
+machinery instead of starting their own. What you must not do is mix them: `connect` **without**
+`--spawn` writes an attaching entry, and when no daemon has ever bound it refuses with exit `3` and
+writes nothing at all — correct, and the reason the first route carries the flag.
 
 Then in Claude Code:
 
@@ -44,11 +59,12 @@ so **re-running it after `npm i -g xplainer@latest` is how you update both**; it
 written or already current. And a first render is slower than the ones after it, because the speech
 model and the browser are fetched once.
 
-For `codex` instead of Claude: `xplainer connect codex` does the same, with the skill at
-`~/.codex/skills/xplainer/SKILL.md`.
+For `codex` instead of Claude: `xplainer connect codex --spawn` does the same, with the skill at
+`~/.codex/skills/xplainer/SKILL.md`. After an upgrade, `xplainer update` re-runs `setup` and
+re-writes each configured agent's entry and skill in whichever of the two forms it already has.
 
-The daemon is **opt-in** and nothing above needs it — see [The daemon, if you want it](#the-daemon-if-you-want-it)
-for what it adds, and [Installing it](#installing-it) for the other two install routes.
+See [The daemon, if you want it](#the-daemon-if-you-want-it) for the rest of what the service route
+adds, and [Installing it](#installing-it) for the other two install routes.
 
 > ### Status: it renders, and it installs itself
 >

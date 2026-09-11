@@ -28,7 +28,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
@@ -39,6 +39,12 @@ import { CLI_VERSION } from "../version.js";
 
 /** The published name a user installs, which is the alias rather than the scoped package. */
 const PUBLISHED_NAME = "xplainer";
+
+/** The key `connect` writes the entry under, in both clients. */
+const MCP_SERVER_NAME = "xplainer";
+
+/** The TOML table `connect codex` writes, and the start of the window to scan for the transport. */
+const CODEX_TABLE = `[mcp_servers.${MCP_SERVER_NAME}]`;
 
 /** How long to wait on the registry before giving up and saying so. */
 const REGISTRY_TIMEOUT_MS = 5_000;
@@ -136,16 +142,84 @@ function runSelf(io: CliIo, argv: readonly string[]): boolean {
   return result.status === 0;
 }
 
-/** Which agents already have a configuration worth refreshing. */
-function configuredAgents(): readonly ("claude" | "codex")[] {
-  const agents: ("claude" | "codex")[] = [];
-  if (existsSync(claudeUserConfigPath())) {
-    agents.push("claude");
+/** One configured agent, and the argv that re-writes it in the form it already has. */
+type ConfiguredAgent = { agent: "claude" | "codex"; argv: readonly string[] };
+
+/**
+ * Which agents have a configuration worth refreshing, and how to refresh each **in place**.
+ *
+ * **The form has to be preserved, and getting this wrong breaks exactly the users who chose the
+ * simpler setup.** `connect <agent>` writes an entry that *attaches* to a daemon and refuses with
+ * exit `3` when none has ever bound; `connect <agent> --spawn` writes one that starts the tools
+ * inside each agent session and needs no daemon. A first version of this command re-ran the bare
+ * verb for every agent, which would have turned `update` into a guaranteed failure on any machine
+ * without a daemon — the majority case, since the daemon is opt-in.
+ *
+ * So the existing entry decides: `--attach` among **its own** arguments means re-run the attaching
+ * form, anything else means `--spawn`. Reading the answer out of the file the user already has is
+ * also the only way to get it right without asking them a question they answered once already.
+ */
+function configuredAgents(): readonly ConfiguredAgent[] {
+  const found: ConfiguredAgent[] = [];
+  const spawnUnless = (attached: boolean): readonly string[] => (attached ? [] : ["--spawn"]);
+
+  const claudeConfig = claudeUserConfigPath();
+  if (existsSync(claudeConfig)) {
+    found.push({
+      agent: "claude",
+      argv: ["connect", "claude", ...spawnUnless(attachedForm(claudeConfig, "claude"))],
+    });
   }
-  if (existsSync(codexConfigPath())) {
-    agents.push("codex");
+  const codexConfig = codexConfigPath();
+  if (existsSync(codexConfig)) {
+    found.push({
+      agent: "codex",
+      argv: ["connect", "codex", ...spawnUnless(attachedForm(codexConfig, "codex"))],
+    });
   }
-  return agents;
+  return found;
+}
+
+/**
+ * Whether this agent's own configuration declares the **attaching** form of the xplainer entry.
+ *
+ * **The window matters more than the flag.** A configuration holds several MCP servers, so
+ * "does `--attach` appear after the word xplainer" is not the question — a neighbouring server
+ * declared below ours carrying its own `--attach` would answer yes, and `update` would then rewrite
+ * a working in-session entry as one that attaches to a daemon that does not exist. The scan has to
+ * be bounded to our entry, which means respecting each format enough to find its end.
+ *
+ * Claude's is JSON, so it is parsed; Codex's is TOML, where a table runs until the next `[`, which
+ * is a slice. Neither needs a dependency and both are exact for the shape `connect` writes.
+ *
+ * Every failure answers `false` — no file, no entry, unparseable, a shape this does not recognise.
+ * `--spawn` is the form that works with nothing running, so it is the safe answer to a question
+ * this cannot resolve.
+ */
+export function attachedForm(path: string, client: "claude" | "codex"): boolean {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  if (client === "codex") {
+    const at = text.indexOf(CODEX_TABLE);
+    if (at === -1) {
+      return false;
+    }
+    const rest = text.slice(at + CODEX_TABLE.length);
+    const next = rest.search(/^\s*\[/m);
+    return (next === -1 ? rest : rest.slice(0, next)).includes("--attach");
+  }
+  try {
+    const servers = Reflect.get(Object(JSON.parse(text)), "mcpServers");
+    const entry = Reflect.get(Object(servers), MCP_SERVER_NAME);
+    const args: unknown = Reflect.get(Object(entry), "args");
+    return Array.isArray(args) && args.includes("--attach");
+  } catch {
+    return false;
+  }
 }
 
 export function createUpdateCommand(io: CliIo): Command {
@@ -211,10 +285,13 @@ export function createUpdateCommand(io: CliIo): Command {
           line: "none configured — run `xplainer connect claude` or `connect codex` once",
         });
       }
-      for (const agent of agents) {
+      for (const { agent, argv } of agents) {
+        const form = argv.includes("--spawn") ? "in-session" : "attached";
         steps.push({
           label: agent,
-          line: runSelf(io, ["connect", agent]) ? "entry and skill refreshed" : "FAILED",
+          line: runSelf(io, argv)
+            ? `entry (${form}) and skill refreshed`
+            : "FAILED — see the output above",
         });
       }
 

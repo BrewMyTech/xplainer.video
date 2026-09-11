@@ -1721,18 +1721,29 @@ the plans, billing portal and share-link lifetime work behind them. They are jud
 already the settled position before the split
 ([ADR 0019](adr/0019-sequencing-local-cli-before-hosted.md)) and the split does not change it.
 
-**Open, found 2026-09-11: `apps/desktop`'s discovery suite fails on any machine with a daemon on
-the default port.** `discovery.test.ts`'s "answers `absent` where nothing is installed and nothing
-is answering" isolates `XPLAINER_STATE_DIR` to a temp directory and **not the port**: with no
-`daemon.json` there, discovery falls back to `DEFAULT_PORT`, so an unrelated daemon on 8787 answers
-and the case sees `unauthorized` where it expects `absent`. Measured on a machine where
+**Open, found 2026-09-11: three suites fail on any machine with a daemon on the default port.**
+Each isolates `XPLAINER_STATE_DIR` to a temp directory and **not the port**: with no `daemon.json`
+there, the probe falls back to `DEFAULT_PORT`, so an unrelated daemon on 8787 answers and a case
+that means "nothing is installed" sees a live 401 instead. Measured on a machine where
 `daemon install` had just been run for real:
 
 ```
 XPLAINER_STATE_DIR=<empty temp>  xplainer daemon status --json
   -> condition: token_absent | probe port: 8787 | http: 401
-discovery.test.ts -> AssertionError: expected 'unauthorized' to be 'absent'
+
+apps/desktop  discovery.test.ts  "answers `absent` where nothing is installed and nothing is
+                                 answering"          expected 'absent',     got 'unauthorized'
+apps/cli      status.test.ts     "says absent when nothing has ever bound here, and unreachable
+                                 when something has" expected 'absent',     got 'token_absent'
+apps/cli      lifecycle.test.ts  "reports an uninstalled machine without asking a supervisor
+                                 anything"
 ```
+
+**They are one defect with three call sites, not three.** All three assert a machine-wide
+precondition — that nothing answers on 8787 — which none of them establishes, so whatever fixes the
+probe's reach fixes all three together. The two `apps/cli` cases were found on 2026-09-11 while
+running the gate for an unrelated change, and are the reason this entry is no longer
+`apps/desktop`-only: a reader who saw only the desktop case would fix it and still have a red gate.
 
 **There is no supported knob to aim that probe.** `daemon status` takes only `--json`; `--url` and
 `XPLAINER_DAEMON_URL` belong to top-level `status`, and `daemon status` ignores the variable —
@@ -1740,10 +1751,10 @@ verified, it still probed 8787. `discover`'s own `remoteUrl` option would work b
 to `status --json --url`, which is a different code path from the one the case is about.
 
 So this needs a decision rather than a patch, and the options are a port override on
-`daemon status`, a recorded `daemon.json` in the fixture (which makes "nothing is installed" false
-and changes the expected condition), or splitting the case. **CI has never seen it** — a fresh
-runner has nothing on 8787 — which is why it survived: the suite asserts a machine-wide
-precondition it does not establish, and only a developer who installed the daemon finds out.
+`daemon status`, a recorded `daemon.json` in each fixture (which makes "nothing is installed" false
+and changes the expected condition), or splitting the cases. **CI has never seen any of the three**
+— a fresh runner has nothing on 8787 — which is why they survived, and why the local gate is red on
+a developer machine while `main` is green.
 
 **Open, found 2026-09-11: `runtime verify` blesses a payload whose symlink points out of it.**
 `runtime/verify.ts`'s step 3 says "No manifest path may be absolute or escape the payload — the rule
