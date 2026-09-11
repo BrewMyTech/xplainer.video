@@ -367,24 +367,38 @@ describe("the program resolver", () => {
           }
           seen.add(key);
           const text = readFileSync(file, "utf8");
-          const asModule = (specifier: string): string =>
-            resolve(dirname(file), specifier.replace(/\.js$/, ".ts"));
+          /**
+           * Every source file a specifier could name, because one spelling is not enough.
+           *
+           * `./materialise.js` is the ESM form this package writes, but **`./materialise` resolves
+           * too**: `apps/cli` is `"type": "module"` and Node 24 enables `require(esm)` by default,
+           * so `createRequire(import.meta.url)("./materialise")` reaches the same module through
+           * CommonJS extension resolution — measured, `.resolve("./materialise")` answers
+           * `…/dist/install/materialise.js`. A single `.js`→`.ts` rewrite left that extensionless
+           * form resolving to nothing, and because only the *tolerant* branch ever saw it, it was
+           * dropped in silence. The strict branch would have failed loudly on the same string.
+           */
+          const candidates = (specifier: string): string[] => {
+            const base = resolve(dirname(file), specifier);
+            return [base, base.replace(/\.js$/, ".ts"), `${base}.ts`, join(base, "index.ts")];
+          };
 
-          // A keyword-anchored specifier MUST resolve. One that does not is a failure of this walk
-          // rather than a pass: it would silently drop a subtree, which is how a guard goes quiet.
+          // A keyword-anchored specifier MUST resolve to something. One that does not is a failure
+          // of this walk rather than a pass: it would silently drop a subtree, which is how a guard
+          // goes quiet.
           for (const [, specifier] of text.matchAll(SPECIFIER)) {
-            const resolved = asModule(specifier ?? "");
-            expect(existsSync(resolved)).toBe(true);
-            pending.push(resolved);
+            const found = candidates(specifier ?? "").filter((path) => existsSync(path));
+            expect(found.length, `no module for specifier ${specifier} in ${key}`).toBeGreaterThan(
+              0,
+            );
+            pending.push(...found);
           }
           // Every other relative literal is followed when it names a module and ignored when it
-          // does not — a data path, a fixture, a message. Tolerant here and strict above, so a
-          // dynamic import cannot hide and an ordinary string cannot break the walk.
+          // does not — a data path, a fixture, a message resolves to none of the candidates.
+          // Tolerant here and strict above, so no call form can hide and an ordinary string cannot
+          // break the walk.
           for (const [, literal] of text.matchAll(RELATIVE_LITERAL)) {
-            const resolved = asModule(literal ?? "");
-            if (existsSync(resolved)) {
-              pending.push(resolved);
-            }
+            pending.push(...candidates(literal ?? "").filter((path) => existsSync(path)));
           }
         }
         return seen;

@@ -308,6 +308,13 @@ describe("assembleRuntime — what it refuses", () => {
     ).toThrowError(/declares no `files` allowlist/);
   }, 30_000);
 
+  // 30 s, the same as the `files`-allowlist case above and for the same reason: both build a
+  // fixture checkout first, which is the expensive half. The other refusals in this block are on
+  // vitest's 5 s default because each is decided before anything is copied — a host that is not
+  // Node, an output directory that is not empty. This one was on the default too, and timed out
+  // intermittently under the full suite while passing every time in isolation; the sibling one line
+  // above had already been given a timeout for the identical cost, so the inconsistency was the
+  // whole defect. Measured: `Test timed out in 5000ms` at this line, in `pnpm verify`.
   it("refuses a root package whose entry was never built, naming the build command", () => {
     const unbuilt = buildCheckout(join(scratch, "unbuilt"), { dropEntry: true });
 
@@ -318,7 +325,7 @@ describe("assembleRuntime — what it refuses", () => {
         rootPackage: ROOT,
       }),
     ).toThrowError(/pnpm --filter @fixture\/root build/);
-  });
+  }, 30_000);
 
   it("refuses to look for a checkout that is not above it", () => {
     const orphan = mkdtempSync(join(tmpdir(), "xplainer-no-checkout-"));
