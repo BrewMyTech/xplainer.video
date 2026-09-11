@@ -100,6 +100,17 @@ tarball and reading the manifest by hand:
   root alike. Forced through with `npm publish` it would ship `workspace:*` verbatim and every
   `npm i` would fail on `Unsupported URL Type`.
 
+**And the obvious way out of that second one is a trap.** Declaring the literal version instead —
+`"@xplainer/cli": "0.0.1"` in `packages/alias` — does make a plain `npm publish` correct, because
+there is no protocol left to rewrite. It also silently unlinks the member: pnpm's
+`linkWorkspacePackages` defaults to **false**, so a literal range resolves through the registry and
+`packages/alias/node_modules/@xplainer/cli` becomes a *download* rather than the package next door.
+The alias exists to read `bin["xplainer"]` out of `@xplainer/cli`'s own manifest, so pinned to the
+registry it stops testing the CLI it ships beside: a renamed bin or a changed `exports` map would
+pass every gate in this repository and break only once published. It also drags our own
+hours-old packages through the release-age gate above, which is what appends `@xplainer/*` entries
+to `minimumReleaseAgeExclude`. Keep the protocol, and publish with pnpm.
+
 So a release is published from a **one-off isolated install**, which supplies the per-consumer
 links the rewriter needs and leaves the committed configuration alone — `hoisted` exists for
 packaging the desktop app, which is not involved in publishing:
