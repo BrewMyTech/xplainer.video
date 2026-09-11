@@ -1721,6 +1721,33 @@ the plans, billing portal and share-link lifetime work behind them. They are jud
 already the settled position before the split
 ([ADR 0019](adr/0019-sequencing-local-cli-before-hosted.md)) and the split does not change it.
 
+**Open, found 2026-09-11: `runtime verify` blesses a payload whose symlink points out of it.**
+`runtime/verify.ts`'s step 3 says "No manifest path may be absolute or escape the payload — the rule
+the assembler enforces on the way in, re-checked on the way out, because a manifest is a file and
+files are edited". That is implemented for a link's **`path`** and not for its **`target`**: links
+are compared by target *equality* against the manifest, so a target the manifest also records
+matches and passes. Measured, on a real payload assembled from an npm-shaped fixture:
+
+```
+links recorded: lib/node_modules/@xplainer/cli/vendor/escape.js -> ../../../../../../etc/hosts
+verifyRuntimePayload ok: true | failure: none
+```
+
+The assembler records such a link rather than refusing it, so both ends of the rule that docblock
+describes are open. It is the same shape as the three defects the argument-free install story was
+retracted over — **a gate that agrees with the defect** — and it is worth a numbered criterion on
+whichever story takes it, covering both halves: the assembler refuses a link whose target escapes
+(as `safeJoin` already does for the two archive readers, so the rule exists in this codebase and is
+not a new invention), and the verifier checks the target against `isPayloadPath` rather than only
+against the manifest. Not urgent: a payload is assembled from a package's own `files` allowlist, so
+planting one needs control of a dependency's published contents. But `verify` is the command a user
+runs to be *told* a payload is sound, and it currently answers `ok` over one that is not.
+
+Worth reading with it: `verbatimSymlinks: true` on the assembler's copies is what preserves such a
+target verbatim now. Before that fix the copy rewrote it to an absolute path — which also escapes,
+and which `verify` also passed, so this is not a consequence of that change. It is what made the
+behaviour legible.
+
 ---
 
 ## Phase 5 — The split: what is discharged, and what is not
