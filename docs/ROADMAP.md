@@ -1679,7 +1679,16 @@ capability, and it already has a decision record behind it.
   none of the instructions for using them. Resolution rules confirmed from `strings` on Claude Code
   2.1.268 — the manifest is read only from `<source>/.claude-plugin/plugin.json` with no bare
   fallback, components at the plugin root are auto-discovered, and `..` in a `source` is refused as
-  path traversal, so reaching up to `packages/skill/SKILL.md` is not available. Three routes, none
+  path traversal, so reaching up to `packages/skill/SKILL.md` is not available. **A second,
+  cheaper confirmation, 2026-09-11: `claude plugin validate` agrees.** The root
+  `.claude-plugin/marketplace.json` passes it; `claude plugin validate
+  packages/skill/claude-plugin` fails with *"No manifest found in directory. Expected
+  .claude-plugin/marketplace.json or .claude-plugin/plugin.json"*, and the built bundle under
+  `dist/` passes. That is a mechanical check of the shape this entry describes, and it also says
+  which of the three routes is verifiable before anyone submits anything: the restructuring route
+  ends with the committed source passing the same validator the built bundle passes today. The
+  command is not a `pnpm verify` gate because it needs the Claude Code CLI, which no CI runner and
+  no Codex session has. Three routes, none
   chosen: commit the built bundle; restructure the committed source into the loadable shape and
   reduce the build to a copy; or publish the bundle to its own repository or branch. The second is
   probably right. Whichever is taken, the one-reviewed-`SKILL.md` rule is already enforceable —

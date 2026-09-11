@@ -347,10 +347,88 @@ describe("the program resolver", () => {
      * live in `runtime/manifest.ts` now, whose docblocks record that this test is why.
      */
     it("cannot reach either writer, anywhere in its transitive import graph", () => {
+      /**
+       * The file with its comments removed, so the scan reads code and not prose.
+       *
+       * **Widening the quote class to backticks made this necessary, and the failure was loud.** A
+       * backtick in TypeScript source is usually a markdown code span in a docblock, not a template
+       * literal: `install/supervisors/identity.ts` contains the sentence "which is the pattern
+       * `../lifecycle.ts`\'s `readSwitch` follows", and following that as a module took the closure
+       * from 24 files to 158 — through `lifecycle.ts` to `server.ts` to the whole `/api` surface to
+       * `setup/providers/workspace.ts`, which legitimately imports the assembler. The guard failed
+       * on correct code, which is the right way round for a mistake like this to surface.
+       *
+       * A character scan rather than a regex, because the two forms nest: `//` inside a string is
+       * not a comment (`"https://…"` is the common case) and a quote inside a comment is not a
+       * string. Strings are kept — they are what is being matched.
+       */
+      const withoutComments = (source: string): string => {
+        let out = "";
+        let quote: string | null = null;
+        let comment: "line" | "block" | null = null;
+        for (let i = 0; i < source.length; i += 1) {
+          const ch = source[i] ?? "";
+          const next = source[i + 1] ?? "";
+          if (comment === "line") {
+            if (ch === "\n") {
+              comment = null;
+              out += ch;
+            }
+            continue;
+          }
+          if (comment === "block") {
+            if (ch === "*" && next === "/") {
+              comment = null;
+              i += 1;
+            }
+            continue;
+          }
+          if (quote !== null) {
+            out += ch;
+            if (ch === "\\") {
+              out += next;
+              i += 1;
+            } else if (ch === quote) {
+              quote = null;
+            }
+            continue;
+          }
+          if (ch === "/" && next === "/") {
+            comment = "line";
+            i += 1;
+            continue;
+          }
+          if (ch === "/" && next === "*") {
+            comment = "block";
+            i += 1;
+            continue;
+          }
+          if (ch === '"' || ch === "'" || ch === "`") {
+            quote = ch;
+          }
+          out += ch;
+        }
+        return out;
+      };
+
       /** A specifier named by `import`, `from` or `require` — parenthesised or not. */
-      const SPECIFIER = /(?:from|import|require)\s*\(?\s*"(\.[^"]+)"/g;
-      /** Any relative path written as a literal, whatever names it. The fail-closed half. */
-      const RELATIVE_LITERAL = /"(\.\.?\/[^"]*)"/g;
+      const SPECIFIER = /(?:from|import|require)\s*\(?\s*["'`](\.[^"'`]+)["'`]/g;
+      /**
+       * Any relative path written as a literal, whatever names it. The fail-closed half.
+       *
+       * **All three quote characters, because a backtick is a literal too.** Both patterns matched
+       * only `"` at first, so \`./materialise.js\` and \`./materialise\` slipped past BOTH branches —
+       * a no-substitution template literal is static, not computed, so it sits squarely inside
+       * AC13's "one level of indirection", and nothing else objected: biome clean and `tsc` clean,
+       * since `noUnusedTemplateLiteral` is not enabled here. Single quotes cost nothing to include
+       * even though the formatter already rules them out.
+       *
+       * What the inversion buys, and worth keeping in mind before widening further: string
+       * concatenation — `require("./mat" + "erialise.js")` — is already caught, because the STRICT
+       * branch matches `"./mat"`, resolves it to nothing, and fails loudly. A genuinely computed
+       * path is past any static guard; these two were not computed, only differently quoted.
+       */
+      const RELATIVE_LITERAL = /["'`](\.\.?\/[^"'`]*)["'`]/g;
 
       /** Every `.ts` file reachable from `entry`, by any means of naming a relative module. */
       const importClosure = (entry: URL): Set<string> => {
@@ -366,7 +444,7 @@ describe("the program resolver", () => {
             continue;
           }
           seen.add(key);
-          const text = readFileSync(file, "utf8");
+          const text = withoutComments(readFileSync(file, "utf8"));
           /**
            * Every source file a specifier could name, because one spelling is not enough.
            *

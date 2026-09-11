@@ -314,7 +314,10 @@ describe("assembleRuntime — what it refuses", () => {
   // Node, an output directory that is not empty. This one was on the default too, and timed out
   // intermittently under the full suite while passing every time in isolation; the sibling one line
   // above had already been given a timeout for the identical cost, so the inconsistency was the
-  // whole defect. Measured: `Test timed out in 5000ms` at this line, in `pnpm verify`.
+  // whole defect. Measured: 2.9 s for this case alone against the 5 s default — about 2 s of
+  // headroom, which a loaded suite eats, and did: `Test timed out in 5000ms` at this line in
+  // `pnpm verify`. The 2.9 s is here so that the next person to see a timeout can tell headroom
+  // from a regression hiding inside it.
   it("refuses a root package whose entry was never built, naming the build command", () => {
     const unbuilt = buildCheckout(join(scratch, "unbuilt"), { dropEntry: true });
 
