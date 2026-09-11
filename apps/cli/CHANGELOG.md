@@ -1,5 +1,62 @@
 # @xplainer/cli
 
+## 0.0.3
+
+### Patch Changes
+
+- 7e68dee: **`xplainer connect claude|codex` writes the skill, not just the MCP entry.**
+
+  `connect` exists to make an agent able to do this, and for a release it delivered the transport and
+  not the method: one stdio entry, eight tools, and none of the instructions an agent reads before it
+  composes a scene. The visible symptom is a video that looks improvised, because it was — an agent
+  with the tools alone has nothing telling it that every scene length comes from measured word
+  timestamps rather than a guess, which is the one mechanic in `SKILL.md` that is not negotiable.
+
+  Both clients read `<home>/skills/<name>/SKILL.md`, verified against real installations of each, so
+  one writer serves both and the only difference is which home. The file comes out of the
+  `@xplainer/skill` this package now depends on — data only, no code, no dependencies of its own,
+  11 KB over 12 files — rather than a copy inside `apps/cli`, because there is one reviewed `SKILL.md`
+  and `packages/skill/src/build.test.ts` already compares it byte-for-byte against both plugin
+  bundles. A second copy here would be the first to go stale.
+
+  **Re-running `connect` is the update path**, which is what the write being idempotent is for: after
+  `npm i -g xplainer@latest`, one `xplainer connect claude` refreshes the entry and the skill together
+  and says which of them changed — `wrote` or `already current` — rather than claiming a write it did
+  not make.
+
+  This is a new runtime dependency of `@xplainer/cli`, so it is a change to payload 1's closure, to
+  the publish contract and to every installer. It is 11 KB of data and no code, which is the only
+  reason that is acceptable.
+
+- c95126e: **`xplainer update` reconciles this machine after an upgrade.**
+
+  Upgrading the package is one command; making the machine match it is two more that nobody remembers
+  — `setup` may need to acquire something the new version wants, and `connect` has to be re-run or the
+  agent keeps yesterday's MCP entry and yesterday's `SKILL.md`. `xplainer update` does both, reports
+  each as reconciled or unchanged, and skips an agent that was never configured rather than creating
+  one. `--check` reports the version comparison and changes nothing.
+
+  **It does not replace the package, and that is a decision.** Spawning a package manager from here
+  rewrites the files the process is executing: survivable on macOS and Linux, where the running inode
+  outlives the unlink, and a failure on Windows, where the package is locked while it runs. The manager
+  is also only knowable for a global npm install — pnpm, bun and yarn globals differ, and `npx -y
+xplainer` has nothing installed to update. So it reads the registry, says which version is newer, and
+  prints the upgrade command for the one install it can identify. Where it cannot, it says so instead
+  of guessing.
+
+  The reconcile steps are **spawned rather than imported**: `commands/setup.ts` and
+  `commands/connect.ts` are about 700 lines of orchestration between them, and calling into their
+  internals would mean either refactoring both or keeping a subset here that drifts the first time
+  either changes. A child process running this same binary cannot drift.
+
+  **The version comparison is numeric, because the first version of it was not.** It asked
+  `latest !== CLI_VERSION` and called any difference "newer on npm", so a build at `0.0.3` was told
+  `0.0.2` was available — an offer to downgrade, printed as an upgrade, found by running the command
+  rather than by reading it. It now answers behind, same, ahead or unknown, compares parts as numbers
+  so `0.0.10` beats `0.0.9`, and declines to guess at anything carrying a pre-release tag: the only
+  decision this command makes is whether to offer an upgrade, and offering the wrong direction is worse
+  than declining.
+
 ## 0.0.2
 
 ### Patch Changes
