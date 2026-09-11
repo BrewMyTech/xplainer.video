@@ -254,16 +254,17 @@ describe("the program resolver", () => {
       const stateDir = freshState("pure");
       const installRoot = mkdtempSync(join(scratch, "pure-installed-"));
       const aliasDir = writeInstalledPackage({ root: installRoot, version: "0.0.1" });
-      // **All three roots, and the third one is the one that matters.** An earlier version of this
-      // case watched the state directory and the install and called that "writes nothing" — while
-      // the materialiser builds into `mkdtempSync(join(tmpdir(), …))`, which neither covered. The
-      // write the implementation actually performs was invisible to the assertion written to forbid
-      // it; only the *old* location, already corrected, was being watched.
-      const before = {
-        state: treeOf(stateDir),
-        install: treeOf(installRoot),
-        temp: readdirSync(tmpdir()).sort(),
-      };
+      // **The two roots this case owns, and deliberately not `os.tmpdir()`.** The materialiser
+      // builds into `mkdtempSync(join(tmpdir(), …))`, so an earlier version of this case diffed
+      // that directory too, filtered by the `xplainer-` prefix — and it raced: `install.test.ts`
+      // and `materialise.test.ts` build payloads there in parallel workers, so the diff caught
+      // *their* directories in flight and this case failed five runs out of five, then passed.
+      // Filtering a shared namespace cannot be made sound by comparing it more carefully.
+      //
+      // What carries that half of the property instead is the import-graph case below, and it is
+      // strictly stronger: a module that cannot reach the assembler cannot assemble on ANY run,
+      // where a before-and-after diff only says it did not on this one.
+      const before = { state: treeOf(stateDir), install: treeOf(installRoot) };
       // The fixture is where a discovering resolver would look, and it is not empty.
       expect(before.install.length).toBeGreaterThan(3);
 
@@ -294,17 +295,9 @@ describe("the program resolver", () => {
         "not-absolute",
       );
 
-      // No tree moved, `<state>/runtime` was never created, and **nothing appeared in the temp
-      // directory** — which is where a resolver that assembled would put it. Compared as a set
-      // difference rather than by equality, because other suites run concurrently in the same
-      // `os.tmpdir()` and may legitimately remove their own entries while this case runs; what
-      // would be a defect here is an ADDITION, and that is what is asserted.
+      // Neither tree moved, and `<state>/runtime` was never created.
       expect(treeOf(stateDir)).toEqual(before.state);
       expect(treeOf(installRoot)).toEqual(before.install);
-      const appeared = readdirSync(tmpdir())
-        .filter((entry) => !before.temp.includes(entry))
-        .filter((entry) => entry.startsWith("xplainer-"));
-      expect(appeared).toEqual([]);
       expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
       expect(aliasDir.startsWith(installRoot)).toBe(true);
     });
