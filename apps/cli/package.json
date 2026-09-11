@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/cli",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "The xplainer local runtime: the `xplainer` binary, its always-on daemon, and the HTTP and MCP server core they serve.",
   "homepage": "https://xplainer.video",
@@ -11,6 +11,9 @@
   },
   "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "xplainer": {
     "tier": "open-later"
   },

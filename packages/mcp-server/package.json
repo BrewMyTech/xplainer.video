@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/mcp-server",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Backend-agnostic MCP tool registration for the eight explainer tools, shared by every TypeScript surface that serves the protocol.",
   "homepage": "https://xplainer.video",
@@ -11,6 +11,9 @@
   },
   "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "xplainer": {
     "tier": "open-later"
   },

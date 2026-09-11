@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/skill",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "The xplainer agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle.",
   "homepage": "https://xplainer.video",
@@ -11,6 +11,9 @@
   },
   "author": "Rishav Anand <rishav@brewmytech.com>",
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "xplainer": {
     "tier": "open-later"
   },
