@@ -1,0 +1,45 @@
+{
+  "name": "xplainer",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "The unscoped `xplainer` command: an alias that forwards to @xplainer/cli of the same version.",
+  "homepage": "https://xplainer.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrewMyTech/xplainer.video.git",
+    "directory": "packages/alias"
+  },
+  "author": "Rishav Anand <rishav@brewmytech.com>",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "bin": {
+    "xplainer": "./dist/bin.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.emit.json",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@xplainer/cli": "workspace:0.0.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/node": "catalog:",
+    "@xplainer/config": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

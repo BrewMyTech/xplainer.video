@@ -3,9 +3,10 @@ Copyright 2026 BrewMyTech
 
 This product includes software developed by BrewMyTech (https://xplainer.video).
 
-The `@xplainer/` packages published to npm are licensed under the Apache
-Licence, Version 2.0. See the LICENSE file distributed with each package, or
-LICENSE-APACHE-2.0 in the source repository.
+The packages published to npm — those under the `@xplainer/` scope and the
+unscoped `xplainer`, which is an alias for `@xplainer/cli` — are licensed under
+the Apache Licence, Version 2.0. See the LICENSE file distributed with each
+package, or LICENSE-APACHE-2.0 in the source repository.
 
 --------------------------------------------------------------------------------
 

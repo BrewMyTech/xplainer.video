@@ -29,7 +29,7 @@
  *                              member's `directory`) and the author.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
- *   Whole workspace            the publishable set is exactly the declared six.
+ *   Whole workspace            the publishable set is exactly the declared seven.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every
  * invocation — see SELF_TESTS. A gate whose rules cannot be shown to fire is
@@ -103,8 +103,8 @@ const EXPECTED_LICENSE = "Apache-2.0";
  *
  * npm auto-includes a package-root `README.md` regardless of the `files`
  * allowlist, so the check below is not about the allowlist — it is about the
- * file existing at all. None of the six had one until the first publish was
- * being prepared.
+ * file existing at all. Not one of the packages that existed then had one until
+ * the first publish was being prepared.
  */
 const README_FILE = "README.md";
 const EXPECTED_HOMEPAGE = "https://xplainer.video";
@@ -167,6 +167,7 @@ const PRIVATE_REFERENCE_PATH = /(^|[^A-Za-z0-9_@/-])max\/[A-Za-z0-9_.-]/;
  */
 const PUBLISHABLE_MEMBERS = [
   { dir: "apps/cli", name: "@xplainer/cli" },
+  { dir: "packages/alias", name: "xplainer" },
   { dir: "packages/mcp-server", name: "@xplainer/mcp-server" },
   { dir: "packages/protocol", name: "@xplainer/protocol" },
   { dir: "packages/render-core", name: "@xplainer/render-core" },
@@ -395,7 +396,7 @@ const MANIFEST_RULES = [
       manifest.author === EXPECTED_AUTHOR
         ? null
         : `package.json "author" is ${JSON.stringify(manifest.author)}, expected the string ` +
-          `${JSON.stringify(EXPECTED_AUTHOR)}. One spelling across all six, so the npm ` +
+          `${JSON.stringify(EXPECTED_AUTHOR)}. One spelling across every one of them, so the npm ` +
           "author page collects them rather than splitting them across near-identical names.",
   },
 ];
@@ -416,8 +417,9 @@ const MANIFEST_RULES = [
  * independently and for different reasons — naming one in `files` and
  * forgetting the other is the obvious mistake, and it is silent.
  *
- * `sameAsRoot` marks the two that are copies of a repository-root file: six
- * copies of a legal document must not drift into six different documents.
+ * `sameAsRoot` marks the two that are copies of a repository-root file: one
+ * copy of a legal document per published package must not drift into as many
+ * different documents.
  */
 const PRESENCE_RULES = [
   {

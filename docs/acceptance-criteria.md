@@ -45,6 +45,27 @@ The nine are `apps/cli`, `apps/desktop`, `packages/config`, `packages/mcp-server
 `services/tts-sidecar`. `services/tts-sidecar` is the sole Python-only member and declares no
 `build`, which is why eight build and nine test.
 
+### And again on 2026-09-11: a tenth member
+
+`packages/alias` was added — the unscoped `xplainer` name on npm, one pinned dependency on
+`@xplainer/cli` and a `bin` that hands over to it — so that `npm i -g xplainer` and
+`npx xplainer` work without the scope. It is a TypeScript member with all four scripts, so every
+count above moves by one and nothing changes meaning:
+
+| Quantity | At the split | Now |
+|---|---|---|
+| Workspace members | 9 | **10** |
+| `uv` workspace members | 2 | 2 (unchanged: it is TypeScript) |
+| Members with a `test` task | 9 | **10** |
+| Members with a `lint` task | 9 | **10** |
+| Members with a `typecheck` task | 9 | **10** |
+| Members with a `build` task | 8 | **9** |
+| Members published to npm | 6 | **7** |
+| Members with an `api/*.api.md` report | 5 | 5 (unchanged: it declares no `exports`) |
+
+`services/tts-sidecar` is still the sole member with no `build`, which is why nine build and ten
+test.
+
 ---
 
 ## AC-1 — Bootstrap
@@ -69,14 +90,17 @@ The nine are `apps/cli`, `apps/desktop`, `packages/config`, `packages/mcp-server
 - **2a** `pnpm turbo build lint typecheck test` exits 0 from a clean checkout.
 - **2b** `pnpm turbo run test --dry=json` lists a `test` task for all **twelve** members.
   - *Amended 2026-09-06 (ADR 0023):* **nine**.
+  - *Amended 2026-09-11 (`packages/alias`):* **ten**.
 - **2c** `grep -rnE '\.(skip|only)\(|\bTODO\b|\bFIXME\b' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' apps packages services` returns no hits.
   - *Amended 2026-09-08 (phase 2):* a second grep, in the same CI step, for the form the first one never matched. `.skipIf(` is **allowed** — it is how a live-server suite, a real render and a macOS-only probe stay out of `pnpm verify` on a machine that cannot run them — but only with the condition at the call site: `grep -rnE '\.skipIf\(' <the same paths> | grep -vE '\.skipIf\(\(?process\.(env|platform)\b'` returns no hits. A `describe.skipIf(SKIPPED)` reads as an unconditional skip to every reader but the author of the constant, and no grep can tell those apart; an inline `process.env.X === "1"` names the variable and where to set it. Added because the original pattern banned `.skip(` and `.only(` and matched neither `.skipIf(` nor anything else about it, so the exception the repository relied on was documented nowhere.
 - **2d** Each member's test asserts behaviour, not existence.
 - **2e** **The dual-language member runs both halves.** `pnpm --filter @xplainer/protocol test` output contains both a vitest summary and a pytest summary, and the same holds for `lint` and `typecheck`. `packages/protocol` is the only member with TypeScript and Python in one package, so it is the only place where a task can pass having exercised half of what it names.
 - **2f** **Every task reaches every member it should.** `pnpm turbo run lint --dry=json` and `pnpm turbo run typecheck --dry=json` each list all **twelve** members, mirroring 2b's assertion for `test`. Turbo skips an undeclared script silently, so a member that never declares `lint` produces a green run over unlinted code; only counting the tasks catches it.
   - *Amended 2026-09-06 (ADR 0023):* **nine** each.
+  - *Amended 2026-09-11 (`packages/alias`):* **ten** each.
 - **2g** **The `build` task covers exactly the ten members that declare it:** `pnpm turbo run build --dry=json` lists **ten** — the ten TypeScript members — and does **not** list `@xplainer/api` or `@xplainer/tts-sidecar`, which have nothing to compile. Ten is the expected number, not a shortfall.
   - *Amended 2026-09-06 (ADR 0023):* **eight**, and the exclusion list is `@xplainer/tts-sidecar` alone; `@xplainer/api` relocated.
+  - *Amended 2026-09-11 (`packages/alias`):* **nine**, the ninth being the unscoped `xplainer`. Its `build` is `tsc -p tsconfig.emit.json` rather than the usual `tsconfig.build.json`, because it emits no declarations and the **Declarations** column of `docs/ARCHITECTURE.md` §3 is derived from that filename; the task count is what this criterion asserts and it is unaffected.
 
 ## AC-3 — Tier boundary
 
@@ -292,7 +316,9 @@ every rule adopted and every rule rejected.
 
 - **15a** `packages/config/tsconfig/base.json` sets all ten of `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `allowUnreachableCode: false`, `allowUnusedLabels: false`, `erasableSyntaxOnly`, `noUnusedLocals`, `noUnusedParameters`, alongside the existing `strict`, and remains parseable by `require()`. **Enforced by `packages/config/src/tsconfig-base.test.ts`**, which reads the file with `JSON.parse` and asserts each flag, so it runs under `turbo test` in both `pnpm verify` and CI rather than only in a verifier's block.
 - **15b** All **six** members with a `tsconfig.build.json` set `isolatedDeclarations: true` — `apps/cli`, `packages/config`, `packages/mcp-server`, `packages/protocol`, `packages/render-core`, `packages/tts-client`. `apps/desktop` and `packages/skill` have no build config and are out of scope.
+  - *Amended 2026-09-11 (`packages/alias`):* still **six**, and `packages/alias` joins the out-of-scope list. It builds, but with `tsconfig.emit.json` and `declaration: false`: it declares a `bin` and no `exports`, so there is no surface to declare and `isolatedDeclarations` has nothing to hold. The filename is deliberate — `docs/ARCHITECTURE.md` §3's **Declarations** column is derived from the presence of `tsconfig.build.json`, and a build config by that name would make the column say `yes` about a package that emits none.
 - **15c** `pnpm turbo typecheck` exits 0 and reaches nine members.
+  - *Amended 2026-09-11 (`packages/alias`):* **ten** members.
 - **15d** `noPropertyAccessFromIndexSignature` is **absent**, and [ADR 0026](adr/0026-agent-first-repository-contracts.md) records why. Asserted by `packages/config/src/tsconfig-base.test.ts`, so a future contributor adding it has to read the record first.
 - **15e** The repository contains **zero** suppressions: no `as any`, `@ts-ignore`, `@ts-expect-error`, `biome-ignore`, `# noqa` in any of its forms — the line-level one and the file-level `# ruff: noqa` and `# flake8: noqa` that silence a whole file — `# type: ignore` or `# pyright: ignore`, in `apps`, `packages` or `services`. The Python entries are here because both Python members run `ruff` as their `lint` script and `pyright` as their `typecheck` script, so leaving their escape hatches out would have made this a TypeScript-only rule wearing a repository-wide name. This is an assertion of equality with zero, not a diff against a baseline, because the count is zero today. **It is enforced by `pnpm check:no-suppressions`, which runs in `pnpm verify` and as its own CI step beside AC-2c's.** An earlier draft ran it only in the verifier's block, which made it advisory in everything but name: a criterion that only a human executes is the thing this repository's enforcement principle exists to forbid.
 - **15f** `pnpm check:no-suppressions` exits **1** when a suppression is introduced, proved by adding one and reverting it.
@@ -308,6 +334,7 @@ every rule adopted and every rule rejected.
 ### AC-17 — A change to a package's public surface is visible in its diff
 
 - **17a** Each of the **five** members that are both published and declaration-emitting has a committed `api/<name>.api.md`. `packages/skill` is published with no TypeScript surface and has none, and the gate asserts its absence rather than leaving it ambiguous.
+  - *Amended 2026-09-11 (`packages/alias`):* still **five**, and there are now **two** published members with no report. The unscoped `xplainer` declares a `bin` and no `exports`, so `scripts/api-report.mjs`'s rule — published **and** declaring an `exports["."].types` entry point — excludes it, and `UNREPORTED_MEMBERS` carries the reason so its absence is asserted rather than assumed.
 - **17b** `pnpm check:api-report` exits 0 on a clean tree, and `pnpm api:report` is idempotent.
 - **17c** The gate exits **exactly 1** on each of four conditions, and each is executed as a runnable case in the verification sequence: an exported symbol **added**; an exported symbol **removed**; a report file **deleted**; and an **orphan report** present for a member that emits no declarations. **The fourth had no case in an earlier draft** — it was asserted only by `test ! -d packages/skill/api`, which proves the directory is absent, not that the gate would notice if it were not. The negative path is the criterion; a check that has never failed proves nothing, which is the argument `pyproject.toml` already makes about the retired import-linter contract.
 - **17d** The added and removed symbols are exercised **through the package's entry point**, not merely appended to an implementation module. `packages/tts-client/src/index.ts` re-exports an explicit named list, so a symbol added to `client.ts` alone is invisible to an entry-point-rooted report and a correct gate stays silent. A case that mutates only the implementation file tests nothing and would fail a working gate.
@@ -324,7 +351,9 @@ every rule adopted and every rule rejected.
 ### AC-19 — There is one agent instruction surface and it is complete
 
 - **19a** Every one of the nine workspace members has an `AGENTS.md` carrying the five required headings.
+  - *Amended 2026-09-11 (`packages/alias`):* **ten** members.
 - **19b** Root `AGENTS.md` exists and carries the canonical post-change procedure; root `CLAUDE.md` **and each of the nine member `CLAUDE.md` stubs** exist, are at most three lines, and contain the line `@AGENTS.md`. Ten files, because Claude Code reads `CLAUDE.md` and has no discovery path for a nested `AGENTS.md`, while Codex walks `AGENTS.md` hierarchically; the nine member stubs are deliberately **not** imported from the root, so a session loads a member's invariants only when working inside that member.
+  - *Amended 2026-09-11 (`packages/alias`):* **ten** member stubs, **eleven** files.
 - **19c** `pnpm check:docs-contract` exits **1** when a member's `AGENTS.md` is removed.
 - **19d** `pnpm verify` exists in the root `package.json` and chains every gate that a local run can execute: `turbo build lint typecheck test`, `biome check .`, `check:no-suppressions`, `lint:tiers`, `check:publish-contract`, `check:codegen-fresh`, `check:api-report`, `check:docs-contract`. **The list is the criterion, not the phrase "every gate"** — an earlier draft asserted the phrase while omitting three of them, which is exactly the drift a criterion is for. Task coverage (AC-2b, AC-2f, AC-2g) is CI-only and named as such, because it asserts a property of the workspace roster that a local run cannot make false.
 

@@ -48,7 +48,7 @@ and [`daemon.md`](daemon.md) is the recipe for a host that has none.
 
 ## 3. Members
 
-Nine workspace members, from `pnpm-workspace.yaml`'s three globs `apps/*`, `packages/*` and
+Ten workspace members, from `pnpm-workspace.yaml`'s three globs `apps/*`, `packages/*` and
 `services/*`.
 
 <!-- CHECKED:members -->
@@ -62,6 +62,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 |---|---|---|:--:|:--:|:--:|---|---|---|
 | `apps/cli` | `@xplainer/cli` | open-later | yes | yes | yes | TypeScript | The `xplainer` binary and the HTTP application — `GET /healthz`, the Streamable HTTP MCP endpoint at `/mcp`, and from phase 1 the job runner. | [AGENTS.md](../apps/cli/AGENTS.md) |
 | `apps/desktop` | `@xplainer/desktop` | open-later | no | no | no | TypeScript | Optional Electron client. Resolves a daemon URL and talks to it; holds no render or TTS code. | [AGENTS.md](../apps/desktop/AGENTS.md) |
+| `packages/alias` | `xplainer` | open-later | yes | no | no | TypeScript | The unscoped `xplainer` name on npm: one pinned dependency on `@xplainer/cli` and a `bin` that hands over to that package's own. | [AGENTS.md](../packages/alias/AGENTS.md) |
 | `packages/config` | `@xplainer/config` | open-later | no | yes | no | TypeScript | Shared tsconfig presets, the tier-boundary rule, and the three `xplainer-*` build binaries. | [AGENTS.md](../packages/config/AGENTS.md) |
 | `packages/mcp-server` | `@xplainer/mcp-server` | open-later | yes | yes | yes | TypeScript | Backend-agnostic registration of the eight tools onto an MCP server, across a `RenderBackend` seam. | [AGENTS.md](../packages/mcp-server/AGENTS.md) |
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
@@ -71,13 +72,15 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
 <!-- /CHECKED:members -->
 
-**Published, emits declarations and has a report are three different sets.** Six members are
+**Published, emits declarations and has a report are three different sets.** Seven members are
 published (`Published: yes`). Six emit declarations — the ones with a `tsconfig.build.json` — and
-they are not the same six: `packages/skill` is published but builds a bespoke bundle with
-`node scripts/build.mjs` and has no TypeScript surface, while `packages/config` is
-`private: true` but does emit declarations for its consumers inside the workspace. **Five** members
-are in both sets, and those five are exactly the ones that carry a committed `api/*.api.md` report.
-Reading the three columns as one is the mistake this table exists to prevent.
+they are not the same members: two of the published ones emit none, because neither has a
+TypeScript surface at all. `packages/skill` builds a bespoke bundle with `node scripts/build.mjs`,
+and `packages/alias` declares a `bin` and no `exports`, so nothing in it is importable. Pointing
+the other way, `packages/config` is `private: true` but does emit declarations for its consumers
+inside the workspace. **Five** members are in both sets, and those five are exactly the ones that
+carry a committed `api/*.api.md` report. Reading the three columns as one is the mistake this table
+exists to prevent.
 
 Every member declares `xplainer.tier`, and every member in this repository is `open-later`. The
 `hosted` tier still exists in the rule ([ADR 0003](adr/0003-tier-boundary-and-open-later-plan.md))
@@ -91,7 +94,7 @@ _These are the **actual** edges, compared for equality against the graph declare
 `package.json` files — not a permission list. Checked: the three table columns **From** (workspace
 path), **To** (package name) and **Kind** (`dependencies`, `devDependencies`, `peerDependencies` or
 `optionalDependencies`), plus the **banned-specifier list** below against `biome.json`'s
-`noRestrictedImports`. The seven `→ @xplainer/config` devDependency edges are excluded by rule:
+`noRestrictedImports`. The eight `→ @xplainer/config` devDependency edges are excluded by rule:
 every member takes the tsconfig presets, so the edge carries no architectural information._
 
 | From | To | Kind |
@@ -102,6 +105,7 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 | `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
 | `apps/desktop` | `@xplainer/protocol` | dependencies |
+| `packages/alias` | `@xplainer/cli` | dependencies |
 | `packages/mcp-server` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/protocol` | dependencies |
 | `packages/render-core` | `@xplainer/tts-client` | dependencies |
@@ -143,6 +147,9 @@ depends on `apps/cli` and on `protocol`, and takes the first as an **injected** 
 directory rather than a symlink. The second is there for one reason: the desktop's discovery has to
 decide whether a daemon's advertised `contract_version` is one it can speak, and both halves of that
 comparison must come from the package that owns the contract rather than from a copy in a client.
+`packages/alias` is the other dependent of `apps/cli`, and it depends on nothing else: it is the
+unscoped `xplainer` name on npm, pinned to that one package at that one version, so that
+`npm i -g xplainer` installs the CLI and `xplainer` runs it.
 
 ## 5. The contract layer
 

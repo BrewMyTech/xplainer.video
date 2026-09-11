@@ -118,6 +118,9 @@ pnpm install                                  # restore the committed hoisted la
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
 transitive `@xplainer/*` dependencies resolve, and run `npx -y @xplainer/cli --help` — the
 zero-install path the plugin bundles declare, and the one a published `workspace:*` would break.
+Then the same for the unscoped alias, which is the name a user actually types:
+`npx -y xplainer --version` must print the version just published, because `packages/alias` is one
+pinned dependency on `@xplainer/cli` and the pin is the only thing holding the two together.
 
 **2FA is interactive.** `pnpm publish` refuses with `ERR_PNPM_OTP_NON_INTERACTIVE` outside a TTY,
 which includes every agent-run shell. Either publish from a real terminal, pass `--otp` for a
@@ -144,11 +147,18 @@ a silently unchecked member.
 
 ## The members
 
-Nine of them. The table — path, package name, tier, published or not, whether it emits declarations,
+Ten of them. The table — path, package name, tier, published or not, whether it emits declarations,
 whether it has an API report, and what it is responsible for — is
 [`docs/ARCHITECTURE.md` §3 Members](docs/ARCHITECTURE.md#3-members), and it is machine-checked
 against the workspace. There is no second copy here on purpose: a hand-maintained duplicate is a
 table that goes stale.
+
+**The workspace root's own manifest is named `xplainer-workspace`, not `xplainer`.** The unscoped
+name belongs to the published alias in `packages/alias`, and `pnpm --filter` matches by name: while
+the root carried it too, `pnpm --filter xplainer test` matched **both** projects and ran the root's
+`turbo run test` — the whole workspace — beside the one member that was asked for. The Python root
+in `pyproject.toml` has been `xplainer-workspace` all along, so this is now one name on both sides.
+Nothing reads either root name; turbo addresses root tasks as `//#<task>`.
 
 ## Non-negotiables
 
@@ -235,7 +245,7 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 ## Before editing a member, read that member's `AGENTS.md`
 
-Each of the nine has one, with the same five headings: `## What this package is`,
+Each of the ten has one, with the same five headings: `## What this package is`,
 `## Public surface`, `## Commands`, `## Invariants`, `## How to add`. The invariants there are
 specific and are not repeated at the root.
 
@@ -243,8 +253,8 @@ specific and are not repeated at the root.
 files automatically in every configuration: Codex walks `AGENTS.md` hierarchically and never reads
 `CLAUDE.md`; Claude Code reads `CLAUDE.md` from directories it works in and never reads
 `AGENTS.md`. That is why each member also carries a one-line `CLAUDE.md` importing its `AGENTS.md`.
-The nine member files are deliberately **not** imported from the root — importing them would load
-all nine every session and destroy the locality that makes them useful.
+The ten member files are deliberately **not** imported from the root — importing them would load
+all ten every session and destroy the locality that makes them useful.
 
 ## What belongs where
 
