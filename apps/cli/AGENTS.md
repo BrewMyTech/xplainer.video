@@ -294,6 +294,7 @@ prints when there is no daemon and no supervisor to arrange one.
 | `vendor-cli.ts` | The one spawn of somebody else's CLI: resolved path, closed stdin, both streams captured |
 | `toml-tables.ts` | Where that table starts and ends, and the declarations it refuses to duplicate |
 | `atomic-write.ts` | temp → `rename` over somebody else's file, keeping the mode that file had |
+| `skill.ts` | The other half of what `connect` writes: `SKILL.md` into `<home>/skills/xplainer/`, read out of the `@xplainer/skill` this package depends on so there is one reviewed copy |
 | `refusal.ts` | `ConnectRefusal`: one sentence and one exit code from the documented table |
 
 ### `src/install/` — where the program comes from, and the one name that survives an update
@@ -778,7 +779,8 @@ Then the root procedure: `pnpm verify`.
   the browser's own credentials attached. `api/routes.test.ts` asserts that no answer, allowed or
   refused, on either listener, carries an `access-control-*` header.
 - **The command surface is asserted with `toEqual`, never widened to `toContain`** (`AC-14b`). The
-  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`, and
+  listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`,
+  `update`, and
   it only holds because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the

@@ -102,6 +102,7 @@ every member takes the tsconfig presets, so the edge carries no architectural in
 | `apps/cli` | `@xplainer/mcp-server` | dependencies |
 | `apps/cli` | `@xplainer/protocol` | dependencies |
 | `apps/cli` | `@xplainer/render-core` | dependencies |
+| `apps/cli` | `@xplainer/skill` | dependencies |
 | `apps/cli` | `@xplainer/tts-client` | dependencies |
 | `apps/desktop` | `@xplainer/cli` | dependencies |
 | `apps/desktop` | `@xplainer/protocol` | dependencies |

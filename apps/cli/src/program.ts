@@ -63,6 +63,7 @@ import { createServeCommand } from "./commands/serve.js";
 import { createSetupCommand } from "./commands/setup.js";
 import { createStatusCommand } from "./commands/status.js";
 import { createTokenCommand } from "./commands/token.js";
+import { createUpdateCommand } from "./commands/update.js";
 import { type CliIo, processIo } from "./io.js";
 import { CLI_VERSION } from "./version.js";
 
@@ -93,6 +94,7 @@ export function createProgram(io: CliIo = processIo): Command {
   program.addCommand(createDaemonCommand(io));
   program.addCommand(createRuntimeCommand(io));
   program.addCommand(createTokenCommand(io));
+  program.addCommand(createUpdateCommand(io));
 
   return program;
 }

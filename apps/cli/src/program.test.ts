@@ -132,7 +132,7 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime and token under --help", async () => {
+  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime, token and update under --help", async () => {
     const { stdout, exitCode } = await run(["--help"]);
 
     expect(listedCommands(stdout)).toEqual([
@@ -144,6 +144,7 @@ describe("xplainer", () => {
       "daemon",
       "runtime",
       "token",
+      "update",
     ]);
     expect(exitCode).toBe(0);
   });
