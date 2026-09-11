@@ -133,6 +133,16 @@ Then the same for the unscoped alias, which is the name a user actually types:
 `npx -y xplainer --version` must print the version just published, because `packages/alias` is one
 pinned dependency on `@xplainer/cli` and the pin is the only thing holding the two together.
 
+**Cut the tag after every member has landed on `main`, not before.** `0.0.1` did the opposite and
+the record is still crooked because of it: `v0.0.1` points at the commit that published the six
+scoped packages, `packages/alias` was written and published afterwards from a branch, and so
+`xplainer@0.0.1` exists on the registry while the tag that names that release contains none of its
+source. The tag was deliberately **left where it is** — moving a pushed ref breaks every clone that
+already fetched it, to fix a mismatch that costs nothing but this paragraph — and `packages/alias`
+carries the only hand-written `CHANGELOG.md` entry in the repository as a result, because its
+changeset was still unspent when the package shipped. Neither is a pattern to repeat: publish every
+member in one pass, then tag.
+
 **2FA is interactive.** `pnpm publish` refuses with `ERR_PNPM_OTP_NON_INTERACTIVE` outside a TTY,
 which includes every agent-run shell. Either publish from a real terminal, pass `--otp` for a
 classic authenticator, or use a granular access token with *bypass 2FA* — the last is the only one
