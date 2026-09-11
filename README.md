@@ -35,8 +35,10 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
 > running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
-> **What is not done, said plainly.** Nothing is published to npm, so `xplainer` is a payload
-> you build or a checkout you run. Speech has two working routes on macOS and Linux — a
+> **What is not done, said plainly.** The six `@xplainer/*` packages are on npm at `0.0.1`; the
+> unscoped `xplainer` alias that makes `npm i -g xplainer` work lives in `packages/alias` and has
+> not been published yet, so until it is, `xplainer` is `npx -y @xplainer/cli`, a payload you
+> build, or a checkout you run. Speech has two working routes on macOS and Linux — a
 > Kokoro-FastAPI server you already run (`setup --tts-url`), or the pinned container — and
 > **none on Windows this phase**, which `setup` says rather than offering a route that fails.
 > Desktop installers are unsigned, and the macOS ones are **arm64 only** this phase.
@@ -181,6 +183,7 @@ xplainer.video/
 │   ├── render-core/        # Remotion template, scaffold generator, render/still runners
 │   ├── tts-client/         # Kokoro-FastAPI-compatible client
 │   ├── skill/              # SKILL.md + Claude & Codex plugin bundles built from it
+│   ├── alias/              # the unscoped `xplainer` name on npm; forwards to @xplainer/cli
 │   └── config/             # shared tsconfig / biome presets + the tier checker
 ├── services/
 │   └── tts-sidecar/        # Kokoro TTS: Dockerfile + per-OS standalone packaging recipes
@@ -195,7 +198,7 @@ xplainer.video/
 └── .github/workflows/      # ci.yml, desktop.yml, and the workflow_dispatch proof workflows
 ```
 
-Nine workspace members: eight TypeScript, one Python-only (`services/tts-sidecar`), and
+Ten workspace members: nine TypeScript, one Python-only (`services/tts-sidecar`), and
 `packages/protocol` carries both — one JSON Schema source generating TypeScript types and
 pydantic models, so the two languages cannot drift.
 
@@ -241,10 +244,10 @@ roadmap hang off.
 ## Tiers
 
 Every package declares its tier in its own `package.json` as
-`"xplainer": { "tier": "open-later" }`. All nine members are `open-later`.
+`"xplainer": { "tier": "open-later" }`. All ten members are `open-later`.
 
 The name is historical and now slightly misleading: it never meant "not yet distributed", and
-it does not mean "not yet open". Six packages are already Apache-2.0 (below); `open-later`
+it does not mean "not yet open". Seven packages are already Apache-2.0 (below); `open-later`
 marks the ones still on the path. The import rule the tier field enforces —
 `hosted` may depend on `open-later`, never the reverse — is what made the repository split a
 directory move rather than a rewrite
@@ -278,7 +281,7 @@ left for someone to discover.
   surface**, at the root and in every member, and **`pnpm verify` is the one command** — it
   chains the build, lint, typecheck and test graph and every repository gate behind it.
 
-Contributions to the six Apache-2.0 packages arrive under Apache-2.0 §5, which supplies the
+Contributions to the seven Apache-2.0 packages arrive under Apache-2.0 §5, which supplies the
 inbound grant in the licence text itself; no separate CLA is required for those
 ([ADR 0022](docs/adr/0022-open-source-the-published-packages.md)). The rest of the tree is not
 open source yet — see below — so a patch to it has no inbound licence to arrive under. Open an
@@ -286,12 +289,14 @@ issue first if that is where you are headed.
 
 ## Licence
 
-**Six packages are open source under the Apache Licence 2.0.** These are the ones published to
-npm under the `@xplainer/` scope, and they are the whole of what a user installs:
+**Seven packages are open source under the Apache Licence 2.0.** These are the ones published to
+npm — six under the `@xplainer/` scope plus the unscoped `xplainer`, which is an alias for
+`@xplainer/cli` — and they are the whole of what a user installs:
 
 | Directory | Package |
 |---|---|
 | `apps/cli` | `@xplainer/cli` |
+| `packages/alias` | `xplainer` |
 | `packages/mcp-server` | `@xplainer/mcp-server` |
 | `packages/protocol` | `@xplainer/protocol` |
 | `packages/render-core` | `@xplainer/render-core` |
@@ -300,7 +305,7 @@ npm under the `@xplainer/` scope, and they are the whole of what a user installs
 
 Full text in [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0); a copy travels inside each published
 tarball, and [`NOTICE`](NOTICE) is the attribution notice Apache-2.0 §4(d) propagates. Each of
-the six manifests declares `"license": "Apache-2.0"`, which is the authoritative statement for
+the seven manifests declares `"license": "Apache-2.0"`, which is the authoritative statement for
 machine consumers.
 
 **The rest of the repository is not open source yet.** [`LICENSE`](LICENSE) Part Two covers

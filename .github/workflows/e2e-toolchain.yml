@@ -252,12 +252,13 @@ jobs:
           # run that produced it and nothing more.
           retention-days: 5
 
-  windows-delivery-position:
-    name: setup names the delivery position (windows, T20 criterion 3)
+  windows-setup-from-a-checkout:
+    name: setup completes on windows from a checkout (T20 criterion 3)
     if: ${{ inputs.windows }}
     runs-on: windows-latest
-    # A `setup` that refuses in its first phase, and a build to reach it.
-    timeout-minutes: 30
+    # A real acquisition: a ~98 MB browser, ~204 MB of speech artefacts from
+    # three hosts, and an npm install of the render workspace.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -277,36 +278,37 @@ jobs:
       - name: Build every member
         run: pnpm turbo build
 
-      # T20's third criterion, on the platform it is about. Nothing is published
-      # to the manifest host this phase, so a plain `setup` fails at the
-      # **browser** phase and `deliveryPosition()` is what it prints.
+      # WHAT THIS JOB USED TO BE, AND WHY IT COULD NOT STAY. It was
+      # `windows-delivery-position`, and it asserted that `setup` **refused**:
+      # nothing was published to the manifest host, so a plain `setup` failed in
+      # its browser phase and `deliveryPosition()` was what it printed. That
+      # premise died on 2026-09-11 when the manifest was published to
+      # cdn.xplainer.video. `setup` now succeeds, so a job whose first check is
+      # `if exit == 0 then FAIL` would fail on every dispatch while the product
+      # was working correctly.
       #
-      # WHAT THIS JOB USED TO ASSERT, AND WHY IT NO LONGER CAN. Until the
-      # in-process `onnx` route landed, `deliveryPosition()` carried a second,
-      # harder paragraph for `win32`: that all three speech routes were
-      # unavailable there and that phase 4 was the milestone which would close
-      # it. This job read that paragraph back word for word — "Windows has no
-      # working speech route at all this phase" — and it was the only thing in
-      # the repository that did. The `onnx` route closes the gap instead, and
-      # closes it now: `win32-x64` and `win32-arm64` are both in
-      # `onnxruntime-node`'s published set, so `setup` on this runner acquires
-      # the model, a voice and that platform's runtime from their own upstream
-      # homes and narration works with no container and no server. A grep for
-      # the retired sentence would now be asserting the one claim the product
-      # most confidently does not make.
+      # It also cannot be rescued by forcing the failure from the CLI. The
+      # refusal that carries `deliveryPosition()` — `ManifestUnreachable` in
+      # setup/source.ts — is thrown only when the *published* URL fails AND no
+      # committed copy sits beside the build, and `--manifest` deliberately does
+      # NOT fall through when the source it names fails ("a reviewer who named a
+      # candidate manifest and silently got the published one would be reviewing
+      # the wrong document"). So there is no flag that reaches that branch, and
+      # the message is asserted per-platform in setup/manifest.test.ts instead,
+      # `win32-x64` included, by calling `deliveryPosition()` directly.
       #
-      # WHAT IT ASSERTS INSTEAD, which is what is true on this platform now:
-      # that the refusal is the **browser's** and says so, that the delivery
-      # position is stated as the expected state rather than as an outage, and
-      # that speech is named as NOT waiting on the address — with the `onnx`
-      # bullet present by name, because that bullet is the sentence a Windows
-      # user acts on. The retired sentences are asserted **absent**, so the
-      # claim cannot come back by accident.
-      #
-      # `shell: bash` for this one step: the whole step is string matching over
-      # captured output, and Git Bash is on every windows runner. The command
-      # under test is `node` either way.
-      - name: setup refuses at the browser and names the delivery position
+      # WHAT IT ASSERTS INSTEAD, and it is strictly more than it used to. This
+      # is the only place in the repository that runs `xplainer setup` from a
+      # **checkout** on Windows — no staged payload 1, so `hostRuntimeDir()`
+      # answers null and the workspace provider takes its resolve route. That is
+      # exactly the configuration that could not work at all until 2026-09-10,
+      # when `providers/workspace.ts` was spawning `npm.cmd` and libuv was
+      # refusing it with EINVAL. The old job never caught it because it refused
+      # at the browser and `setup`'s component order is browser, then speech,
+      # then workspace: it stopped one phase short, for every release from B6
+      # onward. Reaching the third component is the point of this job now.
+      - name: setup acquires all three components
+        shell: bash
         run: |
           set -uo pipefail
           state="${RUNNER_TEMP}/xplainer-t20-state"
@@ -317,39 +319,60 @@ jobs:
           set -e
           echo "exit: $code"
           cat setup.out
-          if [ "$code" -eq 0 ]; then
-            echo "FAIL: setup exited 0, and nothing is published for it to have succeeded from" >&2
+          if [ "$code" -ne 0 ]; then
+            echo "FAIL: setup exited $code; the manifest is published, so this is a real failure" >&2
             exit 1
           fi
-          require_absent() {
-            if grep -qF "$1" setup.out; then
-              echo "FAIL: the message still says something the product no longer claims: $1" >&2
-              exit 1
-            fi
-            echo "ok  absent: $1"
-          }
           require_present() {
             if ! grep -qF "$1" setup.out; then
-              echo "FAIL: the message does not say: $1" >&2
+              echo "FAIL: setup did not report: $1" >&2
               exit 1
             fi
             echo "ok  present: $1"
           }
-          require_present "an address that answers nothing is the expected state rather than an outage"
-          require_present "no command in this repository uploads a manifest"
-          require_present "Speech is not waiting on this address on win32-"
-          require_present "the onnx route fetches the Kokoro model, one voice and this platform's ONNX Runtime"
-          require_present "Only the bundle route reads this manifest"
-          require_present "all this manifest contributes is the expected digest for that exact URL"
-          require_absent "Windows has no working speech route at all this phase"
-          require_absent "None of the three is available here"
-          require_absent "The milestone that closes it is phase 4"
+          # The manifest came over the network, not from a committed copy: a
+          # published build has no committed copy, and reading one here would
+          # mean this job was proving something no user experiences.
+          require_present "manifest: https://cdn.xplainer.video/toolchain/v1/manifest.json"
+          # All three components, in setup's own order.
+          require_present "browser: acquired at"
+          require_present "speech: took the onnx route"
+          require_present "workspace:"
+          require_present "recorded"
+          require_present "platform win32-x64"
+          # The retired reassurance must not reappear, on the platform whose
+          # message carried the harder version of it.
+          if grep -qF "expected state rather than an outage" setup.out; then
+            echo "FAIL: the delivery-position reassurance is back, and it is false" >&2
+            exit 1
+          fi
+          echo "ok  absent: expected state rather than an outage"
 
-      - name: Upload the refusal
+      # The recorded marker, which is what the install preflight reads. Proving
+      # it parses here is cheaper than discovering on a user's machine that a
+      # Windows path landed in it unescaped.
+      - name: toolchain.json records all three components
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "
+            const { readFileSync } = require('node:fs');
+            const path = process.env.RUNNER_TEMP + '/xplainer-t20-state/toolchain.json';
+            const marker = JSON.parse(readFileSync(path, 'utf8'));
+            for (const key of ['chrome', 'speech', 'workspace']) {
+              if (!marker[key]) throw new Error('toolchain.json has no ' + key);
+            }
+            if (marker.speech.provider !== 'onnx') {
+              throw new Error('speech provider is ' + marker.speech.provider + ', expected onnx');
+            }
+            console.log('ok  toolchain.json:', Object.keys(marker).join(', '));
+          "
+
+      - name: Upload the setup log
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-toolchain-windows-delivery-position
+          name: e2e-toolchain-windows-setup-from-a-checkout
           path: setup.out
           if-no-files-found: error
           retention-days: 5

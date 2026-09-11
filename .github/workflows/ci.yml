@@ -300,12 +300,13 @@ jobs:
       - name: Assert task coverage per member (AC-2b, AC-2f, AC-2g)
         run: |
           set -euo pipefail
-          # Nine workspace members: apps/cli, apps/desktop, the six packages
-          # and services/tts-sidecar. Eight of them build — tts-sidecar is the
+          # Ten workspace members: apps/cli, apps/desktop, the seven packages
+          # and services/tts-sidecar. Nine of them build — tts-sidecar is the
           # only Python-only member and declares no `build` script. These were
-          # twelve and ten before the hosted tier moved out; the numbers are the
-          # assertion, so they are restated rather than relaxed.
-          for entry in test:9 lint:9 typecheck:9 build:8; do
+          # twelve and ten before the hosted tier moved out, and nine and eight
+          # before packages/alias added the unscoped `xplainer` name; the
+          # numbers are the assertion, so they are restated rather than relaxed.
+          for entry in test:10 lint:10 typecheck:10 build:9; do
             task="${entry%%:*}"
             expected="${entry##*:}"
             echo "checking that turbo run $task reaches $expected members"

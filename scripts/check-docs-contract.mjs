@@ -15,8 +15,8 @@
  *      disagree.
  *   3. `agents` — the agent instruction surface is complete: an `AGENTS.md`
  *      carrying the five required headings beside every member, the canonical
- *      post-change procedure in the root `AGENTS.md`, and the ten `CLAUDE.md`
- *      stubs (root plus nine members) that Claude Code reads because it never
+ *      post-change procedure in the root `AGENTS.md`, and the eleven `CLAUDE.md`
+ *      stubs (root plus ten members) that Claude Code reads because it never
  *      reads `AGENTS.md` at all (plan §11).
  *
  * WHY A DIAGNOSTIC PREFIX AND NOT THREE EXIT CODES. AC-18c and AC-19c both
@@ -697,7 +697,7 @@ function countLines(text) {
   return lines.length;
 }
 
-/** Check 3 — the instruction surface is complete: nine `AGENTS.md`, ten `CLAUDE.md`, one procedure. */
+/** Check 3 — the instruction surface is complete: ten `AGENTS.md`, eleven `CLAUDE.md`, one procedure. */
 function checkAgents(root, members) {
   const problems = [];
 

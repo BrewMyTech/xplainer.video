@@ -1,7 +1,8 @@
-# Workspace members. Nine in total, after the hosted tier was relocated to the
-# private BrewMyTech/xplainer-hosted repository:
+# Workspace members. Ten in total, after the hosted tier was relocated to the
+# private BrewMyTech/xplainer-hosted repository and packages/alias added the
+# unscoped `xplainer` name on npm:
 #   apps/      cli, desktop
-#   packages/  protocol, mcp-server, render-core, tts-client, skill, config
+#   packages/  protocol, mcp-server, render-core, tts-client, skill, alias, config
 #   services/  tts-sidecar
 packages:
   - apps/*
@@ -141,17 +142,17 @@ minimumReleaseAgeExclude:
 #
 #   * Every TypeScript member carries exactly four scripts: `build`,
 #     `lint` (biome check .), `typecheck` (tsc --noEmit) and `test`
-#     (vitest run). All eight of them: packages/config, packages/protocol,
+#     (vitest run). All nine of them: packages/config, packages/protocol,
 #     packages/render-core, packages/tts-client, packages/mcp-server,
-#     packages/skill, apps/cli, apps/desktop.
+#     packages/skill, packages/alias, apps/cli, apps/desktop.
 #     Members may add their own scripts (dev, package, codegen) but never at the
 #     cost of one of the four.
 #
 #   * The sole exception is the one Python-only member, services/tts-sidecar.
 #     It carries `lint`, `typecheck` and `test` as
 #     `uv run --no-sync --project .` wrappers, and NO `build`, because there is
-#     nothing to compile. This exception is why the `build` task covers eight
-#     members while the other three cover nine (asserted at AC-2f and AC-2g).
+#     nothing to compile. This exception is why the `build` task covers nine
+#     members while the other three cover ten (asserted at AC-2f and AC-2g).
 #
 #   * packages/protocol is the one dual-language member: each of its four
 #     scripts chains its Python half (`lint` -> `lint:py`, and so on) so that a

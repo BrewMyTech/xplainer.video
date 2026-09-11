@@ -12,7 +12,7 @@
  * |---|---|---|
  * | `explicit` | `install --program <absolute path>` | verbatim, after a preflight |
  * | `sea-binary` | `install --from-binary <path>` | accepted and refused: nothing stages a SEA yet |
- * | `package-manager` | asked for by name | not implemented: nothing is published yet |
+ * | `package-manager` | asked for by name | not implemented: the locator is unwritten, not the package |
  * | `runtime-dir` | **always, unless overridden** | the phase-2 default |
  *
  * **Why the two unimplemented sources are branches rather than absences.** Both are reachable —
@@ -142,10 +142,12 @@ export function resolveProgram(request: ProgramRequest): ResolvedProgram {
     case "package-manager":
       throw new ProgramRefusal(
         "unimplemented",
-        "`package-manager` is the source a published `@xplainer/cli` gets, and nothing is " +
-          "published yet: this phase's whole delivery route is a runtime directory assembled " +
-          "from a local checkout. The branch that locates a global install hands its directory " +
-          "to the same stager, so nothing else changes when it arrives.",
+        "`package-manager` is the source a globally installed `xplainer` gets, and the locator " +
+          "for it is not written yet. The package itself is no longer the obstacle — " +
+          "`@xplainer/cli` and the unscoped `xplainer` have been on npm since 0.0.1 — so what is " +
+          "missing is the branch that finds that install and hands its directory to the same " +
+          "stager every other source uses. Until it exists, stage a payload explicitly: " +
+          "`xplainer runtime build --out <dir>` then `xplainer daemon install --runtime <dir>`.",
       );
     case "runtime-dir":
       return runtimeDirProgram(request);

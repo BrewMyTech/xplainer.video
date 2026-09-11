@@ -185,26 +185,50 @@ describe("where the toolchain manifest is fetched from", () => {
 describe("the delivery position, when the published address answers nothing", () => {
   const README = join(REPOSITORY, "infra/README.md");
 
-  it("says nothing is published, and that the two delivery steps are manual", () => {
+  /**
+   * Rewritten 2026-09-11, and the assertions are inverted rather than adjusted.
+   *
+   * This case used to require the message to say "Nothing is published … in this phase" and
+   * "manual steps Terraform does not manage", and required `infra/README.md` to carry the two
+   * manual steps by name. All four are now false: the manifest answers `200`, and both Cloudflare
+   * steps are declared in `infra/terraform`. A test that kept asserting them would have pinned the
+   * product to a reassurance — "an address that answers nothing is the expected state" — on the one
+   * path whose job is to explain a genuine failure.
+   *
+   * So what is pinned now is the opposite: that the message calls a fetch failure a failure, and
+   * that it names causes a reader can act on.
+   */
+  it("calls an unreadable manifest a failure, and names what usually causes it", () => {
     const readme = readFileSync(README, "utf8");
     const message = deliveryPosition(probe({ platform: "darwin", arch: "arm64", glibc: null }));
 
-    // The two steps the module documents as its own, which is why the message can promise them.
-    expect(readme).toContain("Connect the bucket to the custom domain.");
-    expect(readme).toContain("Add a Cache Rule for that hostname.");
-    // And what the message tells a user, in the same terms.
-    expect(message).toContain(`Nothing is published to ${TOOLCHAIN_MANIFEST_URL} in this phase`);
-    expect(message).toContain("custom domain");
-    expect(message).toContain("Cache Rule");
-    expect(message).toContain("manual steps Terraform does not manage");
+    // The README must no longer describe the two Cloudflare steps as manual, because Terraform
+    // declares both. This is the assertion that would have caught the message going stale.
+    expect(readme).toContain("cloudflare_r2_custom_domain");
+    expect(readme).toContain("cloudflare_ruleset.cdn_cache");
+    expect(readme).not.toContain("Connect the bucket to the custom domain.");
+
+    // And what the message tells a user.
+    expect(message).toContain(`The toolchain manifest is published at ${TOOLCHAIN_MANIFEST_URL}`);
+    expect(message).toContain("this is a failure to read it");
+    expect(message).toContain("proxy");
+    expect(message).toContain("DNS");
     expect(message).toContain("infra/README.md");
+    // The retired reassurance, asserted absent so it cannot come back by accident.
+    expect(message).not.toContain("expected state rather than an outage");
+    expect(message).not.toContain("manual steps Terraform does not manage");
   });
 
-  it("names the publisher as the release owner in phase 4, not a command in this repository", () => {
+  it("still says no command here uploads a manifest, because that has not changed", () => {
     const message = deliveryPosition(probe({ platform: "linux", arch: "x64" }));
 
     expect(message).toContain("no command in this repository uploads a manifest");
-    expect(message).toContain("release owner's step, in phase 4");
+    // A stale-but-present manifest is a skipped human step, not a broken pipeline — the one thing
+    // a reader cannot work out from the HTTP status.
+    expect(message).toContain("a manual release step somebody skipped");
+    // "the release owner's step, in phase 4" is gone: phase 4 owns the speech bundles, not the
+    // manifest, and the manifest shipped in phase 2.
+    expect(message).not.toContain("release owner's step, in phase 4");
   });
 
   it("names the three speech routes that read no manifest, and the one that does", () => {
@@ -244,7 +268,10 @@ describe("the delivery position, when the published address answers nothing", ()
     expect(message).toContain("the onnx route fetches the Kokoro model");
     // The one thing that genuinely is waiting on the address, on every platform alike.
     expect(message).toContain("Only the bundle route reads this manifest");
-    expect(message).toContain("what lets a browser acquisition run at all");
+    // Reworded 2026-09-11 with the rest of this message: `--manifest` used to be "what lets a
+    // browser acquisition run at all", which was true only while nothing was published. It is now
+    // the way past a manifest this machine cannot reach, and the browser is what the failure blocks.
+    expect(message).toContain("the browser is what this failure actually blocks");
   });
 });
 
@@ -437,7 +464,13 @@ describe("the committed manifest", () => {
         expect.unreachable("an unpublished bundle must refuse");
       } catch (error) {
         expect((error as ToolchainSelectionRefusal).reason).toBe("artefact-unavailable");
-        expect((error as ToolchainSelectionRefusal).message).toContain("--tts-url");
+        // The refusal has to name a route that works, and which route that is changed on
+        // 2026-09-11. It used to say `--tts-url`, because when every bundle was unpublished the
+        // only answers were a server you already ran and the Docker image. The `onnx` route is
+        // now above both in the precedence and acquires an engine from its components' own
+        // upstream homes, so it is the route a reader of this refusal should take — and the one
+        // that makes an unpublished bundle a deferral rather than a missing feature.
+        expect((error as ToolchainSelectionRefusal).message).toContain("onnx");
       }
     }
     expect(speechPlatformKey(probeHost())).toBe(`${process.platform}-${process.arch}`);

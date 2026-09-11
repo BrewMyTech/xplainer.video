@@ -1,0 +1,9 @@
+{
+  "extends": "@xplainer/config/tsconfig/node.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src"],
+  "exclude": ["dist"]
+}

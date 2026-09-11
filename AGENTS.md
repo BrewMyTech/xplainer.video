@@ -100,6 +100,17 @@ tarball and reading the manifest by hand:
   root alike. Forced through with `npm publish` it would ship `workspace:*` verbatim and every
   `npm i` would fail on `Unsupported URL Type`.
 
+**And the obvious way out of that second one is a trap.** Declaring the literal version instead —
+`"@xplainer/cli": "0.0.1"` in `packages/alias` — does make a plain `npm publish` correct, because
+there is no protocol left to rewrite. It also silently unlinks the member: pnpm's
+`linkWorkspacePackages` defaults to **false**, so a literal range resolves through the registry and
+`packages/alias/node_modules/@xplainer/cli` becomes a *download* rather than the package next door.
+The alias exists to read `bin["xplainer"]` out of `@xplainer/cli`'s own manifest, so pinned to the
+registry it stops testing the CLI it ships beside: a renamed bin or a changed `exports` map would
+pass every gate in this repository and break only once published. It also drags our own
+hours-old packages through the release-age gate above, which is what appends `@xplainer/*` entries
+to `minimumReleaseAgeExclude`. Keep the protocol, and publish with pnpm.
+
 So a release is published from a **one-off isolated install**, which supplies the per-consumer
 links the rewriter needs and leaves the committed configuration alone — `hoisted` exists for
 packaging the desktop app, which is not involved in publishing:
@@ -118,6 +129,19 @@ pnpm install                                  # restore the committed hoisted la
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
 transitive `@xplainer/*` dependencies resolve, and run `npx -y @xplainer/cli --help` — the
 zero-install path the plugin bundles declare, and the one a published `workspace:*` would break.
+Then the same for the unscoped alias, which is the name a user actually types:
+`npx -y xplainer --version` must print the version just published, because `packages/alias` is one
+pinned dependency on `@xplainer/cli` and the pin is the only thing holding the two together.
+
+**Cut the tag after every member has landed on `main`, not before.** `0.0.1` did the opposite and
+the record is still crooked because of it: `v0.0.1` points at the commit that published the six
+scoped packages, `packages/alias` was written and published afterwards from a branch, and so
+`xplainer@0.0.1` exists on the registry while the tag that names that release contains none of its
+source. The tag was deliberately **left where it is** — moving a pushed ref breaks every clone that
+already fetched it, to fix a mismatch that costs nothing but this paragraph — and `packages/alias`
+carries the only hand-written `CHANGELOG.md` entry in the repository as a result, because its
+changeset was still unspent when the package shipped. Neither is a pattern to repeat: publish every
+member in one pass, then tag.
 
 **2FA is interactive.** `pnpm publish` refuses with `ERR_PNPM_OTP_NON_INTERACTIVE` outside a TTY,
 which includes every agent-run shell. Either publish from a real terminal, pass `--otp` for a
@@ -144,11 +168,18 @@ a silently unchecked member.
 
 ## The members
 
-Nine of them. The table — path, package name, tier, published or not, whether it emits declarations,
+Ten of them. The table — path, package name, tier, published or not, whether it emits declarations,
 whether it has an API report, and what it is responsible for — is
 [`docs/ARCHITECTURE.md` §3 Members](docs/ARCHITECTURE.md#3-members), and it is machine-checked
 against the workspace. There is no second copy here on purpose: a hand-maintained duplicate is a
 table that goes stale.
+
+**The workspace root's own manifest is named `xplainer-workspace`, not `xplainer`.** The unscoped
+name belongs to the published alias in `packages/alias`, and `pnpm --filter` matches by name: while
+the root carried it too, `pnpm --filter xplainer test` matched **both** projects and ran the root's
+`turbo run test` — the whole workspace — beside the one member that was asked for. The Python root
+in `pyproject.toml` has been `xplainer-workspace` all along, so this is now one name on both sides.
+Nothing reads either root name; turbo addresses root tasks as `//#<task>`.
 
 ## Non-negotiables
 
@@ -235,7 +266,7 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 ## Before editing a member, read that member's `AGENTS.md`
 
-Each of the nine has one, with the same five headings: `## What this package is`,
+Each of the ten has one, with the same five headings: `## What this package is`,
 `## Public surface`, `## Commands`, `## Invariants`, `## How to add`. The invariants there are
 specific and are not repeated at the root.
 
@@ -243,8 +274,8 @@ specific and are not repeated at the root.
 files automatically in every configuration: Codex walks `AGENTS.md` hierarchically and never reads
 `CLAUDE.md`; Claude Code reads `CLAUDE.md` from directories it works in and never reads
 `AGENTS.md`. That is why each member also carries a one-line `CLAUDE.md` importing its `AGENTS.md`.
-The nine member files are deliberately **not** imported from the root — importing them would load
-all nine every session and destroy the locality that makes them useful.
+The ten member files are deliberately **not** imported from the root — importing them would load
+all ten every session and destroy the locality that makes them useful.
 
 ## What belongs where
 

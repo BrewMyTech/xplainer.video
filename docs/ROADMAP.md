@@ -631,8 +631,9 @@ proof workflows have no upload step to fail:
 **And two runs of 2026-09-10**, after ADR 0028's in-process speech route landed: `e2e-speech` run
 **`34496585851`** green on all three platforms — 86 assertions on ubuntu, 90 on macOS, 93 on Windows,
 each ending `SPEECH END-TO-END PASSED` — and `e2e-toolchain` run **`34492622026`**, the Windows-only
-dispatch that reads back what `deliveryPosition()` says today. `ci` and `desktop` are green on `main`
-at `250e52a` (runs `34497948400` and `34497948352`).
+dispatch that read back what `deliveryPosition()` said on that date; the manifest was published the
+next day and that job now asserts the opposite outcome, per **P2-4**. `ci` and `desktop` are green
+on `main` at `250e52a` (runs `34497948400` and `34497948352`).
 
 **What is actually left, now that the noise is gone. Two things need a human and nothing else does.**
 
@@ -901,7 +902,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     worker's provenance line instead. `.github/workflows/e2e-toolchain.yml`'s
     `windows-delivery-position` job now reads back what `deliveryPosition()` says today, with the
     three retired sentences asserted absent; it is `workflow_dispatch` only and, per the note at the
-    head of this list, has not been dispatched.
+    head of this list, has not been dispatched. *(That job is `windows-setup-from-a-checkout` from
+    2026-09-11 and asserts the opposite outcome; the amendment below carries why.)*
   - *Amended 2026-09-11: **MET, on all three platforms, and the two halves of the line above are
     both now false.*** This is the correction that matters most on this row, because the line of
     2026-09-08 (T30) still read *"PENDING — met on macOS and Linux; pending on Windows, closed by
@@ -944,7 +946,9 @@ owner's, and it is what turns those lines from pending into met or into defects.
     had not. `e2e-toolchain` run **`34492622026`** (2026-09-10, Windows only) is green in both its
     jobs, and the one named *setup names the delivery position (windows, T20 criterion 3)* is the
     reader that asserts the three retired sentences are **absent** from what `deliveryPosition()`
-    says today. The earlier job under that criterion, *setup names no speech route (windows, T20
+    says today. *(That job is `windows-setup-from-a-checkout` from 2026-09-11; both names are kept
+    here because the runs cited under each are the record of the assertion inverting.)* The earlier
+    job under that criterion, *setup names no speech route (windows, T20
     criterion 3)*, was also green in run `34364362924` a day before — asserting the **opposite**
     sentence, correctly, because on 2026-09-09 Windows genuinely had no route. Both runs are cited
     because together they are the record of the sentence changing rather than of a gate being
@@ -957,6 +961,52 @@ owner's, and it is what turns those lines from pending into met or into defects.
     on older evidence and by an older mechanism, and **the docker route is therefore not retired**.
     Its retirement is booked in the phase-4 entry behind the per-architecture work that closes
     `darwin-x64`, and not behind this row, which is already met.
+  - *Amended 2026-09-11, later the same day: **the toolchain manifest is published, so three of the
+    sentences the amendments above rest on are now false — and the one about commands is not.***
+    Measured on this date: `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers `200` as
+    `application/json` with `cf-cache-status: HIT`, and its SHA-256 equals that of the committed
+    `apps/cli/src/setup/toolchain.manifest.json`, which is the check the two copies are held to. So
+    T19's *"Nothing is published to `cdn.xplainer.video` in this phase"* and T20's *"answers nothing
+    usable, which is the intended state and not an outage"* are both retired, and so is the reason
+    T20 gave for the infrastructure half: `infra/terraform` now declares the bucket, the custom
+    domain and the Cache Rule — `cloudflare_r2_bucket.artifacts`, `cloudflare_r2_custom_domain.cdn`,
+    `cloudflare_ruleset.cdn_cache` — so **connecting the domain and adding the Cache Rule are not
+    "manual steps Terraform does not manage"**; they are resources it owns, and `infra/README.md`
+    §*The delivery position* carries the measurement against the real zone that corrected the
+    opposite claim.
+
+    **The clause about commands survives intact, and it is the one that matters operationally.** No
+    command in this repository uploads anything to that bucket and no workflow is scheduled to: the
+    upload is the release owner's, performed by hand with `wrangler`. A change to
+    `toolchain.manifest.json` that is not re-published therefore leaves `setup` handing users an
+    expected digest for an artefact the served document no longer describes — which is a live
+    failure mode now rather than a hypothetical one, because the address is read.
+
+    **And the publish closed a defect rather than tidying a record.**
+    `apps/cli/src/setup/source.ts` deliberately keeps the committed manifest out of the npm tarball,
+    so an installed `xplainer` has exactly **two** manifest sources, `--manifest` and the network.
+    While the address answered nothing, the browser leg of this criterion held only for a user with
+    a checkout or a hand-supplied `--manifest`; `xplainer setup` on a clean state directory with no
+    flags now completes at exit `0`, acquiring the browser, a speech route and the workspace. The
+    **speech bundles** are the part still unpublished — all four `speech` entries remain
+    `"status": "unavailable"` — and that is phase 4 and deferred rather than blocking, because the
+    `onnx` route this row was met by reads no manifest of ours at all.
+
+    **The Windows job the two amendments above cite has inverted, and it is now the stronger of the
+    two.** `windows-delivery-position` asserted that `setup` **refused**; with the manifest published
+    its first check — exit `0` is a failure — would fail on every dispatch while the product worked,
+    and it could not be rescued by forcing the refusal from the CLI, because `ManifestUnreachable`
+    fires only when the published URL fails **and** no committed copy sits beside the build, and
+    `--manifest` deliberately does not fall through when the source it names fails. So the message is
+    asserted per-platform in `apps/cli/src/setup/manifest.test.ts` by calling `deliveryPosition()`
+    directly, `win32-x64` included — inside `pnpm verify` rather than behind a dispatch — and the job
+    is `windows-setup-from-a-checkout`, asserting that `setup` exits `0`, reads the manifest over the
+    network at the published URL, acquires all three components and records `toolchain.json` with
+    `speech.provider === "onnx"`. That reaches the **workspace**, which the refusing job never did:
+    `setup`'s order is browser, speech, workspace, so it stopped one phase short of the `npm.cmd`
+    `EINVAL` defect in `providers/workspace.ts` for every release from B6 onward. Reaching the third
+    component is the point of it now, and the Windows resolve route no longer rests on
+    `pnpm e2e:speech` alone.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
   - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
@@ -1567,6 +1617,21 @@ capability, and it already has a decision record behind it.
     `linux/amd64` image are all still live for it, exactly as
     [ADR 0028](adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md) §Consequences says — *"This adds
     a route; it retires none"* — and as that record's note of this date restates.
+  - *Amended 2026-09-11, later the same day: **half of this bullet is delivered, in phase 2 rather
+    than here, and what is left is the upload and the feed.*** The version-and-checksum manifest is
+    now served at `https://cdn.xplainer.video/toolchain/v1/manifest.json` — `200`,
+    `application/json`, `cf-cache-status: HIT`, byte-identical by SHA-256 to the committed
+    `apps/cli/src/setup/toolchain.manifest.json` — so the **browser's** expected digest, the one
+    thing every route genuinely needed it for, reaches a user with no checkout. The T30 sub-bullet's
+    *"the two steps Terraform does not manage and no command in this repository performs"* is now
+    **one** step rather than two: `infra/terraform` declares the bucket, the custom domain and the
+    Cache Rule (`cloudflare_r2_bucket.artifacts`, `cloudflare_r2_custom_domain.cdn`,
+    `cloudflare_ruleset.cdn_cache`), and the step it does not perform is the **upload**, which is
+    still a release owner's hand-run `wrangler` with no workflow behind it. So what this phase still
+    owns here is the automation of that upload and the **update feed** `electron-updater` resolves
+    against — a different artefact class with its own bucket, per the bullet above — and not the
+    manifest itself. The `bundle` route's per-platform speech entries stay `"unavailable"`, for the
+    reason the amendment above gives.
 - **Code signing and notarisation for macOS and Windows.** Phases 0 and 2 ship unsigned
   artefacts by design. This is also what makes the standalone binary a **recommended** way to
   install the always-on daemon: an npm-delivered CLI carries no `com.apple.quarantine`, so
@@ -1639,7 +1704,7 @@ records cite them.
 
 | # | Criterion | Status |
 |---|---|---|
-| **P5-1** | The repository builds, lints, typechecks and tests from a clean clone with the same two bootstrap commands | **Holds.** Nine members; the bootstrap is unchanged |
+| **P5-1** | The repository builds, lints, typechecks and tests from a clean clone with the same two bootstrap commands | **Holds.** Ten members; the bootstrap is unchanged |
 | **P5-2** | No file contains an absolute local path, the private sibling repository's name, or a reference to a `hosted` package | ~~**Not yet.** Absolute paths are gone — two occurrences in accepted records are redacted in place with a dated note, and one file was removed rather than scrubbed. The repository's name still ships in twelve schema `description` strings and their generated output, and hosted-package references remain in comments including one published `description`. Phase-0 gates 1 and 2~~ — *amended 2026-09-11:* **Holds.** The two gates this row deferred to, **phase-0 gates 1 and 2, both closed on 2026-09-09**; that is recorded at each of them above and was never carried down here, which left the phase-5 table reading as the only outstanding blocker on a repository that is already public. The twelve schema `description` strings no longer name the private repository, and `check-publish-contract` carries `no-private-reference-path` beside `no-private-repository-name`, each with its own negative test, so the class now fails a gate rather than waiting for a reader; the comment-level `hosted` references — `apps/cli/package.json`'s published `description` included — name the relocated service in prose instead of citing a path that is not in this checkout. The struck wording is kept because it is what those gates were opened for |
 | **P5-3** | The private repository consumes the extracted packages from the registry at pinned versions | **Relocated.** It is that repository's criterion to meet, and it cannot be met before phase 1 publishes |
 | **P5-4** | The tier checks still pass in both repositories, adapted to the new boundary | **Holds, with a stated caveat.** `pnpm lint:tiers` passes and still enforces that every member declares a tier. Its real-graph half is vacuous here — no `hosted` member remains for it to catch — and the synthetic fixture in `packages/config/src/tiers.test.ts` is what still proves the rule can fail. The Python import-linter contract retired outright. Recorded in ADR 0003's and ADR 0001's notes of 2026-09-06 |

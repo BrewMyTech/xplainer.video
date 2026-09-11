@@ -17,11 +17,6 @@
 
 locals {
   cdn_hostname = "cdn.${var.zone_name}"
-
-  # The R2 bucket's S3-compatible origin. The cdn record is a proxied CNAME at
-  # this hostname, which is the shape Cloudflare's own "connect a custom domain"
-  # flow produces for a bucket.
-  r2_origin_hostname = "${var.r2_bucket_name}.${var.cloudflare_account_id}.r2.cloudflarestorage.com"
 }
 
 # --- Cloudflare zone ---------------------------------------------------------
@@ -66,22 +61,73 @@ resource "cloudflare_r2_bucket" "artifacts" {
   name       = var.r2_bucket_name
 }
 
-# --- DNS ---------------------------------------------------------------------
+# --- Delivery ----------------------------------------------------------------
 
-# cdn.<zone> fronts the R2 bucket. Proxied is not optional here: the bucket's
-# own r2.dev URL is explicitly not cached by Cloudflare, so serving a ~110 MB
-# CLI binary or a several-hundred-megabyte voice pack from it would pay origin
-# egress on every single download. The DNS record is only half of that setup —
-# the bucket must also be connected to this custom domain, and a Cache Rule must
-# be created for it. Both steps are written out in infra/README.md.
+# cdn.<zone> fronts the R2 bucket, and this resource is the *whole* of that
+# connection: R2 creates and owns the DNS record, provisions the certificate,
+# and proves ownership. Proxying is not optional — the bucket's own r2.dev URL
+# is explicitly not cached by Cloudflare, so serving a ~110 MB CLI binary or a
+# several-hundred-megabyte voice pack from it would pay origin egress on every
+# single download.
 #
-# ttl = 1 means "automatic" and is required whenever proxied is true.
-resource "cloudflare_dns_record" "cdn" {
+# **This used to be a hand-rolled `cloudflare_dns_record` pointing a proxied
+# CNAME at `<bucket>.<account>.r2.cloudflarestorage.com`, and that was wrong in
+# two ways.** That hostname is the S3-compatible *API* endpoint, which answers
+# anonymous reads with an auth error rather than an object, so the record could
+# never have delivered an artefact. And connecting the bucket to the custom
+# domain — which R2 requires regardless — *replaces* that record with its own
+# CNAME onto `public.r2.dev`, leaving Terraform holding a record id that no
+# longer exists: a later `apply` would recreate the broken record beside the
+# working one. Both were observed on 2026-09-11 against the real zone, which is
+# how they were found. The record is R2's to manage, so Terraform manages the
+# custom domain and not the record.
+resource "cloudflare_r2_custom_domain" "cdn" {
+  account_id  = var.cloudflare_account_id
+  bucket_name = cloudflare_r2_bucket.artifacts.name
+  domain      = local.cdn_hostname
+  zone_id     = local.zone_id
+  enabled     = true
+  min_tls     = "1.2"
+}
+
+# --- Cache -------------------------------------------------------------------
+
+# Connecting the custom domain proxies the hostname; it does NOT cache it. A
+# proxied-but-uncached bucket pays R2 Class B operations and egress on every
+# download, which is the same bill as `r2.dev` with extra steps — so this rule
+# is the half that makes the custom domain worth having, and leaving it out is
+# the expensive mistake rather than a missing nicety.
+#
+# A release artefact is immutable: a published version's bytes never change and
+# a new version gets a new key, so a long edge TTL is safe and is the whole
+# point. The toolchain manifest is the one mutable key — it is rewritten when a
+# new artefact is published — which is why the browser TTL is short and a
+# publish is expected to purge it rather than wait the edge TTL out.
+resource "cloudflare_ruleset" "cdn_cache" {
   zone_id = local.zone_id
-  name    = local.cdn_hostname
-  type    = "CNAME"
-  content = local.r2_origin_hostname
-  ttl     = 1
-  proxied = true
-  comment = "Release artefact delivery for ${cloudflare_r2_bucket.artifacts.name}; managed by infra/terraform"
+  name    = "Cache release artefacts on ${local.cdn_hostname}"
+  kind    = "zone"
+  phase   = "http_request_cache_settings"
+
+  rules = [{
+    ref         = "cdn_artefacts_eligible_for_cache"
+    description = "Release artefacts on ${local.cdn_hostname} are immutable and cacheable"
+    expression  = "(http.host eq \"${local.cdn_hostname}\")"
+    action      = "set_cache_settings"
+    enabled     = true
+
+    action_parameters = {
+      cache = true
+
+      edge_ttl = {
+        mode    = "override_origin"
+        default = 2592000 # 30 days
+      }
+
+      browser_ttl = {
+        mode    = "override_origin"
+        default = 3600 # 1 hour: the manifest is the one key that is rewritten
+      }
+    }
+  }]
 }

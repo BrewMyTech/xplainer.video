@@ -10,7 +10,7 @@ leftover.
 
 | Path | What it is | Who it serves |
 | --- | --- | --- |
-| `terraform/` | An R2 bucket for release artefacts and the cached custom domain that delivers them. | Auto-update, and the first-run downloads `xplainer setup` performs — **nothing is published to it yet**, which *The delivery position, phase 2* below states in full. |
+| `terraform/` | An R2 bucket for release artefacts, the custom domain that delivers them, and the Cache Rule that makes it worth having. | Auto-update, and the first-run downloads `xplainer setup` performs — the **toolchain manifest is published** and the release artefacts are not, which *The delivery position* below states in full. |
 | `docker-compose.tts.yml` | The Kokoro TTS container on `127.0.0.1:8880`, alone. | A developer who has Docker and wants the pinned speech server in one command. |
 | `e2e/` | A Debian image that runs the end-to-end render on Linux, and its build-context filter. | Roadmap **P1-1**, whose second half is "on a headless Linux VM". |
 
@@ -78,21 +78,35 @@ front-end caching fixes it. Delivery therefore has to go through a custom domain
 on a zone you control — `cdn.<zone>`, which `terraform` creates as a proxied
 CNAME — with a Cache Rule that actually turns caching on.
 
-Terraform creates the DNS record. Two steps are **not** in this module and must
-be done once, in the dashboard or by API:
+**Both halves are declared in this module**, as of 2026-09-11:
+`cloudflare_r2_custom_domain.cdn` connects the bucket to `cdn.<zone>`, and
+`cloudflare_ruleset.cdn_cache` is the Cache Rule that turns caching on. Without
+that second resource the custom domain is proxied but *not* cached, which is the
+same bill as `r2.dev` with extra steps.
 
-1. **Connect the bucket to the custom domain.** R2 → the bucket → Settings →
-   Custom Domains → add `cdn.<zone>`. This is what makes Cloudflare route the
-   proxied hostname to the bucket. It is not declared here because the resource
-   that does it (`cloudflare_r2_custom_domain`) also wants the record to already
-   exist, and splitting one hostname across two resources that each half-own it
-   is worse than one documented step.
-2. **Add a Cache Rule for that hostname.** Rules → Cache Rules → match
-   `hostname eq "cdn.<zone>"` → *Eligible for cache*, with a long Edge TTL. A
-   release artefact is immutable — a published version's bytes never change, and
-   a new version gets a new key — so a long TTL is safe and is the entire point.
-   Without this rule the custom domain is proxied but not cached, which is the
-   same bill as `r2.dev` with extra steps.
+**This section used to say both were manual, and the reason it gave was wrong.**
+It claimed `cloudflare_r2_custom_domain` "wants the record to already exist", so
+that declaring it would split one hostname across two half-owning resources.
+The opposite is true, and was measured against the real zone on 2026-09-11:
+R2 **creates and owns** the DNS record. Connecting the domain *replaced* the
+proxied CNAME Terraform had made — a new record id, pointing at `public.r2.dev`
+rather than at the S3 endpoint the module used to write — which left Terraform
+holding an id that no longer existed and planning to recreate the broken record
+beside the working one. So the hand-rolled `cloudflare_dns_record` is gone: the
+record was never Terraform's to own, and the S3 endpoint it pointed at answers
+anonymous reads with an auth error rather than an object, so it could not have
+delivered an artefact even unreplaced.
+
+Two operational notes, both observed on the first real apply:
+
+- **`cloudflare_r2_custom_domain` does not support `terraform import`** (provider
+  v5.24.0: *"This resource does not support import"*). A domain connected by
+  hand or by API therefore cannot be adopted — delete it and let Terraform
+  create it, which is free as long as nothing is being served yet.
+- **A newly connected domain answers `403` with `error code: 1014` until
+  ownership verification completes**, while `ssl` reaches `active` first. That is
+  Cloudflare's cross-account CNAME rejection and it clears on its own; the
+  `status` object on the custom domain is what to watch, not the HTTP code.
 
 Verify with a cold then a warm request:
 
@@ -101,16 +115,29 @@ curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect MISS
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect HIT
 ```
 
-### The delivery position, phase 2
+### The delivery position
 
-**Nothing is published to this bucket, and no command in this repository publishes to it.**
-`terraform apply` creates the bucket and the proxied `cdn.<zone>` record and stops there; the two
-steps above are manual and neither is scheduled in this phase; and the upload itself is the release
-owner's, in the phase-4 work that builds the per-platform speech bundles. So
+*Rewritten 2026-09-11. The paragraph that stood here said the bucket was empty and that an empty
+`cdn.xplainer.video` was this phase's intended state. That stopped being true the moment
+`xplainer@0.0.1` reached npm, and the two facts together were a product defect rather than a
+position: a published build has **exactly two** manifest sources — `--manifest` and the network —
+because `source.ts` deliberately keeps the committed copy out of the tarball, so an unpublished
+manifest left `xplainer setup` unable to acquire a browser for **any** user without a checkout.
+Publishing the manifest is what closed that, and it is why the bucket is no longer empty.*
+
+**The toolchain manifest is published**, at
 `https://cdn.xplainer.video/toolchain/v1/manifest.json` — the address
-`apps/cli/src/setup/manifest.ts` fixes for the toolchain manifest, and the only one `xplainer setup`
-reads over the network — answers nothing usable today. **That is this phase's intended state, not an
-outage**, and it is written here so that nobody goes looking for a broken CDN.
+`apps/cli/src/setup/manifest.ts` fixes, and the only one `xplainer setup` reads over the network. It
+is the reviewed document committed at `apps/cli/src/setup/toolchain.manifest.json`, uploaded
+verbatim; the two are expected to be byte-identical and their SHA-256 is the check.
+
+**Nothing else is published, and no command in this repository publishes anything.** The upload is
+still the release owner's manual step — there is no workflow that does it — so re-publishing after a
+manifest change is a thing a human must remember, and forgetting it means `setup` hands users a
+digest for an artefact the manifest no longer describes. The **per-platform speech bundles** remain
+unpublished and their four manifest entries still say `"status": "unavailable"`; that is phase 4,
+and it is genuinely deferred rather than broken, because the `onnx` route acquires speech from its
+components' own upstream homes and needs no manifest at all.
 
 `xplainer setup` says the same thing rather than reporting a DNS or HTTP error: `deliveryPosition()`
 in that module is the paragraph its refusal carries, and it names what still works on the machine
@@ -118,8 +145,16 @@ that is reading it.
 
 | Platform | Browser | Speech | Roadmap **P2-4** |
 | --- | --- | --- | --- |
-| macOS, Linux | the pinned Remotion line's headless shell, on the **expected** digest a manifest named with `--manifest` carries | `--tts-url <url>`, a server you already run; or the `docker` route's pinned Kokoro-FastAPI image | **met** |
-| Windows | the same | **none of the three**: nothing is published for `bundle`, the pinned image is linux/amd64 and `windows-latest` has no engine for it, and `--tts-url` acquires nothing | **pending** |
+| macOS arm64, Linux, Windows | the pinned Remotion line's headless shell, on the **expected** digest the published manifest carries | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | **met** |
+| macOS x64 (Intel) | the same | `onnx` is structurally unavailable — `onnxruntime-node` ships no `darwin/x64` binding — so `docker`'s pinned image, or `--tts-url` | **met** |
+
+*This table said something different until 2026-09-11, and both rows were wrong by then.* The
+browser row required `--manifest` to name a reviewed copy, which was true only while the manifest
+was unpublished. The Windows row said **none of the three** speech routes was available and that
+P2-4 was **pending** there — retired by [ADR 0028](../docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)'s
+`onnx` route, which reads no manifest at all and is proven on all three platforms
+(`e2e-speech` run `34496585851`). Intel Macs are the one platform with a structural gap, and it is
+the reason the `docker` route is kept rather than retired.
 
 Two consequences of the empty bucket are worth stating plainly, because both look like defects from
 the outside:

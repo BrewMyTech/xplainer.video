@@ -72,19 +72,19 @@
   "speech": {
     "linux-x64": {
       "status": "unavailable",
-      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+      "reason": "No speech bundle is published for this platform yet; the per-platform bundles are phase-4 work. Nothing waits on them, because setup's onnx route needs no bundle: it runs Kokoro-82M inside the narration worker on a graph, a voice pack and this platform's ONNX Runtime fetched from their own upstream homes, and it reads no manifest at all."
     },
     "linux-arm64": {
       "status": "unavailable",
-      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+      "reason": "No speech bundle is published for this platform yet; the per-platform bundles are phase-4 work. Nothing waits on them, because setup's onnx route needs no bundle: it runs Kokoro-82M inside the narration worker on a graph, a voice pack and this platform's ONNX Runtime fetched from their own upstream homes, and it reads no manifest at all."
     },
     "darwin-arm64": {
       "status": "unavailable",
-      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+      "reason": "No speech bundle is published for this platform yet; the per-platform bundles are phase-4 work. Nothing waits on them, because setup's onnx route needs no bundle: it runs Kokoro-82M inside the narration worker on a graph, a voice pack and this platform's ONNX Runtime fetched from their own upstream homes, and it reads no manifest at all."
     },
     "win32-x64": {
       "status": "unavailable",
-      "reason": "No speech bundle is published for this platform yet. Nothing is published to cdn.xplainer.video in this phase, so setup's two working speech routes are the pinned Docker image and --tts-url."
+      "reason": "No speech bundle is published for this platform yet; the per-platform bundles are phase-4 work. Nothing waits on them, because setup's onnx route needs no bundle: it runs Kokoro-82M inside the narration worker on a graph, a voice pack and this platform's ONNX Runtime fetched from their own upstream homes, and it reads no manifest at all."
     }
   }
 }

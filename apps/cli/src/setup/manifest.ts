@@ -182,20 +182,28 @@ export function toolchainManifestUrl(zoneName: string): string {
 }
 
 /**
- * The delivery position, in the words a user meets when the published address answers nothing.
+ * The delivery position, in the words a user meets when the published address cannot be read.
  *
- * The address above is provisioned and **empty**. `infra/terraform` declares the R2 bucket and the
- * proxied `cdn.<zone_name>` record and stops there; `infra/README.md` §"R2 delivery needs a custom
- * domain **and** a Cache Rule" records the two steps that module deliberately does not manage —
- * connecting the bucket to the custom domain, and the Cache Rule for the hostname — and neither is
- * scheduled in this phase. No command in this repository uploads a manifest either, so there is no
- * publisher to be waiting on: the upload is the release owner's step, in the phase-4 work that
- * builds the per-platform speech bundles.
+ * **Rewritten 2026-09-11, and the previous version's central claim is now the opposite of true.**
+ * It said the address was provisioned and empty, that connecting the bucket to its custom domain
+ * and adding the Cache Rule were steps `infra/terraform` deliberately did not manage, and therefore
+ * that "a fetch that fails here is the expected state and not an outage". All three have changed:
+ * the manifest is published and answers `200`, and both Cloudflare steps are declared in
+ * `infra/terraform` (`cloudflare_r2_custom_domain.cdn` and `cloudflare_ruleset.cdn_cache`). Telling
+ * a user that an unreachable manifest is expected would now be the single most misleading sentence
+ * in the product: it would explain away a real network failure, a proxy, or an outage as normal, on
+ * the one code path whose whole job is to say what went wrong.
  *
- * **So a fetch that fails here is the expected state and not an outage**, and a message that
- * reported only a DNS or HTTP error would send a reader to look for a broken CDN. This function is
- * the rest of that message: what is true about delivery, and then which routes still work on the
- * machine that is reading it.
+ * So this message now says a fetch failure **is** a failure, and names the four things it is
+ * usually caused by. What has *not* changed is the part that was always true and is the reason the
+ * message exists at all: three of the four speech routes read no manifest, so speech is not waiting
+ * on this address, and what genuinely needs it is the **browser's** expected digest.
+ *
+ * Two claims are deliberately kept because they remain accurate. **No command in this repository
+ * uploads a manifest** — the upload is still the release owner's, done by hand — so a stale
+ * manifest is a thing a human forgot rather than a pipeline that failed. And the **per-platform
+ * speech bundles are still unpublished**, which is phase 4 and is deferred by choice rather than
+ * broken, because the `onnx` route acquires an engine from its components' own upstream homes.
  *
  * **There is no longer a Windows paragraph, and its removal is the point.** This function used to
  * carry a second, harder message for `win32`: that all three speech routes were unavailable there —
@@ -213,12 +221,15 @@ export function toolchainManifestUrl(zoneName: string): string {
  */
 export function deliveryPosition(probe: HostProbe = probeHost()): string {
   const position =
-    `Nothing is published to ${TOOLCHAIN_MANIFEST_URL} in this phase, so an address that answers ` +
-    "nothing is the expected state rather than an outage. infra/terraform creates the R2 bucket " +
-    `and the proxied ${TOOLCHAIN_CDN_HOSTNAME} record and stops there: connecting the bucket to ` +
-    "that custom domain and adding the Cache Rule for the hostname are manual steps Terraform " +
-    "does not manage, neither is scheduled here, and no command in this repository uploads a " +
-    "manifest — that is the release owner's step, in phase 4. infra/README.md records both.";
+    `The toolchain manifest is published at ${TOOLCHAIN_MANIFEST_URL}, so this is a failure to ` +
+    "read it rather than an address that was never meant to answer. The usual causes, in the " +
+    "order worth checking: no network route to " +
+    `${TOOLCHAIN_CDN_HOSTNAME}; an HTTP proxy that intercepted the request (a 407 or an HTML ` +
+    "filter page rather than JSON); DNS that does not resolve the hostname; or an outage at the " +
+    "delivery edge. infra/terraform declares the bucket, the custom domain and its Cache Rule, " +
+    "and infra/README.md records the whole position. One thing it cannot tell you: no command in " +
+    "this repository uploads a manifest, so a document that is present but older than this build " +
+    "expects is a manual release step somebody skipped, not a pipeline that failed.";
 
   return (
     `${position}\n\n` +
@@ -233,9 +244,11 @@ export function deliveryPosition(probe: HostProbe = probeHost()): string {
     "worker: no container, no Python and no server.\n\n" +
     "Only the bundle route reads this manifest, and it is the one with nothing published.\n\n" +
     "The browser is fetched from Google's own storage host at the URL the pinned Remotion line " +
-    "resolves, and all this manifest contributes is the expected digest for that exact URL — so " +
-    "`--manifest <path or https URL>` naming a reviewed copy is what lets a browser acquisition " +
-    "run at all."
+    "resolves, and all this manifest contributes is the expected digest for that exact URL. That " +
+    "digest is the one thing here that cannot be improvised: without it there is nothing to admit " +
+    "the download on, and setup refuses rather than unpacking unreviewed bytes. So the browser is " +
+    "what this failure actually blocks, and `--manifest <path or https URL>` naming a reviewed " +
+    "copy is how to get past it on a machine that cannot reach the published one."
   );
 }
 

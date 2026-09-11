@@ -120,6 +120,13 @@ const UNREPORTED_MEMBERS = [
     reason: "it is private: true — an Electron application, not a published surface",
   },
   {
+    dir: "packages/alias",
+    name: "xplainer",
+    reason:
+      'it is published but has no importable surface at all: the unscoped alias declares a "bin" ' +
+      'and no "exports", so there is nothing a consumer could import and nothing to report',
+  },
+  {
     dir: "packages/config",
     name: "@xplainer/config",
     reason:
