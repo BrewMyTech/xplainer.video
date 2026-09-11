@@ -79,6 +79,12 @@ dedupeInjectedDeps: false
 # next install. Listing `build` here makes pnpm re-sync every injected copy of a
 # package right after that package's build script runs, which is what keeps the
 # Turbo build graph honest.
+#
+# It keeps EXISTING files honest and not new ones. A file the build creates for
+# the first time never reaches the injected copy, and no form of `pnpm install`
+# adds it — measured on pnpm 11.25.0, 2026-09-11. `.npmrc` carries the whole
+# reading and the one-line recovery; the symptom is a consumer failing to load
+# the package with "Cannot find module" naming a file it does not import.
 syncInjectedDepsAfterScripts:
   - build
 

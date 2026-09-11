@@ -95,11 +95,11 @@ import {
   RUNTIME_ROOT_PACKAGE,
   type RuntimeManifest,
   scanTree,
-  templateDirectory,
   toPayloadPath,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,
 } from "./manifest.js";
+import { templateDirectory } from "./template.js";
 
 /** npm ships this whatever a `files` allowlist says, and `version.ts` reads it at startup. */
 const ALWAYS_SHIPPED = new Set(["package.json"]);

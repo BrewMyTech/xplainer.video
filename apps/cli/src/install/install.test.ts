@@ -383,6 +383,11 @@ describe("daemon install — the refusal writes nothing", () => {
       // Absent rather than empty: building must not create the staging root either.
       expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
 
+      // **The `finally` is the contract, and this suite was breaking it.** `MaterialisedPayload`
+      // says the caller must discard in a `finally`, and two cases here did not — leaving 134 MB
+      // in `os.tmpdir()` per run each, measured at 29 directories and ~3.9 GB on one machine. A
+      // test that demonstrates the product's own lifetime rule by ignoring it is the worst place
+      // to break it.
       const refusal = await installDaemon({
         stateDir,
         payloadDir: built.payloadDir,
@@ -392,7 +397,11 @@ describe("daemon install — the refusal writes nothing", () => {
         environment,
         run: harness.run,
         healthTimeoutMs: 1_500,
-      }).catch((error: unknown) => error);
+      })
+        .catch((error: unknown) => error)
+        .finally(() => {
+          built.discard();
+        });
 
       expect(refusal).toBeInstanceOf(InstallRefusal);
       expect((refusal as InstallRefusal).phase).toBe("verify");
@@ -698,6 +707,9 @@ describe("daemon install — Linux", () => {
       // goes down the branch that already pushes a journal undo for what it stages.
       const built = materialiseProgramPayload({ locateInstall: () => aliasDir });
 
+      // Discarded in a `finally`, which is what `MaterialisedPayload` asks of every caller. The
+      // staged copy under `<state>/runtime/` is what the assertions below read; this one is the
+      // build directory, and leaving it behind is the leak the fourth review measured.
       const outcome = await installDaemon({
         stateDir,
         payloadDir: built.payloadDir,
@@ -707,6 +719,8 @@ describe("daemon install — Linux", () => {
         environment,
         run: harness.run,
         healthTimeoutMs: HEALTH_MS,
+      }).finally(() => {
+        built.discard();
       });
 
       // The provenance field is the whole point: both sources end in a staged, content-addressed

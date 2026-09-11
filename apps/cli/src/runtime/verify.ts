@@ -63,11 +63,11 @@ import {
   type RuntimeManifest,
   readRuntimeManifest,
   readWorkspaceManifest,
-  templateDirectory,
   toPayloadPath,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,
 } from "./manifest.js";
+import { templateDirectory } from "./template.js";
 
 /** Why a payload failed to verify. One value per distinguishable condition, never a catch-all. */
 export type VerifyFailureReason =

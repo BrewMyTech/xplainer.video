@@ -86,10 +86,10 @@ import {
   PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   scanTree,
-  templateDirectory,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,
 } from "../../runtime/manifest.js";
+import { templateDirectory } from "../../runtime/template.js";
 import { readTemplatePins } from "../../runtime/verify.js";
 
 /** The environment variable naming a payload 2 already staged on this machine. */

@@ -292,7 +292,6 @@ async function underOperationLock<T>(
   });
 }
 
-/** Print a refused lock or a refused journal, and answer with its exit code, or `null` if neither. */
 /**
  * The two refusals only `daemon install` produces, as the exact lines and code a user gets.
  *
@@ -330,6 +329,7 @@ export function describeInstallRefusal(
   return null;
 }
 
+/** Print a refused lock or a refused journal, and answer with its exit code, or `null` if neither. */
 function reportOperationRefusal(io: CliIo, verb: string, error: unknown): number | null {
   if (error instanceof OperationLockRefused) {
     io.writeErr(`xplainer daemon ${verb}: ${error.message}\n`);
