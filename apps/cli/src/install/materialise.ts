@@ -37,12 +37,23 @@ export type MaterialiseRefusalReason = "not-installed" | "not-a-payload";
 export class MaterialiseRefusal extends Error {
   readonly reason: MaterialiseRefusalReason;
   readonly exitCode: number;
+  /**
+   * The temp directory this refusal removed on its way out, or `null` if it never made one.
+   *
+   * Reported for the same reason {@link InstallRefusal} carries `undone`: a refusal that claims to
+   * have left nothing behind should say what it took away. It is also the only way to *check* that
+   * claim from outside — the caller never receives a handle on this path, so the alternative was
+   * counting `xplainer-materialise-*` directories in the shared `os.tmpdir()`, which answered for
+   * whatever else was running beside the test and passed alone while failing in the full suite.
+   */
+  readonly discarded: string | null;
 
-  constructor(reason: MaterialiseRefusalReason, message: string) {
+  constructor(reason: MaterialiseRefusalReason, message: string, discarded: string | null = null) {
     super(message);
     this.name = "MaterialiseRefusal";
     this.reason = reason;
     this.exitCode = PRECONDITION_UNMET_EXIT_CODE;
+    this.discarded = discarded;
   }
 }
 
@@ -121,6 +132,7 @@ export function materialiseProgramPayload(options: MaterialiseOptions): Material
       "not-a-payload",
       `the install at ${root} could not be assembled into a payload: ` +
         `${error instanceof Error ? error.message : String(error)}`,
+      outDir,
     );
   }
 

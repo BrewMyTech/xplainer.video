@@ -254,7 +254,16 @@ describe("the program resolver", () => {
       const stateDir = freshState("pure");
       const installRoot = mkdtempSync(join(scratch, "pure-installed-"));
       const aliasDir = writeInstalledPackage({ root: installRoot, version: "0.0.1" });
-      const before = { state: treeOf(stateDir), install: treeOf(installRoot) };
+      // **All three roots, and the third one is the one that matters.** An earlier version of this
+      // case watched the state directory and the install and called that "writes nothing" — while
+      // the materialiser builds into `mkdtempSync(join(tmpdir(), …))`, which neither covered. The
+      // write the implementation actually performs was invisible to the assertion written to forbid
+      // it; only the *old* location, already corrected, was being watched.
+      const before = {
+        state: treeOf(stateDir),
+        install: treeOf(installRoot),
+        temp: readdirSync(tmpdir()).sort(),
+      };
       // The fixture is where a discovering resolver would look, and it is not empty.
       expect(before.install.length).toBeGreaterThan(3);
 
@@ -285,9 +294,17 @@ describe("the program resolver", () => {
         "not-absolute",
       );
 
-      // Neither tree moved, and `<state>/runtime` was never even created.
+      // No tree moved, `<state>/runtime` was never created, and **nothing appeared in the temp
+      // directory** — which is where a resolver that assembled would put it. Compared as a set
+      // difference rather than by equality, because other suites run concurrently in the same
+      // `os.tmpdir()` and may legitimately remove their own entries while this case runs; what
+      // would be a defect here is an ADDITION, and that is what is asserted.
       expect(treeOf(stateDir)).toEqual(before.state);
       expect(treeOf(installRoot)).toEqual(before.install);
+      const appeared = readdirSync(tmpdir())
+        .filter((entry) => !before.temp.includes(entry))
+        .filter((entry) => entry.startsWith("xplainer-"));
+      expect(appeared).toEqual([]);
       expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
       expect(aliasDir.startsWith(installRoot)).toBe(true);
     });
@@ -305,10 +322,23 @@ describe("the program resolver", () => {
      * `import { materialiseProgramPayload } from "./materialise.js"` and called it. Both were text
      * scans over one file, and a text scan over one file cannot see one hop.
      *
-     * So this walks the graph instead: every relative import specifier, from `program.ts` outward,
-     * to fixpoint — and asserts that neither module that writes a payload is anywhere in the
-     * closure. A helper, a re-export, a barrel or a dynamic hop all fail it, because each of them
-     * has to put the writer in the closure to reach it.
+     * So this walks the graph instead: from `program.ts` outward, to fixpoint — and asserts that
+     * neither module that writes a payload is anywhere in the closure. A helper, a re-export or a
+     * barrel all fail it, because each of them has to put the writer in the closure to reach it.
+     *
+     * **The walk is fail-closed on string literals, not anchored to the `import` keyword, and that
+     * is the third correction.** A keyword-anchored regex — `(?:from|import)\s+"(\.[^"]+)"` — was
+     * measured missing four routes to the same module: `await import("./materialise.js")`, the same
+     * spread over lines, a `createRequire(import.meta.url)` call, and the path assigned to a
+     * variable first. Each is one level of indirection, which is exactly what AC13 names. So every
+     * relative string literal in a file is treated as a possible specifier whatever precedes it:
+     * naming a module requires writing its path, and a path that is computed rather than written is
+     * past what any static guard can see and past "one level of indirection" too.
+     *
+     * The one route that does not need a relative path is the package's own name, and that is
+     * closed elsewhere: `@xplainer/cli`'s `exports` map declares `.` alone, `assembleRuntime` is
+     * exported from neither `src/index.ts` nor `api/cli.api.md`, and `pnpm check:api-report` fails
+     * on a change to either.
      *
      * **It only became assertable once two names moved.** `RUNTIME_ROOT_PACKAGE` and
      * `templateDirectory` were exported from `runtime/assemble.ts`, and `program.ts` needed the
@@ -317,27 +347,44 @@ describe("the program resolver", () => {
      * live in `runtime/manifest.ts` now, whose docblocks record that this test is why.
      */
     it("cannot reach either writer, anywhere in its transitive import graph", () => {
-      /** Every `.ts` file reachable from `entry` through relative import specifiers. */
+      /** A specifier named by `import`, `from` or `require` — parenthesised or not. */
+      const SPECIFIER = /(?:from|import|require)\s*\(?\s*"(\.[^"]+)"/g;
+      /** Any relative path written as a literal, whatever names it. The fail-closed half. */
+      const RELATIVE_LITERAL = /"(\.\.?\/[^"]*)"/g;
+
+      /** Every `.ts` file reachable from `entry`, by any means of naming a relative module. */
       const importClosure = (entry: URL): Set<string> => {
         const src = fileURLToPath(new URL("../", import.meta.url));
         const seen = new Set<string>();
         const pending = [fileURLToPath(entry)];
         for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
-          const key = relative(src, file);
+          // Lower-cased, because macOS and Windows resolve `./Materialise.js` and `./materialise.js`
+          // to the same file and this set would otherwise hold it under two keys — walking it twice
+          // is harmless, but `not.toContain("install/materialise.ts")` would miss the other spelling.
+          const key = relative(src, file).toLowerCase();
           if (seen.has(key)) {
             continue;
           }
           seen.add(key);
-          // Both spellings, so a `import type {…} from` and a bare `import "./x.js"` are followed
-          // too: a module reached by either is still in this module's graph.
-          for (const [, specifier] of readFileSync(file, "utf8").matchAll(
-            /(?:from|import)\s+"(\.[^"]+)"/g,
-          )) {
-            const resolved = resolve(dirname(file), (specifier ?? "").replace(/\.js$/, ".ts"));
-            // A specifier that resolves to nothing is a failure of this walk, not a pass: it would
-            // silently drop a subtree. `.d.ts`-only and JSON imports do not occur in this graph.
+          const text = readFileSync(file, "utf8");
+          const asModule = (specifier: string): string =>
+            resolve(dirname(file), specifier.replace(/\.js$/, ".ts"));
+
+          // A keyword-anchored specifier MUST resolve. One that does not is a failure of this walk
+          // rather than a pass: it would silently drop a subtree, which is how a guard goes quiet.
+          for (const [, specifier] of text.matchAll(SPECIFIER)) {
+            const resolved = asModule(specifier ?? "");
             expect(existsSync(resolved)).toBe(true);
             pending.push(resolved);
+          }
+          // Every other relative literal is followed when it names a module and ignored when it
+          // does not — a data path, a fixture, a message. Tolerant here and strict above, so a
+          // dynamic import cannot hide and an ordinary string cannot break the walk.
+          for (const [, literal] of text.matchAll(RELATIVE_LITERAL)) {
+            const resolved = asModule(literal ?? "");
+            if (existsSync(resolved)) {
+              pending.push(resolved);
+            }
           }
         }
         return seen;
