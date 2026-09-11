@@ -899,3 +899,29 @@ to run every five minutes, still re-reads the flag, and still exits `0`. What is
 element* asks it, and the fact that before this amendment nothing did.
 
 This record stays `accepted` and no line above is rewritten.
+
+## Note, 2026-09-11: §The agent path is IPC, not TCP has an HTTP sibling, and its reason survives
+
+[ADR 0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) amends one
+sentence of §*The agent path is IPC, not TCP*: *"No URL and no token enter any agent configuration
+file."* That constraint is **upheld**, not traded. What changed is that the agent client gained a
+mechanism this record could not have known about — Claude Code's `headersHelper`, a command that
+emits JSON headers at connection time — so an HTTP entry can now name the daemon's port while the
+bearer token stays in the `0600` file R-SEC-6 puts it in. Verified against Claude Code 2.1.268 and a
+real `serve` on 2026-09-11: `✔ Connected`, with no credential anywhere in the configuration.
+
+**Why it is worth amending at all.** The `stdio` entry this record chose costs a whole Node process
+per agent session — measured at **98.3 MB idle**, the same as the full in-process server, because
+the shim loads the same bundle to forward JSON-RPC to a socket. So the resident daemon centralised
+nothing and *added* a process: ten sessions cost ~1.08 GB with a daemon against ~980 MB without one.
+Over HTTP, one daemon served five concurrent MCP clients for **102.6 MB total**.
+
+**What it costs, stated plainly.** This record's strongest claim about the socket — that the
+DNS-rebinding class is "structurally absent from the path agents actually use, rather than filtered
+out of it" — is exactly what an HTTP entry gives up. On that path the class is *filtered*, by the
+`Host` allowlist, the `Origin` check and the token; all three were re-verified on 2026-09-11 (`403`
+for a foreign `Host`, `403` for a foreign `Origin`, `401` with no token) and all three are things a
+later change could get wrong in a way a unix socket could not. The MCP specification quoted above
+sanctions both and lists `stdio` first, so **the socket entry remains the default** and ADR 0029's
+HTTP form is opt-in, with port staleness named there as the open question that gates any change to
+that default.
