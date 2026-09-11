@@ -1,7 +1,7 @@
 /**
  * `xplainer mcp` with no daemon behind it: the whole runtime in one stdio process.
  *
- * This is the entry the **plugin bundles** point at — `npx -y @xplainer/cli mcp` in a
+ * This is the entry the **plugin bundles** point at — `npx -y xplainer mcp` in a
  * `.mcp.json` or a Codex `command`/`args` pair — and the one an agent gets on a machine where
  * nothing has been installed and no `serve` is running. It is the MCP specification's own
  * first-choice mitigation, quoted in

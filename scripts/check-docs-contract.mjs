@@ -55,6 +55,7 @@
  * of them looks at.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -755,6 +756,102 @@ function checkAgents(root, members) {
   return problems;
 }
 
+/**
+ * Every path the root `AGENTS.md` declares as root-owned is tracked by git.
+ *
+ * **This exists because a deliverable sat untracked through a whole run and no gate could see it.**
+ * `.claude-plugin/marketplace.json` is the file `/plugin marketplace add` fetches, and it existed
+ * only in a working tree: `git log --all` had never seen it. Nothing caught that, and the reason is
+ * structural rather than an oversight — the file is at the workspace root, inside no member, so it
+ * is in no tarball and `check-publish-contract` never enumerates it. A tracked-deliverable check
+ * cannot be a tarball check; it has to ask git.
+ *
+ * The declaration is the table in §Root-owned paths, so a new root-owned path gets checked the
+ * moment somebody documents it — and a path documented but never committed is the exact shape of
+ * the defect. `git ls-files` rather than `existsSync`, because the question is not "is it on this
+ * disk" but "is it in the repository".
+ *
+ * **What it asserts is `git ls-files`, which is the index, and that is deliberate rather than
+ * loose.** *Tracked* is what git calls a path in the index, and it is the property that failed:
+ * `git ls-files --error-unmatch` refused the marketplace file, so the defect was untracked and not
+ * merely uncommitted. Asserting `HEAD` instead would be strictly stronger and unusable in the one
+ * place this runs first: adding a root-owned path means writing the file, writing its row and
+ * running `pnpm verify` — all before the commit that would satisfy a `HEAD` check, so the gate
+ * would be red on correct work with "commit it" as the only remedy, which is the same trap
+ * `AGENTS.md` records for `codegen:check` against `git diff`. So the gap is stated rather than
+ * papered over: a path that is staged and never committed passes here. In CI the checkout is
+ * pristine, so the index *is* `HEAD` and the two questions are one.
+ *
+ * **A cell may hold more than one path**, and four rows do — `biome.json`, `ruff.toml` in one, and
+ * `turbo.json`, `lefthook.yml`, `.npmrc`, `pyproject.toml`, `uv.lock` in another. Splitting on the
+ * backticks is why: the first version took the cell as a single token and dropped any cell with a
+ * space in it, which silently skipped **7 of 14** declared paths and made coverage a function of
+ * markdown formatting.
+ */
+function checkRootOwned(root) {
+  const problems = [];
+  const agentsPath = join(root, AGENTS_FILE);
+  if (!existsSync(agentsPath)) {
+    return [`${AGENTS_FILE} is missing, so the root-owned paths cannot be read.`];
+  }
+  const text = readFileSync(agentsPath, "utf8");
+  const section = text.split("## Root-owned paths")[1];
+  if (section === undefined) {
+    return [`${AGENTS_FILE} has no "## Root-owned paths" section to read.`];
+  }
+
+  const declared = [];
+  for (const line of section.split("\n")) {
+    if (!line.startsWith("|")) {
+      if (declared.length > 0 && line.trim() === "") {
+        break;
+      }
+      continue;
+    }
+    const cells = splitRow(line);
+    if (isSeparatorRow(cells)) {
+      continue;
+    }
+    // Every backticked path in the first cell, so a row naming several — `biome.json`,
+    // `ruff.toml` — contributes all of them. Reading the cell as one token instead dropped any
+    // multi-path row, which was 7 of the 14 paths declared and silently.
+    for (const [, quoted] of (cells[0] ?? "").matchAll(/`([^`]+)`/g)) {
+      const path = (quoted ?? "").trim();
+      // A backticked token that is not a path — the `Path` header has none, and a cell carrying
+      // prose in backticks would — is excluded by the space test, which no path here contains.
+      if (path !== "" && !path.includes(" ")) {
+        declared.push(path);
+      }
+    }
+  }
+
+  if (declared.length === 0) {
+    return [`${AGENTS_FILE} §Root-owned paths declares no paths, which cannot be right.`];
+  }
+
+  for (const path of declared) {
+    const listed = spawnSync("git", ["ls-files", "--", path], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (listed.status !== 0) {
+      problems.push(
+        `git ls-files failed for "${path}": ${(listed.stderr || "").trim() || "no output"}.`,
+      );
+      continue;
+    }
+    if (listed.stdout.trim() === "") {
+      problems.push(
+        `${AGENTS_FILE} §Root-owned paths declares "${path}", and git tracks nothing there. ` +
+          "Either the file exists only in this working tree — in which case a clone does not have " +
+          "it and whatever reads it is broken for everybody but you, and `git add` is the fix — " +
+          "or the row is stale and should go.",
+      );
+    }
+  }
+  return problems;
+}
+
 function report(check, problems) {
   for (const problem of problems) {
     process.stderr.write(`docs-contract: ${check}: ${problem}\n`);
@@ -784,6 +881,7 @@ function main(argv) {
   failures += report("members", checkMembers(members, rosters, document));
   failures += report("deps", checkDeps(members, banned, document));
   failures += report("agents", checkAgents(root, members));
+  failures += report("root-owned", checkRootOwned(root));
 
   if (failures > 0) {
     process.stderr.write(

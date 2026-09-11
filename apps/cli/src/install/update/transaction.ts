@@ -936,8 +936,20 @@ function installedSide(context: UpdateContext, daemon: DaemonState): JournalledR
       context.steps,
     );
   }
+  // **Two of the four sources produce a staged payload-1 runtime, and this transaction replaces
+  // one with another.** `runtime-dir` is a payload somebody assembled; `package-manager` is a
+  // payload assembled out of a global npm install — content-addressed under the same
+  // `<state>/runtime/<version>-<digest>/`, and indistinguishable to everything downstream, which is
+  // the argument `daemon/daemon-state.ts` makes for why the provenance is recorded at all. So both
+  // are updatable. `explicit` and `sea-binary` are not: those name a program this command did not
+  // stage and has no business moving.
+  //
+  // This guard was written as `!== "runtime-dir"` while `package-manager` was unreachable, so
+  // making it reachable swept it in and closed `daemon update` for every npm-installed machine —
+  // on the route the argument-free install exists to enable, with the remediation it printed
+  // (`xplainer daemon install`) looping straight back to the state that produced the refusal.
   const source: ProgramSource = daemon.program_source ?? "runtime-dir";
-  if (source !== "runtime-dir") {
+  if (source !== "runtime-dir" && source !== "package-manager") {
     throw new UpdateRefusal(
       "installed",
       PRECONDITION_UNMET_EXIT_CODE,

@@ -233,3 +233,36 @@ launcher** at `<state>/bin/xplainer`, which is what `xplainer connect` writes in
 configuration on a machine where the package was never installed from a registry. Second, when the
 publish happens, nothing in this record changes: the `npx` form starts working, the second half of
 the bar clears, and the bundles are submittable exactly as they are built today.
+
+
+## Note, 2026-09-11: the publish happened, and the bundles name the unscoped alias
+
+The 2026-09-08 note above closes by predicting that "when the publish happens, nothing in this
+record changes: the `npx` form starts working, the second half of the bar clears, and the bundles
+are submittable exactly as they are built today." The publish happened — `@xplainer/cli` and the
+unscoped `xplainer` both reached npm at `0.0.1` on 2026-09-11 — and the prediction held in
+substance and failed in one detail, which is what this note is for.
+
+**One sentence of the body above is now stale.** §*Consequences* reads "Both bundles therefore
+declare a local stdio server (`npx -y @xplainer/cli mcp`)". They declare `npx -y xplainer mcp`.
+The **decision** is untouched: a local stdio server in both bundles, no `oauth_resource` in either,
+and the zero-install `npx` form rather than a binary that has to be on `PATH`. What changed is
+which package name that form resolves, and it changed because the release created a name this
+record could not have known about — the unscoped alias in `packages/alias`, published so that
+`npm i -g xplainer` works. Naming the scoped package left the bundles and every install instruction
+in `README.md` disagreeing about what the product is called.
+
+**The installed binary was considered and rejected in the same pass**, and the reason is this
+record's own: `command: "xplainer"` would have required a global install before the bundle could
+start a server, which collapses the plugin route into the npm route with extra steps. The
+zero-install property is the whole reason §*Decision Outcome* chose `npx`, and it is preserved. The
+cost of `npx` is a first-run fetch cached under `~/.npm/_npx`, not a per-session round trip.
+
+**What is still not true is separate from the command, and larger.** A marketplace install resolves
+the bundle and declares the server, and ships **no `SKILL.md`**: Claude Code reads a plugin's
+manifest only from `<source>/.claude-plugin/plugin.json` and discovers skills only at
+`<source>/skills/<name>/SKILL.md`, and the committed bundle has a flat `plugin.json` and no
+`skills/` directory — `SKILL.md` reaches that path only in the gitignored `dist/` the build writes.
+So this record's "one SKILL.md, two plugin bundles" is true of what the build emits and not of what
+`/plugin install` delivers. That is a gap in the packaging rather than in this decision, and it is
+booked as its own work.

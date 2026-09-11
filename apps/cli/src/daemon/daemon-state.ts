@@ -159,11 +159,18 @@ export const SUPERVISOR_KINDS: readonly SupervisorKind[] = ["systemd", "launchd"
 /**
  * Where `install` got the program it registered.
  *
- * `runtime-dir` is the phase-2 default and the only one a machine with nothing published can reach
- * by itself; `explicit` is `install --program`; `sea-binary` is accepted and unused this phase; and
- * `package-manager` is the branch a publish adds, which changes this value and nothing else,
- * because the assembler, the launch contract, the renderers and the update transaction never ask
- * where the payload came from.
+ * `runtime-dir` is a payload somebody assembled — the answer in a checkout, in CI, and wherever
+ * `--runtime` names one; `explicit` is `install --program`; `sea-binary` is accepted and unused this
+ * phase; and `package-manager` is a payload assembled out of a global npm install, which since
+ * 2026-09-11 is what an argument-free `xplainer daemon install` takes on a machine that ran
+ * `npm i -g xplainer`. It changes this value and nothing else, because the launch contract, the
+ * renderers and the update transaction never ask where the payload came from.
+ *
+ * **The two that produce a payload are distinguished here and nowhere else**, which is the reason
+ * this field is worth writing: both end in a staged, content-addressed directory that every
+ * downstream reader treats identically, so the record is the only place that says whether the bytes
+ * came from a registry or from somebody's working copy. An install that guessed would make the one
+ * field whose job is provenance the one field you cannot trust.
  */
 export type ProgramSource = "runtime-dir" | "explicit" | "sea-binary" | "package-manager";
 

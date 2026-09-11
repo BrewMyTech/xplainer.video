@@ -243,7 +243,17 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
  * from a wrong token; and `runtime.json` is written after the bind, because its whole job is to
  * record the port that was really taken.
  */
-function entrySource(marker: string): string {
+/**
+ * The miniature daemon a payload's entry is, as source.
+ *
+ * Exported because a second suite needs the same process for a different artefact: the
+ * `package-manager` install assembles its payload out of an npm-install-shaped fixture rather than
+ * from this builder, and the install it drives ends in a real authenticated `GET /healthz` — so the
+ * entry in that fixture has to bind a port and record it, exactly as this one does. A fixture whose
+ * entry printed and exited registers and starts fine and then fails the health check, which is a
+ * confusing way to learn that the daemon was never a daemon.
+ */
+export function entrySource(marker: string): string {
   return `import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";

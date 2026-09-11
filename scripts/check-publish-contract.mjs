@@ -5,7 +5,10 @@
  * Runs `npm pack --dry-run --json` in every publishable workspace member and
  * checks the exact file list npm would put in the tarball, plus the bytes of
  * the JavaScript inside it. A tarball is the only thing a user ever receives,
- * so it is the only thing worth checking.
+ * so it is the first thing worth checking — and the manifest that travels
+ * inside it is the second, because the two defects that made the first release
+ * take three attempts were both in the manifest, and a gate reading file lists
+ * and file contents alone watched all three attempts go by.
  *
  * WHY PACK OUTPUT AND NOT THE WORKING TREE. `.gitignore` and the npm `files`
  * allowlist are different filters, and only npm's opinion decides what ships.
@@ -27,6 +30,10 @@
  *                              tarball, and the manifest carries the SPDX
  *                              licence, the homepage, the repository (with the
  *                              member's `directory`) and the author.
+ *   Per package                the manifest is PUBLISHABLE and not merely
+ *                              correct: `publishConfig.access` says public, and
+ *                              every dependency on a workspace member is still
+ *                              declared through the `workspace:` protocol.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
  *   Whole workspace            the publishable set is exactly the declared seven.
@@ -112,6 +119,27 @@ const EXPECTED_REPOSITORY = "https://github.com/BrewMyTech/xplainer.video";
 const EXPECTED_AUTHOR = "Rishav Anand <rishav@brewmytech.com>";
 
 /**
+ * The one `publishConfig` field, and the reason it is not optional.
+ *
+ * A scoped package defaults to RESTRICTED, and on an organisation with no
+ * private plan the registry refuses a restricted publish outright. It refuses it
+ * as a PERMISSIONS error, against the token and without a word about the
+ * manifest, which reads like a credentials problem and sends the next person to
+ * re-check their token, their org membership and their 2FA before it occurs to
+ * them to open `package.json`. That is the first of the two defects that made
+ * the first release take three attempts, and this gate could not see it: it read
+ * the tarball's file list and the bytes inside it, and never the manifest it was
+ * about to ship alongside them.
+ *
+ * Asserted on the unscoped alias too, where `restricted` is not the default and
+ * the field is therefore redundant. The uniformity is the point. "Every
+ * published member declares access: public" is a property a reader confirms at a
+ * glance; "every scoped one does, and the unscoped one need not" is a rule with
+ * an exception, and the next scoped member is the one that gets to forget it.
+ */
+const EXPECTED_ACCESS = "public";
+
+/**
  * The name of the private repository the hosted tier moved to (ADR 0023).
  *
  * It must not appear in anything a stranger downloads. This is phase-0 gate 1
@@ -187,6 +215,46 @@ const PRIVATE_MEMBERS = [
   { dir: "apps/desktop", name: "@xplainer/desktop" },
   { dir: "packages/config", name: "@xplainer/config" },
   { dir: "services/tts-sidecar", name: "@xplainer/tts-sidecar" },
+];
+
+/**
+ * Every workspace member's package name, publishable or private.
+ *
+ * The union of the two rosters rather than a `@xplainer/` prefix test, because
+ * `xplainer` — the unscoped alias in `packages/alias`, and the name a user
+ * actually types — is a member and does not carry the scope. A prefix heuristic
+ * would read its single dependency as third-party and excuse precisely the
+ * member whose whole job is to stay pinned to the package next door.
+ */
+const WORKSPACE_MEMBER_NAMES = new Set(
+  [...PUBLISHABLE_MEMBERS, ...PRIVATE_MEMBERS].map((member) => member.name),
+);
+
+/**
+ * The manifest fields checked for the workspace protocol, `devDependencies` INCLUDED.
+ *
+ * The first three carry the ranges a consumer's installer resolves, so they are
+ * not a judgement call. The fourth is, and it is in, for two reasons.
+ *
+ * The harm the rule exists to prevent is strictly worse there. Every one of the
+ * seven publishable members takes `@xplainer/config` as a devDependency, and
+ * `@xplainer/config` is PRIVATE: it has never been published and is not going to
+ * be. A literal `"0.0.1"` in that position does not merely unlink it from the
+ * package next door, it names something the registry does not have — or, later,
+ * whatever a stranger has since published under an unclaimed name. That is the
+ * worst version of the trap below, not an exempt one.
+ *
+ * And what this rule reads is the SOURCE manifest, not the tarball. Whether a
+ * field reaches a consumer's `npm install` is what decides the scope of the
+ * other rules here; it has no bearing on whether `pnpm publish` can rewrite the
+ * protocol, or on whether a member stays linked to its neighbour while it is
+ * being developed and tested. Both of those are `devDependencies` questions too.
+ */
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "devDependencies",
 ];
 
 /** File extensions that are compiled output a consumer executes. */
@@ -338,6 +406,11 @@ const CONTENT_RULES = [
  * mistake and it is silent — npm publishes a package with a blank sidebar
  * without a word of complaint.
  *
+ * The last two are here because the first release took three attempts and this
+ * gate watched all three of them go by. Both defects were in the manifest, both
+ * are written down in `AGENTS.md` §Publishing a release, and prose is not a
+ * gate: it is read by whoever thought to look, which on a release day is nobody.
+ *
  * `check` returns the sentence to print, or `null` when the manifest is fine.
  * It takes the roster entry too, because `repository.directory` is the one
  * field whose correct value differs per member.
@@ -398,6 +471,60 @@ const MANIFEST_RULES = [
         : `package.json "author" is ${JSON.stringify(manifest.author)}, expected the string ` +
           `${JSON.stringify(EXPECTED_AUTHOR)}. One spelling across every one of them, so the npm ` +
           "author page collects them rather than splitting them across near-identical names.",
+  },
+  {
+    id: "access-is-public",
+    check: (manifest) =>
+      manifest.publishConfig?.access === EXPECTED_ACCESS
+        ? null
+        : `package.json "publishConfig.access" is ` +
+          `${JSON.stringify(manifest.publishConfig?.access)}, expected ` +
+          `${JSON.stringify(EXPECTED_ACCESS)}. A scoped name defaults to "restricted", and the ` +
+          "registry refuses a restricted publish on an organisation with no private plan. It " +
+          "refuses it as a PERMISSIONS error against the token, naming neither this field nor " +
+          "the manifest, so the reading it invites is that the credentials are wrong — and the " +
+          "next hour goes on tokens, org membership and 2FA while nothing is wrong with the " +
+          `login. Add "publishConfig": { "access": "${EXPECTED_ACCESS}" } to this member.`,
+  },
+  {
+    id: "workspace-deps-use-the-protocol",
+    // The direction of this rule is the opposite of the one people expect, and
+    // getting it backwards would be worse than not having it. `workspace:*` is
+    // CORRECT in a source manifest and must stay: a release is published from a
+    // one-off isolated install, which is what supplies the per-consumer links
+    // pnpm's rewriter needs, and pnpm substitutes the real version on the way
+    // out. So what this rule refuses is the FIX someone reaches for after
+    // `ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL` under the committed
+    // `nodeLinker: hoisted` layout — writing the literal version instead, which
+    // makes a plain `npm publish` work and is the trap `AGENTS.md` §Publishing a
+    // release spends a paragraph on.
+    check: (manifest) => {
+      for (const field of DEPENDENCY_FIELDS) {
+        for (const [name, range] of Object.entries(manifest[field] ?? {})) {
+          if (!WORKSPACE_MEMBER_NAMES.has(name)) {
+            continue;
+          }
+          if (typeof range === "string" && range.startsWith("workspace:")) {
+            continue;
+          }
+          return (
+            `package.json "${field}" depends on the workspace member ${JSON.stringify(name)} ` +
+            `with ${JSON.stringify(range)} instead of a "workspace:" range. A literal range ` +
+            "does publish — there is no protocol left for pnpm to rewrite — and that is what " +
+            "makes it dangerous: it silently UNLINKS the member. pnpm's " +
+            "`linkWorkspacePackages` defaults to false, so a literal range resolves through " +
+            `the REGISTRY, and node_modules/${name} becomes a download of whatever is ` +
+            "published rather than the package next door. The member then stops being tested " +
+            "against the code it ships beside, which is the entire point of depending on it " +
+            "from inside the workspace: a renamed bin or a changed `exports` map would pass " +
+            "every gate in this repository and break only once published. Restore " +
+            '"workspace:*" (or "workspace:<version>") and publish with pnpm from the isolated ' +
+            "install AGENTS.md §Publishing a release describes."
+          );
+        }
+      }
+      return null;
+    },
   },
 ];
 
@@ -729,6 +856,14 @@ const SELF_TEST_MANIFEST = {
     directory: SELF_TEST_MEMBER.dir,
   },
   author: EXPECTED_AUTHOR,
+  publishConfig: { access: EXPECTED_ACCESS },
+  // Two entries, one carrying each half of `workspace-deps-use-the-protocol`'s
+  // clean sample: a real workspace member on the protocol, and an ordinary
+  // third-party dependency pinned to a literal version. The second is the half
+  // that keeps the rule usable. A rule that fired on `"typescript": "7.0.2"`
+  // would redden every manifest in the workspace, and a rule that reddens
+  // everything gets weakened rather than obeyed.
+  dependencies: { "@xplainer/protocol": "workspace:*", typescript: "7.0.2" },
 };
 
 const selfTestManifest = (overrides) => ({
@@ -835,6 +970,58 @@ const SELF_TESTS = [
     rule: "author-is-the-owner",
     violating: selfTestManifest({ author: { name: "Rishav Anand" } }),
     clean: selfTestManifest({}),
+  },
+  {
+    rule: "access-is-public",
+    // The first release's defect, exactly as it was: the field simply absent.
+    violating: selfTestManifest({ publishConfig: undefined }),
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "access-is-public",
+    // And the near miss the absent-field test cannot catch: a publishConfig
+    // that exists and says something else, leaving `access` defaulted. A member
+    // declaring a registry but not an access level is refused exactly as hard as
+    // one declaring neither.
+    violating: selfTestManifest({ publishConfig: { registry: "https://registry.npmjs.org" } }),
+    clean: selfTestManifest({ publishConfig: { access: EXPECTED_ACCESS } }),
+  },
+  {
+    rule: "workspace-deps-use-the-protocol",
+    // The trap itself: the literal version someone writes to get past
+    // ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL. The clean sample is the base
+    // manifest, whose `dependencies` carries a member on the protocol beside a
+    // third-party pin, so one assertion proves the rule fires on the first and
+    // stays silent on the second.
+    violating: selfTestManifest({ dependencies: { "@xplainer/cli": "0.0.1" } }),
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "workspace-deps-use-the-protocol",
+    // The unscoped alias, under the name a user actually types. This is the
+    // member a `@xplainer/` prefix test would wave through, and `packages/alias`
+    // is one pinned dependency on @xplainer/cli and nothing else, so it is also
+    // the member with the most to lose from being quietly unlinked.
+    violating: selfTestManifest({ peerDependencies: { xplainer: "^0.0.1" } }),
+    clean: selfTestManifest({ peerDependencies: { xplainer: "workspace:^" } }),
+  },
+  {
+    rule: "workspace-deps-use-the-protocol",
+    // The third field, and the versioned spelling `packages/alias` actually
+    // uses: `workspace:<version>` is the protocol too, and a rule that only
+    // accepted `workspace:*` would fail the one member that ships the alias.
+    violating: selfTestManifest({ optionalDependencies: { "@xplainer/tts-client": "0.0.1" } }),
+    clean: selfTestManifest({
+      optionalDependencies: { "@xplainer/tts-client": "workspace:0.0.1" },
+    }),
+  },
+  {
+    rule: "workspace-deps-use-the-protocol",
+    // The judgement call in DEPENDENCY_FIELDS, asserted rather than only
+    // argued: @xplainer/config is a PRIVATE member, so a literal range on it
+    // resolves to a name the registry does not carry at all.
+    violating: selfTestManifest({ devDependencies: { "@xplainer/config": "0.0.1" } }),
+    clean: selfTestManifest({ devDependencies: { "@xplainer/config": "workspace:*" } }),
   },
 
   // --- PRESENCE_RULES -----------------------------------------------------
@@ -1210,7 +1397,13 @@ function runSelfTests() {
     }
   }
 
-  return problems;
+  // Reported, not only counted, because a silent pass is indistinguishable from a pass that
+  // checked nothing. Every rule above has just been fired on a violating sample and held silent on
+  // a clean one; saying so is the difference between "the gate exited 0" and "the gate's own tests
+  // ran". This line was added because a criterion asking to *see* the self-tests reported was
+  // amended away on the ground that the observation could not be made — which was false. It could,
+  // and this is it.
+  return { problems, verified: [...covered].sort(), samples: SELF_TESTS.length };
 }
 
 /** Check one publishable member. Returns grouped findings. */
@@ -1468,17 +1661,22 @@ async function main() {
   // The rules judge themselves before they judge anything else. If one of them
   // cannot fail, nothing it says about a real tarball is worth reading, so this
   // returns rather than continuing on to report a reassuring "clean".
-  const selfTestProblems = runSelfTests();
-  if (selfTestProblems.length > 0) {
+  const selfTest = runSelfTests();
+  if (selfTest.problems.length > 0) {
     process.stderr.write(
       "check-publish-contract: the gate failed its own tests, so it was not run against the " +
         "packages.\n",
     );
-    for (const problem of selfTestProblems) {
+    for (const problem of selfTest.problems) {
       process.stderr.write(`  x ${problem}\n`);
     }
     return 1;
   }
+  process.stdout.write(
+    `check-publish-contract: ${String(selfTest.verified.length)} rule(s) self-tested from ` +
+      `${String(selfTest.samples)} sample(s), each fired on a violating value and silent on a ` +
+      `clean one: ${selfTest.verified.join(", ")}.\n`,
+  );
 
   const rosterProblems = checkRoster(root);
 

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "xplainer",
+  "owner": {
+    "name": "xplainer.video",
+    "url": "https://xplainer.video"
+  },
+  "description": "The xplainer skill and the local MCP server it drives, for building narrated explainer videos on your own machine.",
+  "plugins": [
+    {
+      "name": "xplainer",
+      "displayName": "Xplainer",
+      "source": "./packages/skill/claude-plugin",
+      "description": "Turn a bug, a root cause, or an architecture decision into a short narrated explainer video with captions, rendered to one MP4. Rendering uses Remotion: depending on the size of your company and how you use it, you may need your own Remotion licence — see https://remotion.pro/license.",
+      "author": {
+        "name": "xplainer.video",
+        "url": "https://xplainer.video"
+      },
+      "homepage": "https://xplainer.video",
+      "repository": "https://github.com/BrewMyTech/xplainer.video",
+      "license": "Apache-2.0",
+      "category": "design",
+      "keywords": [
+        "explainer",
+        "video",
+        "remotion",
+        "animation",
+        "captions",
+        "narration",
+        "tts",
+        "mcp"
+      ],
+      "tags": ["video", "explainer", "motion-graphics", "remotion"]
+    }
+  ]
+}

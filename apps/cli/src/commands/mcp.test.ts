@@ -136,7 +136,7 @@ async function toolNames(client: Client): Promise<string[]> {
 
 describe("xplainer mcp", () => {
   /**
-   * The plugin-bundle path: `npx -y @xplainer/cli mcp`, on a machine where nothing is installed and
+   * The plugin-bundle path: `npx -y xplainer mcp`, on a machine where nothing is installed and
    * no daemon is running. The tool list is compared against `TOOL_NAMES` from `@xplainer/protocol`
    * rather than a list written here, so this surface is pinned to the manifest like every other.
    */

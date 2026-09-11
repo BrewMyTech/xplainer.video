@@ -12,33 +12,39 @@
  * |---|---|---|
  * | `explicit` | `install --program <absolute path>` | verbatim, after a preflight |
  * | `sea-binary` | `install --from-binary <path>` | accepted and refused: nothing stages a SEA yet |
- * | `package-manager` | asked for by name | not implemented: the locator is unwritten, not the package |
- * | `runtime-dir` | **always, unless overridden** | the phase-2 default |
+ * | `package-manager` | the caller says so, having built a payload out of an installed package | labels the staged payload; never builds one |
+ * | `runtime-dir` | the default | a payload somebody else staged |
  *
- * **Why the two unimplemented sources are branches rather than absences.** Both are reachable —
- * `--from-binary` is a flag a user can type, and a `daemon.json` written by a future release can
- * name either — so the choice is between a refusal that says which phase implements it and a
- * fall-through that silently installs the *default* program under somebody else's name. The second
- * would record `runtime-dir` in a file whose whole job is to say where the program came from.
+ * **Why the one unimplemented source is a branch rather than an absence.** `--from-binary` is a
+ * flag a user can type and a `daemon.json` written by a future release can name `sea-binary`, so
+ * the choice is between a refusal that says which phase implements it and a fall-through that
+ * silently installs the *default* program under somebody else's name. The second would record
+ * `runtime-dir` in a file whose whole job is to say where the program came from.
  *
- * **What a publish changes here, and it is one branch.** `package-manager` gains a body that
- * locates the globally installed package and hands its directory to the same stager. The assembler,
- * the launch contract, the renderers, the update transaction and the consistency check are
- * untouched, because none of them asks where the payload came from — which is the property §2.1
- * claims and this file is where it is either true or false.
+ * **Every arm of this module is a question, and none of them writes.** `package-manager` used to
+ * refuse because nothing was published, and when the publish made it reachable it was implemented
+ * *here* — locating an install, assembling ~174 MB and staging it, inside a function whose contract
+ * says "Nothing here writes". The cost landed on a caller nobody was thinking about:
+ * `connect/spawn.ts` resolves a program in order to write one line into an agent's configuration,
+ * and began building a payload to do it. So the building moved out, to
+ * {@link materialiseProgramPayload} and the command that calls it, and `package-manager` here is
+ * only a **label** on a payload the caller already staged. Keep it that way: the property that
+ * makes this module safe to call is that asking it a question costs nothing.
  *
  * **The resolver answers with paths, not with an argument vector.** A `LaunchSpec` is built by
  * `runtime/launch-spec.ts` and by nothing else (D1), so what comes out of here is the interpreter
  * and the entry file that spec — and the stable launcher in `install/launcher.ts` — will name.
  */
 
-import { statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ProgramSource } from "../daemon/daemon-state.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { NOT_IMPLEMENTED_EXIT_CODE } from "../not-implemented.js";
 import {
   RUNTIME_MANIFEST_FILE,
+  RUNTIME_ROOT_PACKAGE,
   type RuntimeManifest,
   readRuntimeManifest,
 } from "../runtime/manifest.js";
@@ -51,7 +57,16 @@ export type ProgramRefusalReason =
   | "not-a-payload"
   | "nothing-staged"
   | "ambiguous"
-  | "unimplemented";
+  | "unimplemented"
+  /**
+   * `package-manager` was asked for and this build is not running out of an installed package.
+   *
+   * Its own reason rather than `missing`, because the two lead to opposite advice: `missing` is a
+   * path that should have existed, and this is a machine where the source does not apply at all —
+   * a checkout, or a payload already staged, neither of which has a `node_modules/@xplainer/cli`
+   * above it to copy.
+   */
+  | "not-installed";
 
 /**
  * The resolver will not name a program, and nothing has been written.
@@ -128,7 +143,7 @@ export type ProgramRequest = {
  * writes, so a refusal leaves a machine exactly as it was.
  */
 export function resolveProgram(request: ProgramRequest): ResolvedProgram {
-  switch (request.source ?? impliedSource(request)) {
+  switch (request.source ?? resolveProgramSource(request)) {
     case "explicit":
       return explicitProgram(request);
     case "sea-binary":
@@ -140,22 +155,31 @@ export function resolveProgram(request: ProgramRequest): ResolvedProgram {
           "`xplainer runtime build --out <dir>`, then `xplainer daemon install`.",
       );
     case "package-manager":
-      throw new ProgramRefusal(
-        "unimplemented",
-        "`package-manager` is the source a globally installed `xplainer` gets, and the locator " +
-          "for it is not written yet. The package itself is no longer the obstacle — " +
-          "`@xplainer/cli` and the unscoped `xplainer` have been on npm since 0.0.1 — so what is " +
-          "missing is the branch that finds that install and hands its directory to the same " +
-          "stager every other source uses. Until it exists, stage a payload explicitly: " +
-          "`xplainer runtime build --out <dir>` then `xplainer daemon install --runtime <dir>`.",
-      );
+      return packageManagerProgram(request);
     case "runtime-dir":
       return runtimeDirProgram(request);
   }
 }
 
-/** Which source the flags ask for, when the caller has not said. */
-function impliedSource(request: ProgramRequest): ProgramSource {
+/**
+ * Which source the flags ask for, when the caller has not said. **Pure: it touches no filesystem.**
+ *
+ * That purity is the whole of a defect this function briefly had. It was made to probe for an
+ * installed package and answer `package-manager` when it found one — which reads as a property of
+ * `xplainer daemon install` and is in fact a property of **every** caller of {@link resolveProgram}
+ * that omits `runtimeDir`. `connect/spawn.ts` is one, so `xplainer connect claude --spawn` began
+ * assembling and permanently staging a ~174 MB payload as a side effect of writing one line into an
+ * agent's configuration — measured, 4.2 s and 174 MB — on exactly the machine that command exists
+ * for, since ADR 0020 prints it as the remediation where there is no supervisor to install a daemon
+ * under and `installedPackageRoot()` is non-null precisely there.
+ *
+ * So the decision of *whether to build a payload out of an installed package* belongs to the
+ * command that can also arrange the rollback for it, and `package-manager` is now **chosen by a
+ * caller and never inferred here**. `commands/daemon.ts` asks {@link installedPackageRoot}, calls
+ * {@link materialiseProgramPayload}, and passes the result as an ordinary `payloadDir` — which is
+ * also how it inherits the journal undo that branch already pushes.
+ */
+export function resolveProgramSource(request: ProgramRequest): ProgramSource {
   if (request.program !== undefined) {
     return "explicit";
   }
@@ -268,4 +292,98 @@ function isFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Where this build's own `@xplainer/cli` package is, when it is running out of an installed one.
+ *
+ * Answers the directory the assembler needs as its `repoRoot` — the one whose
+ * `node_modules/@xplainer/cli` is this module's own package — or `null` on a machine where that is
+ * not what is happening, which is every checkout and every staged payload.
+ *
+ * **It is derived from `import.meta.url` and never from `npm root -g`, and that is a measurement
+ * rather than a preference.** On a machine with nvm, `npm root -g` answers for whichever Node the
+ * `npm` on `PATH` belongs to: asked on 2026-09-11 it named `…/v22.23.1/lib/node_modules` while the
+ * `xplainer` being run was installed under `v24.20.0`, so a locator built on it would have
+ * assembled a payload out of a tree that did not contain the package doing the assembling — or,
+ * more often, found nothing and refused on a machine where the install was right there. This module
+ * is inside the package it is looking for, so walking up from itself cannot disagree with itself.
+ *
+ * `process.argv[1]` is no use either: the unscoped `xplainer` alias rewrites it to the CLI's entry
+ * before importing it, so it names the same file on both routes and distinguishes nothing.
+ */
+export function installedPackageRoot(from: string = fileURLToPath(import.meta.url)): string | null {
+  let directory = dirname(from);
+  for (;;) {
+    const manifestFile = join(directory, "package.json");
+    if (isFile(manifestFile)) {
+      let name: unknown;
+      try {
+        name = JSON.parse(readFileSync(manifestFile, "utf8")).name;
+      } catch {
+        return null;
+      }
+      if (name !== RUNTIME_ROOT_PACKAGE) {
+        return null;
+      }
+      // `<root>/node_modules/@xplainer/cli` — the assembler resolves the root package from
+      // `<root>`, so the answer is the directory above the `node_modules` this package sits in.
+      // Found by locating that segment rather than by counting `dirname`s, because the count
+      // differs between a scoped package and an unscoped one and a wrong count is a silent
+      // mis-copy rather than an error.
+      const segments = directory.split(sep);
+      const index = segments.lastIndexOf("node_modules");
+      if (index <= 0) {
+        return null;
+      }
+      const root = segments.slice(0, index).join(sep);
+      if (!isFile(join(root, "node_modules", ...RUNTIME_ROOT_PACKAGE.split("/"), "package.json"))) {
+        return null;
+      }
+      // **A staged payload looks exactly like an install from here, and answering it would be a
+      // loop.** A payload's layout is `<payload>/lib/node_modules/@xplainer/cli/…`, so this walk
+      // finds the manifest and finds a `node_modules` segment and would answer `<payload>/lib`. An
+      // argument-free install run through the stable launcher — which `docs/daemon.md` names as one
+      // of the three things `xplainer` on `PATH` can be — would then assemble a payload out of the
+      // payload it is running from, and record `program_source: package-manager` for bytes that
+      // came from a staged runtime rather than from a registry. That is a false answer in the one
+      // field whose whole job is provenance. `runtime.manifest.json` sits beside `lib/` in a
+      // payload and in no npm install, so it is the tell.
+      // The manifest sits at the payload's own root, and `root` here is its `lib/` — a payload is
+      // `<payload>/lib/node_modules/@xplainer/cli/…`, so the walk lands one level below the
+      // manifest. Both places are checked because an npm prefix has a `lib/` too and neither it nor
+      // its parent ever carries a runtime manifest.
+      const payloadTell = [
+        join(root, RUNTIME_MANIFEST_FILE),
+        join(dirname(root), RUNTIME_MANIFEST_FILE),
+      ];
+      return payloadTell.some((candidate) => isFile(candidate)) ? null : root;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      return null;
+    }
+    directory = parent;
+  }
+}
+
+/**
+ * `package-manager`: label a staged payload as having come from an installed package.
+ *
+ * **This arm writes nothing, and that is the correction.** It used to locate the install, assemble a
+ * ~174 MB payload and stage it — inside a function whose own contract says "Nothing here writes, so
+ * a refusal leaves a machine exactly as it was". Three things went wrong at once. `connect/spawn.ts`
+ * calls {@link resolveProgram} with no `runtimeDir`, so writing one line into an agent's
+ * configuration assembled a payload. The branch of `install.ts` it ran through pushes no journal
+ * undo, so a later phase failing left 174 MB staged while the refusal said everything had been
+ * undone. And `reused` was hardcoded `true`, so a user was told "already staged" about bytes just
+ * copied twice.
+ *
+ * The materialising half is {@link materialiseProgramPayload}, called by `commands/daemon.ts`, which
+ * passes the result as an ordinary `payloadDir`. That routes it through the staging branch that
+ * already has a rollback undo and already reports a real {@link StageOutcome}, so all three defects
+ * are fixed by where the work happens rather than by patching each symptom.
+ */
+function packageManagerProgram(request: ProgramRequest): ResolvedProgram {
+  return { ...runtimeDirProgram(request), source: "package-manager" };
 }

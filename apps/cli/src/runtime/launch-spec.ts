@@ -65,8 +65,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { STATE_DIR_ENV } from "../daemon/state-dir.js";
 import { TOKEN_FILE_ENV } from "../daemon/token.js";
-import { RUNTIME_ROOT_PACKAGE } from "./assemble.js";
-import { PAYLOAD_BIN_DIR, PAYLOAD_LIB_DIR } from "./manifest.js";
+import { PAYLOAD_BIN_DIR, PAYLOAD_LIB_DIR, RUNTIME_ROOT_PACKAGE } from "./manifest.js";
 
 /** The `bin` name `@xplainer/cli` publishes, and the one the launch contract resolves. */
 export const CLI_BIN_NAME = "xplainer";

@@ -35,12 +35,19 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
 > running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
-> **What is not done, said plainly.** The six `@xplainer/*` packages are on npm at `0.0.1`; the
-> unscoped `xplainer` alias that makes `npm i -g xplainer` work lives in `packages/alias` and has
-> not been published yet, so until it is, `xplainer` is `npx -y @xplainer/cli`, a payload you
-> build, or a checkout you run. Speech has two working routes on macOS and Linux — a
-> Kokoro-FastAPI server you already run (`setup --tts-url`), or the pinned container — and
-> **none on Windows this phase**, which `setup` says rather than offering a route that fails.
+> **What is not done, said plainly.** `npm i -g xplainer` is a real install route: the six
+> `@xplainer/*` packages and the unscoped `xplainer` alias in `packages/alias` are all on npm at
+> `0.0.1`, so `xplainer` is a command you have rather than a package you assemble. The daemon is
+> **opt-in rather than hand-built**: `xplainer daemon install` takes no arguments on a machine that
+> installed from npm, building its own relocatable payload — about 150 MB — out of that install,
+> and `--runtime` stays the route for a checkout, for CI and for a machine with no registry access.
+> Speech runs **in-process on every platform** the ONNX route reaches, Windows included: `setup`
+> acquires the Kokoro graph, one voice and this platform's ONNX Runtime, each from its own upstream
+> home, and narration needs no container, no Python and no server. A Kokoro-FastAPI server you
+> already run (`setup --tts-url`) and the pinned container are still supported routes, and Intel
+> Macs need one of them because `onnxruntime-node` publishes no `darwin/x64` binding, which `setup`
+> says rather than
+> offering a route that fails.
 > Desktop installers are unsigned, and the macOS ones are **arm64 only** this phase.
 >
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) is what happens next, in order, with the criteria each
@@ -66,7 +73,98 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
   here that is not a piece of software you can just install, and it is stated up front on
   purpose.
 
+## Installing it
+
+Three routes. **All three need `xplainer setup`**, which acquires the browser, records a speech
+route and materialises the render workspace on the machine that will do the rendering. "No daemon"
+is not "no setup", and no plugin bundle can do it for you. `setup` needs no arguments in the normal
+case: the toolchain manifest it reads is published at
+<https://cdn.xplainer.video/toolchain/v1/manifest.json>.
+
+### The plugin marketplace
+
+In Claude Code:
+
+```text
+/plugin marketplace add BrewMyTech/xplainer.video
+/plugin install xplainer
+```
+
+The marketplace file is `.claude-plugin/marketplace.json` at the root of this repository, and it
+resolves the plugin to `packages/skill/claude-plugin` — where the Claude bundle's reviewed sources
+live: the manifest, and one `.mcp.json` declaring a local stdio server, `npx -y xplainer mcp`.
+
+**This route gives you the eight tools and not the skill, and that is a gap rather than a design.**
+`SKILL.md` is what an agent reads before it drives the tools, and Claude Code discovers a plugin's
+skills at `<plugin>/skills/<name>/SKILL.md`. `pnpm --filter @xplainer/skill build` writes it to
+exactly that path — but into `dist/`, which is not committed, and a marketplace can only read what is
+in the repository. So an install declares the MCP server and ships no instructions for using it.
+Until that is closed ([ROADMAP](docs/ROADMAP.md) phase 4, where it blocks **P4-3**), an agent driven
+through this route is working without them, and **the two routes below give you both halves**.
+
+Nothing has to be installed globally for that server to start: `npx` fetches the CLI the first time
+and caches it under `~/.npm/_npx`. What no bundle can do for you is `setup`, so run it once, from
+anywhere:
+
+```bash
+npx -y xplainer setup
+```
+
+### npm
+
+```bash
+npm i -g xplainer                    # the unscoped alias; forwards to @xplainer/cli
+xplainer setup                       # browser + speech route + the render workspace
+xplainer connect claude --spawn      # write that command into your agent's configuration
+```
+
+`connect codex` does the same for Codex, and both write a command line — no URL, no port and no
+token in it. `--spawn` is the no-daemon form: the agent starts `xplainer mcp`, which serves all
+eight tools in its own process. Measured: about 140 ms to start, about 98 MB resident while idle.
+
+### The daemon, if you want it
+
+The daemon is **opt-in**, and nothing above needs it. Installed from npm, it takes no arguments:
+
+```bash
+xplainer daemon install                 # builds its own payload, registers with the supervisor
+xplainer daemon status                  # installed? running? healthy?
+```
+
+That first command assembles a **relocatable payload** — a copy of the interpreter, the CLI and its
+dependency closure, roughly 150 MB — out of the package npm installed, and registers *that* rather
+than the `xplainer` on your `PATH`. The indirection is the point: your `PATH` copy lives under
+whichever Node installed it, so the next `nvm install` would leave a supervisor entry naming a file
+that is gone. The payload carries its own interpreter and survives that.
+
+On a checkout, in CI, or anywhere with no npm install to build from, name a payload instead:
+
+```bash
+xplainer runtime build --out <dir>
+xplainer daemon install --runtime <dir>
+```
+
+**What the daemon buys, and nothing else does:** a render that keeps going after the agent exits, a
+`job_id` that outlives the session that
+created it, one serial queue for the whole machine rather than one per agent session, and the
+`/api/*` surface `apps/desktop` attaches to. Without it the only exclusion is per video —
+`locks/<slug>.lock`, so two agents on two explainers never contend, and two on one fail the second
+job with a retryable answer. [`docs/daemon.md`](docs/daemon.md) is that surface end to end.
+
+### What a restart costs, without the daemon
+
+The tools run inside the MCP server your agent spawned, and that process ends when the agent's
+connection to it does. Quitting the agent ends it; so does reloading the editor, and so does
+reconnecting the server — it is not only the case of closing the session deliberately. **An
+unfinished render does not survive that**: the `job_id` you were polling stops resolving and the
+render does not resume where it left off. **Anything already finished stays on disk** — completed
+MP4s, stills and timings are written into the workspace and are untouched by the restart. So what
+is lost is work in flight, and **continuity across a restart is precisely what the daemon adds**:
+it holds the queue and the job records outside any one agent session.
+
 ## Getting started
+
+The rest of this file is for working **on** xplainer rather than with it.
 
 ```bash
 corepack enable && pnpm install   # TypeScript members
@@ -117,14 +215,9 @@ is the constraint the whole local design was chosen against
 
 **The daemon installs itself**, rather than being started by hand — a `systemd --user` unit on
 Linux, a LaunchAgent on macOS, a per-user Scheduled Task on Windows, none of them needing an
-administrator ([ADR 0020](docs/adr/0020-always-running-local-daemon.md)):
-
-```bash
-xplainer setup                          # browser + speech route + the render workspace
-xplainer runtime build --out <dir>      # the relocatable payload, carrying its own interpreter
-xplainer daemon install --runtime <dir> # register it with this machine's supervisor
-xplainer daemon status                  # installed? running? healthy?
-```
+administrator ([ADR 0020](docs/adr/0020-always-running-local-daemon.md)). The three commands that
+do it are in §Installing it above, along with what the daemon buys that no other route does; this
+section is the rest of that surface.
 
 [`docs/daemon.md`](docs/daemon.md) is that surface end to end — install, lifecycle, updates,
 exposing the daemon beyond this machine, and the self-supervision recipes for a host that has no

@@ -127,11 +127,13 @@ pnpm install                                  # restore the committed hoisted la
 
 **Verify from the registry rather than from the tarball**, because the tarball is what you already
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
-transitive `@xplainer/*` dependencies resolve, and run `npx -y @xplainer/cli --help` — the
-zero-install path the plugin bundles declare, and the one a published `workspace:*` would break.
-Then the same for the unscoped alias, which is the name a user actually types:
-`npx -y xplainer --version` must print the version just published, because `packages/alias` is one
-pinned dependency on `@xplainer/cli` and the pin is the only thing holding the two together.
+transitive `@xplainer/*` dependencies resolve, and run `npx -y @xplainer/cli --help` — a published
+`workspace:*` breaks exactly this, because `npx` has to resolve the dependency tree before it can
+run anything. Then the **unscoped alias**, which is both the name a user types and the one the
+plugin bundles declare (`npx -y xplainer mcp`), so it is the zero-install path as well as the
+install one: `npx -y xplainer --version` must print the version just published, because
+`packages/alias` is one pinned dependency on `@xplainer/cli` and the pin is the only thing holding
+the two together.
 
 **Cut the tag after every member has landed on `main`, not before.** `0.0.1` did the opposite and
 the record is still crooked because of it: `v0.0.1` points at the commit that published the six
@@ -243,6 +245,7 @@ workspace-wide change.
 | `.github/workflows/` | CI, the desktop packaging workflow, and the **proof** workflows — `e2e-linux.yml`, `e2e-runtime.yml`, `e2e-speech.yml`, `e2e-toolchain.yml`, `phase2-proofs.yml` and the seven `daemon-*` files (`daemon-lifecycle`, `daemon-restart`, `daemon-breaker`, `daemon-update`, `daemon-identity`, `daemon-remote`, `daemon-windows`) — every one of them `workflow_dispatch` only, because each renders a real video, assembles a real artefact, drives a real supervisor or binds a real network address. `workflow_dispatch` registers from the **default branch**, so a new proof workflow is dispatchable only once it is on `main`, whatever `--ref` says. Each carries a boolean input for the operating systems it can actually run on, and nothing for the ones it cannot: **eight of the twelve** carry all three (`e2e-runtime`, `e2e-speech`, `e2e-toolchain` and the five three-platform `daemon-*` files), `e2e-linux.yml` carries `linux` alone, `phase2-proofs.yml` carries `linux` and `windows`, `daemon-remote.yml` carries `linux` and `macos`, and `daemon-windows.yml` carries `windows` alone. Every input defaults to `false` except the one that names the workflow's home platform — `linux=true` in eleven of them, `windows=true` in `daemon-windows.yml`, which has no Linux leg. An omitted input keeps its default, so a Windows-only iteration is `gh workflow run daemon-lifecycle.yml --ref phase-2 -f linux=false -f windows=true`, and an unselected platform is excluded from the matrix before a runner is allocated, so iterating on one platform never re-pays for the others | `actionlint` (`AC-4a`) |
 | `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `daemon.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
 | `infra/e2e/` | The Debian image `pnpm e2e:render:linux` builds to run that proof on Linux, and its own `Dockerfile.dockerignore`. Not a Compose file, and not reachable from one | The run itself; nothing else builds it |
+| `.claude-plugin/` | The one-entry marketplace `/plugin marketplace add BrewMyTech/xplainer.video` reads, because that command reads the repository **root** and the bundle lives in a member. It carries no plugin content of its own: its `source` is a plain relative path to `packages/skill/claude-plugin`, and it declares no `version`, because nothing stamps one at the root and a hand-written one would drift from the package's on the next release | Root `pnpm biome check .`, and `pnpm check:docs-contract` for the one thing a tarball check cannot see: that it is **tracked by git**, since a marketplace reads the repository and this file spent a whole run existing only in a working tree. Nothing validates its *contents* — it is in no member's tarball, so `check-publish-contract` never sees it, and the install is the only thing that resolves the `source` |
 | `biome.json`, `ruff.toml` | Lint configuration for both languages | Changing either changes every member's `lint` |
 | `pnpm-workspace.yaml` | Member globs, the version catalog, and the install settings | `pnpm install --frozen-lockfile`; the normative script rule is written in its comments |
 | `packages/config/tsconfig/` | The presets every member extends | Every member's `typecheck` and `build` |

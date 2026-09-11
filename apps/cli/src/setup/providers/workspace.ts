@@ -76,7 +76,7 @@ import {
   DAEMON_INTERNAL_EXIT_CODE,
   PRECONDITION_UNMET_EXIT_CODE,
 } from "../../daemon/exit-codes.js";
-import { remotionEntryPath, templateDirectory } from "../../runtime/assemble.js";
+import { remotionEntryPath } from "../../runtime/assemble.js";
 import {
   hashFile,
   MANIFEST_VERSION,
@@ -86,6 +86,7 @@ import {
   PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   scanTree,
+  templateDirectory,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,
 } from "../../runtime/manifest.js";

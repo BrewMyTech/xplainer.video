@@ -3,7 +3,7 @@
     "xplainer": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@xplainer/cli", "mcp"]
+      "args": ["-y", "xplainer", "mcp"]
     }
   }
 }

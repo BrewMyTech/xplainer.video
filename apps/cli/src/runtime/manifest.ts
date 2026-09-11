@@ -48,7 +48,7 @@ import {
   readSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import process from "node:process";
 
 /** Payload 1's manifest, written at the root of the payload. */
@@ -68,6 +68,35 @@ export const PAYLOAD_NPM_CLI = "lib/node_modules/npm/bin/npm-cli.js";
 
 /** The version stamped into every manifest this module writes. */
 export const MANIFEST_VERSION = 1;
+
+/**
+ * The package whose runtime dependency closure payload 1 is.
+ *
+ * **It lives here rather than beside the assembler, and that placement is load-bearing.** Four
+ * modules need to know which package a payload is the closure of — the assembler, the launch-spec
+ * builder, the resolver in `install/program.ts` and the materialiser — and only one of them writes
+ * a payload. While this constant was exported from `runtime/assemble.ts`, importing the name pulled
+ * the whole 146 MB writer into the resolver's import closure, which is the one module whose
+ * contract is that asking it a question costs nothing. `install/program.test.ts` walks that closure
+ * and asserts the assembler is not in it; this constant is why it can.
+ */
+export const RUNTIME_ROOT_PACKAGE = "@xplainer/cli";
+
+/**
+ * `@xplainer/render-core`'s `template/` directory, wherever this CLI is running from.
+ *
+ * Resolved through the package's own `exports` rather than by walking up from this file, because
+ * the two places this runs are a checkout and an assembled payload, and only the module resolver
+ * knows both layouts. `render-core`'s `files` allowlist ships `template`, so the directory exists
+ * in a published copy exactly as it does in the checkout.
+ *
+ * Here for the same reason as {@link RUNTIME_ROOT_PACKAGE}: `runtime/verify.ts` needs it and writes
+ * nothing, and it was the second of the two edges that put the assembler in the resolver's closure.
+ */
+export function templateDirectory(): string {
+  const require = createRequire(import.meta.url);
+  return dirname(require.resolve("@xplainer/render-core/template/package.json"));
+}
 
 /**
  * Which interpreter is running this assembler.

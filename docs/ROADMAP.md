@@ -70,7 +70,7 @@ close to irreversible and is a decision rather than a task.
 3. **The plugin bundles are retargeted, and must not be published yet.** Both `.mcp.json`
    files declared `https://mcp.xplainer.video/mcp` — an endpoint this repository no longer
    describes — and the Codex bundle declared an `oauth_resource` that a loopback daemon cannot
-   answer. Both now declare a local stdio server, `npx -y @xplainer/cli mcp`
+   answer. Both now declare a local stdio server, `npx -y xplainer mcp`
    ([ADR 0013](adr/0013-plugin-packaging-for-claude-and-codex.md)'s note of 2026-09-06). **That
    command is still a stub that exits 2**, so the bundles are correct and not yet publishable:
    publishing a dead URL and publishing a command that exits 2 are the same failure in different
@@ -142,7 +142,7 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
   working stdio MCP server, built from the *same* `createMcpServer()` the HTTP surface uses,
   never a second registration
   ([ADR 0016](adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)). **This is
-  now also what unblocks the plugin bundles**, which declare `npx -y @xplainer/cli mcp` and
+  now also what unblocks the plugin bundles**, which declare `npx -y xplainer mcp` and
   cannot be submitted to a marketplace while that command exits 2.
 - A real `RenderBackend` implementation behind `packages/mcp-server`'s interface, replacing
   the phase-0 stub whose methods returned "not implemented in this phase".
@@ -1667,6 +1667,26 @@ capability, and it already has a decision record behind it.
   **A marketplace fetch is not retractable**, and publishing a command that exits 2 is the same
   failure as publishing a dead URL. Submission also needs real published pages, verified
   identity and icon assets, which ADR 0013's addendum records as the long pole.
+- **A marketplace `source` that is git-readable and in the loadable shape**, which is a gap found
+  on 2026-09-11 and is not what it looks like. `scripts/build.mjs` already emits a correct bundle —
+  `dist/claude-plugin/.claude-plugin/plugin.json`, the subdirectory Claude Code reads a manifest
+  from, and `dist/claude-plugin/skills/xplainer/SKILL.md`, the path skills are discovered at. The
+  problem is that `/plugin marketplace add <repo>` can read only **committed** paths and `dist/` is
+  gitignored, so the root `.claude-plugin/marketplace.json` points its `source` at
+  `packages/skill/claude-plugin` — the *source* directory, with a flat `plugin.json` and no
+  `skills/`. That directory installs, because its top-level `.mcp.json` is enough plugin content,
+  and it ships **no `SKILL.md`**: the shortest install route hands an agent the eight tools with
+  none of the instructions for using them. Resolution rules confirmed from `strings` on Claude Code
+  2.1.268 — the manifest is read only from `<source>/.claude-plugin/plugin.json` with no bare
+  fallback, components at the plugin root are auto-discovered, and `..` in a `source` is refused as
+  path traversal, so reaching up to `packages/skill/SKILL.md` is not available. Three routes, none
+  chosen: commit the built bundle; restructure the committed source into the loadable shape and
+  reduce the build to a copy; or publish the bundle to its own repository or branch. The second is
+  probably right. Whichever is taken, the one-reviewed-`SKILL.md` rule is already enforceable —
+  `packages/skill/src/build.test.ts` compares it byte-for-byte in both bundles today, so covering a
+  committed copy is an extension rather than a new mechanism. **P4-3 cannot pass until this is
+  done**, because a bundle that installs without its skill does not "install cleanly" in the sense
+  that criterion means.
 
 **Judged by:**
 

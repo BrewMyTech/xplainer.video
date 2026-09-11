@@ -77,6 +77,7 @@ import { basename, dirname, join } from "node:path";
 import process from "node:process";
 import {
   type DaemonState,
+  type ProgramSource,
   type SupervisorKind,
   updateDaemonState,
 } from "../daemon/daemon-state.js";
@@ -228,8 +229,27 @@ export type InstallRequest = {
    *
    * Omitted, the install uses whichever runtime is already staged under `<state>/runtime/` — which
    * is what a re-install and `daemon update`'s own re-registration do.
+   *
+   * **A function is how a caller that has to *build* one gets the preflight first.** `--runtime`
+   * names a directory that already exists, so it arrives as a string; the argument-free install
+   * assembles ~146 MB, and passing a thunk means phase 3 calls it — after phase 1 has read the
+   * setup marker, found a supervisor and checked the port, and inside the operation lock. Built
+   * eagerly at the call site it was 1.3 s and 146 MB spent for an install about to exit 3, twice
+   * over for two concurrent installers, and a comment in `commands/daemon.ts` claimed the opposite
+   * of what the code did until a review executed the order.
    */
-  payloadDir?: string | undefined;
+  payloadDir?: string | (() => string) | undefined;
+  /**
+   * The `program_source` to record, when the caller already knows it.
+   *
+   * `commands/daemon.ts` sets `package-manager` after it has materialised a payload out of an
+   * installed package, because that is the one fact the payload directory cannot carry: both
+   * sources end in a staged, content-addressed directory that every downstream reader treats
+   * identically, so a resolver looking at the result would answer `runtime-dir` for both. This is
+   * also what replaced carrying a resolution forward between phases — the source is now an input
+   * rather than something re-derived from an output.
+   */
+  source?: ProgramSource | undefined;
   /** The port the artefact records. Defaults to {@link DEFAULT_INSTALL_PORT}. */
   port?: number | undefined;
   /** The platform whose supervisor is registered with. Defaults to this process's. */
@@ -397,14 +417,40 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
   }
 
   // ── Phase 3: the payload ─────────────────────────────────────────────────────────────────────
+  //
+  // **A payload arrives here already built, whoever built it, and that is deliberate.** An
+  // argument-free `xplainer daemon install` on a machine that installed from npm builds one out of
+  // that install — but `commands/daemon.ts` does the building and passes the result as an ordinary
+  // `payloadDir`, so it lands in the branch below rather than in a branch of its own.
+  //
+  // The alternative was tried and was wrong in three ways at once. Making the *resolver* materialise
+  // a payload meant `resolveProgram` wrote a payload's worth of bytes, breaking its own contract ("Nothing here
+  // writes") and cost `connect/spawn.ts` — a command that resolves a program only in order to write
+  // one line into an agent's config — a full assemble as a side effect. It also meant the payload
+  // arrived through the `payloadDir === undefined` branch, which pushes **no** journal undo, so a
+  // failure in phases 5-9 left the payload staged while the refusal at the end of this function told
+  // the user everything had been undone. And it reported `reused: true` for bytes just copied.
+  //
+  // Routing it through `payloadDir` fixes all three by construction: the undo below is pushed for
+  // whatever was staged, `reused` comes from the real `StageOutcome`, and the resolver goes back to
+  // being a pure question. `request.source` carries the one fact the directory cannot — that the
+  // bytes came from a registry rather than somebody's working copy.
+  //
+  // **And a payload that has to be *built* is built here, not at the call site.** A thunk is called
+  // at this line, which is below phase 1 and inside the caller's operation lock, so the read-only
+  // refusals — no setup marker, no supervisor, a held port — all happen before anything assembles.
+  // A refusal from the thunk itself propagates: nothing has been written at this point, and the
+  // materialiser reclaims its own temp directory before it throws.
   let staged: StagedRuntime & { reused: boolean };
   if (request.payloadDir === undefined) {
     staged = { ...describeStagedRuntime(request.stateDir, refuse), reused: true };
   } else {
-    log(`staging ${request.payloadDir} under ${request.stateDir}`);
+    const payloadDir =
+      typeof request.payloadDir === "string" ? request.payloadDir : request.payloadDir();
+    log(`staging ${payloadDir} under ${request.stateDir}`);
     const stageRootCreated = missingAncestors(stagedRuntimeRoot(request.stateDir));
     try {
-      const outcome = stageRuntime({ payloadDir: request.payloadDir, stateDir: request.stateDir });
+      const outcome = stageRuntime({ payloadDir, stateDir: request.stateDir });
       staged = outcome;
       if (!outcome.reused) {
         journal.push({
@@ -428,7 +474,11 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
   let program: ResolvedProgram;
   let spec: LaunchSpec;
   try {
-    program = resolveProgram({ stateDir: request.stateDir, runtimeDir: staged.path });
+    program = resolveProgram({
+      stateDir: request.stateDir,
+      runtimeDir: staged.path,
+      ...(request.source === undefined ? {} : { source: request.source }),
+    });
     spec = buildLaunchSpec({
       runtimeDir: staged.path,
       port,

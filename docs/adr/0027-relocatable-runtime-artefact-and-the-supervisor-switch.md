@@ -723,3 +723,64 @@ publishes no `darwin/x64` binding, so `darwin-x64` is now the one platform with 
 and its only acquiring route is `docker` — which is therefore **not retired**, and whose retirement
 is booked behind closing that platform. The argument is in `docs/ROADMAP.md`'s phase-4 entry and in
 ADR 0028's note of this date.
+
+
+## Note, 2026-09-11: `package-manager` is implemented, and the prediction below held except in one place
+
+§*The four program sources* books `package-manager` as **Not implemented this phase**, and
+§*What one value changes when a publish happens* predicts that it "gains a body whose only job is"
+to locate a global install and hand it to the same stager. The publish happened — `@xplainer/cli`
+and the unscoped `xplainer` reached npm at `0.0.1` — and that row is now stale: `xplainer daemon
+install` takes no arguments on a machine that installed from npm.
+
+**The prediction was right about the shape and wrong about the place, and the difference cost two
+defects.** Implementing it inside `install/program.ts` made that module write ~165 MB, and its
+contract says "Nothing here writes, so a refusal leaves a machine exactly as it was". Two callers
+paid: `connect/spawn.ts` resolves a program in order to write one line into an agent's
+configuration and began assembling a payload to do it, and the branch of `install.ts` the payload
+arrived through pushes no rollback undo, so a failed install kept the bytes while reporting that it
+had undone everything. Neither is a flaw in this record's reasoning — both follow from putting the
+write in the module this record calls a resolver.
+
+So the body lives in a new `install/materialise.ts`, `commands/daemon.ts` calls it and passes the
+result as an ordinary `payloadDir`, and `install/program.ts` no longer imports the assembler at all.
+That last part is the durable half: the property "asking where the program comes from costs nothing"
+is now held by the import graph rather than by a comment, because a text-level guard over that
+module was measured to be bypassable by one level of indirection.
+
+**One consequence this record could not have anticipated.** `update/transaction.ts` refuses any
+`program_source` other than `runtime-dir`, which was correct while `package-manager` was
+unreachable — `explicit` and `sea-binary` genuinely are not staged payloads. A `package-manager`
+install **is** one, content-addressed in the same `<state>/runtime/<version>-<digest>/`, so making
+the fourth value reachable silently closed `daemon update` for every npm-installed machine. The
+guard now admits both staged-payload sources. The table's own column header — "pinned by copy
+exactly as `runtime-dir` does" — is what makes that the right answer.
+
+This record stays `accepted` and no line above is rewritten.
+
+### Note, 2026-09-11 — the sentence above about the import graph was a claim about the design, not about the guard
+
+The note immediately above says the purity property "is now held by the import graph rather than by
+a comment, because a text-level guard over that module was measured to be bypassable by one level of
+indirection". **The first half was not true when it was written.** The design was right — the
+materialiser had moved to `install/materialise.ts` and `install/program.ts` imported only a constant
+from the assembler — but the *guard* was still a text scan: `readFileSync` over `program.ts` plus a
+regex asserting the string `assembleRuntime` was absent and that the one `assemble.js` import
+carried a single binding. A review then executed the bypass it was written to prevent: adding
+`import { materialiseProgramPayload } from "./materialise.js"` to `program.ts` and calling it from
+`resolveProgramSource` passed every assertion. One hop is exactly what a scan over one file cannot
+see, which is the thing the sentence claimed to have fixed.
+
+It is true now, and what made it assertable was moving two names. `RUNTIME_ROOT_PACKAGE` and
+`templateDirectory` were exported from `runtime/assemble.ts`; `program.ts` needed the first and
+`runtime/verify.ts` — which `program.ts` does import — needed the second, so the assembler was in
+the resolver's transitive closure through two edges that had nothing to do with writing, and "the
+assembler is not reachable from here" could not be stated at all. Both now live in
+`runtime/manifest.ts`, whose docblocks record that this is why, and `program.test.ts` walks every
+relative import specifier from `program.ts` to fixpoint and asserts that neither `runtime/assemble.ts`
+nor `install/materialise.ts` is in the result. Verified by mutation: the review's own bypass fails it.
+
+The general point is worth keeping, because this record made the mistake twice in two paragraphs —
+first predicting the right shape in the wrong place, then describing a property the code held and
+the test did not. **A record may state what a design guarantees; it may not state how a gate holds
+it unless the gate has been run against a violation.**

@@ -39,7 +39,7 @@ import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { readDaemonState, readRuntimeState } from "../../daemon/daemon-state.js";
+import { readDaemonState, readRuntimeState, updateDaemonState } from "../../daemon/daemon-state.js";
 import {
   DAEMON_UNHEALTHY_EXIT_CODE,
   OWNERSHIP_REFUSED_EXIT_CODE,
@@ -613,6 +613,103 @@ describe("daemon update — the transaction", () => {
         outcome.incoming.runtime_dir,
       );
       expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+/**
+ * Which `program_source` values this transaction will move, which is a question that changed when
+ * the fourth one became reachable.
+ *
+ * The guard was written as "not `runtime-dir`" while `package-manager` was a refusal, and that was
+ * correct then: `explicit` and `sea-binary` name a program this command did not stage and has no
+ * business replacing. But a `package-manager` install **is** a staged payload — content-addressed
+ * under the same `<state>/runtime/<version>-<digest>/`, pinned by copy exactly as `runtime-dir` is
+ * — so making it reachable would have closed `daemon update` for every machine that installed from
+ * npm, on the route the argument-free install exists to enable, with the remediation it printed
+ * (`xplainer daemon install`) looping straight back to the state that produced the refusal.
+ *
+ * There was no coverage of this refusal at all before, in either direction.
+ */
+describe("daemon update — which program sources it will move", () => {
+  it(
+    "updates a daemon installed from npm, because that is a staged payload too",
+    async () => {
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      // The one difference from an ordinary install: where the bytes came from.
+      updateDaemonState(where.stateDir, { program_source: "package-manager" });
+
+      const outcome = await updateDaemon({
+        stateDir: where.stateDir,
+        from: beta.outDir,
+        environment: where.environment,
+        run: harness.run,
+        workspaceRoot: where.workspaceRoot,
+      });
+
+      expect(outcome.rolledBack).toBe(false);
+      expect(outcome.running.slot).toBe(outcome.incoming.slot);
+      // And the provenance travels: an update does not silently reclassify where a program came from.
+      expect(readDaemonState(where.stateDir).program_source).toBe("package-manager");
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "still refuses `explicit`, which names a program it did not stage",
+    async () => {
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      updateDaemonState(where.stateDir, { program_source: "explicit" });
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: beta.outDir,
+          environment: where.environment,
+          run: harness.run,
+          workspaceRoot: where.workspaceRoot,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.message).toContain('"explicit"');
+      expect(refusal.message).toContain("not this command's to move");
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /**
+   * And the other refused source. It is the same guard branch as `explicit`, so the risk of it
+   * regressing alone is low — but the branch is a list of two admitted values and a change that
+   * widens it by one is exactly what happened here once already, so both refusals are asserted
+   * rather than one and a comment.
+   */
+  it(
+    "still refuses `sea-binary`, which is phase 4's program and not a staged payload",
+    async () => {
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      updateDaemonState(where.stateDir, { program_source: "sea-binary" });
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: beta.outDir,
+          environment: where.environment,
+          run: harness.run,
+          workspaceRoot: where.workspaceRoot,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.message).toContain('"sea-binary"');
+      expect(refusal.message).toContain("not this command's to move");
     },
     SPAWN_TIMEOUT_MS,
   );

@@ -77,7 +77,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -93,15 +92,14 @@ import {
   PAYLOAD_LIB_DIR,
   PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
+  RUNTIME_ROOT_PACKAGE,
   type RuntimeManifest,
   scanTree,
+  templateDirectory,
   toPayloadPath,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,
 } from "./manifest.js";
-
-/** The package whose runtime dependency closure payload 1 is. */
-export const RUNTIME_ROOT_PACKAGE = "@xplainer/cli";
 
 /** npm ships this whatever a `files` allowlist says, and `version.ts` reads it at startup. */
 const ALWAYS_SHIPPED = new Set(["package.json"]);
@@ -358,19 +356,6 @@ export function assembleWorkspace(options: AssembleWorkspaceOptions): AssembledW
 }
 
 /**
- * `@xplainer/render-core`'s `template/` directory, wherever this CLI is running from.
- *
- * Resolved through the package's own `exports` rather than by walking up from this file, because
- * the two places this runs are a checkout and an assembled payload, and only the module resolver
- * knows both layouts. `render-core`'s `files` allowlist ships `template`, so the directory exists
- * in a published copy exactly as it does in the checkout.
- */
-export function templateDirectory(): string {
-  const require = createRequire(import.meta.url);
-  return dirname(require.resolve("@xplainer/render-core/template/package.json"));
-}
-
-/**
  * The Remotion CLI entry inside an installed workspace, workspace-relative, or `null`.
  *
  * Resolution goes through `@remotion/cli`'s own `bin` field rather than through the `.bin` shim,
@@ -431,9 +416,18 @@ function entryFor(repoRoot: string, rootPackage: string, packages: ManifestPacka
   if (copied === undefined) {
     throw new AssemblyRefusal("unbuilt-entry", `${rootPackage} was not copied into the payload.`);
   }
-  const directory = workspacePackages(repoRoot).get(rootPackage);
-  if (directory === undefined) {
-    throw new AssemblyRefusal("unbuilt-entry", `${rootPackage} has no directory in ${repoRoot}.`);
+  // Where the root package's own manifest is, which is the only thing the `bin` field can be read
+  // off. A checkout answers from the workspace globs; a global npm install answers from ordinary
+  // `node_modules` resolution, and `findPackageDir` is the same walk `copyClosure` just used, so
+  // the directory the entry is read from is the directory the payload was copied from.
+  const directory =
+    workspacePackages(repoRoot).get(rootPackage) ?? findPackageDir(repoRoot, rootPackage);
+  if (directory === null || directory === undefined) {
+    throw new AssemblyRefusal(
+      "unbuilt-entry",
+      `${rootPackage} has no directory in ${repoRoot}: it is neither a workspace package there ` +
+        `nor resolvable from its \`node_modules\`, so there is no manifest to read a \`bin\` off.`,
+    );
   }
   const bin = readJson(join(directory, "package.json")).bin;
   const target =
@@ -676,7 +670,35 @@ function copyClosure(plan: CopyPlan): ManifestPackage[] {
     }
   };
 
-  installWorkspace(plan.rootPackage);
+  // The root package is a *workspace* package when `repoRoot` is a checkout, and an *installed*
+  // one when it is not — which is the whole of what lets this assembler read a payload out of a
+  // global npm install as well as out of this repository. It used to call `installWorkspace`
+  // unconditionally, so a published layout refused with `unresolved-dependency` ("declared as a
+  // workspace dependency and has no directory in this checkout") before copying a byte.
+  //
+  // The two branches are not merely interchangeable, and the difference is why this is safe.
+  // `installWorkspace` copies exactly a package's `files` allowlist, because a checkout holds
+  // `src/`, tests and configs that must not travel. An installed package has already had that
+  // allowlist applied to it — npm expanded the published tarball — so there is no `src/` there to
+  // exclude, and reaching for the `files` field again would be applying it to a tree it had already
+  // been applied to.
+  //
+  // **It is not byte-identical, and the difference is worth naming rather than glossing.** npm
+  // ships `package.json`, `README` and `LICENSE` whatever `files` says, so the installed tree of
+  // `@xplainer/cli` carries a `README.md` its allowlist does not name (measured: allowlist is
+  // `dist/**/*.js`, `dist/**/*.d.ts`, `LICENSE`, `NOTICE`; the installed directory also holds
+  // `README.md`). So this route's payload is the allowlist plus a few kilobytes of documentation.
+  // That is acceptable — nothing resolves a module through a README — and it is the reason this
+  // comment does not claim the two branches produce the same bytes.
+  //
+  // Nested `node_modules` are not a hazard here either: `installExternal`'s own `cpSync` filter
+  // excludes that directory name at any depth, and the closure is walked by its recursive calls
+  // instead, so a dependency arrives once at the hoisted position rather than twice.
+  if (workspace.has(plan.rootPackage)) {
+    installWorkspace(plan.rootPackage);
+  } else {
+    installExternal(plan.rootPackage, plan.repoRoot, plan.libDir);
+  }
   installed.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return installed;
 }

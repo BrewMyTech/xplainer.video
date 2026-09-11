@@ -52,7 +52,6 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
-import { templateDirectory } from "./assemble.js";
 import {
   hashFile,
   isPayloadPath,
@@ -64,6 +63,7 @@ import {
   type RuntimeManifest,
   readRuntimeManifest,
   readWorkspaceManifest,
+  templateDirectory,
   toPayloadPath,
   WORKSPACE_MANIFEST_FILE,
   type WorkspaceManifest,

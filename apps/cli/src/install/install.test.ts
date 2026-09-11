@@ -49,6 +49,7 @@ import {
 import { CHILD_CLI, spawnEntry } from "../daemon/testing/spawn-child.js";
 import { InstallRefusal, installDaemon } from "./install.js";
 import { launcherPath } from "./launcher.js";
+import { materialiseProgramPayload } from "./materialise.js";
 import {
   type InstallPreflight,
   type ProbeCommand,
@@ -57,9 +58,10 @@ import {
   preflightInstall,
   preflightWriteLocations,
 } from "./preflight.js";
-import { stagedRuntimeRoot } from "./stage.js";
+import { listStagedRuntimes, stagedRuntimeRoot } from "./stage.js";
 import type { SupervisorEnvironment } from "./supervisors/artefact.js";
-import { buildFixturePayload } from "./testing/payload.js";
+import { writeInstalledPackage } from "./testing/installed-package.js";
+import { buildFixturePayload, entrySource } from "./testing/payload.js";
 import { writeToolchainMarker } from "./testing/toolchain.js";
 import { uninstallDaemon } from "./uninstall.js";
 
@@ -347,6 +349,65 @@ describe("daemon install — the refusal writes nothing", () => {
    * edit: the state directory, the artefact, **the directory the artefact lives in** — which on
    * macOS is `~/Library/LaunchAgents` — the linger marker, and the log directory.
    */
+  /**
+   * A `package-manager` install that fails late leaves nothing staged.
+   *
+   * This is the criterion that a version of this route could not have met. It materialised its
+   * payload inside the resolver, which meant the payload arrived through the branch of phase 3 that
+   * pushes **no** journal undo — so a failure in any later phase left ~174 MB staged while the
+   * refusal at the end of `installDaemon` told the user "Everything this install wrote has been
+   * undone". That is `install.ts`'s headline invariant, stated in its own docblock, reported as
+   * satisfied while false.
+   *
+   * The failure forced here is a **health timeout**, which is the ordinary one rather than a
+   * contrived one: it is what a held port or a Windows batch-logon problem produces, and it happens
+   * in the last phase, after everything has been written. The fixture entry deliberately does not
+   * bind, so the daemon starts and never answers.
+   */
+  it(
+    "stages nothing when a package-manager install fails after staging",
+    async () => {
+      const root = scratchDirectory();
+      const stateDir = installableState();
+      const environment = fixtureEnvironment(root);
+      const lingerDir = String(environment.lingerDir);
+      mkdirSync(lingerDir, { recursive: true });
+      const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
+
+      // An installed layout whose CLI entry exits immediately instead of binding a port.
+      const installRoot = join(root, "npm-global-unhealthy");
+      // The default entry exits immediately instead of binding, which is what makes the health
+      // check time out — the ordinary late failure rather than a contrived one.
+      const aliasDir = writeInstalledPackage({ root: installRoot, version: "0.0.1" });
+      const built = materialiseProgramPayload({ locateInstall: () => aliasDir });
+      // Absent rather than empty: building must not create the staging root either.
+      expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
+
+      const refusal = await installDaemon({
+        stateDir,
+        payloadDir: built.payloadDir,
+        source: "package-manager",
+        port: 0,
+        platform: "linux",
+        environment,
+        run: harness.run,
+        healthTimeoutMs: 1_500,
+      }).catch((error: unknown) => error);
+
+      expect(refusal).toBeInstanceOf(InstallRefusal);
+      expect((refusal as InstallRefusal).phase).toBe("verify");
+      // **The staging root is asserted ABSENT, and never through `listStagedRuntimes`.** That
+      // filtered read is what this criterion was retracted over: the first version of this route
+      // built the payload under `<state>/runtime/` behind `STAGE_TEMP_PREFIX`, which
+      // `listStagedRuntimes` filters — so a 146 MB orphan read back as "nothing staged" in the
+      // product *and* in the test written to catch it. `existsSync` on the root cannot be fooled
+      // that way, and it is what the neighbouring refusal cases already use.
+      expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
+      expect(readDaemonState(stateDir).program_source).toBeNull();
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
   it("refuses 3 with no setup marker, and every hashed location is unchanged", async () => {
     const root = scratchDirectory();
     const stateDir = join(root, "state");
@@ -384,6 +445,86 @@ describe("daemon install — the refusal writes nothing", () => {
     // Not a single supervisor command ran: the refusal is a decision, not an attempt.
     expect(harness.commands.filter((entry) => !entry.includes("print-disabled"))).toEqual([]);
   });
+
+  /**
+   * The ordering the argument-free install turns on: **phase 1 refuses before a payload is built**.
+   *
+   * `--runtime` names a directory that already exists, so the cost of resolving it early is
+   * nothing. An argument-free `xplainer daemon install` assembles ~146 MB out of the installed
+   * package, and where that happened at the call site the machine paid for it and *then* heard that
+   * it has no setup marker — 1.3 s and 146 MB for an install that was never going to happen, twice
+   * over when two installers raced, and with a comment above the call claiming the opposite. So
+   * `payloadDir` takes a function and phase 3 is what calls it, which is below phase 1 and inside
+   * the caller's operation lock. Asserted by counting the calls, because the property is about
+   * *when* the build happens and a directory on disk cannot say when it appeared.
+   */
+  it("never calls the payload builder when the read-only preflight refuses", async () => {
+    const root = scratchDirectory();
+    const stateDir = join(root, "state");
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const environment: SupervisorEnvironment = fixtureEnvironment(root);
+    mkdirSync(join(environment.home, "Library", "LaunchAgents"), { recursive: true });
+    const harness = supervisorHarness({ stateDir });
+    const builds: string[] = [];
+
+    const refusal = await installDaemon({
+      stateDir,
+      payloadDir: () => {
+        builds.push("built");
+        return payloadDir;
+      },
+      source: "package-manager",
+      port: 0,
+      platform: "darwin",
+      environment,
+      run: harness.run,
+      uid: 501,
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(InstallRefusal);
+    expect((refusal as InstallRefusal).phase).toBe("preflight");
+    expect(builds).toEqual([]);
+    expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
+  });
+
+  /**
+   * And the same thunk on the path that does not refuse: called exactly once, and what it returns
+   * is staged. Without this the case above would pass over a `payloadDir` that was never read at
+   * all.
+   */
+  it(
+    "calls the payload builder once, and stages what it returns",
+    async () => {
+      const root = scratchDirectory();
+      const stateDir = installableState();
+      const environment = fixtureEnvironment(root);
+      const lingerDir = String(environment.lingerDir);
+      mkdirSync(lingerDir, { recursive: true });
+      const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
+      const builds: string[] = [];
+
+      const installed = await installDaemon({
+        stateDir,
+        payloadDir: () => {
+          builds.push("built");
+          return payloadDir;
+        },
+        source: "package-manager",
+        port: 0,
+        platform: "linux",
+        environment,
+        run: harness.run,
+      });
+
+      expect(builds).toEqual(["built"]);
+      expect(installed.reusedRuntime).toBe(false);
+      expect(readDaemonState(stateDir).program_source).toBe("package-manager");
+      expect(readdirSync(stagedRuntimeRoot(stateDir))).toHaveLength(1);
+
+      uninstallDaemon({ stateDir, platform: "linux", environment, run: harness.run });
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
   /**
    * The Windows half of the same obligation, and the one location no renderer produces: the task
@@ -460,6 +601,71 @@ describe("daemon install — Linux", () => {
         program_source: "runtime-dir",
         log_sink: "journald",
       });
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /**
+   * An argument-free install on a machine that ran `npm i -g xplainer`, and the one assertion that
+   * caught a defect a unit test could not.
+   *
+   * `resolveProgram` was correct in isolation and this command still recorded the wrong provenance.
+   * This module calls the resolver in **two** phases: phase 3 asks with no `runtimeDir`, which is
+   * what reaches the `package-manager` route and assembles a payload out of the install; phase 4
+   * used to ask again with `runtimeDir: staged.path`, so `impliedSource` answered `runtime-dir` and
+   * `daemon.json` recorded that for an install that had just assembled from npm. The 164 MB
+   * assemble would also have run twice. Phase 3's answer is now carried forward, and this case is
+   * what holds it there: it drives a whole install with no `payloadDir` and reads the record back.
+   *
+   * The fixture is the layout npm actually produces — `@xplainer/cli` nested inside the alias's own
+   * `node_modules` rather than hoisted beside it — so the resolver has to walk through the alias to
+   * the package that carries the daemon.
+   */
+  it(
+    "records `package-manager` for an install that assembled from a global npm install",
+    async () => {
+      const root = scratchDirectory();
+      const stateDir = installableState();
+      const environment = fixtureEnvironment(root);
+      const lingerDir = String(environment.lingerDir);
+      mkdirSync(lingerDir, { recursive: true });
+      const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
+
+      // `<installRoot>/node_modules/xplainer` is the alias; the CLI is nested under it.
+      const installRoot = join(root, "npm-global");
+      const aliasDir = writeInstalledPackage({
+        root: installRoot,
+        version: "0.0.1",
+        // A real miniature daemon: this install runs to an authenticated GET /healthz, so the
+        // entry has to bind a port and record it.
+        entry: entrySource("installed"),
+      });
+
+      // What `commands/daemon.ts` does for an argument-free install: materialise a payload out of
+      // the installed package, then hand it over as an ordinary `payloadDir` with the source named.
+      // The materialising is deliberately NOT inside `installDaemon` — a payload is a write, and it
+      // goes down the branch that already pushes a journal undo for what it stages.
+      const built = materialiseProgramPayload({ locateInstall: () => aliasDir });
+
+      const outcome = await installDaemon({
+        stateDir,
+        payloadDir: built.payloadDir,
+        source: "package-manager",
+        port: 0,
+        platform: "linux",
+        environment,
+        run: harness.run,
+        healthTimeoutMs: HEALTH_MS,
+      });
+
+      // The provenance field is the whole point: both sources end in a staged, content-addressed
+      // directory that every downstream reader treats identically, so this record is the only
+      // place that says the bytes came from a registry rather than from somebody's working copy.
+      expect(readDaemonState(stateDir)).toMatchObject({ program_source: "package-manager" });
+      // And it really is a payload, staged outside the install tree it was assembled from.
+      expect(outcome.runtimeDir.startsWith(stateDir)).toBe(true);
+      expect(outcome.runtimeDir.startsWith(installRoot)).toBe(false);
+      expect(listStagedRuntimes(stateDir)).toHaveLength(1);
     },
     SPAWN_TIMEOUT_MS,
   );

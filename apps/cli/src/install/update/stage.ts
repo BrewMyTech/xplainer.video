@@ -13,9 +13,20 @@
  * the whole reason `daemon update` exists is that ADR 0025 §Part one measured a package manager
  * replacing the *global* CLI while the supervisor kept executing the **pinned copy under the state
  * directory** — so an updater that resolved its own replacement from `PATH` would be reasoning from
- * the one fact the record establishes as unreliable. There is no registry route this phase, and
- * `install/program.ts` already refuses `package-manager` by name for the same reason: nothing is
- * published.
+ * the one fact the record establishes as unreliable.
+ *
+ * **The second half of that argument expired on 2026-09-11 and the conclusion did not.** It used to
+ * read "there is no registry route this phase, and `install/program.ts` already refuses
+ * `package-manager` by name for the same reason: nothing is published." Both clauses are now false
+ * — `xplainer` is on npm and `daemon install` builds its own payload from an installed copy. What
+ * survives is why this module still takes a payload rather than finding one: `--build` assembles
+ * from *this program's own checkout*, and `--from <dir>` names a payload a caller already has.
+ * Neither resolves anything off `PATH`, which is the property the paragraph above is about.
+ *
+ * What the publish *did* change is one line in `transaction.ts`: its guard refused every
+ * `program_source` but `runtime-dir`, which silently closed `daemon update` for every npm-installed
+ * machine until `package-manager` was admitted beside it. Both are staged payload-1 runtimes,
+ * content-addressed in the same place; `explicit` and `sea-binary` are not, and are still refused.
  *
  * ## The precondition is three-way, and refusal-only
  *

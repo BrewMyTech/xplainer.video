@@ -74,6 +74,12 @@ import {
   stopDaemon,
   tailFile,
 } from "../install/lifecycle.js";
+import {
+  installedPackageRoot,
+  type MaterialisedPayload,
+  MaterialiseRefusal,
+  materialiseProgramPayload,
+} from "../install/materialise.js";
 import { currentSupervisorEnvironment } from "../install/preflight.js";
 import { type UninstallOutcome, uninstallDaemon } from "../install/uninstall.js";
 import { OperationLockRefused, withOperationLock } from "../install/update/lock.js";
@@ -165,8 +171,8 @@ function createInstallCommand(io: CliIo): Command {
     .description("Install the daemon so it starts on boot or login")
     .option(
       "--runtime <dir>",
-      "a payload-1 directory from `xplainer runtime build --out` to stage; omit it to use " +
-        "whichever runtime is already staged",
+      "a payload-1 directory from `xplainer runtime build --out` to stage; omit it and this " +
+        "builds its own from the installed package, or uses whichever runtime is already staged",
     )
     .option(
       "-p, --port <port>",
@@ -177,29 +183,74 @@ function createInstallCommand(io: CliIo): Command {
       const stateDir = resolveStateDir();
       let outcome: InstallOutcome;
       try {
-        outcome = await underOperationLock(stateDir, "install", async () =>
-          installDaemon({
-            stateDir,
-            ...(options.runtime === undefined ? {} : { payloadDir: options.runtime }),
-            ...(options.port === undefined ? {} : { port: options.port }),
-            log: (line) => {
-              io.writeOut(`xplainer daemon install: ${line}\n`);
-            },
-          }),
-        );
+        // **The argument-free install decides here, and reclaims what it builds.**
+        //
+        // With no `--runtime` and an installed package present, this builds its own payload — which
+        // is what makes `xplainer daemon install` take no arguments. The decision is in the command
+        // rather than in `install/program.ts` because building is a write and that module promises
+        // it does not write; when the promise was broken, `connect --spawn` paid for it by
+        // assembling ~174 MB to write one line of agent configuration.
+        //
+        // **The `finally` is the fix for the half that moving it did not solve.** The payload
+        // outlives this call only because `installDaemon` copies out of it, so its lifetime belongs
+        // here. An earlier shape had no `finally` and built into `<state>/runtime/` behind the
+        // prefix `listStagedRuntimes` filters — so a failed install kept ~146 MB that nothing in
+        // the product, and nothing in the test written to catch a leak, could see, while the
+        // refusal reported that everything written had been undone.
+        //
+        // **The preflight runs first, and a thunk is what makes that true.** `installDaemon`'s
+        // phase 1 is read-only and refuses on a missing setup marker, an absent supervisor or a
+        // held port; phase 3 is where a payload is wanted. So what goes in is a *function*, called
+        // at phase 3 — inside the operation lock, after every read-only refusal. Building eagerly
+        // here read correctly and behaved otherwise: a review executed the order and found 1.3 s
+        // and 146 MB spent ahead of an install about to exit 3, and both of two concurrent
+        // installers assembling before the lock turned one of them away.
+        //
+        // The locator is walked **once**, into `installRoot`: it decides the route, and asking it
+        // twice left a window in which the two answers could differ.
+        const installRoot = options.runtime === undefined ? installedPackageRoot() : null;
+        // A list rather than a `let`, so the `finally` reclaims what the thunk built without
+        // depending on narrowing across a closure boundary.
+        const built: MaterialisedPayload[] = [];
+        try {
+          const payloadDir =
+            options.runtime ??
+            (installRoot === null
+              ? undefined
+              : (): string => {
+                  const payload = materialiseProgramPayload({ locateInstall: () => installRoot });
+                  built.push(payload);
+                  return payload.payloadDir;
+                });
+          outcome = await underOperationLock(stateDir, "install", async () =>
+            installDaemon({
+              stateDir,
+              ...(payloadDir === undefined ? {} : { payloadDir }),
+              ...(installRoot === null ? {} : { source: "package-manager" as const }),
+              ...(options.port === undefined ? {} : { port: options.port }),
+              log: (line) => {
+                io.writeOut(`xplainer daemon install: ${line}\n`);
+              },
+            }),
+          );
+        } finally {
+          for (const payload of built) {
+            payload.discard();
+          }
+        }
       } catch (error) {
         const refused = reportOperationRefusal(io, "install", error);
         if (refused !== null) {
           return io.exit(refused);
         }
-        if (error instanceof InstallRefusal) {
-          io.writeErr(`xplainer daemon install: ${error.message}\n`);
-          for (const undone of error.undone) {
-            io.writeErr(`  rolled back: ${undone}\n`);
-          }
-          return io.exit(error.exitCode);
+        const refusal = describeInstallRefusal(error);
+        if (refusal === null) {
+          throw error;
         }
-        throw error;
+        for (const line of refusal.lines) {
+          io.writeErr(line);
+        }
+        return io.exit(refusal.exitCode);
       }
       io.writeOut(describeInstall(outcome));
     });
@@ -242,6 +293,43 @@ async function underOperationLock<T>(
 }
 
 /** Print a refused lock or a refused journal, and answer with its exit code, or `null` if neither. */
+/**
+ * The two refusals only `daemon install` produces, as the exact lines and code a user gets.
+ *
+ * A pure function rather than a pair of arms inside the action, because the action itself is the
+ * one thing in this file no test can drive: it reads `installedPackageRoot()`, whose answer depends
+ * on whether *this module* sits inside a `node_modules`, and in a checkout it is always `null`. So
+ * the arm that turns a failed assemble into an exit code was unreachable from the suite and
+ * unasserted — and it was missing: `MaterialiseRefusal` fell through to `throw error`, commander's
+ * `parseAsync` rejected, nothing caught it, and the user got the class printed as a stack trace
+ * with `exitCode: 3` inside the dump and a **real exit code of 1**. ADR 0020's rule for every
+ * degraded path is "exit with the documented code, and print the one command that fixes it", and
+ * the message this discards names `xplainer runtime build --out <dir>`.
+ *
+ * @returns the lines to write, newlines included, and the exit code — or `null` when `error` is
+ * not one of these two, which the caller must rethrow rather than swallow.
+ */
+export function describeInstallRefusal(
+  error: unknown,
+): { lines: string[]; exitCode: number } | null {
+  if (error instanceof InstallRefusal) {
+    return {
+      lines: [
+        `xplainer daemon install: ${error.message}\n`,
+        ...error.undone.map((undone) => `  rolled back: ${undone}\n`),
+      ],
+      exitCode: error.exitCode,
+    };
+  }
+  if (error instanceof MaterialiseRefusal) {
+    return {
+      lines: [`xplainer daemon install: ${error.message}\n`],
+      exitCode: error.exitCode,
+    };
+  }
+  return null;
+}
+
 function reportOperationRefusal(io: CliIo, verb: string, error: unknown): number | null {
   if (error instanceof OperationLockRefused) {
     io.writeErr(`xplainer daemon ${verb}: ${error.message}\n`);

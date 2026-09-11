@@ -250,7 +250,7 @@ and this directory is what that command runs.
 | `attach.ts` | `xplainer mcp --attach`: the `/healthz` skew gate, then one pumped MCP session |
 | `socket-fetch.ts` | `fetch` over a unix socket, which Node's own has no supported way to do |
 
-`xplainer mcp` is the **plugin-bundle** path — `npx -y @xplainer/cli mcp`, on a machine with nothing
+`xplainer mcp` is the **plugin-bundle** path — `npx -y xplainer mcp`, on a machine with nothing
 installed — and `--attach` is what a machine with a daemon gets. They share the *workspace* and
 deliberately not the *job store*, and because they share the workspace they take a per-video write
 lock in it: see the two invariants below.
@@ -305,17 +305,22 @@ consumer may hold its path — which is what the launcher is for.
 
 | Module | What it owns |
 |---|---|
-| `program.ts` | The four ordered sources — `explicit`, `sea-binary`, `package-manager`, `runtime-dir` — and the interpreter and entry each one resolves to |
+| `program.ts` | The four ordered sources — `explicit`, `sea-binary`, `package-manager`, `runtime-dir` — and the interpreter and entry each one resolves to. It **writes nothing and probes nothing**, and `program.test.ts` holds that by walking its transitive import graph |
+| `materialise.ts` | The one write `program.ts` may not do: a payload-1 artefact assembled out of an installed `@xplainer/cli`, built into an OS temp directory and handed to the caller with the `discard()` its `finally` must call |
 | `stage.ts` | `<state>/runtime/<version>-<digest>/`: the content-addressed name, the sibling temp dir, the one `rename`, and what is staged already |
 | `launcher.ts` | `<state>/bin/xplainer[.cmd]`: the generated two-line script, and its rewrite as one more small-file temp → rename |
 | `preflight.ts` | Every question an install asks before it writes: the setup marker, the supervisor, the program, the port, lingering, the disable record, the token file |
 | `supervisors/` | The three artefact renderers — the systemd unit, the LaunchAgent plist, the Task Scheduler document — behind one `SupervisorAdapter`, plus `identity.ts`: the three-row consistency check |
 | `testing/` | A real, small payload-1 artefact whose entry is a miniature daemon, so a launch can be proved by launching |
 
-Two of the four sources **refuse** this phase, by name: `sea-binary` is phase 4 and
-`package-manager` is what a publish adds. They are branches rather than absences because falling
-through to the default would record `runtime-dir` in the one field whose job is to say where the
-program came from. The launcher is the path `connect` writes, the desktop shells out to and
+**One** of the four sources refuses now, and it is `sea-binary`, which is phase 4. It is a branch
+rather than an absence because falling through to the default would record `runtime-dir` in the one
+field whose job is to say where the program came from. `package-manager` was the second such
+refusal until the publish of `0.0.1`, and it is now the argument-free install's own route:
+`commands/daemon.ts` asks `installedPackageRoot()`, `materialise.ts` assembles a payload out of
+what it found, and `program.ts` only **labels** the result — both sources end in an identical
+content-addressed slot, so the source is an input to `installDaemon` and never re-derived from the
+directory it produced. The launcher is the path `connect` writes, the desktop shells out to and
 `attach.ts` names in its skew message; nothing else is allowed to hold a version-scoped directory —
 with one stated exception, `connect --spawn` on a machine where the install was *refused* and so
 wrote no launcher.
@@ -885,7 +890,7 @@ Then the root procedure: `pnpm verify`.
   store is single-writer — `job_id`s are allocated from what is on disk — so an in-process `mcp`
   takes a session directory under `<state dir>/mcp/` and removes it when the session ends. It does
   **not** take `owner.lock`, deliberately: an `mcp` that refused to start because a daemon was
-  running would defeat the `npx -y @xplainer/cli mcp` bundle path it exists for. The consequence is
+  running would defeat the `npx -y xplainer mcp` bundle path it exists for. The consequence is
   documented rather than discovered: a `job_id` from one connection means nothing on another.
 - **One writer per video, across processes, and it is a lock in the *workspace*.** Owning the state
   directory says nothing about the workspace once `xplainer mcp` holds the same worker registry over

@@ -48,11 +48,26 @@ const EXPECTED_FILES = [
  * BrewMyTech/xplainer-hosted repository, so publishing it here would ship an
  * install that silently does nothing. A marketplace fetch is not retractable,
  * which is why this is asserted against the emitted bytes.
+ *
+ * The package it names is the **unscoped** `xplainer`, not `@xplainer/cli`. The
+ * two resolve to the same CLI — `packages/alias` is one pinned dependency on
+ * `@xplainer/cli` and exists to re-export its `bin` — but only one of them is a
+ * name a user is ever told. `README.md` §Installing it says `npm i -g xplainer`,
+ * and a bundle that named the scoped package left the two disagreeing about what
+ * the product is called, for no gain.
+ *
+ * `npx -y` is kept rather than the installed `xplainer` binary, because
+ * zero-install is the plugin route's whole reason to exist: `apps/cli/AGENTS.md`
+ * records `xplainer mcp` without `--attach` as "the plugin-bundle path … on a
+ * machine with nothing installed". Naming the binary would have required
+ * `npm i -g xplainer` first, which collapses that route into the npm one with
+ * extra steps, and a client that skipped it would get a server that fails to
+ * spawn rather than one that fetches itself.
  */
 const MCP_SERVER = {
   type: "stdio",
   command: "npx",
-  args: ["-y", "@xplainer/cli", "mcp"],
+  args: ["-y", "xplainer", "mcp"],
 };
 
 /** Keys that only a remote, OAuth-protected resource server would need. */
