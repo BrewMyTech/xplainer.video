@@ -82,6 +82,48 @@ pnpm --filter @xplainer/<member> test
 pnpm biome check .            # the root scripts/ and config files
 ```
 
+## Publishing a release
+
+`pnpm verify` does not cover this and neither does `check-publish-contract`, which reads a
+tarball's **contents** — licences, NOTICE, no test scaffolding, no private paths — and cannot see
+the two things that actually broke the first release attempt. Both were found by unpacking a
+tarball and reading the manifest by hand:
+
+- **`publishConfig: { access: public }` on every published member.** A scoped package defaults to
+  restricted, so without it the publish is refused as a private package on an org with no private
+  plan. npm reports this as a permissions error, which reads like a credentials problem and is not.
+- **`workspace:*` is not publishable, and this workspace cannot rewrite it.** pnpm normally
+  substitutes the real version at publish time by resolving the protocol through the *consumer's*
+  own `node_modules` — and `nodeLinker: hoisted` (above, for electron-builder) puts every member in
+  the **root** `node_modules` instead, so `pnpm pack` and `pnpm publish` both refuse with
+  `ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL`, in a package directory and recursively from the
+  root alike. Forced through with `npm publish` it would ship `workspace:*` verbatim and every
+  `npm i` would fail on `Unsupported URL Type`.
+
+So a release is published from a **one-off isolated install**, which supplies the per-consumer
+links the rewriter needs and leaves the committed configuration alone — `hoisted` exists for
+packaging the desktop app, which is not involved in publishing:
+
+```bash
+pnpm changeset version          # consumes .changeset/ into CHANGELOGs, bumps versions
+TURBO_FORCE=true pnpm verify    # the gate, on the versioned tree
+git commit && git push          # the repository records what is about to ship, first
+
+pnpm install --config.nodeLinker=isolated     # ONLY for the publish; do not commit a lockfile from it
+pnpm publish -r --no-git-checks --access public
+pnpm install                                  # restore the committed hoisted layout
+```
+
+**Verify from the registry rather than from the tarball**, because the tarball is what you already
+believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
+transitive `@xplainer/*` dependencies resolve, and run `npx -y @xplainer/cli --help` — the
+zero-install path the plugin bundles declare, and the one a published `workspace:*` would break.
+
+**2FA is interactive.** `pnpm publish` refuses with `ERR_PNPM_OTP_NON_INTERACTIVE` outside a TTY,
+which includes every agent-run shell. Either publish from a real terminal, pass `--otp` for a
+classic authenticator, or use a granular access token with *bypass 2FA* — the last is the only one
+a release workflow can use.
+
 ## The four-scripts rule
 
 Every TypeScript member declares **exactly four** scripts: `build`, `lint` (`biome check .`),
