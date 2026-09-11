@@ -10,7 +10,7 @@ leftover.
 
 | Path | What it is | Who it serves |
 | --- | --- | --- |
-| `terraform/` | An R2 bucket for release artefacts and the cached custom domain that delivers them. | Auto-update, and the first-run downloads `xplainer setup` performs — **nothing is published to it yet**, which *The delivery position, phase 2* below states in full. |
+| `terraform/` | An R2 bucket for release artefacts, the custom domain that delivers them, and the Cache Rule that makes it worth having. | Auto-update, and the first-run downloads `xplainer setup` performs — the **toolchain manifest is published** and the release artefacts are not, which *The delivery position* below states in full. |
 | `docker-compose.tts.yml` | The Kokoro TTS container on `127.0.0.1:8880`, alone. | A developer who has Docker and wants the pinned speech server in one command. |
 | `e2e/` | A Debian image that runs the end-to-end render on Linux, and its build-context filter. | Roadmap **P1-1**, whose second half is "on a headless Linux VM". |
 
@@ -145,8 +145,16 @@ that is reading it.
 
 | Platform | Browser | Speech | Roadmap **P2-4** |
 | --- | --- | --- | --- |
-| macOS, Linux | the pinned Remotion line's headless shell, on the **expected** digest a manifest named with `--manifest` carries | `--tts-url <url>`, a server you already run; or the `docker` route's pinned Kokoro-FastAPI image | **met** |
-| Windows | the same | **none of the three**: nothing is published for `bundle`, the pinned image is linux/amd64 and `windows-latest` has no engine for it, and `--tts-url` acquires nothing | **pending** |
+| macOS arm64, Linux, Windows | the pinned Remotion line's headless shell, on the **expected** digest the published manifest carries | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | **met** |
+| macOS x64 (Intel) | the same | `onnx` is structurally unavailable — `onnxruntime-node` ships no `darwin/x64` binding — so `docker`'s pinned image, or `--tts-url` | **met** |
+
+*This table said something different until 2026-09-11, and both rows were wrong by then.* The
+browser row required `--manifest` to name a reviewed copy, which was true only while the manifest
+was unpublished. The Windows row said **none of the three** speech routes was available and that
+P2-4 was **pending** there — retired by [ADR 0028](../docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)'s
+`onnx` route, which reads no manifest at all and is proven on all three platforms
+(`e2e-speech` run `34496585851`). Intel Macs are the one platform with a structural gap, and it is
+the reason the `docker` route is kept rather than retired.
 
 Two consequences of the empty bucket are worth stating plainly, because both look like defects from
 the outside:

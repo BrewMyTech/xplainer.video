@@ -167,13 +167,24 @@ describe("the program resolver", () => {
     expect(refusal.message).toContain("phase 4");
   });
 
-  it("refuses `package-manager`, because nothing is published yet", () => {
+  /**
+   * Reworded 2026-09-11. This case used to be "because nothing is published yet", and asserted
+   * only that the message contained "published" — which it would have gone on satisfying while
+   * saying something false, because `@xplainer/cli` and `xplainer` reached npm at `0.0.1` that
+   * morning and the refusal still told users nothing was published. What is actually unimplemented
+   * is the branch that locates a global install, so that is what the message has to say, and the
+   * refusal has to name the two commands that work in the meantime.
+   */
+  it("refuses `package-manager`, because the locator is unwritten — not because nothing is published", () => {
     const refusal = refusalFrom(() =>
       resolveProgram({ stateDir: freshState("published"), source: "package-manager" }),
     );
     expect(refusal.reason).toBe("unimplemented");
     expect(refusal.exitCode).toBe(NOT_IMPLEMENTED_EXIT_CODE);
-    expect(refusal.message).toContain("published");
+    expect(refusal.message).toContain("the locator for it is not written yet");
+    expect(refusal.message).toContain("xplainer runtime build --out <dir>");
+    // The retired claim, pinned absent: it was false the moment 0.0.1 was published.
+    expect(refusal.message).not.toContain("nothing is published yet");
   });
 
   it("records the source it chose in `daemon.json`", () => {

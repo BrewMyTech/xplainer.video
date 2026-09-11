@@ -164,3 +164,41 @@ would not have seen it; what caught it was reading the dependency, which is the 
 rather than the gate firing. AC-1d carries a dated note of its own saying so, and this is the second
 time the "explicit command, never an install hook" reasoning in §Decision Outcome has decided
 something — the first was `setup` itself.
+
+## Note, 2026-09-11: the manifest is published, and a published build could not take this path without it
+
+Added as a dated note rather than a rewrite. The decision is unchanged; what changed is that one
+sentence of the 2026-09-08 note above has expired and the first §Consequence has been discharged
+rather than merely booked.
+
+**"Nothing is published to R2" is retired.** That note's third paragraph opens with it, and as of
+this date it is false: `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers `200` as
+`application/json` with `cf-cache-status: HIT`, and its SHA-256 equals that of the reviewed document
+committed at `apps/cli/src/setup/toolchain.manifest.json`, which is the check the two copies are held
+to. Only the first clause goes: the same paragraph's account of the **`bundle` route having nothing
+to fetch** stands, because all four `speech` entries still read `"status": "unavailable"`. What is
+published is the manifest, not the artefacts it would name.
+
+**The first §Consequence is now a fact rather than a prediction, and one of its three pieces is
+still a hand-run command.** It books "a CDN and a version/checksum manifest become infrastructure,
+not an afterthought". The infrastructure exists and is declared: `infra/terraform` holds
+`cloudflare_r2_bucket.artifacts`, `cloudflare_r2_custom_domain.cdn` and
+`cloudflare_ruleset.cdn_cache`, so the custom domain and its Cache Rule — which `infra/README.md`
+once recorded as steps Terraform deliberately did not manage — are resources it owns. The **upload**
+is not: no command in this repository puts a file in that bucket and no workflow is scheduled to, so
+a change to the committed manifest that nobody re-publishes leaves `setup` handing users an expected
+digest for an artefact the served document no longer describes. That is the same class of drift this
+record's §Consequences names for two acquisition paths of one browser, arriving in a different place.
+
+**And this is what made the decision reachable at all from a published build, which is worth stating
+because the record could not have anticipated the mechanism.** §Decision Outcome chooses
+download-on-first-run driven by an explicit `xplainer setup`; `apps/cli/src/setup/source.ts`
+deliberately keeps the committed manifest **out** of the npm tarball, so a user is never silently
+served the copy a reviewer happens to have. An installed `xplainer` therefore
+has exactly two manifest sources, `--manifest` and the network — and while the network answered
+nothing, the browser could be acquired only by someone with a checkout or a hand-supplied file. From
+this date `xplainer setup` on a clean state directory with no flags completes at exit `0` and
+acquires browser, speech and workspace. Speech is the route that needed none of this, exactly as the
+note of 2026-09-10 argues; the browser is the one that did, and the digest it is admitted on is still
+an *expected* value captured at manifest-build time rather than a trust anchor, which the note of
+2026-09-08 states in full and this note does not weaken.

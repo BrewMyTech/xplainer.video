@@ -177,7 +177,7 @@ export function createSetupCommand(io: CliIo): Command {
           `xplainer setup: --speech ${route} is not a route. It takes ` +
             `${PINNABLE_SPEECH_ROUTES.join(" or ")} — the two routes that acquire something. For a ` +
             "server you already run pass `--tts-url <url>` instead; the bundle route reads the " +
-            "published manifest and nothing is published to it in this phase.\n",
+            "published manifest, which carries no bundle for any platform yet.\n",
         );
         io.exit(USAGE_EXIT_CODE);
       }

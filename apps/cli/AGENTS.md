@@ -463,10 +463,14 @@ platform cannot spawn.
 `e2e-toolchain.yml`'s Windows leg is green and its D8 phase does run `setup --workspace`, but out of
 a **relocated payload 1**, so `hostRuntimeDir()` answers and it takes the interpreter-plus-script
 form; its phase 4 sets `XPLAINER_WORKSPACE_PAYLOAD` and takes the `copy` route, which spawns
-nothing. That workflow's `windows-delivery-position` job does run the CLI from the checkout, but it
-refuses at the **browser** — `setup`'s order is browser, speech, workspace — and never reaches the
-provider. The unit test asserted the launcher rather than questioning it. `pnpm e2e:speech` is the
-first thing in this repository to run the resolve route on Windows, and it is what found this.
+nothing. That workflow's third job did run the CLI from the checkout, but while it was
+`windows-delivery-position` it refused at the **browser** — `setup`'s order is browser, speech,
+workspace — and never reached the provider. The unit test asserted the launcher rather than
+questioning it. `pnpm e2e:speech` is the first thing in this repository to run the resolve route on
+Windows, and it is what found this. Since 2026-09-11 that job is
+`windows-setup-from-a-checkout` and reaching the third component is its whole point, so this
+particular blind spot is **closed** rather than merely described: nothing in this repository now
+depends on `e2e:speech` alone to exercise the resolve route on Windows.
 `InstallHost` — `platform`, `execPath` and `path` as arguments, the same seam
 `install/supervisors/`'s three renderers take — is what makes the `win32` argv assertable from a
 suite on the other two platforms, since this package mocks nothing.
@@ -504,45 +508,71 @@ and the browser it acquired, and asserts a **PNG** out of the daemon each recove
 `pnpm e2e:toolchain`'s last phase and is spawned by it; it is never part of `pnpm verify`.
 
 **The manifest is fetched from `cdn.<zone_name>` and never from `r2.dev`.** `infra/terraform`
-provisions exactly one hostname — `main.tf`'s `local.cdn_hostname`, a **proxied** CNAME onto the
-bucket — and its own comment gives the reason: the bucket's `r2.dev` URL "is explicitly not cached
+declares exactly one hostname — `main.tf`'s `local.cdn_hostname`, attached to the bucket by
+`cloudflare_r2_custom_domain.cdn`, which creates and owns the proxied record itself rather than
+leaving one for a `cloudflare_dns_record` to write — and its own comment gives the reason: the
+bucket's `r2.dev` URL "is explicitly not cached
 by Cloudflare, so serving a ~110 MB CLI binary or a several-hundred-megabyte voice pack from it
 would pay origin egress on every single download". `toolchainManifestUrl()` refuses an `r2.dev`
 zone rather than trusting nobody will type one, and a **speech** entry served from any other host
 is refused when the manifest is parsed. Chrome's host is not checked that way, deliberately: its
 URL is chosen by the selector, not by the document.
 
-**Nothing is published to that hostname in this phase, and the refusal says so.** `terraform`
-creates the bucket and the record; connecting the bucket to the custom domain and adding its Cache
-Rule are manual steps it deliberately does not manage, neither is scheduled here, and no command in
-this repository uploads a manifest — so the published address answers nothing usable, deliberately.
-`deliveryPosition()` is the paragraph `ManifestUnreachable` carries, and it is now **one message for
-every platform**: three of the four speech routes read no manifest at all (`--tts-url`, the `docker`
-image pinned by digest, and the in-process `onnx` route), only `bundle` does, and what genuinely is
-waiting on the address is the **browser's** expected digest. It used to carry a second, harder
-paragraph for Windows — no working speech route at all, phase 4 as the milestone — and the `onnx`
-route is what removed it: `win32-x64` and `win32-arm64` are both in `onnxruntime-node`'s published
-set, so the asymmetry P2-4 recorded has gone rather than merely become unreachable, and a sentence
-saying Windows has no speech would now be the most confidently wrong line in the product.
-`infra/README.md` §*The delivery position, phase 2* is where the infrastructure half is recorded.
-**`.github/workflows/e2e-toolchain.yml`'s `windows-delivery-position` job is what reads this message
-back on Windows**, and since 2026-09-10 it asserts what is true now — the delivery position, the
-`onnx` bullet by name, and the **browser's** digest as the one thing waiting on the address — with
-the three retired sentences asserted *absent* so the claim cannot come back by accident. It is
-`workflow_dispatch` only and registers from the default branch, so nothing in `pnpm verify` or in CI
-sees it first: a change to `deliveryPosition()`'s wording has to be made in that job in the same
-commit or it is discovered on the next dispatch.
+**The manifest is published to that hostname; nothing else of ours is, and no command here uploads
+anything.** Measured 2026-09-11: `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers
+`200` as `application/json` with `cf-cache-status: HIT`, and its SHA-256 equals that of the committed
+`toolchain.manifest.json` — the two are expected to be byte-identical and that digest is the check.
+All three pieces of infrastructure behind it are now declared (`cloudflare_r2_bucket.artifacts`,
+`cloudflare_r2_custom_domain.cdn`, `cloudflare_ruleset.cdn_cache`), so **connecting the domain and
+adding its Cache Rule have stopped being manual steps**; `infra/README.md` §*The delivery position*
+records the infrastructure half, and the section above it carries the measurement against the real
+zone that retired the claim those two were not Terraform's to own — R2 creates the DNS record itself,
+which is why the hand-rolled `cloudflare_dns_record` is gone. What is still manual is the **upload**:
+no command in this repository puts a file in
+that bucket and no workflow is scheduled to, so re-publishing after a change to
+`toolchain.manifest.json` is something a release owner has to remember, and forgetting it leaves
+`setup` handing users an expected digest for an artefact the served document no longer describes.
+**Publishing it was not a convenience.** `source.ts` keeps the committed copy out of the published
+tarball, so an installed `xplainer` has exactly two manifest sources — `--manifest` and the network —
+and while the address answered nothing, `setup` could not acquire a browser for any user without a
+checkout.
 
-**That job's green square proves less than it looks like it does, and the reason is worth keeping in
-view.** It is the one place in this repository that runs `xplainer setup` from a **checkout** on
-Windows — no staged payload 1, so `hostRuntimeDir()` answers `null` — which is precisely the
-configuration that could not work at all until 2026-09-10 (see the `npm-cli.js` paragraph above). It
-stayed green because it refuses at the **browser**, and `setup`'s component order is browser, then
-speech, then workspace: the job asserts a *refusal* and never reaches the second component, let
-alone the third. So it was one gate away from catching a shipped Windows defect from B6 onward, and
-it caught nothing. Anything added here that widens what it reaches — a manifest it can actually read,
-a `--skip-*` that lets it past the browser — is a job whose meaning has changed, and worth saying so
-in the same commit.
+**The per-platform speech bundles are still unpublished, and that is phase 4 rather than a
+breakage.** All four `speech` entries say `"status": "unavailable"` and their `reason` strings name
+the milestone and the route that needs no bundle. Three of the four speech routes read no manifest
+at all (`--tts-url`, the `docker` image pinned by digest, and the in-process `onnx` route), only
+`bundle` does, and what genuinely needed this address was the **browser's** expected digest.
+`deliveryPosition()` is the paragraph `ManifestUnreachable` carries when the address cannot be
+reached, and it is **one message for every platform**: it used to carry a second, harder paragraph
+for Windows — no working speech route at all, phase 4 as the milestone — and the `onnx` route is what
+removed it: `win32-x64` and `win32-arm64` are both in `onnxruntime-node`'s published set, so the
+asymmetry P2-4 recorded has gone rather than merely become unreachable, and a sentence saying Windows
+has no speech would now be the most confidently wrong line in the product.
+**No workflow reads that message back any more, and `manifest.test.ts` is where it is asserted
+instead.** `.github/workflows/e2e-toolchain.yml`'s Windows job carried it from 2026-09-10 as
+`windows-delivery-position` — the delivery position, the `onnx` bullet by name, the **browser's**
+digest as the one thing waiting on the address, and the three retired sentences asserted *absent* so
+the claim could not come back by accident — and the publish of 2026-09-11 killed that job's premise
+rather than its wording. **It could not be rescued by forcing the refusal from the CLI.**
+`ManifestUnreachable` is thrown only when the published URL fails **and** no committed copy sits
+beside the build, and `--manifest` deliberately does not fall through when the source it names
+fails, so no flag reaches that branch. The message is therefore asserted per-platform in
+`manifest.test.ts` by calling `deliveryPosition()` directly, `win32-x64` included — a unit test in
+`pnpm verify`, where the old assertion was a `workflow_dispatch` job nothing saw first.
+
+**What the job asserts now is strictly more, and it closes the gap the `npm-cli.js` paragraph above
+is about.** It is `windows-setup-from-a-checkout`, and it is still the one place in this repository
+that runs `xplainer setup` from a **checkout** on Windows — no staged payload 1, so
+`hostRuntimeDir()` answers `null` and the workspace provider takes its **resolve** route, which is
+precisely the configuration that could not work at all until 2026-09-10 (see the `npm-cli.js`
+paragraph above). While it asserted a refusal it stopped at the **browser**, and `setup`'s component
+order is browser, then speech, then workspace: it never reached the second component, let alone the
+third, so it was one gate away from catching a shipped Windows defect from B6 onward and it caught
+nothing. It now asserts `setup` **exits `0`** and acquires all three — the manifest line naming the
+published URL, so the document came over the network rather than from a copy no published build
+carries; `speech: took the onnx route`; the workspace; and `toolchain.json` parsing with
+`speech.provider === "onnx"`. It is still `workflow_dispatch` only and still registers from the
+default branch, so what changed is what a dispatch means, not when one happens.
 
 **The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
 `@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on

@@ -12,10 +12,15 @@ things that path does not cover:
 - **a daemon reachable from another machine**, which ADR 0020 §Security R-SEC-9 makes a list of five
   requirements rather than a flag. §5.
 
-Two facts to have before anything below. **Nothing is published to npm yet**, so `xplainer` on
-`PATH` is either the stable launcher an install wrote (`<state>/bin/xplainer`) or a checkout you run
-as `node apps/cli/dist/bin.js`; every command here is written as `xplainer …` and both forms are
-interchangeable. And **the exit codes are a single table** in
+Two facts to have before anything below. **`xplainer` on `PATH` is one of three things**: the stable
+launcher an install wrote (`<state>/bin/xplainer`), a checkout you run as
+`node apps/cli/dist/bin.js`, or — since `@xplainer/cli` and the unscoped `xplainer` alias reached npm
+at `0.0.1` on 2026-09-11 — an `npm i -g xplainer` or an `npx -y xplainer`. Every command here is
+written as `xplainer …` and the forms are interchangeable for running one, with the exception §1
+turns on: `daemon install` takes its program from a **payload-1 directory**, because
+`install/program.ts`'s `package-manager` source is still a refusal naming the phase that implements
+it, so a globally installed `xplainer` is a way to run these commands and not yet a way to install
+the daemon. And **the exit codes are a single table** in
 [`docs/ARCHITECTURE.md` §6](ARCHITECTURE.md#6-the-runtime); this file names codes and does not
 restate their meanings.
 
@@ -282,8 +287,10 @@ The interpreter and the entry are named explicitly because the payload carries i
 the image need not have one on `PATH` — `bin/node` and
 `lib/node_modules/@xplainer/cli/dist/bin.js` are what `runtime.manifest.json` calls the launch pair.
 The image must carry that runtime: a payload built by `xplainer runtime build --out` on a machine of
-the same OS **and architecture** (it copies the build host's own interpreter), or, while nothing is
-published, a checkout run as `node <checkout>/apps/cli/dist/bin.js serve`. Use a **glibc** base —
+the same OS **and architecture** (it copies the build host's own interpreter), or a checkout run as
+`node <checkout>/apps/cli/dist/bin.js serve`, or the published package installed into the image —
+which is a way to run `serve` rather than a supervised install, for the reason the two facts at the
+head of this file give. Use a **glibc** base —
 `node:24-bookworm-slim` is the floor this repository already uses — for the reason in §7.1.
 
 *Measured, Docker 29.4.0 on macOS/arm64, 2026-09-08.* `node:24-bookworm-slim` with the checkout

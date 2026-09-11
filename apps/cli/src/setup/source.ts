@@ -16,13 +16,21 @@
  *    stated
  *    boundary, and a published `xplainer setup` has exactly two sources rather than a silent third.
  *
- * **Nothing is published to `cdn.xplainer.video` in this phase** (§2.5): the custom-domain
- * connection and the Cache Rule are manual steps Terraform does not manage. So on a machine running
- * a published build, source 2 fails and source 3 is not there, and the refusal has to say so in
- * terms a user can act on rather than reporting a DNS error. {@link ManifestUnreachable} is that
- * refusal, and it carries `manifest.ts`'s {@link deliveryPosition} — why the address is empty, who
- * would have published to it, and which speech routes still work on the machine reading the
- * message, which on Windows is none of them.
+ * **The manifest is published, since 2026-09-11**, and this paragraph used to say the opposite: that
+ * nothing was published to `cdn.xplainer.video` because the custom-domain connection and the Cache
+ * Rule were manual steps Terraform did not manage. Both are now declared in `infra/terraform`, the
+ * address answers `200`, and source 2 is the one a published build actually reads.
+ *
+ * **That makes the two-source rule above a real constraint rather than a footnote.** Between the
+ * first npm publish and the manifest upload, a published build had two sources where one had never
+ * been filled and the other was deliberately excluded from the tarball — so `setup` could not
+ * acquire a browser for anybody without a checkout. Source 3's boundary is correct and stays; what
+ * it means is that publishing the CLI and publishing the manifest are one release step, not two.
+ *
+ * So a failure at source 2 is now a **failure** — no route, a proxy, DNS, or an outage — and
+ * {@link ManifestUnreachable} says that rather than explaining an empty address. It carries
+ * `manifest.ts`'s {@link deliveryPosition}, which names the likely causes and which speech routes
+ * are unaffected: three of the four read no manifest at all, on every platform including Windows.
  */
 
 import { existsSync, readFileSync } from "node:fs";
