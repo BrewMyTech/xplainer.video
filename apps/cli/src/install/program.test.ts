@@ -295,6 +295,35 @@ describe("the program resolver", () => {
         "not-absolute",
       );
 
+      // **And the resolver imports no writing function at all**, which is the race-free way to
+      // observe "writes nothing" and the assertion that should have been here instead of a diff of
+      // a shared temp directory. `program.ts`'s own `node:fs` import is the whole of its access to
+      // the filesystem: every write in this codebase goes through one of these names, so an
+      // allowlist over that one import line is a property rather than a sample of one run.
+      //
+      // It is deliberately about `program.ts` and NOT about its closure, because the closure is not
+      // write-free and cannot be: `install/stage.ts` is in it — pinned, in the set below — and
+      // carries `stageRuntime` and six write calls. What the pinned closure buys is that the
+      // *assembler* is unreachable; what this buys is that this module writes nothing itself. Two
+      // different properties, and conflating them is an error I made in this criterion's own
+      // amendment before checking it.
+      const fsImport = /import \{([^}]*)\} from "node:fs";/.exec(
+        readFileSync(new URL("program.ts", import.meta.url), "utf8"),
+      );
+      const fsBindings = (fsImport?.[1] ?? "")
+        .split(",")
+        .map((binding) => binding.trim())
+        .filter((binding) => binding !== "");
+      expect(
+        fsBindings.length,
+        "program.ts must import from node:fs to be checked",
+      ).toBeGreaterThan(0);
+      expect(
+        fsBindings.every((binding) =>
+          /^(read|stat|lstat|exists|access|realpath|opendir)/.test(binding),
+        ),
+      ).toBe(true);
+
       // Neither tree moved, and `<state>/runtime` was never created.
       expect(treeOf(stateDir)).toEqual(before.state);
       expect(treeOf(installRoot)).toEqual(before.install);
