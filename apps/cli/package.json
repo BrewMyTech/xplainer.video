@@ -45,6 +45,7 @@
     "@xplainer/mcp-server": "workspace:*",
     "@xplainer/protocol": "workspace:*",
     "@xplainer/render-core": "workspace:*",
+    "@xplainer/skill": "workspace:*",
     "@xplainer/tts-client": "workspace:*",
     "commander": "15.0.0",
     "hono": "4.13.5"

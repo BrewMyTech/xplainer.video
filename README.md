@@ -13,17 +13,12 @@ client, the render core, the MCP tool contract, and the agent skill that drives 
 
 ## Quick setup
 
-Five commands, then ask for a video. Works on macOS, Linux and Windows.
+Three commands, then ask for a video. Works on macOS, Linux and Windows.
 
 ```bash
 npm i -g xplainer          # the unscoped alias; forwards to @xplainer/cli
 xplainer setup             # browser + a speech route + the render workspace (~2 min, once)
-xplainer connect claude    # writes one stdio MCP entry into ~/.claude.json
-
-# The skill: the tools give an agent the capability, this gives it the method.
-mkdir -p ~/.claude/skills/xplainer
-curl -sL "$(npm view @xplainer/skill dist.tarball)" \
-  | tar -xzO package/SKILL.md > ~/.claude/skills/xplainer/SKILL.md
+xplainer connect claude    # the MCP entry AND the skill an agent reads before driving it
 ```
 
 Then in Claude Code:
@@ -43,11 +38,13 @@ and the tool's own answer gives you the path.
 
 **Three things worth knowing before you start.** `setup` is not optional and no agent can do it for
 you: it downloads a headless browser and resolves the render workspace, and the render tools refuse
-without it. The **skill step is the one people skip** — an agent with the tools and no `SKILL.md`
-will improvise the scene composition and the pacing, and the result looks like it. And a first
-render is slower than the ones after it, because the speech model and the browser are fetched once.
+without it. `connect` writes **two** things — the stdio MCP entry and
+`~/.claude/skills/xplainer/SKILL.md`, the instructions an agent reads before it composes a scene —
+so **re-running it after `npm i -g xplainer@latest` is how you update both**; it reports each as
+written or already current. And a first render is slower than the ones after it, because the speech
+model and the browser are fetched once.
 
-For `codex` instead of Claude: `xplainer connect codex`, and the same `SKILL.md` goes to
+For `codex` instead of Claude: `xplainer connect codex` does the same, with the skill at
 `~/.codex/skills/xplainer/SKILL.md`.
 
 The daemon is **opt-in** and nothing above needs it — see [The daemon, if you want it](#the-daemon-if-you-want-it)
@@ -78,8 +75,9 @@ for what it adds, and [Installing it](#installing-it) for the other two install 
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
 > **What is not done, said plainly.** `npm i -g xplainer` is a real install route: the six
-> `@xplainer/*` packages and the unscoped `xplainer` alias in `packages/alias` are all on npm at
-> `0.0.1`, so `xplainer` is a command you have rather than a package you assemble. The daemon is
+> `@xplainer/*` packages and the unscoped `xplainer` alias in `packages/alias` are all on npm — the
+> CLI, the alias and the skill at `0.0.2`, the other four at `0.0.1` — so `xplainer` is a command you
+> have rather than a package you assemble. The daemon is
 > **opt-in rather than hand-built**: `xplainer daemon install` takes no arguments on a machine that
 > installed from npm, building its own relocatable payload — about 150 MB — out of that install,
 > and `--runtime` stays the route for a checkout, for CI and for a machine with no registry access.
@@ -144,21 +142,16 @@ in the repository. So an install declares the MCP server and ships no instructio
 Until that is closed ([ROADMAP](docs/ROADMAP.md) phase 4, where it blocks **P4-3**), an agent driven
 through this route is working without them.
 
-**No route below installs it either, and that is worth saying plainly rather than implying
-otherwise.** `xplainer connect` writes one stdio entry and nothing else; neither published tarball
-carries a `SKILL.md` (`files` is `dist`, `LICENSE`, `NOTICE`); and nothing has an install hook that
-could place one. So until P4-3 closes, the skill is a deliberate one-line step on every route:
+**The two routes below do install it**, because `xplainer connect` writes the skill beside the MCP
+entry — `~/.claude/skills/xplainer/SKILL.md`, or `~/.codex/` for Codex — out of the `@xplainer/skill`
+the CLI depends on. It had not, for one release: `connect` wrote the transport and not the method,
+which is how an agent ends up with eight tools and no instructions. Re-running `connect` after an
+upgrade refreshes both, and reports each as written or already current.
 
-```bash
-mkdir -p ~/.claude/skills/xplainer
-curl -sL "$(npm view @xplainer/skill dist.tarball)" \
-  | tar -xzO package/SKILL.md > ~/.claude/skills/xplainer/SKILL.md
-```
-
-`@xplainer/skill` ships it at `package/SKILL.md` and again at
-`package/dist/claude-plugin/skills/xplainer/SKILL.md`, which is the layout a plugin is read from —
-`packages/skill/src/build.test.ts` compares the two byte-for-byte, so there is one reviewed copy and
-no second version to drift. For Codex, the same file goes to `~/.codex/skills/xplainer/SKILL.md`.
+So the gap is now specific to **this** route: `/plugin install` cannot deliver the skill while the
+marketplace `source` points at a directory with no `skills/`. There is one reviewed `SKILL.md` and
+`packages/skill/src/build.test.ts` compares it byte-for-byte against both bundles, so whichever way
+P4-3 is closed, there is no second copy to drift.
 
 Nothing has to be installed globally for that server to start: `npx` fetches the CLI the first time
 and caches it under `~/.npm/_npx`. What no bundle can do for you is `setup`, so run it once, from

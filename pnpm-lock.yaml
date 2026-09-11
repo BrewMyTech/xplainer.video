@@ -59,6 +59,9 @@ importers:
       '@xplainer/render-core':
         specifier: workspace:*
         version: file:packages/render-core
+      '@xplainer/skill':
+        specifier: workspace:*
+        version: file:packages/skill
       '@xplainer/tts-client':
         specifier: workspace:*
         version: file:packages/tts-client
@@ -2138,6 +2141,9 @@ packages:
 
   '@xplainer/render-core@file:packages/render-core':
     resolution: {directory: packages/render-core, type: directory}
+
+  '@xplainer/skill@file:packages/skill':
+    resolution: {directory: packages/skill, type: directory}
 
   '@xplainer/tts-client@file:packages/tts-client':
     resolution: {directory: packages/tts-client, type: directory}
@@ -6026,6 +6032,7 @@ snapshots:
       '@xplainer/mcp-server': file:packages/mcp-server(supports-color@8.1.1)
       '@xplainer/protocol': file:packages/protocol
       '@xplainer/render-core': file:packages/render-core
+      '@xplainer/skill': file:packages/skill
       '@xplainer/tts-client': file:packages/tts-client
       commander: 15.0.0
       hono: 4.13.5
@@ -6053,6 +6060,8 @@ snapshots:
     dependencies:
       '@xplainer/protocol': file:packages/protocol
       '@xplainer/tts-client': file:packages/tts-client
+
+  '@xplainer/skill@file:packages/skill': {}
 
   '@xplainer/tts-client@file:packages/tts-client': {}
 

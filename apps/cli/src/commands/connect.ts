@@ -60,6 +60,7 @@ import {
 import { describeEntry, findOnPath, resolveStdioEntry, type StdioEntry } from "../connect/entry.js";
 import { type PreflightResult, preflightDaemon } from "../connect/preflight.js";
 import { ConnectRefusal } from "../connect/refusal.js";
+import { installSkill, type SkillClient } from "../connect/skill.js";
 import { resolveSpawnEntry } from "../connect/spawn.js";
 import type { VendorCliResult } from "../connect/vendor-cli.js";
 import { StateFileUnreadableError } from "../daemon/daemon-state.js";
@@ -180,12 +181,35 @@ function vendorFailed(
   return io.exit(DAEMON_INTERNAL_EXIT_CODE);
 }
 
-/** The summary both verbs print: a headline, then the facts, indented. */
-function report(io: CliIo, agent: string, lines: readonly string[]): void {
+/**
+ * Install the skill, then print the summary both verbs end with.
+ *
+ * **The skill is written here because every successful path goes through this function**, and
+ * `connect` had shipped for a release writing the transport and not the method: eight tools with no
+ * instructions, which an agent then improvises. Four exits reach this point — the vendor CLI and the
+ * direct writer, for each of two agents — and putting the write at any one of them would have left
+ * the other three half-configured. The name says the side effect for the same reason.
+ *
+ * A refusal to write the skill is **not** fatal to the registration that already happened: the MCP
+ * entry is on disk by now, so this reports the failure and the command still exits `0`. Saying
+ * "registered" and then exiting non-zero would be the worse answer — a user would re-run a command
+ * whose first half had already succeeded.
+ */
+function finish(io: CliIo, agent: SkillClient, lines: readonly string[]): void {
+  const skill: string[] = [];
+  try {
+    const installed = installSkill(agent);
+    skill.push(`  skill:   ${installed.updated ? "wrote" : "already current"} ${installed.path}`);
+  } catch (error) {
+    io.writeErr(
+      `xplainer connect ${agent}: the MCP server is registered, but the skill was not written: ` +
+        `${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
   io.writeOut(
     `xplainer connect ${agent}: registered the MCP server "xplainer" with ${
       agent === "claude" ? "Claude Code" : "Codex CLI"
-    }.\n${lines.join("\n")}\n`,
+    }.\n${[...lines, ...skill].join("\n")}\n`,
   );
 }
 
@@ -237,7 +261,7 @@ function createClaudeCommand(io: CliIo): Command {
           `  via:     ${claude} mcp add, at ${options.scope} scope` +
             (registration.replaced ? ", replacing the entry that was there" : ""),
         );
-        report(io, "claude", lines);
+        finish(io, "claude", lines);
         return;
       }
 
@@ -262,7 +286,7 @@ function createClaudeCommand(io: CliIo): Command {
         `  note:    \`${CLAUDE_CLI}\` is not on PATH, so the ${CLAUDE_DEFAULT_SCOPE}-scope file ` +
           "was written directly.",
       );
-      report(io, "claude", lines);
+      finish(io, "claude", lines);
     });
 }
 
@@ -296,7 +320,7 @@ function createCodexCommand(io: CliIo): Command {
           );
         }
         lines.push(`  via:     ${codex} mcp add`);
-        report(io, "codex", lines);
+        finish(io, "codex", lines);
         return;
       }
 
@@ -306,7 +330,7 @@ function createCodexCommand(io: CliIo): Command {
         `  wrote:   ${path} ([${CODEX_TABLE_PATH.join(".")}], ` +
           `${written.replaced ? "replacing the table that was there" : "a new table"})`,
       );
-      report(io, "codex", lines);
+      finish(io, "codex", lines);
     });
 }
 
