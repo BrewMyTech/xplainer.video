@@ -100,7 +100,23 @@ skills at `<plugin>/skills/<name>/SKILL.md`. `pnpm --filter @xplainer/skill buil
 exactly that path — but into `dist/`, which is not committed, and a marketplace can only read what is
 in the repository. So an install declares the MCP server and ships no instructions for using it.
 Until that is closed ([ROADMAP](docs/ROADMAP.md) phase 4, where it blocks **P4-3**), an agent driven
-through this route is working without them, and **the two routes below give you both halves**.
+through this route is working without them.
+
+**No route below installs it either, and that is worth saying plainly rather than implying
+otherwise.** `xplainer connect` writes one stdio entry and nothing else; neither published tarball
+carries a `SKILL.md` (`files` is `dist`, `LICENSE`, `NOTICE`); and nothing has an install hook that
+could place one. So until P4-3 closes, the skill is a deliberate one-line step on every route:
+
+```bash
+mkdir -p ~/.claude/skills/xplainer
+curl -sL "$(npm view @xplainer/skill dist.tarball)" \
+  | tar -xzO package/SKILL.md > ~/.claude/skills/xplainer/SKILL.md
+```
+
+`@xplainer/skill` ships it at `package/SKILL.md` and again at
+`package/dist/claude-plugin/skills/xplainer/SKILL.md`, which is the layout a plugin is read from —
+`packages/skill/src/build.test.ts` compares the two byte-for-byte, so there is one reviewed copy and
+no second version to drift. For Codex, the same file goes to `~/.codex/skills/xplainer/SKILL.md`.
 
 Nothing has to be installed globally for that server to start: `npx` fetches the CLI the first time
 and caches it under `~/.npm/_npx`. What no bundle can do for you is `setup`, so run it once, from
