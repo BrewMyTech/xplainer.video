@@ -49,7 +49,7 @@ import {
 import { CHILD_CLI, spawnEntry } from "../daemon/testing/spawn-child.js";
 import { InstallRefusal, installDaemon } from "./install.js";
 import { launcherPath } from "./launcher.js";
-import { materialiseProgramPayload } from "./materialise.js";
+import { MaterialiseRefusal, materialiseProgramPayload } from "./materialise.js";
 import {
   type InstallPreflight,
   type ProbeCommand,
@@ -525,6 +525,57 @@ describe("daemon install — the refusal writes nothing", () => {
     },
     SPAWN_TIMEOUT_MS,
   );
+
+  /**
+   * A payload that will not build, refused **after** lingering was enabled.
+   *
+   * This is the defect moving the build bought, and it is the reason the thunk is called inside the
+   * `try` rather than beside it. Phase 2 is the step immediately above phase 3 and it *writes*: it
+   * runs `loginctl enable-linger` and pushes the undo that turns it off. An earlier shape called
+   * the thunk just above the `try`, under a comment asserting "nothing has been written at this
+   * point" — so a refusal from the builder propagated raw, `rollback()` never ran, the marker
+   * stayed, and phase 7 never recorded `linger_enabled_by_us`, which is what `uninstall` would
+   * have needed to take it away later. The machine was left changed by an install that refused.
+   *
+   * So this asserts the three things that were false: the refusal is an `InstallRefusal` carrying
+   * the builder's own exit code and sentence, the marker is gone, and the rollback says so.
+   */
+  it("rolls back the linger marker when the payload builder refuses", async () => {
+    const root = scratchDirectory();
+    const stateDir = installableState();
+    const environment = fixtureEnvironment(root);
+    const lingerDir = String(environment.lingerDir);
+    mkdirSync(lingerDir, { recursive: true });
+    const harness = supervisorHarness({ stateDir, lingerMarker: join(lingerDir, "tester") });
+
+    const refusal = await installDaemon({
+      stateDir,
+      payloadDir: () => {
+        throw new MaterialiseRefusal(
+          "not-a-payload",
+          "the install at /x could not be assembled into a payload: ENOSPC",
+        );
+      },
+      source: "package-manager",
+      port: 0,
+      platform: "linux",
+      environment,
+      run: harness.run,
+    }).catch((error: unknown) => error);
+
+    // The builder's refusal arrives as the class that carries a rollback, not as itself: a raw
+    // MaterialiseRefusal out of here is a refusal that undid nothing.
+    expect(refusal).toBeInstanceOf(InstallRefusal);
+    expect((refusal as InstallRefusal).phase).toBe("stage");
+    expect((refusal as InstallRefusal).exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+    // The cause survives verbatim, because a reader who is out of disk needs to see ENOSPC.
+    expect((refusal as InstallRefusal).message).toContain("ENOSPC");
+    // And the machine is as it was found: lingering off, and the undo named in the report.
+    expect(existsSync(join(lingerDir, "tester"))).toBe(false);
+    expect(harness.commands).toContain("loginctl --no-ask-password disable-linger tester");
+    expect((refusal as InstallRefusal).undone.join("\n")).toContain("disabled lingering");
+    expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
+  });
 
   /**
    * The Windows half of the same obligation, and the one location no renderer produces: the task

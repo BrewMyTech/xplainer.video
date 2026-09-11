@@ -12,9 +12,20 @@
  * about the result. The two refusals reach no assembler and stay separate.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { MaterialiseRefusal, materialiseProgramPayload } from "./materialise.js";
@@ -72,6 +83,71 @@ describe("materialiseProgramPayload", () => {
     expect(() => {
       built.discard();
     }).not.toThrow();
+  }, 60_000);
+
+  /**
+   * A relative symlink inside a shipped package tree stays relative, so the payload can move.
+   *
+   * `cpSync` does **not** do this by default: Node resolves a symlink's target against the source
+   * location unless `verbatimSymlinks` is set, so a link reading `../dist/bin.js` arrived in the
+   * payload as an absolute path back into the npm install — the exact directory the payload exists
+   * to stop depending on, since a `PATH` copy dies on the next `nvm install` and so does an
+   * absolute link into it.
+   *
+   * **It was silent in both directions, which is why this is asserted on the recorded target and
+   * on the resolved one.** `scanTree` records whatever the copy produced, so `verifyRuntimePayload`
+   * compared the link against the rewritten value and answered `ok: true`; and `bin/npm` is correct
+   * however this is set, because the assembler creates that one with `symlinkSync` — so the one
+   * link a reader would spot-check is the one that cannot be wrong. No package in today's closure
+   * ships an internal symlink, so nothing was broken yet and the trigger would have been a
+   * dependency-tree change rather than a code change: nobody's review would have seen the day it
+   * started.
+   */
+  it("keeps a package's own relative symlink relative, so the payload stays relocatable", () => {
+    const root = mkdtempSync(join(scratch, "symlinked-"));
+    const aliasDir = writeInstalledPackage({ root, version: "0.0.1" });
+    const cliDir = join(aliasDir, "node_modules", "@xplainer", "cli");
+    // A package that ships a directory of its own holding a relative link into its `dist/`, which
+    // is the shape `files: ["dist/**", "vendor/**"]` produces and what `installExternal` copies.
+    mkdirSync(join(cliDir, "vendor"), { recursive: true });
+    const target = join("..", "dist", "bin.js");
+    symlinkSync(target, join(cliDir, "vendor", "entry.js"));
+    writeFileSync(
+      join(cliDir, "package.json"),
+      JSON.stringify({
+        name: "@xplainer/cli",
+        version: "0.0.1",
+        bin: { xplainer: "./dist/bin.js" },
+        files: ["dist/**/*.js", "vendor/**"],
+      }),
+    );
+
+    const built = materialiseProgramPayload({ locateInstall: () => aliasDir });
+
+    const manifest = JSON.parse(
+      readFileSync(join(built.payloadDir, "runtime.manifest.json"), "utf8"),
+    ) as { links: { path: string; target: string }[] };
+    const vendored = manifest.links.find((link) => link.path.endsWith("vendor/entry.js"));
+    // Recorded as it was written, not as the copy resolved it.
+    expect(vendored?.target).toBe(target.split(sep).join("/"));
+    expect(manifest.links.every((link) => !isAbsolute(link.target))).toBe(true);
+
+    // And it resolves to a file, inside the payload, from where the payload now is — which is the
+    // property the target being relative is only evidence for.
+    const link = join(
+      built.payloadDir,
+      "lib",
+      "node_modules",
+      "@xplainer",
+      "cli",
+      "vendor",
+      "entry.js",
+    );
+    const resolved = realpathSync(link);
+    expect(resolved.startsWith(realpathSync(built.payloadDir))).toBe(true);
+    expect(statSync(resolved).isFile()).toBe(true);
+
+    built.discard();
   }, 60_000);
 
   it("refuses when the locator finds no installed package, and names what to do instead", () => {

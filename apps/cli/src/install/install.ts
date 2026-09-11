@@ -436,20 +436,27 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
   // being a pure question. `request.source` carries the one fact the directory cannot — that the
   // bytes came from a registry rather than somebody's working copy.
   //
-  // **And a payload that has to be *built* is built here, not at the call site.** A thunk is called
-  // at this line, which is below phase 1 and inside the caller's operation lock, so the read-only
-  // refusals — no setup marker, no supervisor, a held port — all happen before anything assembles.
-  // A refusal from the thunk itself propagates: nothing has been written at this point, and the
-  // materialiser reclaims its own temp directory before it throws.
+  // **And a payload that has to be *built* is built here, not at the call site** — a thunk, called
+  // below phase 1 and inside the caller's operation lock, so the read-only refusals (no setup
+  // marker, no supervisor, a held port) all happen before anything assembles.
+  //
+  // **The thunk is called INSIDE the try, and that is the whole of a second defect.** An earlier
+  // shape called it just above, with a comment claiming "nothing has been written at this point" —
+  // and phase 2 is immediately above this one and enables lingering, pushing the undo that turns it
+  // off again. A refusal from the thunk therefore propagated raw: `rollback()` never ran, the
+  // marker this install had just created stayed, and phase 7 never recorded
+  // `linger_enabled_by_us`, so `uninstall` could not take it away later either. Measured — the
+  // marker present, `disable-linger` never called. Every failure from here now leaves through
+  // `refuse`, which is the only thing that runs the journal.
   let staged: StagedRuntime & { reused: boolean };
   if (request.payloadDir === undefined) {
     staged = { ...describeStagedRuntime(request.stateDir, refuse), reused: true };
   } else {
-    const payloadDir =
-      typeof request.payloadDir === "string" ? request.payloadDir : request.payloadDir();
-    log(`staging ${payloadDir} under ${request.stateDir}`);
-    const stageRootCreated = missingAncestors(stagedRuntimeRoot(request.stateDir));
     try {
+      const payloadDir =
+        typeof request.payloadDir === "string" ? request.payloadDir : request.payloadDir();
+      log(`staging ${payloadDir} under ${request.stateDir}`);
+      const stageRootCreated = missingAncestors(stagedRuntimeRoot(request.stateDir));
       const outcome = stageRuntime({ payloadDir, stateDir: request.stateDir });
       staged = outcome;
       if (!outcome.reused) {

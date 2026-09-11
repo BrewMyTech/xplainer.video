@@ -521,7 +521,14 @@ function copyNpm(execPath: string, outDir: string): { version: string; entry: Ma
 
   const target = join(outDir, ...PAYLOAD_LIB_DIR.split("/"), "npm");
   mkdirSync(dirname(target), { recursive: true });
-  cpSync(source, target, { recursive: true, mode: constants.COPYFILE_FICLONE });
+  // `verbatimSymlinks` for the reason `installExternal`'s own copy gives: without it Node resolves
+  // a relative link target against the source, and a payload carrying an absolute link into the
+  // interpreter it was built from is not relocatable, which is the one thing payload 1 is for.
+  cpSync(source, target, {
+    recursive: true,
+    mode: constants.COPYFILE_FICLONE,
+    verbatimSymlinks: true,
+  });
 
   const shimDir = process.platform === "win32" ? nodeRoot : join(nodeRoot, "bin");
   const shims = process.platform === "win32" ? ["npm.cmd", "npm.ps1", "npm"] : ["npm"];
@@ -613,6 +620,17 @@ function copyClosure(plan: CopyPlan): ManifestPackage[] {
     cpSync(source, target, {
       recursive: true,
       mode: constants.COPYFILE_FICLONE,
+      // **`verbatimSymlinks`, because the default rewrites a relocatable link into an absolute
+      // one.** Node resolves a symlink's target against the source location unless this is set, so
+      // a relative link inside a copied package tree — `../dist/bin.js` — lands in the payload as
+      // an absolute path back into the npm install the payload exists to stop depending on.
+      // Measured on Node 24: `../lib/node_modules/real/cli.js` became
+      // `/private/tmp/.../sym-src/lib/node_modules/real/cli.js`. The failure is silent twice over:
+      // `scanTree` records the rewritten target, so `runtime verify` compares the link against the
+      // value the copy produced and answers `ok: true`; and `bin/npm` is correct whatever this
+      // option says, because the assembler creates that one with `symlinkSync`, so the one link a
+      // reader would spot-check is the one that cannot be wrong.
+      verbatimSymlinks: true,
       filter: (path) => !relative(source, path).split(sep).includes("node_modules"),
     });
     record(target, source, false);
