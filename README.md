@@ -11,6 +11,48 @@ rendered anywhere but your machine.
 This repository is the whole local product: the `xplainer` CLI daemon, an optional Electron
 client, the render core, the MCP tool contract, and the agent skill that drives them.
 
+## Quick setup
+
+Five commands, then ask for a video. Works on macOS, Linux and Windows.
+
+```bash
+npm i -g xplainer          # the unscoped alias; forwards to @xplainer/cli
+xplainer setup             # browser + a speech route + the render workspace (~2 min, once)
+xplainer connect claude    # writes one stdio MCP entry into ~/.claude.json
+
+# The skill: the tools give an agent the capability, this gives it the method.
+mkdir -p ~/.claude/skills/xplainer
+curl -sL "$(npm view @xplainer/skill dist.tarball)" \
+  | tar -xzO package/SKILL.md > ~/.claude/skills/xplainer/SKILL.md
+```
+
+Then in Claude Code:
+
+```text
+/reload-plugins
+```
+
+and ask for one:
+
+> Explain how our retry logic works as a ninety-second video.
+
+Claude writes the Remotion scenes and the narration, then drives
+`create → put_source → narrate → still → render` over MCP. The MP4 lands in
+`<state dir>/workspace/out/<slug>/explainer.mp4` — `xplainer status` prints the state directory,
+and the tool's own answer gives you the path.
+
+**Three things worth knowing before you start.** `setup` is not optional and no agent can do it for
+you: it downloads a headless browser and resolves the render workspace, and the render tools refuse
+without it. The **skill step is the one people skip** — an agent with the tools and no `SKILL.md`
+will improvise the scene composition and the pacing, and the result looks like it. And a first
+render is slower than the ones after it, because the speech model and the browser are fetched once.
+
+For `codex` instead of Claude: `xplainer connect codex`, and the same `SKILL.md` goes to
+`~/.codex/skills/xplainer/SKILL.md`.
+
+The daemon is **opt-in** and nothing above needs it — see [The daemon, if you want it](#the-daemon-if-you-want-it)
+for what it adds, and [Installing it](#installing-it) for the other two install routes.
+
 > ### Status: it renders, and it installs itself
 >
 > **A video renders end to end, locally, and the daemon that does it is installed rather than
