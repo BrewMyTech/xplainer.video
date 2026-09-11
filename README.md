@@ -3,7 +3,7 @@
 **Agent-driven explainer videos, rendered on your own machine.**
 
 <p align="center">
-  <a href="https://github.com/BrewMyTech/xplainer.video/blob/main/docs/media/xplainer-intro.mp4">
+  <a href="https://youtu.be/AjI2cN68rQU">
     <img
       src="docs/media/xplainer-intro-poster.png"
       alt="xplainer.video — an eighty-second tour, itself written, narrated and rendered by an agent"
@@ -13,8 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BrewMyTech/xplainer.video/blob/main/docs/media/xplainer-intro.mp4"><b>▶&nbsp; Watch the 80-second tour</b></a><br>
-  <sub>An agent wrote the scenes, the built-in voice narrated them, and this machine rendered it — with the five tools below.</sub>
+  <a href="https://youtu.be/AjI2cN68rQU"><b>▶&nbsp; Watch the 80-second tour</b></a><br>
+  <sub>An agent wrote the scenes, the built-in voice narrated them, and this machine rendered it — with the five tools below.<br>
+  <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
 
 An agent — Claude Code or Codex — writes [Remotion](https://remotion.dev) scenes and a
