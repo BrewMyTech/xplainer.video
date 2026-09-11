@@ -763,6 +763,120 @@ xplainer_protocol itself instead of reaching in here.
 
 // ── Entry point ────────────────────────────────────────────────────────────
 
+/**
+ * One tool's input schema, with every cross-file `$ref` inlined.
+ *
+ * **Why this exists.** The per-tool schemas are written with `$ref`s to sibling
+ * documents — `../slug.json`, `../narration.json`, `../job-state.json` — which
+ * is right for the contract and wrong for an MCP client, because `tools/list`
+ * hands a client one schema with no base URI to resolve a relative reference
+ * against. `packages/mcp-server` reacted to that by publishing an open object
+ * for all eight tools, so a client was told the arguments were
+ * `{"type":"object","properties":{}}` and nothing more. An agent with no schema
+ * has no reason to believe `narration` is an object rather than a string, and
+ * one that guessed a JSON string was rejected by the backend with an error that
+ * named neither the argument nor its shape. Bundling here is what lets that
+ * package publish the real contract.
+ *
+ * Every `$defs` encountered is hoisted into one root map so that the internal
+ * `#/$defs/...` references keep resolving after the inlining. Two different
+ * definitions sharing a name is a contract error, not something to merge.
+ *
+ * `not` is dropped, which is deliberate and already the documented position:
+ * `explainer_put_source.input.json`'s `path` uses `not`/`enum` to reserve the
+ * five engine-owned files and says in its own description that both code
+ * generators ignore it, so it is the published contract and the ajv gate rather
+ * than the runtime gate — the runtime gate is `assertAgentOwnedPaths()` in
+ * `@xplainer/mcp-server`, which still runs on every call. Keeping `not` here
+ * would only make the document unconvertible for consumers that cannot express
+ * it.
+ */
+function bundleToolInput(toolName) {
+  const defs = Object.create(null);
+
+  const walk = (node, here, chain) => {
+    if (Array.isArray(node)) {
+      return node.map((item) => walk(item, here, chain));
+    }
+    if (node === null || typeof node !== "object") {
+      return node;
+    }
+    if (typeof node.$ref === "string" && !node.$ref.startsWith("#")) {
+      const target = path.resolve(path.join(here, node.$ref));
+      if (chain.includes(target)) {
+        throw new Error(
+          `codegen: \`$ref\` cycle bundling ${toolName}: ${[...chain, target]
+            .map((file) => path.relative(SCHEMAS_DIR, file))
+            .join(" -> ")}`,
+        );
+      }
+      const { $schema, $id, ...body } = load(target, [...chain, target]);
+      // A sibling keyword beside `$ref` overrides the referenced document, which
+      // is how 2020-12 reads and how the hand-written schemas use it.
+      const { $ref, ...siblings } = node;
+      return { ...body, ...siblings };
+    }
+    return Object.fromEntries(
+      Object.entries(node)
+        .filter(([keyword]) => keyword !== "not")
+        .map(([keyword, value]) => [keyword, walk(value, here, chain)]),
+    );
+  };
+
+  const load = (absolute, chain) => {
+    const document = readJson(absolute);
+    const here = path.dirname(absolute);
+    for (const [name, definition] of Object.entries(document.$defs ?? {})) {
+      const bundled = walk(definition, here, chain);
+      const existing = defs[name];
+      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(bundled)) {
+        throw new Error(
+          `codegen: two schemas define \`$defs.${name}\` differently while bundling ` +
+            `${toolName}. Definition names must be unique across packages/protocol/schemas/, ` +
+            "because bundling hoists them into one document.",
+        );
+      }
+      defs[name] = bundled;
+    }
+    const { $defs, ...rest } = document;
+    return walk(rest, here, chain);
+  };
+
+  const entry = path.join(TOOLS_DIR, `${toolName}.input.json`);
+  const bundled = load(entry, [entry]);
+  return Object.keys(defs).length > 0 ? { ...bundled, $defs: defs } : bundled;
+}
+
+/**
+ * The eight self-contained input schemas, for a client that cannot follow a
+ * `$ref` off the end of the document it was handed.
+ */
+function generateTsToolSchemas(names) {
+  const entries = names
+    .map((name) => `  ${JSON.stringify(name)}: ${JSON.stringify(bundleToolInput(name), null, 2)},`)
+    .join("\n");
+  return `${TS_HEADER}
+import type { ToolName } from "./manifest.js";
+
+/** A JSON Schema document, opaque to TypeScript and read by whatever validates. */
+export type ToolInputSchema = Readonly<Record<string, unknown>>;
+
+/**
+ * Each tool's input schema with every cross-file \`$ref\` already inlined.
+ *
+ * This is what a surface publishes in \`tools/list\`. The unbundled documents in
+ * \`schemas/tools/\` remain the contract; these are the same documents made
+ * self-contained, because a client receiving one schema has no base URI to
+ * resolve \`../narration.json\` against and would be handed a broken pointer.
+ *
+ * \`not\` is absent by construction — see \`bundleToolInput\` in codegen.mjs.
+ */
+export const TOOL_INPUT_SCHEMAS: Readonly<Record<ToolName, ToolInputSchema>> = Object.freeze({
+${entries}
+});
+`;
+}
+
 async function main() {
   const check = process.argv.includes("--check");
   const names = toolNames();
@@ -774,6 +888,7 @@ async function main() {
     [path.join(TS_OUT_DIR, "types.ts"), await generateTypes()],
     [path.join(TS_OUT_DIR, "manifest.ts"), generateTsManifest(names, engineOwned, version)],
     [path.join(TS_OUT_DIR, "open-enums.ts"), generateTsOpenEnums(open)],
+    [path.join(TS_OUT_DIR, "tool-input-schemas.ts"), generateTsToolSchemas(names)],
     [path.join(PY_OUT_DIR, "models.py"), generateModels(open)],
     [path.join(PY_OUT_DIR, "manifest.py"), generatePyManifest(names, engineOwned)],
     [path.join(PY_OUT_DIR, "__init__.py"), generatePyInit()],

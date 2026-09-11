@@ -1756,6 +1756,29 @@ and changes the expected condition), or splitting the cases. **CI has never seen
 — a fresh runner has nothing on 8787 — which is why they survived, and why the local gate is red on
 a developer machine while `main` is green.
 
+**Closed 2026-09-11: `tools/list` published an open object for all eight tools.** Every tool was
+registered with one `z.looseObject({})`, so a client was told the arguments were
+`{"type":"object","properties":{}}` and nothing else — not that `slug` is required, not that `files`
+is an array, not that `narration` is an object. **The failure this produces does not look like a
+schema problem**, which is why it survived: an agent with no schema passes `narration` as a JSON
+string, and the backend rejects the call with an error naming neither the argument nor its shape. It
+was found from a user report of exactly that, after the operator gave up on the tool and drove the
+daemon from a hand-written script.
+
+The reason the schemas were withheld was sound — they use cross-file `$ref`s (`../slug.json`,
+`../narration.json`) and a client holding one document has no base URI to resolve them against — so
+the fix is a bundler in `packages/protocol/scripts/codegen.mjs`: `TOOL_INPUT_SCHEMAS` is the same
+eight documents with references inlined and `$defs` hoisted, and `packages/mcp-server` publishes
+those. Arguments are now validated at the tool boundary, which they never were.
+
+**The part worth keeping is why nothing caught it.** `server.ts` called this "roadmap phase 1 work"
+in a docblock, and no roadmap item existed — a grep for `OPEN_TOOL_INPUT` or "dereference" across
+`docs/` found nothing. The contract's real shape lived only in `packages/skill/SKILL.md`, which
+documents the narration object correctly, so the protocol was load-bearing *documentation*: an agent
+that had not loaded the skill, or had drifted from it, had nothing at all. A deferral recorded only
+in the code that defers is not tracked, and `AC-8`/`AC-14d` assert names, titles and descriptions —
+never that a published schema describes anything.
+
 **Open, found 2026-09-11: `runtime verify` blesses a payload whose symlink points out of it.**
 `runtime/verify.ts`'s step 3 says "No manifest path may be absolute or escape the payload — the rule
 the assembler enforces on the way in, re-checked on the way out, because a manifest is a file and

@@ -28,6 +28,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   MCP_CONTRACT_VERSION as CONTRACT_VERSION,
+  TOOL_INPUT_SCHEMAS,
   TOOL_NAMES,
   type ToolName,
 } from "@xplainer/protocol";
@@ -75,22 +76,41 @@ const MANIFEST_ENTRIES: ReadonlyMap<string, ManifestEntry> = new Map(
 );
 
 /**
- * Input schema published for every tool in this phase.
+ * The published input schema for one tool, built from the bundled contract.
  *
- * The per-tool JSON Schemas in `packages/protocol/schemas/tools/` are the real
- * contract, but they are written with `$ref`s to sibling documents
- * (`../slug.json`, `../narration.json`, `../job-state.json`) which an MCP
- * client receiving a single inlined schema could not resolve. Publishing them
- * verbatim would hand clients broken references, so this phase publishes an
- * open object instead and lets the backend see the arguments unmodified.
- * Dereferencing the schemas into self-contained documents is roadmap phase 1
- * work; until then `tools/list` carries the eight names, titles and
- * descriptions, which is what AC-8 and AC-14d assert against.
+ * **This used to be one open object for all eight tools, and that was a defect
+ * rather than a simplification.** `tools/list` advertised
+ * `{"type":"object","properties":{}}` for every tool, so a client — and the
+ * model driving it — was told nothing about any argument: not that `slug` is
+ * required, not that `files` is an array, and not that `narration` is an
+ * object. An agent with no schema has no reason to prefer an object over a JSON
+ * string, and one that guessed wrong was rejected by the backend with an error
+ * that named neither the argument nor its shape. Reported from a real session
+ * on 2026-09-11, where the operator gave up on the tool and called the daemon
+ * from a hand-written script instead.
  *
- * It must be an open object, not `z.object({})`: a strict object would strip
- * every key on the way through and the backend would be handed `{}`.
+ * The reason it was open is real and is now handled a layer earlier: the
+ * hand-written schemas use cross-file `$ref`s that a client holding one
+ * document cannot resolve, so `@xplainer/protocol` publishes
+ * {@link TOOL_INPUT_SCHEMAS}, the same documents with those references inlined.
+ *
+ * Two consequences worth naming, because both change behaviour:
+ *
+ * - **Arguments are now validated.** They were not before — `z.looseObject({})`
+ *   accepts anything and passes it through — so a malformed call reached the
+ *   backend and failed there. It now fails here, against the contract, with the
+ *   argument named.
+ * - **`additionalProperties: false` becomes a strict object**, so an undeclared
+ *   key is refused rather than forwarded. That is what the contract has always
+ *   said; nothing was enforcing it.
+ *
+ * The old comment warned that a strict object would strip every key. That was
+ * true of `z.object({})` — a strict object with *no* declared properties. With
+ * the real properties declared, the declared keys are exactly what survives.
  */
-const OPEN_TOOL_INPUT = z.looseObject({});
+function publishedInputSchema(name: ToolName): z.ZodType {
+  return z.fromJSONSchema(TOOL_INPUT_SCHEMAS[name] as Parameters<typeof z.fromJSONSchema>[0]);
+}
 
 /**
  * A tool method with its argument and result types erased.
@@ -156,6 +176,11 @@ function manifestEntry(name: ToolName): ManifestEntry {
   return entry;
 }
 
+/** Whether validated arguments are the object shape the guards and backend index into. */
+function isToolArguments(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * Build an MCP server that serves the eight explainer tools out of `backend`.
  *
@@ -178,9 +203,21 @@ export function createMcpServer(
 
     server.registerTool(
       name,
-      { title, description, inputSchema: OPEN_TOOL_INPUT },
+      { title, description, inputSchema: publishedInputSchema(name) },
       async (args): Promise<CallToolResult> => {
         try {
+          // The SDK types a schema-validated callback's argument as `unknown`,
+          // because a `ZodType` says nothing about its output at this position.
+          // A guard rather than a cast: every one of the eight schemas is an
+          // object at the top level, so this cannot fail for a call that got
+          // here — and if a ninth is ever added that is not, this says so
+          // instead of handing the backend something it cannot index.
+          if (!isToolArguments(args)) {
+            throw new Error(
+              `${name} validated to ${args === null ? "null" : typeof args}, but every tool's ` +
+                "input schema is an object. Check schemas/tools/ for this tool.",
+            );
+          }
           PRE_DISPATCH_GUARDS[name]?.(args);
           const result = await handler(args);
           return {

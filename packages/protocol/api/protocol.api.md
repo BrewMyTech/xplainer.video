@@ -117,6 +117,25 @@ export declare const JOB_ERROR_CODE_VALUES: readonly ["daemon_restarted", "daemo
 export declare function toJobErrorCode(value: string): JobErrorCode;
 ```
 
+## `dist/generated/tool-input-schemas.d.ts`
+
+```ts
+/** A JSON Schema document, opaque to TypeScript and read by whatever validates. */
+export type ToolInputSchema = Readonly<Record<string, unknown>>;
+
+/**
+ * Each tool's input schema with every cross-file `$ref` already inlined.
+ *
+ * This is what a surface publishes in `tools/list`. The unbundled documents in
+ * `schemas/tools/` remain the contract; these are the same documents made
+ * self-contained, because a client receiving one schema has no base URI to
+ * resolve `../narration.json` against and would be handed a broken pointer.
+ *
+ * `not` is absent by construction — see `bundleToolInput` in codegen.mjs.
+ */
+export declare const TOOL_INPUT_SCHEMAS: Readonly<Record<ToolName, ToolInputSchema>>;
+```
+
 ## `dist/generated/types.d.ts`
 
 ```ts

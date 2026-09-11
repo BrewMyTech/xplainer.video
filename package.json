@@ -34,7 +34,7 @@
     "e2e:remote": "node scripts/e2e/remote.mjs",
     "e2e:render:linux": "node scripts/e2e/linux.mjs",
     "e2e:macos": "node scripts/e2e/render.mjs",
-    "relink:cli": "node scripts/relink-injected-cli.mjs"
+    "relink": "node scripts/relink-injected.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
