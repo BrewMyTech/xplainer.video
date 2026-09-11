@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/protocol",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "JSON Schema source of truth for the eight explainer tools, with generated TypeScript types and pydantic models.",
   "homepage": "https://xplainer.video",

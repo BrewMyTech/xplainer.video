@@ -1,5 +1,15 @@
 # @xplainer/cli
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [f28ea89]
+  - @xplainer/protocol@0.0.2
+  - @xplainer/mcp-server@0.0.2
+  - @xplainer/render-core@0.0.2
+  - @xplainer/skill@0.0.2
+
 ## 0.0.3
 
 ### Patch Changes
