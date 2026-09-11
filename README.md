@@ -2,6 +2,21 @@
 
 **Agent-driven explainer videos, rendered on your own machine.**
 
+<p align="center">
+  <a href="https://github.com/BrewMyTech/xplainer.video/blob/main/docs/media/xplainer-intro.mp4">
+    <img
+      src="docs/media/xplainer-intro-poster.png"
+      alt="xplainer.video — an eighty-second tour, itself written, narrated and rendered by an agent"
+      width="860"
+    >
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/BrewMyTech/xplainer.video/blob/main/docs/media/xplainer-intro.mp4"><b>▶&nbsp; Watch the 80-second tour</b></a><br>
+  <sub>An agent wrote the scenes, the built-in voice narrated them, and this machine rendered it — with the five tools below.</sub>
+</p>
+
 An agent — Claude Code or Codex — writes [Remotion](https://remotion.dev) scenes and a
 narration spec, then drives `create → put_source → narrate → still → render` over MCP and
 polls for the result. Text-to-speech produces word-level timestamps, every scene duration is
