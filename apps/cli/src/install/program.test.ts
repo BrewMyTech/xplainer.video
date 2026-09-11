@@ -301,6 +301,14 @@ describe("the program resolver", () => {
       // the filesystem: every write in this codebase goes through one of these names, so an
       // allowlist over that one import line is a property rather than a sample of one run.
       //
+      // **The allowlist is conservative, and that is the direction to fail in.** It admits only
+      // names beginning `read|stat|lstat|exists|access|realpath|opendir`, so it refuses every
+      // writer including ones nobody enumerated — `unlinkSync` was missed by two independent
+      // hand-written writer lists during review, and a denylist would have baked both blind spots
+      // into this check. The cost is that a legitimate read through `openSync(path, "r")` would
+      // also be refused, as `runtime/manifest.ts` does for chunked hashing. If that is ever needed
+      // here, widen the allowlist deliberately rather than switching to a list of what is banned.
+      //
       // It is deliberately about `program.ts` and NOT about its closure, because the closure is not
       // write-free and cannot be: `install/stage.ts` is in it — pinned, in the set below — and
       // carries `stageRuntime` and six write calls. What the pinned closure buys is that the
