@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PROGRAM_SOURCES, readDaemonState, updateDaemonState } from "../daemon/daemon-state.js";
@@ -366,6 +366,12 @@ describe("the program resolver", () => {
         let out = "";
         let quote: string | null = null;
         let comment: "line" | "block" | null = null;
+        let regex = false;
+        // The last character that could end an operand. A `/` after one is division; a `/` anywhere
+        // else begins a regex literal. This is the standard disambiguation and it is the whole
+        // reason a regex needs tracking at all: `/a\/*b/` otherwise reads as a `/`, then a `/*`
+        // that opens a block comment and swallows the file to the next `*/`.
+        let previous = "";
         for (let i = 0; i < source.length; i += 1) {
           const ch = source[i] ?? "";
           const next = source[i + 1] ?? "";
@@ -383,6 +389,17 @@ describe("the program resolver", () => {
             }
             continue;
           }
+          if (regex) {
+            out += ch;
+            if (ch === "\\") {
+              out += next;
+              i += 1;
+            } else if (ch === "/") {
+              regex = false;
+              previous = ch;
+            }
+            continue;
+          }
           if (quote !== null) {
             out += ch;
             if (ch === "\\") {
@@ -390,6 +407,7 @@ describe("the program resolver", () => {
               i += 1;
             } else if (ch === quote) {
               quote = null;
+              previous = ch;
             }
             continue;
           }
@@ -403,8 +421,16 @@ describe("the program resolver", () => {
             i += 1;
             continue;
           }
+          if (ch === "/" && !/[\w$)\]"'`]/.test(previous)) {
+            regex = true;
+            out += ch;
+            continue;
+          }
           if (ch === '"' || ch === "'" || ch === "`") {
             quote = ch;
+          }
+          if (!/\s/.test(ch)) {
+            previous = ch;
           }
           out += ch;
         }
@@ -439,7 +465,7 @@ describe("the program resolver", () => {
           // Lower-cased, because macOS and Windows resolve `./Materialise.js` and `./materialise.js`
           // to the same file and this set would otherwise hold it under two keys — walking it twice
           // is harmless, but `not.toContain("install/materialise.ts")` would miss the other spelling.
-          const key = relative(src, file).toLowerCase();
+          const key = relative(src, file).split(sep).join("/").toLowerCase();
           if (seen.has(key)) {
             continue;
           }
@@ -482,13 +508,45 @@ describe("the program resolver", () => {
         return seen;
       };
 
-      const closure = [...importClosure(new URL("program.ts", import.meta.url))];
-      // The walk has to have gone somewhere, or an empty set would pass every assertion below.
-      expect(closure.length).toBeGreaterThan(10);
-      expect(closure).toContain("install/program.ts");
-      expect(closure).toContain("runtime/verify.ts");
+      // **The closure is asserted EXACTLY, and that is what makes a silent truncation loud.**
+      // `not.toContain` alone is satisfied by a walk that collapsed to one file — and a walk here
+      // CAN collapse: the comment stripper is not a parser, so a regex literal whose body contains
+      // `/*` sends it into block-comment mode and everything to the next `*/` is dropped. The real
+      // TypeScript scanner does not save this either, measured: `createScanner` from
+      // `typescript/unstable/ast/scanner` loses a specifier after `/a\/*b/` for the same reason,
+      // because deciding regex-from-divide needs parser context, which is what its own
+      // `reScanSlashToken` exists to supply. So rather than a sixth attempt at tokenising, the set
+      // is pinned: a truncation shrinks it and fails, a new edge into a writer grows it and fails,
+      // and either way somebody has to look. The same argument `install/supervisors/` makes for
+      // asserting a whole artefact instead of one key.
+      const closure = [...importClosure(new URL("program.ts", import.meta.url))].sort();
+      expect(closure).toEqual([
+        "daemon/daemon-state.ts",
+        "daemon/durable-write.ts",
+        "daemon/exit-codes.ts",
+        "daemon/state-dir.ts",
+        "daemon/token.ts",
+        "daemon/windows-acl.ts",
+        "daemon/worker-identity.ts",
+        "install/preflight.ts",
+        "install/program.ts",
+        "install/register.ts",
+        "install/stage.ts",
+        "install/supervisors/artefact.ts",
+        "install/supervisors/identity.ts",
+        "install/supervisors/index.ts",
+        "install/supervisors/launchd.ts",
+        "install/supervisors/schtasks.ts",
+        "install/supervisors/systemd.ts",
+        "not-implemented.ts",
+        "runtime/launch-spec.ts",
+        "runtime/manifest.ts",
+        "runtime/template.ts",
+        "runtime/verify.ts",
+      ]);
 
-      // The two modules that write a payload, neither of them reachable from here.
+      // Named as well as pinned, because the exact set says what IS reachable and these two
+      // sentences say what must never be — which is the property a reader is looking for.
       expect(closure).not.toContain("runtime/assemble.ts");
       expect(closure).not.toContain("install/materialise.ts");
 
