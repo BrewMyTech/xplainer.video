@@ -1,6 +1,8 @@
 # xplainer.video
 
-**Agent-driven explainer videos, rendered on your own machine.**
+**Your agents found the answer. Now see the explanation.**
+
+Working across multiple agents means repeatedly catching up on what each one found. Turn complex code, debugging findings, and ideas into explainer videos, so you can follow the problem without reconstructing it from chat threads.
 
 <p align="center">
   <a href="https://youtu.be/AjI2cN68rQU">
