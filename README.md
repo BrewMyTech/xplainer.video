@@ -4,18 +4,10 @@
 
 Working across multiple agents means repeatedly catching up on what each one found. Turn complex code, debugging findings, and ideas into explainer videos, so you can follow the problem without reconstructing it from chat threads.
 
-<p align="center">
-  <a href="https://youtu.be/QKSdKxJ1Q3o">
-    <img
-      src="docs/media/xplainer-intro-poster.png"
-      alt="xplainer.video — your agents found the answer, now see the explanation"
-      width="860"
-    >
-  </a>
-</p>
+https://github.com/user-attachments/assets/32e7abb8-eb8d-4359-a661-af709731788f
 
 <p align="center">
-  <a href="https://youtu.be/QKSdKxJ1Q3o"><b>▶&nbsp; Watch the 90-second tour</b></a><br>
+  <a href="https://youtu.be/QKSdKxJ1Q3o"><b>▶&nbsp; Watch it on YouTube</b></a> &nbsp;·&nbsp; 90 seconds<br>
   <sub>This one explains itself: an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
   <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
