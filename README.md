@@ -16,7 +16,7 @@ Working across multiple agents means repeatedly catching up on what each one fou
 
 <p align="center">
   <a href="https://youtu.be/AjI2cN68rQU"><b>▶&nbsp; Watch the 90-second tour</b></a><br>
-  <sub>Working across several agents means repeatedly catching up on what each one found. This one explains itself — an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
+  <sub>This one explains itself: an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
   <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
 
