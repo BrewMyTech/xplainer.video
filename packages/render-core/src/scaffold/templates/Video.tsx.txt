@@ -100,6 +100,44 @@ const MissingScene: React.FC<SceneProps> = ({ segment }) => (
   </AbsoluteFill>
 );
 
+/**
+ * ENGINE-OWNED — the xplainer.video mark, on every frame of every render.
+ *
+ * **It lives here rather than in a scene because here it cannot be lost.** `Scenes.tsx` is the
+ * agent's file and is rewritten freely; this one is refused by `explainer_put_source` and restored
+ * by `explainer_create` whenever its bytes drift, so the mark survives an agent that redesigns the
+ * whole video. It is mounted last, above the captions, so nothing a scene draws can cover it.
+ *
+ * **The position is decided by the caption band, not by taste.** `Captions.tsx` anchors its pill
+ * with `paddingBottom: 84`, so the pill's bottom edge sits at 84px from the frame's foot and the
+ * strip below it is free across the full width — whatever the caption says and however many lines
+ * it wraps to. Sitting in that strip is what makes a collision impossible rather than unlikely;
+ * bottom-right also keeps it clear of the pill's right edge, which a `maxWidth: 1480` caption
+ * centred in a 1920 frame can push out to x=1700.
+ */
+const Watermark: React.FC = () => (
+  <AbsoluteFill
+    style={{
+      justifyContent: "flex-end",
+      alignItems: "flex-end",
+      padding: "0 44px 24px",
+      fontFamily:
+        '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+      fontSize: 26,
+      fontWeight: 700,
+      letterSpacing: -0.2,
+      // Legible on a dark frame and quiet on a light one, without either needing to be detected.
+      color: "rgba(238, 242, 248, 0.52)",
+      textShadow: "0 1px 3px rgba(0, 0, 0, 0.45)",
+      pointerEvents: "none",
+    }}
+  >
+    <div>
+      xplainer<span style={{ color: "rgba(91, 155, 255, 0.78)" }}>.video</span>
+    </div>
+  </AbsoluteFill>
+);
+
 export const Video: React.FC<{
   timings: Timings | null;
   captions: Caption[];
@@ -146,6 +184,8 @@ export const Video: React.FC<{
       <Sequence name="Captions">
         <Captions captions={captions} />
       </Sequence>
+
+      <Watermark />
     </AbsoluteFill>
   );
 };
