@@ -1,5 +1,12 @@
 # @xplainer/cli
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [61cc4e3]
+  - @xplainer/render-core@0.0.3
+
 ## 0.0.4
 
 ### Patch Changes

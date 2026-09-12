@@ -6,31 +6,35 @@
     "segments": [
       {
         "id": "title",
-        "text": "This video was not edited. An agent wrote it, and the machine it is playing on rendered it."
+        "text": "Your agents found the answer. This is the part where you get to see the explanation."
       },
       {
         "id": "problem",
-        "text": "Making an explainer normally costs an afternoon. You write the script, record it twice, then drag clips around a timeline until the words finally line up with the pictures."
+        "text": "Working across several agents means repeatedly catching up on what each one found. The work is already done. You are the part that is slow, because the finding arrives as a wall of text, a long diff, and a thread you have to rebuild the problem from."
+      },
+      {
+        "id": "answer",
+        "text": "So let it show you instead. The agent turns what it found into a short narrated video, and you follow the problem without reconstructing it in your head first."
       },
       {
         "id": "pipeline",
-        "text": "Xplainer gives your coding agent five tools. It creates the video, writes the scenes as real code, narrates them, checks a frame, and renders. You only ask for the video."
+        "text": "It is a plugin. Your agent gets five tools: it creates the video, writes the scenes as real code, narrates them, checks a frame, and renders."
       },
       {
         "id": "measured",
-        "text": "The trick is the order. The speech is generated first, with a timestamp on every single word, so every scene length is measured instead of guessed, and the captions are already in sync before one frame has been drawn."
+        "text": "The speech is generated first, with a timestamp on every single word, so every scene length is measured instead of guessed, and the captions are already in sync before one frame has been drawn."
       },
       {
         "id": "uses",
-        "text": "Which makes it cheap to explain the things you would never have filmed. A pull request. A new hire's first week. Last night's outage. The architecture that only two people understand."
+        "text": "It earns its keep exactly where text is worst. A race condition across three services. Last night's outage. An architecture only two people hold. A handoff from the agent that did the work to the one picking it up."
       },
       {
         "id": "setup",
-        "text": "Setting it up is three commands. Install the tool, let it fetch a browser and a voice, then connect your agent. Claude Code and Codex both work."
+        "text": "Setting it up is three commands. Install it, let it fetch a browser and a voice, then connect your agent. Claude Code and Codex both work."
       },
       {
         "id": "close",
-        "text": "Nothing is uploaded, nothing is rendered anywhere but your own machine, and all of it is open source. Go and ask your agent for a video."
+        "text": "Nothing is uploaded, nothing renders anywhere but your own machine, and all of it is open source."
       }
     ]
   }

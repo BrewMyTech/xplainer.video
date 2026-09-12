@@ -6,15 +6,15 @@
   <a href="https://youtu.be/AjI2cN68rQU">
     <img
       src="docs/media/xplainer-intro-poster.png"
-      alt="xplainer.video — an eighty-second tour, itself written, narrated and rendered by an agent"
+      alt="xplainer.video — your agents found the answer, now see the explanation"
       width="860"
     >
   </a>
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/AjI2cN68rQU"><b>▶&nbsp; Watch the 80-second tour</b></a><br>
-  <sub>An agent wrote the scenes, the built-in voice narrated them, and this machine rendered it — with the five tools below.<br>
+  <a href="https://youtu.be/AjI2cN68rQU"><b>▶&nbsp; Watch the 90-second tour</b></a><br>
+  <sub>Working across several agents means repeatedly catching up on what each one found. This one explains itself — an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
   <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
 
@@ -106,10 +106,11 @@ adds, and [Installing it](#installing-it) for the other two install routes.
 > running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
-> **What is not done, said plainly.** `npm i -g xplainer` is a real install route: the six
-> `@xplainer/*` packages and the unscoped `xplainer` alias in `packages/alias` are all on npm — the
-> CLI, the alias and the skill at `0.0.2`, the other four at `0.0.1` — so `xplainer` is a command you
-> have rather than a package you assemble. The daemon is
+> **What is not done, said plainly.** `npm i -g xplainer` is a real install route: the
+> `@xplainer/*` packages and the unscoped `xplainer` alias in `packages/alias` are all on npm, so
+> `xplainer` is a command you have rather than a package you assemble. The exact versions are not
+> written here — this sentence has already gone stale twice, and
+> [the registry](https://www.npmjs.com/package/xplainer) is the copy that cannot. The daemon is
 > **opt-in rather than hand-built**: `xplainer daemon install` takes no arguments on a machine that
 > installed from npm, building its own relocatable payload — about 150 MB — out of that install,
 > and `--runtime` stays the route for a checkout, for CI and for a machine with no registry access.

@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/render-core",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "description": "Remotion workspace template, the ownership-aware video scaffold generator (engine-owned composition shell, agent-owned scenes) and the render preflight.",
   "homepage": "https://xplainer.video",
