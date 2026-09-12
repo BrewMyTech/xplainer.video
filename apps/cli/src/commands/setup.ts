@@ -80,6 +80,7 @@ import {
   WorkspaceRefusal,
 } from "../setup/providers/workspace.js";
 import { loadToolchainManifest, ManifestUnreachable } from "../setup/source.js";
+import { offerStar } from "../setup/star.js";
 import {
   hostPlatformKey,
   readToolchainMarker,
@@ -106,6 +107,8 @@ type SetupOptions = {
   speech?: string;
   stateDir?: string;
   manifest?: string;
+  /** Commander sets this `false` for `--no-star`, and leaves it undefined otherwise. */
+  star?: boolean;
 };
 
 /**
@@ -155,6 +158,7 @@ export function createSetupCommand(io: CliIo): Command {
       `take this speech route and no other (${PINNABLE_SPEECH_ROUTES.join("|")})`,
     )
     .option("--state-dir <dir>", "where toolchain.json and the acquisitions go")
+    .option("--no-star", "never ask about starring the repository on GitHub")
     .option("--manifest <source>", "read the toolchain manifest from this file or https URL")
     .configureOutput({
       writeOut: (text) => {
@@ -278,6 +282,18 @@ export function createSetupCommand(io: CliIo): Command {
       };
       log(`recorded ${writeToolchainMarker(stateDir, marker)}`);
       log(`platform ${hostPlatformKey()}`);
+
+      // Last, and never able to fail the command: everything a user came for is already recorded
+      // above, so a GitHub outage or a missing browser costs a line of output and nothing else.
+      // `offerStar` answers null on a machine with no terminal and on one that has already been
+      // asked, which is what keeps `xplainer update` and every e2e proof from ever seeing a prompt.
+      if (options.star !== false) {
+        try {
+          await offerStar({ stateDir, log });
+        } catch (error) {
+          log(`could not ask about starring: ${describe(error)}`);
+        }
+      }
     });
 }
 

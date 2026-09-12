@@ -281,6 +281,7 @@ describe("xplainer", () => {
       "--tts-url",
       "--speech",
       "--state-dir",
+      "--no-star",
       "--manifest",
     ]);
   });

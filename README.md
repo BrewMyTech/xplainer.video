@@ -77,6 +77,10 @@ so **re-running it after `npm i -g xplainer@latest` is how you update both**; it
 written or already current. And a first render is slower than the ones after it, because the speech
 model and the browser are fetched once.
 
+`setup` also asks, once, whether to star the repository on GitHub — only when you are at a terminal,
+never in CI and never when `xplainer update` runs it for you. It gives up after ten seconds if
+nobody answers, and `--no-star` skips it entirely.
+
 For `codex` instead of Claude: `xplainer connect codex --spawn` does the same, with the skill at
 `~/.codex/skills/xplainer/SKILL.md`. After an upgrade, `xplainer update` re-runs `setup` and
 re-writes each configured agent's entry and skill in whichever of the two forms it already has.

@@ -99,19 +99,23 @@ function linkTree(from, to) {
   if (!existsSync(from)) {
     return 0;
   }
-  // Two `files` entries can name the same file — `@xplainer/protocol` lists both
-  // `python/**\/*.py` and `python/xplainer_protocol/py.typed`, and truncating the first at its
-  // wildcard makes them overlap. Linking an existing destination throws EEXIST and aborts the run
-  // half-way, leaving the copy it was repairing incomplete, so an already-linked file is a no-op.
-  if (existsSync(to)) {
-    return 0;
-  }
   if (statSync(from).isDirectory()) {
     let linked = 0;
     for (const entry of readdirSync(from)) {
       linked += linkTree(join(from, entry), join(to, entry));
     }
     return linked;
+  }
+  // **Files only, and after the directory branch.** Two `files` entries can name the same file —
+  // `@xplainer/protocol` lists both `python/**\/*.py` and `python/xplainer_protocol/py.typed`, and
+  // truncating the first at its wildcard makes them overlap, which would throw EEXIST and abort the
+  // run half-way. An earlier version put this check at the top of the function, where it also
+  // matched *directories*: an injected copy that already had a `dist/` was reported as complete
+  // while every new file under it was skipped, so the tool for the missing-file defect silently
+  // refused to fix one. Found when `@xplainer/cli` gained `dist/setup/star.js` and six alias tests
+  // failed against a copy this script had just called up to date.
+  if (existsSync(to)) {
+    return 0;
   }
   mkdirSync(dirname(to), { recursive: true });
   linkSync(from, to);
