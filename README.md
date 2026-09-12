@@ -7,8 +7,7 @@ Working across multiple agents means repeatedly catching up on what each one fou
 https://github.com/user-attachments/assets/32e7abb8-eb8d-4359-a661-af709731788f
 
 <p align="center">
-  <a href="https://youtu.be/QKSdKxJ1Q3o"><b>▶&nbsp; Watch it on YouTube</b></a> &nbsp;·&nbsp; 90 seconds<br>
-  <sub>This one explains itself: an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
+  <sub>Ninety seconds, and it explains itself: an agent wrote the scenes, the built-in voice narrated them, and the machine it played on rendered it.<br>
   <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
 
