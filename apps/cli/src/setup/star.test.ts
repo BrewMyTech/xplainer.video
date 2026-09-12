@@ -75,6 +75,7 @@ describe("offerStar", () => {
         stateDir: dir,
         log,
         interactive: true,
+        alreadyStarred: () => false,
         ask: async () => {
           asked = true;
           return true;
@@ -96,6 +97,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => false,
       gh: never,
       token: never as unknown as (token: string) => Promise<boolean>,
@@ -117,6 +119,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => true,
       env: { GITHUB_TOKEN: "should-not-be-used" },
       gh: () => true,
@@ -137,6 +140,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => true,
       env: { GH_TOKEN: "t0ken" },
       gh: () => false,
@@ -161,6 +165,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => true,
       env: {},
       gh: () => false,
@@ -185,6 +190,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => true,
       env: {},
       gh: () => false,
@@ -205,12 +211,39 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => false,
       gh: never,
     });
 
     expect(record).toMatchObject({ decision: "declined" });
     expect(JSON.parse(readFileSync(starMarkerPath(dir), "utf8")).decision).toBe("declined");
+  });
+
+  it("says nothing at all when the repository is already starred", async () => {
+    const dir = stateDir();
+    const { log, lines } = logger();
+    let asked = false;
+
+    const record = await offerStar({
+      stateDir: dir,
+      log,
+      interactive: true,
+      alreadyStarred: () => true,
+      ask: async () => {
+        asked = true;
+        return true;
+      },
+      gh: never,
+    });
+
+    // The people most likely to resent the question are the ones who already said yes, and a local
+    // marker cannot know about a star added from the web or on another machine.
+    expect(asked).toBe(false);
+    expect(record).toBeNull();
+    expect(lines).toEqual([]);
+    // Nothing recorded either: the answer is on GitHub, which outlives this state directory.
+    expect(readStarRecord(dir)).toBeNull();
   });
 
   it("gives up after the timeout without recording anything", async () => {
@@ -221,6 +254,7 @@ describe("offerStar", () => {
       stateDir: dir,
       log,
       interactive: true,
+      alreadyStarred: () => false,
       ask: async () => NO_ANSWER,
       gh: never,
       browser: never,

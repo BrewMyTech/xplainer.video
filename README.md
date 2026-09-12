@@ -78,8 +78,8 @@ written or already current. And a first render is slower than the ones after it,
 model and the browser are fetched once.
 
 `setup` also asks, once, whether to star the repository on GitHub — only when you are at a terminal,
-never in CI and never when `xplainer update` runs it for you. It gives up after ten seconds if
-nobody answers, and `--no-star` skips it entirely.
+never in CI, never when `xplainer update` runs it for you, and never if you have already starred it.
+Enter declines, it gives up after ten seconds if nobody answers, and `--no-star` skips it entirely.
 
 For `codex` instead of Claude: `xplainer connect codex --spawn` does the same, with the skill at
 `~/.codex/skills/xplainer/SKILL.md`. After an upgrade, `xplainer update` re-runs `setup` and

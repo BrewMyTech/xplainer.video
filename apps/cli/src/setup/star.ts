@@ -110,8 +110,8 @@ export async function askYesNo(question: string): Promise<boolean | typeof NO_AN
   try {
     const answer = await rl.question(question, { signal: abort.signal });
     const trimmed = answer.trim().toLowerCase();
-    // Empty is yes, because the prompt shows `[Y/n]` and Enter has to mean the capital one.
-    return trimmed === "" || trimmed === "y" || trimmed === "yes";
+    // Only an explicit yes counts: the prompt shows `[y/N]`, so Enter is the capital one.
+    return trimmed === "y" || trimmed === "yes";
   } catch {
     // The only way out of `question` other than an answer is the abort above.
     return NO_ANSWER;
@@ -139,6 +139,27 @@ function run(command: string, args: readonly string[]): boolean {
  * scoped. `gh auth status` is checked first so an installed-but-signed-out `gh` falls through to
  * the next route rather than reporting a failure.
  */
+/**
+ * Whether `gh` can see this repository already starred by the signed-in account.
+ *
+ * **The idea is borrowed from `oh-my-claudecode`'s setup skill, and it is better than a local
+ * record.** `<state>/star.json` only knows about answers given on *this* machine, so somebody who
+ * starred the repository from the web last year is still asked on every new checkout and every new
+ * laptop. `GET /user/starred/:owner/:repo` answers `204` when the star is already there, which
+ * means the question can be skipped for the people most likely to resent it — the ones who already
+ * said yes.
+ *
+ * Only a definite yes counts. `gh` missing, signed out, offline or rate-limited all answer `false`
+ * and the question is asked as before: a check that cannot run is not evidence that the star is
+ * absent, but it is also no reason to stay silent.
+ */
+export function alreadyStarred(): boolean {
+  if (!run("gh", ["auth", "status"])) {
+    return false;
+  }
+  return run("gh", ["api", "--silent", `/user/starred/${STAR_REPO}`]);
+}
+
 export function starViaGh(): boolean {
   if (!run("gh", ["auth", "status"])) {
     return false;
@@ -190,6 +211,8 @@ export type StarOptions = {
   interactive?: boolean;
   env?: NodeJS.ProcessEnv;
   gh?: () => boolean;
+  /** The already-starred pre-check; overridden in tests so no case shells out to `gh`. */
+  alreadyStarred?: () => boolean;
   token?: (token: string) => Promise<boolean>;
   browser?: (url: string) => boolean;
 };
@@ -210,9 +233,20 @@ export async function offerStar(options: StarOptions): Promise<StarRecord | null
   if (!interactive) {
     return null;
   }
+  // Asked before anything is printed, so someone who has already starred it sees nothing at all.
+  const starred = options.alreadyStarred ?? alreadyStarred;
+  if (starred()) {
+    return null;
+  }
 
   const ask = options.ask ?? askYesNo;
-  const yes = await ask(`Star ${STAR_REPO} on GitHub? [Y/n] (skipping in 10s) `);
+  // **`[y/N]`, not `[Y/n]`.** Starring is a public action on the reader's own account, so Enter
+  // finishes the install rather than publishing an endorsement nobody typed. A line with any
+  // personality in it and an affirmative default compound into something people feel tricked by,
+  // and the prompt is only worth having if a yes means someone meant it.
+  const yes = await ask(
+    `\nYour agents just got a video studio. Worth a star?\n  ${STAR_REPO}  [y/N] (skips in 10s) `,
+  );
   if (yes === NO_ANSWER) {
     // Deliberately not recorded. A recorded answer is never revisited, and nobody answered this —
     // so treating silence as "no" would quietly retire the question on a machine whose owner simply

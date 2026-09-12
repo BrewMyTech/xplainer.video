@@ -1,6 +1,6 @@
 {
   "name": "xplainer",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "type": "module",
   "description": "The unscoped `xplainer` command: an alias that forwards to @xplainer/cli of the same version.",
   "homepage": "https://xplainer.video",
@@ -33,7 +33,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@xplainer/cli": "workspace:0.0.5"
+    "@xplainer/cli": "workspace:0.0.6"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
