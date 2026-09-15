@@ -1,5 +1,12 @@
 # xplainer
 
+## 0.0.7
+
+### Patch Changes
+
+- Updated dependencies [3932672]
+  - @xplainer/cli@0.0.7
+
 ## 0.0.6
 
 ### Patch Changes

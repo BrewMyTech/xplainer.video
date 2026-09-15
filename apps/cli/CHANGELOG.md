@@ -1,5 +1,11 @@
 # @xplainer/cli
 
+## 0.0.7
+
+### Patch Changes
+
+- 3932672: Add GitHub Copilot CLI as a first-class `xplainer connect` target, including MCP registration and installation of the existing xplainer agent skill.
+
 ## 0.0.6
 
 ### Patch Changes
