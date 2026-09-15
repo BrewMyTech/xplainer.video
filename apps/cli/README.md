@@ -1,8 +1,8 @@
 # @xplainer/cli
 
 **The xplainer local runtime.** It installs the `xplainer` binary, which serves the eight
-explainer tools to a coding agent — Claude Code or Codex — over MCP, and runs every render and
-narration job on your own machine. Nothing is uploaded anywhere.
+explainer tools to a coding agent — Claude Code, Codex, or GitHub Copilot CLI — over MCP, and runs
+every render and narration job on your own machine. Nothing is uploaded anywhere.
 
 ```bash
 npm i -g @xplainer/cli
@@ -16,7 +16,7 @@ xplainer --help
 | `xplainer serve` | Serves `GET /healthz` and the Streamable HTTP MCP endpoint at `/mcp` on loopback |
 | `xplainer mcp` | Serves the same tools over stdio, for an agent that spawns its MCP servers |
 | `xplainer setup` | Prepares the local render and TTS toolchain |
-| `xplainer connect` | Points an agent client at this daemon |
+| `xplainer connect` | Points Claude Code, Codex, or GitHub Copilot CLI at this daemon |
 | `xplainer daemon` | Installs and manages the always-on per-user daemon |
 
 Run `xplainer <command> --help` for the flags each one takes. **What is implemented today and

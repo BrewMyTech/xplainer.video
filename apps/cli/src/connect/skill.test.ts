@@ -59,23 +59,37 @@ describe("the skill connect installs", () => {
   it.each([
     ["claude", ".claude"],
     ["codex", ".codex"],
+    ["copilot", ".copilot"],
   ] as const)("writes %s's skill at <home>/%s/skills/xplainer/SKILL.md", (client, root) => {
     const where = home();
 
-    const installed = installSkill(client, where);
+    const installed = installSkill(client, where, {});
 
     expect(installed.path).toBe(join(where, root, "skills", SKILL_NAME, SKILL_FILE));
     expect(installed.updated).toBe(true);
     expect(readFileSync(installed.path, "utf8")).toBe(REVIEWED);
   });
 
+  it.each([
+    ["claude", "CLAUDE_CONFIG_DIR"],
+    ["codex", "CODEX_HOME"],
+    ["copilot", "COPILOT_HOME"],
+  ] as const)("moves %s's skill with %s", (client, variable) => {
+    const where = home();
+    const configured = join(where, "custom-client-home");
+    const installed = installSkill(client, where, { [variable]: configured });
+
+    expect(installed.path).toBe(join(configured, "skills", SKILL_NAME, SKILL_FILE));
+    expect(readFileSync(installed.path, "utf8")).toBe(REVIEWED);
+  });
+
   it("replaces a stale skill, which is what re-running connect after an upgrade is for", () => {
     const where = home();
-    const path = skillPath("claude", where);
+    const path = skillPath("claude", where, {});
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "# an older version of the instructions\n");
 
-    const installed = installSkill("claude", where);
+    const installed = installSkill("claude", where, {});
 
     expect(installed.updated).toBe(true);
     expect(readFileSync(path, "utf8")).toBe(REVIEWED);
@@ -84,17 +98,17 @@ describe("the skill connect installs", () => {
   it("reports an identical skill as already current rather than claiming a write", () => {
     const where = home();
 
-    expect(installSkill("claude", where).updated).toBe(true);
+    expect(installSkill("claude", where, {}).updated).toBe(true);
     // Second run, same bytes: the command should say "already current", not "wrote".
-    expect(installSkill("claude", where).updated).toBe(false);
-    expect(readFileSync(skillPath("claude", where), "utf8")).toBe(REVIEWED);
+    expect(installSkill("claude", where, {}).updated).toBe(false);
+    expect(readFileSync(skillPath("claude", where, {}), "utf8")).toBe(REVIEWED);
   });
 
   it("creates the directories it needs and touches nothing else in the home", () => {
     const where = home();
     writeFileSync(join(where, "untouched"), "mine\n");
 
-    installSkill("codex", where);
+    installSkill("codex", where, {});
 
     expect(existsSync(join(where, ".codex", "skills", SKILL_NAME))).toBe(true);
     expect(readFileSync(join(where, "untouched"), "utf8")).toBe("mine\n");

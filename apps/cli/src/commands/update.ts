@@ -16,10 +16,9 @@
  * exists.
  *
  * **The steps are spawned rather than imported.** `commands/setup.ts` and `commands/connect.ts` are
- * about 700 lines of orchestration between them, and calling into their internals would mean either
- * refactoring both or reimplementing a subset here that drifts the first time either changes. A
- * child process running this same binary cannot drift: whatever `xplainer setup` does today is what
- * this runs.
+ * orchestration-heavy, and calling into their internals would mean either refactoring both or
+ * reimplementing a subset here that drifts the first time either changes. A child process running
+ * this same binary cannot drift: whatever `xplainer setup` does today is what this runs.
  *
  * **It is `update`, not `self-update`, and it is deliberately not `daemon update`.** That verb
  * already means something precise — switch the installed daemon to another staged runtime and roll
@@ -33,6 +32,7 @@ import process from "node:process";
 import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
 import { codexConfigPath } from "../connect/codex.js";
+import { copilotConfigPath } from "../connect/copilot.js";
 import { installedPackageRoot } from "../install/materialise.js";
 import type { CliIo } from "../io.js";
 import { CLI_VERSION } from "../version.js";
@@ -40,7 +40,7 @@ import { CLI_VERSION } from "../version.js";
 /** The published name a user installs, which is the alias rather than the scoped package. */
 const PUBLISHED_NAME = "xplainer";
 
-/** The key `connect` writes the entry under, in both clients. */
+/** The key `connect` writes the entry under, in every supported client. */
 const MCP_SERVER_NAME = "xplainer";
 
 /** The TOML table `connect codex` writes, and the start of the window to scan for the transport. */
@@ -143,7 +143,10 @@ function runSelf(io: CliIo, argv: readonly string[]): boolean {
 }
 
 /** One configured agent, and the argv that re-writes it in the form it already has. */
-type ConfiguredAgent = { agent: "claude" | "codex"; argv: readonly string[] };
+type ConfiguredAgent = {
+  agent: "claude" | "codex" | "copilot";
+  argv: readonly string[];
+};
 
 /**
  * Which agents have a configuration worth refreshing, and how to refresh each **in place**.
@@ -177,6 +180,13 @@ function configuredAgents(): readonly ConfiguredAgent[] {
       argv: ["connect", "codex", ...spawnUnless(attachedForm(codexConfig, "codex"))],
     });
   }
+  const copilotConfig = copilotConfigPath();
+  if (existsSync(copilotConfig)) {
+    found.push({
+      agent: "copilot",
+      argv: ["connect", "copilot", ...spawnUnless(attachedForm(copilotConfig, "copilot"))],
+    });
+  }
   return found;
 }
 
@@ -185,18 +195,14 @@ function configuredAgents(): readonly ConfiguredAgent[] {
  *
  * **The window matters more than the flag.** A configuration holds several MCP servers, so
  * "does `--attach` appear after the word xplainer" is not the question — a neighbouring server
- * declared below ours carrying its own `--attach` would answer yes, and `update` would then rewrite
- * a working in-session entry as one that attaches to a daemon that does not exist. The scan has to
- * be bounded to our entry, which means respecting each format enough to find its end.
- *
- * Claude's is JSON, so it is parsed; Codex's is TOML, where a table runs until the next `[`, which
- * is a slice. Neither needs a dependency and both are exact for the shape `connect` writes.
+ * declared below ours carrying its own `--attach` would answer yes. Codex's TOML therefore gets a
+ * bounded table scan; Claude and Copilot use JSON and can read the exact entry directly.
  *
  * Every failure answers `false` — no file, no entry, unparseable, a shape this does not recognise.
  * `--spawn` is the form that works with nothing running, so it is the safe answer to a question
  * this cannot resolve.
  */
-export function attachedForm(path: string, client: "claude" | "codex"): boolean {
+export function attachedForm(path: string, client: "claude" | "codex" | "copilot"): boolean {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -282,7 +288,7 @@ export function createUpdateCommand(io: CliIo): Command {
       if (agents.length === 0) {
         steps.push({
           label: "agents",
-          line: "none configured — run `xplainer connect claude` or `connect codex` once",
+          line: "none configured — run `xplainer connect claude`, `connect codex` or `connect copilot` once",
         });
       }
       for (const { agent, argv } of agents) {

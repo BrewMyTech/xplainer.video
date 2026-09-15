@@ -1,19 +1,18 @@
 /**
  * Replacing a file that belongs to somebody else's program, without ever leaving half of one.
  *
- * `connect` is the first thing in this repository that edits a file **outside** the state directory:
- * `~/.claude.json` holds a user's whole Claude Code state and `~/.codex/config.toml` holds their
- * whole Codex configuration, and both are read by a program that may be running right now. A
- * truncate-then-write that is interrupted — a `SIGINT`, a full disk — leaves that program with a
- * file it cannot parse and a user with no obvious way back. So the new content is written beside the
- * target and `rename`d over it, which is atomic for any reader within the filesystem.
+ * `connect` edits files **outside** the state directory: `~/.claude.json` holds a user's whole
+ * Claude Code state, `~/.codex/config.toml` holds their whole Codex configuration, and Copilot's
+ * `mcp-config.json` holds its user MCP servers. All may be read by a program that is running right
+ * now. A truncate-then-write that is interrupted — a `SIGINT`, a full disk — leaves that program
+ * with a file it cannot parse and a user with no obvious way back. So the new content is written
+ * beside the target and `rename`d over it, which is atomic for any reader within the filesystem.
  *
  * This is deliberately **not** `daemon/durable-write.ts`. That module answers a different question —
  * "will this record survive the machine losing power" — and pays for the answer with two `fsync`s
  * and a forced `0600` mode on everything it writes. Here the file's mode is the *other* program's
  * decision and is preserved exactly; only a file this command creates gets a mode of its own, and it
- * is the restrictive one, because an agent configuration is a file both vendors already keep at
- * `0600` on this machine.
+ * is the restrictive one, because an agent configuration is a file the clients keep private.
  */
 
 import { chmodSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";

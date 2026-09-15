@@ -1,9 +1,9 @@
 /**
  * `xplainer connect` — point an agent client at this daemon.
  *
- * Two verbs, one entry. `claude` and `codex` differ only in *where* a configuration lives and *who*
- * is allowed to write it; what gets written is the same stdio command line for both, produced by
- * `connect/entry.ts` and never by either writer
+ * Three verbs, one entry. Claude, Codex and Copilot differ only in *where* a configuration lives
+ * and *who* is allowed to write it; what gets written is the same stdio command line for all three,
+ * produced by `connect/entry.ts` and never by an individual writer
  * ([ADR 0020](../../../../docs/adr/0020-always-running-local-daemon.md) §The agent path is IPC, not
  * TCP: "No URL and no token enter any agent configuration file").
  *
@@ -20,9 +20,9 @@
  * exists and `daemon install` has just refused; applying the preflight to it would make the
  * remediation refuse itself. What it writes is `xplainer mcp` **without** `--attach` — the eight
  * tools in the agent's own session, no supervision, no shared queue — and `connect/spawn.ts` is
- * where that entry and its extra fallback are decided. Both verbs carry it: the remediation
- * ADR 0020 prints names `claude` because that is the example it is written around, and a Codex user
- * on the same supervisor-less machine has the same problem and the same answer.
+ * where that entry and its extra fallback are decided. All three verbs carry it: the remediation
+ * ADR 0020 prints names `claude` because that is the example it is written around, and Codex or
+ * Copilot users on the same supervisor-less machine have the same problem and the same answer.
  *
  * **The exit codes are the table's** (`docs/ARCHITECTURE.md` §6): `3` for a precondition that is not
  * met, with nothing written — no daemon has ever bound here, or the file to edit cannot be
@@ -30,11 +30,11 @@
  * own CLI; `11` for a `daemon.json` that exists and cannot be read; and `70` for anything else,
  * including a vendor's own `mcp add` that failed for its own reasons.
  *
- * **Each verb prefers the vendor's writer and falls back to a file.** `claude mcp add` and
- * `codex mcp add` both exist and both are delegated to when that binary is on `PATH`; the direct
- * writers in `connect/claude.ts` and `connect/codex.ts` are for the machine where it is not, and —
- * on the Codex side — for a `--config <path>` that CLI has no way to be aimed at. Which branch ran
- * is printed either way, because "it worked" and "which file changed" are different questions.
+ * **Each verb prefers the vendor's writer and falls back to a file.** `claude mcp add`,
+ * `codex mcp add` and `copilot mcp add` are delegated to when that binary is on `PATH`; the direct
+ * writers are for a machine where it is not, and — on the Codex side — for a `--config <path>` that
+ * its CLI has no way to be aimed at. Which branch ran is printed either way, because "it worked"
+ * and "which file changed" are different questions.
  *
  * **This is not an agent-facing entry**, so unlike `commands/mcp.ts` it writes its summary to
  * stdout. Nothing spawns `connect` and reads its stdout as a protocol.
@@ -57,6 +57,13 @@ import {
   registerWithCodexCli,
   writeCodexConfig,
 } from "../connect/codex.js";
+import {
+  COPILOT_CLI,
+  COPILOT_SERVERS_KEY,
+  copilotConfigPath,
+  registerWithCopilotCli,
+  writeCopilotConfig,
+} from "../connect/copilot.js";
 import { describeEntry, findOnPath, resolveStdioEntry, type StdioEntry } from "../connect/entry.js";
 import { type PreflightResult, preflightDaemon } from "../connect/preflight.js";
 import { ConnectRefusal } from "../connect/refusal.js";
@@ -72,7 +79,7 @@ import {
 import { resolveStateDir } from "../daemon/state-dir.js";
 import type { CliIo } from "../io.js";
 
-/** The flags both verbs share. */
+/** The flags all verbs share. */
 type CommonOptions = {
   force?: boolean;
   spawn?: boolean;
@@ -95,11 +102,18 @@ type Preparation = {
   daemonLine: string;
 };
 
+/** Human-facing client names used only in the completion sentence. */
+const CLIENT_LABEL: Readonly<Record<SkillClient, string>> = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  copilot: "GitHub Copilot CLI",
+};
+
 /**
  * Read `daemon.json`, refuse if no daemon has ever bound, and resolve the entry to write.
  *
- * Everything that can stop a run before a byte is written happens here, so that both verbs refuse in
- * the same words and with the same code.
+ * Everything that can stop a run before a byte is written happens here, so that every verb refuses
+ * in the same words and with the same code.
  */
 function prepare(io: CliIo, verb: string, options: CommonOptions): Preparation {
   const stateDir = resolveStateDir();
@@ -182,13 +196,13 @@ function vendorFailed(
 }
 
 /**
- * Install the skill, then print the summary both verbs end with.
+ * Install the skill, then print the summary every verb ends with.
  *
  * **The skill is written here because every successful path goes through this function**, and
  * `connect` had shipped for a release writing the transport and not the method: eight tools with no
- * instructions, which an agent then improvises. Four exits reach this point — the vendor CLI and the
- * direct writer, for each of two agents — and putting the write at any one of them would have left
- * the other three half-configured. The name says the side effect for the same reason.
+ * instructions, which an agent then improvises. Six exits reach this point — the vendor CLI and the
+ * direct writer for each of three agents — and putting the write at any one of them would leave the
+ * others half-configured. The name says the side effect for the same reason.
  *
  * A refusal to write the skill is **not** fatal to the registration that already happened: the MCP
  * entry is on disk by now, so this reports the failure and the command still exits `0`. Saying
@@ -207,9 +221,8 @@ function finish(io: CliIo, agent: SkillClient, lines: readonly string[]): void {
     );
   }
   io.writeOut(
-    `xplainer connect ${agent}: registered the MCP server "xplainer" with ${
-      agent === "claude" ? "Claude Code" : "Codex CLI"
-    }.\n${[...lines, ...skill].join("\n")}\n`,
+    `xplainer connect ${agent}: registered the MCP server "xplainer" with ${CLIENT_LABEL[agent]}.\n` +
+      `${[...lines, ...skill].join("\n")}\n`,
   );
 }
 
@@ -334,12 +347,61 @@ function createCodexCommand(io: CliIo): Command {
     });
 }
 
+function createCopilotCommand(io: CliIo): Command {
+  return new Command("copilot")
+    .description("Register this daemon's stdio entry with GitHub Copilot CLI")
+    .option("--force", "write the entry even though no daemon has bound on this machine")
+    .option(
+      "--spawn",
+      "write an entry that starts `xplainer mcp` inside each agent session instead of attaching " +
+        "to a daemon — the form for a machine with no service manager",
+    )
+    .action((options: CommonOptions) => {
+      const { entry, daemonLine } = prepare(io, "copilot", options);
+      const lines = [`  runs:    ${describeEntry(entry)}`, daemonLine];
+      const copilot = findOnPath(COPILOT_CLI);
+
+      if (copilot !== null) {
+        const registration = attempt(io, "copilot", () => registerWithCopilotCli(copilot, entry));
+        if (!registration.ok) {
+          vendorFailed(
+            io,
+            "copilot",
+            COPILOT_CLI,
+            registration.argv,
+            registration.result,
+            registration.removed
+              ? "and the entry that was there had already been removed, so this user " +
+                  "configuration now holds none. Fix what that command reports and run this again."
+              : "so nothing was registered.",
+          );
+        }
+        lines.push(
+          `  via:     ${copilot} mcp add` +
+            (registration.replaced ? ", replacing the entry that was there" : ""),
+        );
+        finish(io, "copilot", lines);
+        return;
+      }
+
+      const path = copilotConfigPath();
+      const written = attempt(io, "copilot", () => writeCopilotConfig(path, entry));
+      lines.push(
+        `  wrote:   ${path} (${COPILOT_SERVERS_KEY}.xplainer, ` +
+          `${written.replaced ? "replacing the entry that was there" : "a new entry"})`,
+        `  note:    \`${COPILOT_CLI}\` is not on PATH, so its user MCP configuration was written ` +
+          "directly.",
+      );
+      finish(io, "copilot", lines);
+    });
+}
+
 /**
  * The group, with its own output routing for the reason `commands/daemon.ts` gives: commander's
  * `addCommand()` copies neither `configureOutput()` nor `exitOverride()` from the parent, so a group
  * added to an already-configured program still holds the default one and would write straight to the
  * process streams. `helpCommand(false)` is load-bearing for the same reason it is there: an implicit
- * `help [command]` would make this group list three verbs.
+ * `help [command]` would add a fourth entry to this group's verb list.
  */
 export function createConnectCommand(io: CliIo): Command {
   const connect = new Command("connect")
@@ -357,6 +419,7 @@ export function createConnectCommand(io: CliIo): Command {
 
   connect.addCommand(createClaudeCommand(io));
   connect.addCommand(createCodexCommand(io));
+  connect.addCommand(createCopilotCommand(io));
 
   return connect;
 }
