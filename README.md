@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/32e7abb8-eb8d-4359-a661-af709731788f
   <code>docs/media/</code> holds the MP4, and <code>docs/media/xplainer-intro/</code> the <code>narrate</code> and <code>put_source</code> payloads that regenerate it.</sub>
 </p>
 
-An agent — Claude Code or Codex — writes [Remotion](https://remotion.dev) scenes and a
+An agent — Claude Code, Codex or GitHub Copilot CLI — writes [Remotion](https://remotion.dev) scenes and a
 narration spec, then drives `create → put_source → narrate → still → render` over MCP and
 polls for the result. Text-to-speech produces word-level timestamps, every scene duration is
 derived from them, and the captions are burned in. Nothing is uploaded and nothing is
@@ -73,8 +73,10 @@ never in CI, never when `xplainer update` runs it for you, and never if you have
 Enter declines, it gives up after ten seconds if nobody answers, and `--no-star` skips it entirely.
 
 For `codex` instead of Claude: `xplainer connect codex --spawn` does the same, with the skill at
-`~/.codex/skills/xplainer/SKILL.md`. After an upgrade, `xplainer update` re-runs `setup` and
-re-writes each configured agent's entry and skill in whichever of the two forms it already has.
+`~/.codex/skills/xplainer/SKILL.md`. For GitHub Copilot CLI, use
+`xplainer connect copilot --spawn`; its skill lives at `~/.copilot/skills/xplainer/SKILL.md`
+(or under `COPILOT_HOME` when that is set). After an upgrade, `xplainer update` re-runs `setup`
+and re-writes each configured agent's entry and skill in whichever of the two forms it already has.
 
 See [The daemon, if you want it](#the-daemon-if-you-want-it) for the rest of what the service route
 adds, and [Installing it](#installing-it) for the other two install routes.
@@ -100,7 +102,7 @@ adds, and [Installing it](#installing-it) for the other two install routes.
 > including what to do on a host with no user-scope supervisor at all.
 >
 > `xplainer mcp` serves those tools over stdio, `xplainer mcp --attach` proxies a session to a
-> running daemon over its unix socket, and `xplainer connect claude|codex` writes that command
+> running daemon over its unix socket, and `xplainer connect claude|codex|copilot` writes that command
 > into your agent's configuration — a command line, with no URL, no port and no token in it.
 >
 > **What is not done, said plainly.** `npm i -g xplainer` is a real install route: the
@@ -173,7 +175,8 @@ Until that is closed ([ROADMAP](docs/ROADMAP.md) phase 4, where it blocks **P4-3
 through this route is working without them.
 
 **The two routes below do install it**, because `xplainer connect` writes the skill beside the MCP
-entry — `~/.claude/skills/xplainer/SKILL.md`, or `~/.codex/` for Codex — out of the `@xplainer/skill`
+entry — `~/.claude/skills/xplainer/SKILL.md`, `~/.codex/` for Codex, or `~/.copilot/` for
+GitHub Copilot CLI — out of the `@xplainer/skill`
 the CLI depends on. It had not, for one release: `connect` wrote the transport and not the method,
 which is how an agent ends up with eight tools and no instructions. Re-running `connect` after an
 upgrade refreshes both, and reports each as written or already current.
@@ -199,8 +202,8 @@ xplainer setup                       # browser + speech route + the render works
 xplainer connect claude --spawn      # write that command into your agent's configuration
 ```
 
-`connect codex` does the same for Codex, and both write a command line — no URL, no port and no
-token in it. `--spawn` is the no-daemon form: the agent starts `xplainer mcp`, which serves all
+`connect codex` and `connect copilot` do the same for Codex and GitHub Copilot CLI, and all three
+write a command line — no URL, no port and no token in it. `--spawn` is the no-daemon form: the agent starts `xplainer mcp`, which serves all
 eight tools in its own process. Measured: about 140 ms to start, about 98 MB resident while idle.
 
 ### The daemon, if you want it

@@ -8,11 +8,10 @@
  * improvises all of it, and the result looks like it. The gap was documented in `README.md` twice
  * before it was closed here, which was the wrong order: it cost 11 KB and one dependency to remove.
  *
- * **Both clients read `<home>/skills/<name>/SKILL.md`**, so one writer serves both and the only
- * difference is which home — verified against real installations of each: `~/.claude/skills/` and
- * `~/.codex/skills/`, each holding one directory per skill with `SKILL.md` inside it. That is the
- * same layout `packages/skill/scripts/build.mjs` emits into both plugin bundles, which is why its
- * docblock can say "both clients discover skills at `skills/<name>/SKILL.md`" as one sentence.
+ * **All three clients read `<client home>/skills/<name>/SKILL.md`**, so one writer serves them and
+ * only the client home differs. The defaults are `~/.claude`, `~/.codex`, and `~/.copilot`; each
+ * client can move that home with its own environment variable, and the skill must move with the MCP
+ * configuration or the agent gets tools without the instructions for using them.
  *
  * **The file is read out of `@xplainer/skill` rather than copied into this package.** There is one
  * reviewed `SKILL.md` and `packages/skill/src/build.test.ts` compares it byte-for-byte against both
@@ -26,28 +25,50 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { writeFileAtomically } from "./atomic-write.js";
+import type { PathEnvironment } from "./entry.js";
 import { ConnectRefusal } from "./refusal.js";
 
 /** The skill's directory name, which is the name an agent addresses it by. */
 export const SKILL_NAME = "xplainer";
 
-/** The file both clients look for inside that directory. */
+/** The file every client looks for inside that directory. */
 export const SKILL_FILE = "SKILL.md";
 
 /** Which agent's home the skill is written under. */
-export type SkillClient = "claude" | "codex";
+export type SkillClient = "claude" | "codex" | "copilot";
 
-/** The directory each client keeps user-level skills in, relative to `home`. */
+/** The default directory each client keeps user-level skills in, relative to `home`. */
 const CLIENT_ROOT: Readonly<Record<SkillClient, string>> = {
   claude: ".claude",
   codex: ".codex",
+  copilot: ".copilot",
 };
 
+/** The environment variable each client uses to move its configuration home. */
+const CLIENT_HOME_ENV: Readonly<Record<SkillClient, string>> = {
+  claude: "CLAUDE_CONFIG_DIR",
+  codex: "CODEX_HOME",
+  copilot: "COPILOT_HOME",
+};
+
+/** Where one client's personal skill directory starts. */
+function skillRoot(client: SkillClient, home: string, env: PathEnvironment): string {
+  const configured = env[CLIENT_HOME_ENV[client]]?.trim();
+  return configured === undefined || configured === ""
+    ? join(home, CLIENT_ROOT[client])
+    : configured;
+}
+
 /** Where {@link installSkill} will write, so a caller can report the path it wrote. */
-export function skillPath(client: SkillClient, home: string = homedir()): string {
-  return join(home, CLIENT_ROOT[client], "skills", SKILL_NAME, SKILL_FILE);
+export function skillPath(
+  client: SkillClient,
+  home: string = homedir(),
+  env: PathEnvironment = process.env,
+): string {
+  return join(skillRoot(client, home, env), "skills", SKILL_NAME, SKILL_FILE);
 }
 
 /**
@@ -100,7 +121,7 @@ export type SkillInstall = {
  * Write the skill into `client`'s home, replacing whatever version was there.
  *
  * **Re-running `connect` is the update path**, which is the reason this overwrites rather than
- * refusing an existing file: after `npm i -g xplainer@latest`, one `xplainer connect claude`
+ * refusing an existing file: after `npm i -g xplainer@latest`, one `xplainer connect <client>`
  * refreshes both halves — the MCP entry and the instructions — and a user who has upgraded should
  * not have to know that the skill is a separate artefact. `updated` distinguishes a refresh from a
  * no-op so the command can say which, rather than claiming to have changed something it did not.
@@ -109,8 +130,12 @@ export type SkillInstall = {
  * does: it is somebody else's directory, and a half-written `SKILL.md` is an agent reading half an
  * instruction.
  */
-export function installSkill(client: SkillClient, home: string = homedir()): SkillInstall {
-  const path = skillPath(client, home);
+export function installSkill(
+  client: SkillClient,
+  home: string = homedir(),
+  env: PathEnvironment = process.env,
+): SkillInstall {
+  const path = skillPath(client, home, env);
   const text = readSkill();
   const before = existsSync(path) ? readFileSync(path, "utf8") : null;
   if (before === text) {

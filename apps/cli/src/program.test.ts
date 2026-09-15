@@ -149,10 +149,10 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly claude and codex under `connect --help`", async () => {
+  it("lists exactly claude, codex and copilot under `connect --help`", async () => {
     const { stdout, exitCode } = await run(["connect", "--help"]);
 
-    expect(listedCommands(stdout)).toEqual(["claude", "codex"]);
+    expect(listedCommands(stdout)).toEqual(["claude", "codex", "copilot"]);
     expect(exitCode).toBe(0);
   });
 
@@ -196,7 +196,7 @@ describe("xplainer", () => {
     const { stdout, stderr, exitCode } = await run(["connect"]);
 
     expect(stdout).toBe("");
-    expect(listedCommands(stderr)).toEqual(["claude", "codex"]);
+    expect(listedCommands(stderr)).toEqual(["claude", "codex", "copilot"]);
     expect(exitCode).toBe(1);
   });
 
@@ -239,14 +239,14 @@ describe("xplainer", () => {
 
   /**
    * `--spawn` is the leading remediation in ADR 0020's two no-supervisor degraded paths, so it has
-   * to be a flag that exists on both verbs rather than a sentence in a message. What it *writes* is
-   * asserted against real configuration files in `commands/connect.test.ts`; this is the surface,
-   * read off the commands for the same reason `mcp --attach` is above.
+   * to be a flag that exists on every connect verb rather than a sentence in a message. What it
+   * *writes* is asserted against real configuration files in `commands/connect.test.ts`; this is
+   * the surface, read off the commands for the same reason `mcp --attach` is above.
    */
-  it("offers connect claude --spawn and connect codex --spawn, which two refusals print", () => {
+  it("offers --spawn on every connect verb", () => {
     const connect = createProgram().commands.find((command) => command.name() === "connect");
 
-    for (const verb of ["claude", "codex"]) {
+    for (const verb of ["claude", "codex", "copilot"]) {
       const command = connect?.commands.find((entry) => entry.name() === verb);
       expect(command?.options.map((option) => option.long)).toContain("--spawn");
       expect(command?.options.find((option) => option.long === "--spawn")?.description).toContain(
