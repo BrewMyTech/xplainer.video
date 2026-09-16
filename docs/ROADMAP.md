@@ -1779,6 +1779,37 @@ that had not loaded the skill, or had drifted from it, had nothing at all. A def
 in the code that defers is not tracked, and `AC-8`/`AC-14d` assert names, titles and descriptions —
 never that a published schema describes anything.
 
+**Open, found 2026-09-16: caption sentence breaks are inferred at render time, not known.**
+`Captions.tsx` restarts its grouping window at each sentence, which is what stopped a caption
+carrying the first word of the next one. It finds those sentences by reading the words: a token
+ending in `.`, `!` or `?`, minus an abbreviation list and dotted initials. Every one of the 24
+boundary cases behaves as intended, and five of them are intended to be wrong:
+
+| input | answer | what it costs |
+|---|---|---|
+| `U.S.` | no break | a sentence that really ends in it runs on |
+| `No.` | no break | same, and it is in the abbreviation list |
+| `3.` | **breaks** | a numbered walkthrough splits inside item 3 |
+| `...` vs `…` | breaks / no break | ASCII and Unicode ellipsis disagree |
+| `中文。` | no break | non-English narration gets no sentence breaks at all |
+
+**Extending the regex is the wrong repair**, and the reason is that each addition is another guess
+that fails somewhere else: `No.` cannot be told from "No." by its letters, and no list settles
+`U.S.` at the end of a sentence. The information exists, just not where the guess is being made —
+`explainer_narrate` is handed the narration as whole sentences and then throws that structure away.
+The G2P emits one span per word that has a *sound*, so punctuation never becomes a token; 0 of 234
+caption tokens in this repository's own intro video carried a mark until
+`attachSentencePunctuation` put them back from the IPA.
+
+So the fix is to carry the boundary rather than re-derive it: mark it where the segment text is
+still intact and let `buildCaptions` read a flag instead of a regex. That makes all five rows facts,
+gives every script correct breaks for nothing, and deletes the abbreviation list. It is a change to
+what `narrate` writes — `packages/protocol/schemas/captions.json` — so it wants a schema change,
+codegen and a contract bump, which is why it is booked rather than done.
+
+The numbered-list row is the one most likely to be seen: an agent narrating a numbered walkthrough
+is an ordinary use of this product, and "3." is how such a narration starts an item.
+
 **Open, found 2026-09-11: `runtime verify` blesses a payload whose symlink points out of it.**
 `runtime/verify.ts`'s step 3 says "No manifest path may be absolute or escape the payload — the rule
 the assembler enforces on the way in, re-checked on the way out, because a manifest is a file and
