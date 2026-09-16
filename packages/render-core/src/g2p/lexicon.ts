@@ -23,6 +23,7 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { unsupportedSymbols } from "./vocab.js";
 
 /** Where the lexicon sits, beside this module in `src/` and in `dist/`. */
 const LEXICON_PATH = fileURLToPath(new URL("data/lexicon.txt", import.meta.url));
@@ -67,7 +68,7 @@ let cached: Lexicon | null = null;
  * Kokoro token 16 and a short pause, and it is what puts the beat between
  * "post-gres" and "Q-L".
  */
-function parseLine(line: string): LexiconEntry | null {
+function parseLine(line: string, source: string = LEXICON_PATH): LexiconEntry | null {
   const withoutComment = line.split("#");
   const body = (withoutComment[0] ?? "").trim();
   if (body === "") {
@@ -76,14 +77,14 @@ function parseLine(line: string): LexiconEntry | null {
   const separator = body.search(/\s/);
   if (separator < 0) {
     throw new Error(
-      `${LEXICON_PATH}: entry ${JSON.stringify(body)} has a spelling and no pronunciation. ` +
+      `${source}: entry ${JSON.stringify(body)} has a spelling and no pronunciation. ` +
         "Every line is `<spelling><whitespace><IPA>`.",
     );
   }
   const spelling = body.slice(0, separator);
   const ipa = body.slice(separator).trim();
   if (ipa === "") {
-    throw new Error(`${LEXICON_PATH}: entry ${JSON.stringify(spelling)} has an empty IPA field.`);
+    throw new Error(`${source}: entry ${JSON.stringify(spelling)} has an empty IPA field.`);
   }
   const gloss = withoutComment.slice(1).join("#").trim();
   return {
@@ -92,6 +93,81 @@ function parseLine(line: string): LexiconEntry | null {
     gloss: gloss === "" ? null : gloss,
     caseSensitive: spelling !== spelling.toLowerCase(),
   };
+}
+
+/**
+ * A parsed lexicon that did not come from the committed file.
+ *
+ * The two maps are the same shape {@link lookUpLexicon} already searches — exact before folded — so
+ * an overlay is consulted by the same two lookups rather than by a second code path.
+ */
+export type ExtraLexicon = {
+  readonly exact: ReadonlyMap<string, string>;
+  readonly folded: ReadonlyMap<string, string>;
+};
+
+/** One line a user-supplied lexicon could not use, and why. */
+export type LexiconProblem = { readonly line: number; readonly reason: string };
+
+/** A user-supplied lexicon, and every line of it that was skipped. */
+export type ParsedLexicon = ExtraLexicon & {
+  readonly entries: readonly LexiconEntry[];
+  readonly problems: readonly LexiconProblem[];
+};
+
+/**
+ * Parse a lexicon a **user** wrote, skipping what it cannot use instead of throwing.
+ *
+ * `loadLexicon` throws on a malformed line and on a duplicate spelling, which is right for the
+ * committed file: it is reviewed, and a mistake in it is a bug that should stop the build. A file
+ * somebody hand-edits between takes is the opposite case — a stray character in it must not fail a
+ * narration that was otherwise fine, because the failure would arrive minutes into a render and
+ * name a file the person had just been editing for an unrelated reason.
+ *
+ * So every problem is collected and returned for the caller to print, and the entries that did
+ * parse are still used. A duplicate keeps the **last** one, because a person editing a file expects
+ * the line they just added at the bottom to win.
+ */
+export function parseLexicon(text: string, source: string): ParsedLexicon {
+  const entries: LexiconEntry[] = [];
+  const problems: LexiconProblem[] = [];
+  const folded = new Map<string, string>();
+  const exact = new Map<string, string>();
+  const lines = text.split("\n");
+  for (const [index, line] of lines.entries()) {
+    let entry: LexiconEntry | null;
+    try {
+      entry = parseLine(line, source);
+    } catch (error) {
+      problems.push({
+        line: index + 1,
+        reason: error instanceof Error ? error.message.replace(`${source}: `, "") : String(error),
+      });
+      continue;
+    }
+    if (entry === null) {
+      continue;
+    }
+    // **The line's shape is not enough.** `good  g\u028ad` parses perfectly and then kills the
+    // narration at tokenisation, because ASCII `g` is not the IPA `\u0261` Kokoro's vocabulary
+    // carries — a distinction invisible in most fonts. Checking here turns a render that dies
+    // minutes in into a line that is skipped and named, which is the whole promise of this parser.
+    const missing = unsupportedSymbols(entry.ipa);
+    if (missing.length > 0) {
+      problems.push({
+        line: index + 1,
+        reason:
+          `${JSON.stringify(entry.spelling)} uses ${missing.map((s) => JSON.stringify(s)).join(", ")}, ` +
+          "which the speech model has no symbol for. Check for an ASCII letter where an IPA one is " +
+          "meant — `g` for `\u0261`, `:` for `\u02d0`.",
+      });
+      continue;
+    }
+    const target = entry.caseSensitive ? exact : folded;
+    target.set(entry.caseSensitive ? entry.spelling : entry.spelling.toLowerCase(), entry.ipa);
+    entries.push(entry);
+  }
+  return { entries, problems, exact, folded };
 }
 
 /** Parse the whole file, refusing a duplicate spelling rather than letting one win silently. */
@@ -138,7 +214,17 @@ export function lexiconEntries(): readonly LexiconEntry[] {
  * The exact spelling is tried before the case-folded one, so a case-sensitive
  * entry beats a lower-case entry for the same letters.
  */
-export function lookUpLexicon(word: string): string | null {
+export function lookUpLexicon(word: string, extra?: ExtraLexicon): string | null {
+  const folded = word.toLowerCase();
+  // The overlay is searched first and in the same order, so a user entry beats the curated one for
+  // the same spelling. Overriding a shipped pronunciation is the point: the curated file is one
+  // opinion about how a word sounds, and the person listening to it has a better one.
+  if (extra !== undefined) {
+    const supplied = extra.exact.get(word) ?? extra.folded.get(folded);
+    if (supplied !== undefined) {
+      return supplied;
+    }
+  }
   const lexicon = loadLexicon();
-  return lexicon.exact.get(word) ?? lexicon.folded.get(word.toLowerCase()) ?? null;
+  return lexicon.exact.get(word) ?? lexicon.folded.get(folded) ?? null;
 }

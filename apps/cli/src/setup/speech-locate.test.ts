@@ -156,6 +156,11 @@ describe("onnxSpeechFromToolchain", () => {
       voice: "af_bella",
       runtimeLocation: elsewhere,
       origin: "XPLAINER_ONNX_MODEL, XPLAINER_ONNX_VOICE and XPLAINER_ONNX_RUNTIME",
+      // The three variables choose the *engine*; they say nothing about pronunciations, so this
+      // route reads the state directory's lexicon exactly like the marker route does. An earlier
+      // shape returned here before the lexicon was ever consulted, so a machine configured this way
+      // read no pronunciations while narration went on recommending the file it was ignoring.
+      lexiconPath: join(stateDir, "lexicon.txt"),
     });
 
     // Two of three is somebody mid-experiment, so the marker still answers rather than a

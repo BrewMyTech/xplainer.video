@@ -43,6 +43,48 @@ export declare class G2pError extends Error {
 }
 ```
 
+## `dist/g2p/lexicon.d.ts`
+
+```ts
+/**
+ * A parsed lexicon that did not come from the committed file.
+ *
+ * The two maps are the same shape {@link lookUpLexicon} already searches — exact before folded — so
+ * an overlay is consulted by the same two lookups rather than by a second code path.
+ */
+export type ExtraLexicon = {
+    readonly exact: ReadonlyMap<string, string>;
+    readonly folded: ReadonlyMap<string, string>;
+};
+
+/** One line a user-supplied lexicon could not use, and why. */
+export type LexiconProblem = {
+    readonly line: number;
+    readonly reason: string;
+};
+
+/** A user-supplied lexicon, and every line of it that was skipped. */
+export type ParsedLexicon = ExtraLexicon & {
+    readonly entries: readonly LexiconEntry[];
+    readonly problems: readonly LexiconProblem[];
+};
+
+/**
+ * Parse a lexicon a **user** wrote, skipping what it cannot use instead of throwing.
+ *
+ * `loadLexicon` throws on a malformed line and on a duplicate spelling, which is right for the
+ * committed file: it is reviewed, and a mistake in it is a bug that should stop the build. A file
+ * somebody hand-edits between takes is the opposite case — a stray character in it must not fail a
+ * narration that was otherwise fine, because the failure would arrive minutes into a render and
+ * name a file the person had just been editing for an unrelated reason.
+ *
+ * So every problem is collected and returned for the caller to print, and the entries that did
+ * parse are still used. A duplicate keeps the **last** one, because a person editing a file expects
+ * the line they just added at the bottom to win.
+ */
+export declare function parseLexicon(text: string, source: string): ParsedLexicon;
+```
+
 ## `dist/g2p/phonemise.d.ts`
 
 ```ts
@@ -94,7 +136,19 @@ export interface Phonemisation {
  * thing that could not be read. `NOTHING_TO_SPEAK` when the text holds no word
  * at all, which is a caller passing an empty or punctuation-only segment.
  */
-export declare function phonemise(text: string): Phonemisation;
+/** What a caller may hand `phonemise`, beyond the text. */
+export type PhonemiseOptions = {
+    /**
+     * Pronunciations that win over the curated lexicon and over CMUdict.
+     *
+     * Read and parsed by the **caller**, never here: this module promises no I/O beyond the three
+     * committed data files, and a user's file lives in their state directory, which `render-core`
+     * has no business knowing the location of. `apps/cli` reads it and passes the result.
+     */
+    readonly extra?: ExtraLexicon;
+};
+
+export declare function phonemise(text: string, options?: PhonemiseOptions): Phonemisation;
 ```
 
 ## `dist/g2p/resolve.d.ts`

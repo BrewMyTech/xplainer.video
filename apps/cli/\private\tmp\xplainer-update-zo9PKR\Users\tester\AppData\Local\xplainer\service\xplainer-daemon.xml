@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>xplainer local daemon</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+      </Repetition>
+      <Enabled>true</Enabled>
+      <UserId>CORP\tester</UserId>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Repetition>
+        <Interval>PT5M</Interval>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>CORP\tester</UserId>
+      <LogonType>S4U</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>/private/tmp/xplainer-update-zo9PKR/state/runtime/1.2.3-alpha-8c83f3f2cdd4/bin/node.exe</Command>
+      <Arguments>/private/tmp/xplainer-update-zo9PKR/state/runtime/1.2.3-alpha-8c83f3f2cdd4/lib/node_modules/@xplainer/cli/dist/bin.js serve --port 0 --state-dir /private/tmp/xplainer-update-zo9PKR/state --token-file /private/tmp/xplainer-update-zo9PKR/state/token --socket \\.\pipe\xplainer-f52f4605dd119fc5</Arguments>
+      <WorkingDirectory>/private/tmp/xplainer-update-zo9PKR/state</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

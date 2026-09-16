@@ -23,15 +23,20 @@
 
 export type {
   DerivedPronunciation,
+  ExtraLexicon,
   G2pErrorCode,
+  LexiconProblem,
+  ParsedLexicon,
   PhonemeSource,
   Phonemisation,
+  PhonemiseOptions,
   WordSpan,
 } from "./g2p/index.js";
 export {
   G2pError,
   kokoroTokenIds,
   kokoroVocabulary,
+  parseLexicon,
   phonemise,
   unsupportedSymbols,
 } from "./g2p/index.js";

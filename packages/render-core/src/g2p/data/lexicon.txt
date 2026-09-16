@@ -245,6 +245,7 @@ webpack        wˈɛbpˌæk                  # WEB-pack
 
 # --- Cloud, identity and the wire formats ------------------------------------
 
+ai             ˌAˈI                      # A-I, not "eye"
 api            ˌApˌiˈI                   # A-P-I
 ascii          ˈæski                     # ASK-ee
 aws            ˌAdˌʌbəljˌuˈɛs            # A-W-S
@@ -267,6 +268,7 @@ grpc           ʤˌiˌɑɹpˌisˈi              # G-R-P-C
 guid           ɡˈuɪd                     # GOO-id
 html           ˌAʧtˌiɛmˈɛl               # H-T-M-L
 iam            ˌIˌAˈɛm                   # I-A-M
+ID             ˌIdˈi                     # capitalised on purpose: "the id and ego" is untouched
 ide            ˌIdˌiˈi                   # I-D-E
 io             ˌIˈO                      # I-O
 ios            ˌIˌOˈɛs                   # i-O-S

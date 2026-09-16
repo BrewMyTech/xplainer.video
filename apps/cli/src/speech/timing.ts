@@ -112,6 +112,58 @@ export type DerivedTiming = {
  *   the tokens that were fed, and `TIMING_INCONSISTENT` when the spans and the audio cannot be
  *   reconciled. Both refuse rather than emitting timings that disagree with the audio.
  */
+/**
+ * Sentence-ending punctuation, as it appears between two spoken words.
+ *
+ * Only the marks that end a sentence, and only when they sit immediately after the word: a comma
+ * changes no pagination and a hyphen inside a compound is not punctuation between words at all.
+ */
+const TRAILING_SENTENCE_MARK = /^\s*([.!?]+["'\u201d\u2019)\]}]*)/u;
+
+/**
+ * Put sentence punctuation back onto the words it was spoken after.
+ *
+ * **The G2P drops it, and everything downstream needs it.** `phonemise()` emits one span per word
+ * that has a *sound*, so "answer." arrives as `answer` and the full stop exists only in the source
+ * string. That was invisible until captions tried to break on sentences: `buildCaptions` has a
+ * branch that folds a punctuation-only token onto the previous word, and on this route no such
+ * token is ever produced, so every caption in every video rendered so far is bare — 0 of 234 tokens
+ * carried a `.`, `!` or `?` in the project's own intro video.
+ *
+ * **The offsets index the IPA, not the source text**, and the IPA keeps the punctuation —
+ * `"The build failed. Start again!"` phonemises to `"\u00f0\u0259 b\u02c8\u026ald f\u02c8Ald. st\u02c8\u0251\u0279t \u0259\u0261\u02c8\u025bn!"`. So the marks are
+ * already in hand: the run between one span's `end` and the next span's `start` is exactly what the
+ * G2P did not give a word to, and the last word takes whatever trails it. Slicing the *source*
+ * string here instead looks plausible and silently does nothing, because the spans do not address
+ * it: `"The"` spans `[0,2)`, which is `"\u00f0\u0259"` in the IPA and `"Th"` in the text.
+ *
+ * **It returns the timings untouched if the two lists disagree in length.** They are produced from
+ * the same spans and should always match; if they ever do not, attaching punctuation by index would
+ * put a full stop after the wrong word, and a caption that reads oddly is worse than one that reads
+ * as it did before this function existed.
+ */
+export function attachSentencePunctuation(
+  ipa: string,
+  words: readonly WordSpan[],
+  timestamps: readonly WordTimestamp[],
+): readonly WordTimestamp[] {
+  if (words.length !== timestamps.length) {
+    return timestamps;
+  }
+  return timestamps.map((timestamp, index) => {
+    const span = words[index];
+    if (span === undefined) {
+      return timestamp;
+    }
+    const next = words[index + 1];
+    const gap = ipa.slice(span.end, next === undefined ? ipa.length : next.start);
+    const match = TRAILING_SENTENCE_MARK.exec(gap);
+    return match === null
+      ? timestamp
+      : { ...timestamp, word: `${timestamp.word}${match[1] ?? ""}` };
+  });
+}
+
 export function deriveWordTimings(input: TimingInput): DerivedTiming {
   const { tokens, durations, words, sampleCount, sampleRate } = input;
 

@@ -43,6 +43,7 @@ import {
   onnxSpeechFromEnvironment,
   voiceFromPackPath,
 } from "../speech/index.js";
+import { readUserLexicon } from "../speech/user-lexicon.js";
 import { ONNX_PROVIDER, ONNX_RUNTIME_DIR, ONNX_VOICES_DIR } from "./providers/speech-onnx.js";
 import { readToolchainMarker, toolchainMarkerPath } from "./toolchain.js";
 
@@ -108,14 +109,31 @@ function recordedVoice(component: ToolchainComponent, root: string): string | nu
  * directory into the narration worker's environment for exactly this call.
  */
 export const onnxSpeechFromToolchain: OnnxSpeechLocator = (env) => {
-  const named = onnxSpeechFromEnvironment(env);
-  if (named !== null) {
-    return named;
-  }
   const stateDir = resolveStateDir(env);
+  // **The overlay is attached after the route is chosen, not inside one branch of it.** An earlier
+  // shape returned the environment-named engine first and never reached the lexicon, so a machine
+  // with all three `XPLAINER_ONNX_*` variables set read no pronunciations at all — while narration
+  // went on recommending the file it was ignoring.
+  const located = onnxSpeechFromEnvironment(env) ?? fromMarker(stateDir);
+  if (located === null) {
+    return null;
+  }
+  // A missing file, an unreadable one and a file of nothing but comments all answer the same way —
+  // no overlay — so the ordinary machine, which has never written one, pays a single `existsSync`.
+  const user = readUserLexicon(stateDir);
+  return {
+    ...located,
+    lexiconPath: user.path,
+    ...(user.lexicon === null ? {} : { extraLexicon: user.lexicon }),
+    ...(user.problems.length === 0 ? {} : { lexiconProblems: user.problems }),
+  };
+};
+
+/** The engine this machine's toolchain marker records, or `null` when it records none. */
+function fromMarker(stateDir: string): OnnxSpeechPaths | null {
   const marker: Toolchain | null = readToolchainMarker(stateDir);
   if (marker === null) {
     return null;
   }
   return onnxSpeechFromComponent(marker.speech, toolchainMarkerPath(stateDir));
-};
+}

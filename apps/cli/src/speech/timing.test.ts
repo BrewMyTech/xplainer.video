@@ -1,7 +1,7 @@
 import type { WordSpan } from "@xplainer/render-core";
 import { phonemise } from "@xplainer/render-core";
 import { describe, expect, it } from "vitest";
-import { deriveWordTimings } from "./timing.js";
+import { attachSentencePunctuation, deriveWordTimings } from "./timing.js";
 import { tokenisePhonemes } from "./tokens.js";
 
 const SAMPLE_RATE = 24000;
@@ -232,5 +232,48 @@ describe("deriveWordTimings", () => {
     // span — but they may never exceed it either.
     expect(spokenSeconds).toBeGreaterThan(derived.seconds * 0.5);
     expect(spokenSeconds).toBeLessThan(derived.seconds);
+  });
+});
+
+describe("attachSentencePunctuation", () => {
+  it("puts sentence marks back on the words they were spoken after", () => {
+    // The G2P emits one span per word that has a *sound*, so punctuation never becomes a word and
+    // every caption arrived bare — 0 of 234 tokens in the project's own intro video carried a stop.
+    // The marks do survive into the IPA, which is what makes them recoverable here.
+    const text = "The build failed. Start again!";
+    const spoken = phonemise(text);
+    const stamps = spoken.words.map((word, index) => ({
+      word: word.word,
+      start_time: index,
+      end_time: index + 1,
+    }));
+
+    const attached = attachSentencePunctuation(spoken.ipa, spoken.words, stamps);
+
+    expect(attached.map((stamp) => stamp.word).join(" ")).toBe("The build failed. Start again!");
+  });
+
+  it("leaves the timings untouched when the two lists disagree in length", () => {
+    // They are built from the same spans and should always match. If they ever stop matching,
+    // attaching by index would put a full stop after the wrong word, which is worse than none.
+    const spoken = phonemise("One. Two.");
+    const short = [{ word: "One", start_time: 0, end_time: 1 }];
+
+    expect(attachSentencePunctuation(spoken.ipa, spoken.words, short)).toEqual(short);
+  });
+
+  it("ignores a comma, which changes no pagination", () => {
+    const text = "First, second.";
+    const spoken = phonemise(text);
+    const stamps = spoken.words.map((word, index) => ({
+      word: word.word,
+      start_time: index,
+      end_time: index + 1,
+    }));
+
+    const attached = attachSentencePunctuation(spoken.ipa, spoken.words, stamps);
+
+    expect(attached[0]?.word).toBe("First");
+    expect(attached[1]?.word).toBe("second.");
   });
 });

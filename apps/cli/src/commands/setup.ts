@@ -87,6 +87,7 @@ import {
   TOOLCHAIN_FORMAT_VERSION,
   writeToolchainMarker,
 } from "../setup/toolchain.js";
+import { seedUserLexicon } from "../speech/user-lexicon.js";
 import { resolveWorkspaceRoot } from "../workspace-root.js";
 
 /** The three things `setup` can acquire. */
@@ -258,6 +259,20 @@ export function createSetupCommand(io: CliIo): Command {
       } catch (error) {
         io.writeErr(`xplainer setup: ${describe(error)}\n`);
         io.exit(exitCodeFor(error));
+      }
+
+      // **Seeded before the completeness check, not after it.** Placing this after the marker was
+      // written meant a partial run — `setup --workspace`, or any run whose browser or speech
+      // acquisition is still outstanding — returned below without ever creating the file, so the
+      // machines most likely to be mid-setup were the ones that never got it. Nothing about a
+      // pronunciation list depends on the toolchain being complete.
+      //
+      // Seeded once and never overwritten, so what a person writes here survives every upgrade:
+      // `xplainer update` runs this command again on each one. The seed is entirely commented out,
+      // so a fresh file changes no pronunciation until somebody deliberately edits it.
+      const lexicon = seedUserLexicon(stateDir);
+      if (lexicon.written) {
+        log(`pronunciations you can edit: ${lexicon.path}`);
       }
 
       if (chrome === null || speech === null || workspace === null) {

@@ -1,9 +1,19 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerWithCopilotCli } from "./copilot.js";
 import type { StdioEntry } from "./entry.js";
+
+/**
+ * Longer than vitest's five-second default, because every case here spawns a real process.
+ *
+ * The shim is a three-line shell script with no sleep in it, so the cost is scheduling rather than
+ * work — and under the full suite, with ~1,300 other tests competing, a spawn that normally takes
+ * milliseconds crossed five seconds twice in a row and failed two *different* cases in this file.
+ * The flake is the timeout, not the code under test.
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 const scratch: string[] = [];
 const ENTRY: StdioEntry = { command: "xplainer", args: ["mcp", "--attach"], source: "path" };

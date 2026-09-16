@@ -26,6 +26,7 @@
  */
 
 import { basename, extname } from "node:path";
+import type { ExtraLexicon, LexiconProblem } from "@xplainer/render-core";
 
 /** Names the `.onnx` model file the in-process synthesiser speaks with. */
 export const ONNX_MODEL_ENV = "XPLAINER_ONNX_MODEL";
@@ -52,6 +53,28 @@ export type OnnxSpeechPaths = {
   readonly voicePath: string;
   readonly voice: string;
   readonly runtimeLocation: string;
+  /**
+   * The user's own pronunciations, already read and parsed, or absent when there are none.
+   *
+   * It rides along with the paths because the locator is the one thing here that knows the state
+   * directory, and `createOnnxSynthesiser` takes this object whole — so carrying it costs no new
+   * argument at the call site in `workers/speech.ts`.
+   */
+  readonly extraLexicon?: ExtraLexicon;
+  /**
+   * Where a user's pronunciations live on this machine, whether or not the file exists yet.
+   *
+   * Carried even when `extraLexicon` is absent, because the log line that matters most is the one
+   * printed when a word had to be guessed at — and that is exactly when somebody needs the path.
+   */
+  readonly lexiconPath?: string;
+  /**
+   * Lines of that file the parser could not use.
+   *
+   * Carried so the narration can say so once. Skipping a line silently is how somebody "fixes" a
+   * pronunciation four times without ever learning their entry was rejected.
+   */
+  readonly lexiconProblems?: readonly LexiconProblem[];
   /**
    * Where these paths came from, in the words the worker's provenance line uses.
    *

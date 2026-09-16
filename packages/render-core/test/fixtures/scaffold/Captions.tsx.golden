@@ -6,69 +6,153 @@ import type { Caption, TikTokPage } from "@remotion/captions";
 /** How often the caption line turns over. Higher = more words on screen. */
 const SWITCH_EVERY_MS = 1400;
 
-const Page: React.FC<{ page: TikTokPage }> = ({ page }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const nowMs = page.startMs + (frame / fps) * 1000;
+/**
+ * Words that end in a full stop without ending a sentence.
+ *
+ * Deliberately short. Every entry is a word that shows up in technical narration and would
+ * otherwise split a line in half; a longer list would start guessing, and a wrong guess here is a
+ * caption that breaks where nobody speaks a pause.
+ */
+const ABBREVIATION = /^(?:e\.g|i\.e|etc|vs|approx|fig|eq|no|mr|mrs|ms|dr|prof|st)\.$/i;
 
-  return (
-    <AbsoluteFill
-      style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 84 }}
+/** Dotted initials — `U.S.`, `A.I.` — which end in a stop and usually are not the end. */
+const DOTTED_INITIALS = /^(?:[A-Za-z]\.)+$/;
+
+/**
+ * Whether this word ends a sentence.
+ *
+ * **A heuristic, and knowingly so.** The certain answer needs the narration to mark its own
+ * boundaries, which is a change to what `explainer_narrate` writes rather than to how it is read;
+ * until then this reads the words. What it gets right is the cases that actually occur: `!` and `?`
+ * always end one, a decimal like `1.5` never does because it ends in a digit, and `e.g.` does not
+ * because it is listed above. What it can still get wrong is `U.S.` at the genuine end of a
+ * sentence — treated as an abbreviation, so the line runs on, which is the same behaviour as before
+ * this function existed and therefore not a regression.
+ *
+ * Surrounding quotes and brackets are stripped before the test, because `drawn."` and `drawn.)` end
+ * a sentence exactly as `drawn.` does.
+ */
+function endsSentence(text: string): boolean {
+  const word = text
+    .trim()
+    .replace(/^["'“‘([{]+/u, "")
+    .replace(/["'”’)\]}]+$/u, "");
+  if (/[!?]$/.test(word)) {
+    return true;
+  }
+  return word.endsWith(".") && !ABBREVIATION.test(word) && !DOTTED_INITIALS.test(word);
+}
+
+/**
+ * Group words into pages, restarting the grouping window at every sentence.
+ *
+ * **The window is reset before grouping rather than after, and that is the whole fix.**
+ * `createTikTokStyleCaptions` groups purely by elapsed time: a page still under
+ * `SWITCH_EVERY_MS` when a sentence ends keeps absorbing words from the next one, so a line reads
+ * "…before one frame has been drawn. It" and the eye trips on a word belonging to a thought that
+ * has not started yet. Splitting the finished pages instead would not help — by then the previous
+ * sentence has already decided where the breaks fall, and those breaks stay.
+ *
+ * A sentence that ends 200 ms into its window leaves a short page, and that is allowed. Merging the
+ * remainder forward is how the original defect comes back, and a page that flashes briefly is a
+ * smaller cost than one carrying the opening word of the next sentence.
+ *
+ * Pure: no clock, no frame, no order-dependence, so Remotion rendering frames out of order and in
+ * parallel cannot change the answer.
+ */
+function paginate(captions: readonly Caption[]): TikTokPage[] {
+  const pages: TikTokPage[] = [];
+  let sentence: Caption[] = [];
+
+  const flush = (): void => {
+    if (sentence.length === 0) {
+      return;
+    }
+    const grouped = createTikTokStyleCaptions({
+      captions: sentence,
+      combineTokensWithinMilliseconds: SWITCH_EVERY_MS,
+    });
+    pages.push(...grouped.pages);
+    sentence = [];
+  };
+
+  for (const caption of captions) {
+    if (caption.text.trim() === "") {
+      continue;
+    }
+    sentence.push(caption);
+    if (endsSentence(caption.text)) {
+      flush();
+    }
+  }
+  flush();
+  return pages;
+}
+
+const Page: React.FC<{ page: TikTokPage; nowMs: number }> = ({ page, nowMs }) => (
+  <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 84 }}>
+    <div
+      style={{
+        maxWidth: 1480,
+        textAlign: "center",
+        fontSize: 48,
+        fontWeight: 600,
+        lineHeight: 1.3,
+        // Tokens carry their own leading space; pre-wrap keeps words apart.
+        whiteSpace: "pre-wrap",
+        padding: "20px 40px",
+        borderRadius: 18,
+        backgroundColor: "rgba(10, 12, 16, 0.78)",
+      }}
     >
-      <div
-        style={{
-          maxWidth: 1480,
-          textAlign: "center",
-          fontSize: 48,
-          fontWeight: 600,
-          lineHeight: 1.3,
-          // Tokens carry their own leading space; pre-wrap keeps words apart.
-          whiteSpace: "pre-wrap",
-          padding: "20px 40px",
-          borderRadius: 18,
-          backgroundColor: "rgba(10, 12, 16, 0.78)",
-        }}
-      >
-        {page.tokens.map((token) => {
-          const isActive = token.fromMs <= nowMs && token.toMs > nowMs;
-          return (
-            <span
-              key={`${token.fromMs}-${token.text}`}
-              style={{ color: isActive ? "#FFFFFF" : "#8A94A8" }}
-            >
-              {token.text}
-            </span>
-          );
-        })}
-      </div>
-    </AbsoluteFill>
-  );
-};
+      {page.tokens.map((token) => {
+        const isActive = token.fromMs <= nowMs && token.toMs > nowMs;
+        return (
+          <span
+            key={`${token.fromMs}-${token.text}`}
+            style={{ color: isActive ? "#FFFFFF" : "#8A94A8" }}
+          >
+            {token.text}
+          </span>
+        );
+      })}
+    </div>
+  </AbsoluteFill>
+);
 
 export const Captions: React.FC<{ captions: Caption[] }> = ({ captions }) => {
   const { fps } = useVideoConfig();
-  const { pages } = useMemo(
-    () =>
-      createTikTokStyleCaptions({
-        captions,
-        combineTokensWithinMilliseconds: SWITCH_EVERY_MS,
-      }),
-    [captions],
-  );
+  const frame = useCurrentFrame();
+  const pages = useMemo(() => paginate(captions), [captions]);
+
+  // The composition's own clock, handed down rather than recomputed inside the page. A page's
+  // `from` is quantised to a whole frame below, so `page.startMs + localFrame / fps * 1000` is off
+  // by whatever that rounding moved — enough to light the wrong word at a page's first frame.
+  const nowMs = (frame / fps) * 1000;
+  const frameAt = (ms: number): number => Math.ceil((ms * fps) / 1000);
 
   return (
     <AbsoluteFill>
-      {pages.map((page, i) => {
-        const next = pages[i + 1] ?? null;
-        const from = (page.startMs / 1000) * fps;
+      {pages.map((page, index) => {
+        // Both edges are quantised as absolute positions and only then subtracted, so consecutive
+        // pages share an integer boundary and cannot overlap by a rounded fraction. Rounding a
+        // duration on its own — or forcing a minimum of one frame — is what makes a page reach past
+        // the start of the next.
+        const from = frameAt(page.startMs);
+        const next = pages[index + 1];
+        // The page's own measured duration, not a fixed window: `SWITCH_EVERY_MS` is the threshold
+        // that *groups* words, and a page may legitimately run longer than it. Cutting at
+        // `from + SWITCH_EVERY_MS` hid words that were still being spoken.
         const end = Math.min(
-          next ? (next.startMs / 1000) * fps : Infinity,
-          from + (SWITCH_EVERY_MS / 1000) * fps,
+          frameAt(page.startMs + page.durationMs),
+          next === undefined ? Number.POSITIVE_INFINITY : frameAt(next.startMs),
         );
-        if (end - from <= 0) return null;
+        if (end <= from) {
+          return null;
+        }
         return (
-          <Sequence key={page.startMs} from={from} durationInFrames={end - from}>
-            <Page page={page} />
+          <Sequence key={`${String(index)}-${String(page.startMs)}`} from={from} durationInFrames={end - from}>
+            <Page page={page} nowMs={nowMs} />
           </Sequence>
         );
       })}

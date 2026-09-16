@@ -31,6 +31,7 @@
  */
 
 import { G2pError } from "./errors.js";
+import type { ExtraLexicon } from "./lexicon.js";
 import { isDerivedSource, type PhonemeSource, resolveWord } from "./resolve.js";
 import { tokenise } from "./tokenise.js";
 
@@ -97,7 +98,19 @@ const STRAIGHT_QUOTE = '"';
  * thing that could not be read. `NOTHING_TO_SPEAK` when the text holds no word
  * at all, which is a caller passing an empty or punctuation-only segment.
  */
-export function phonemise(text: string): Phonemisation {
+/** What a caller may hand `phonemise`, beyond the text. */
+export type PhonemiseOptions = {
+  /**
+   * Pronunciations that win over the curated lexicon and over CMUdict.
+   *
+   * Read and parsed by the **caller**, never here: this module promises no I/O beyond the three
+   * committed data files, and a user's file lives in their state directory, which `render-core`
+   * has no business knowing the location of. `apps/cli` reads it and passes the result.
+   */
+  readonly extra?: ExtraLexicon;
+};
+
+export function phonemise(text: string, options: PhonemiseOptions = {}): Phonemisation {
   const words: WordSpan[] = [];
   const derived: DerivedPronunciation[] = [];
   let ipa = "";
@@ -127,7 +140,7 @@ export function phonemise(text: string): Phonemisation {
       continue;
     }
 
-    const resolved = resolveWord(token.text);
+    const resolved = resolveWord(token.text, options.extra);
     if (resolved === null) {
       throw new G2pError(
         "UNPRONOUNCEABLE",

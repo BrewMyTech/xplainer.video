@@ -16,8 +16,15 @@
 export type { G2pErrorCode } from "./errors.js";
 export { G2pError } from "./errors.js";
 export type {
+  ExtraLexicon,
+  LexiconProblem,
+  ParsedLexicon,
+} from "./lexicon.js";
+export { parseLexicon } from "./lexicon.js";
+export type {
   DerivedPronunciation,
   Phonemisation,
+  PhonemiseOptions,
   WordSpan,
 } from "./phonemise.js";
 export { phonemise } from "./phonemise.js";

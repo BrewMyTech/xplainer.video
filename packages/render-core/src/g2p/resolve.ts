@@ -40,7 +40,7 @@
 
 import { lookUpCmudict } from "./cmudict.js";
 import { spellOutLetters } from "./letters.js";
-import { lookUpLexicon } from "./lexicon.js";
+import { type ExtraLexicon, lookUpLexicon } from "./lexicon.js";
 import { lettersToIpa } from "./lts.js";
 import { readNumber } from "./numbers.js";
 
@@ -155,14 +155,14 @@ export function splitCompound(word: string): readonly string[] {
  * digits are not being guessed at, they are being read, and the reading is a
  * documented decision rather than a derivation from spelling.
  */
-function resolveSpokenNumber(token: string): Resolution | null {
+function resolveSpokenNumber(token: string, extra?: ExtraLexicon): Resolution | null {
   const words = readNumber(token);
   if (words === null || words.length === 0) {
     return null;
   }
   const parts: string[] = [];
   for (const word of words) {
-    const resolved = lookUpLexicon(word) ?? lookUpCmudict(word) ?? lettersToIpa(word);
+    const resolved = lookUpLexicon(word, extra) ?? lookUpCmudict(word) ?? lettersToIpa(word);
     if (resolved === null) {
       return null;
     }
@@ -178,12 +178,12 @@ function resolveSpokenNumber(token: string): Resolution | null {
  * `null` rather than `""`: an empty string is a word that vanishes from the
  * audio, which is precisely the upstream behaviour D5 exists to forbid.
  */
-export function resolveWord(word: string): Resolution | null {
+export function resolveWord(word: string, extra?: ExtraLexicon): Resolution | null {
   if (word === "") {
     return null;
   }
 
-  const curated = lookUpLexicon(word);
+  const curated = lookUpLexicon(word, extra);
   if (curated !== null) {
     return { ipa: curated, source: "lexicon" };
   }
@@ -193,7 +193,7 @@ export function resolveWord(word: string): Resolution | null {
     return { ipa: transcribed, source: "cmudict" };
   }
 
-  const numeric = resolveSpokenNumber(word);
+  const numeric = resolveSpokenNumber(word, extra);
   if (numeric !== null) {
     return numeric;
   }
@@ -202,7 +202,7 @@ export function resolveWord(word: string): Resolution | null {
   if (possessive !== null) {
     const [, stem, plural] = possessive;
     if (stem !== undefined && stem !== "") {
-      const resolved = resolveWord(stem);
+      const resolved = resolveWord(stem, extra);
       if (resolved !== null) {
         const suffix = plural === "s" ? possessiveSuffix(resolved.ipa) : "";
         return { ipa: `${resolved.ipa}${suffix}`, source: resolved.source };
@@ -214,7 +214,7 @@ export function resolveWord(word: string): Resolution | null {
   if (parts.length > 1) {
     const resolutions: Resolution[] = [];
     for (const part of parts) {
-      const resolved = resolvePart(part);
+      const resolved = resolvePart(part, extra);
       if (resolved === null) {
         return null;
       }
@@ -226,7 +226,7 @@ export function resolveWord(word: string): Resolution | null {
     return { ipa: resolutions.map((one) => one.ipa).join(" "), source: weakest.source };
   }
 
-  return resolvePart(parts[0] ?? word);
+  return resolvePart(parts[0] ?? word, extra);
 }
 
 /**
@@ -236,14 +236,14 @@ export function resolveWord(word: string): Resolution | null {
  * — `splitCompound` is idempotent, but a recursive call would also retry the
  * possessive branch on a stem that has already had its apostrophe removed.
  */
-function resolvePart(part: string): Resolution | null {
+function resolvePart(part: string, extra?: ExtraLexicon): Resolution | null {
   if (part === "") {
     return null;
   }
   if (/^\d+$/.test(part)) {
-    return resolveSpokenNumber(part);
+    return resolveSpokenNumber(part, extra);
   }
-  const curated = lookUpLexicon(part);
+  const curated = lookUpLexicon(part, extra);
   if (curated !== null) {
     return { ipa: curated, source: "lexicon" };
   }

@@ -68,7 +68,9 @@ import process from "node:process";
 import {
   DEFAULT_SAMPLE_RATE,
   type DerivedPronunciation,
+  type ExtraLexicon,
   encodeWav,
+  type LexiconProblem,
   phonemise,
   type SpeechSynthesiser,
 } from "@xplainer/render-core";
@@ -79,7 +81,7 @@ import {
 } from "@xplainer/tts-client";
 import { OnnxSpeechError } from "./errors.js";
 import { loadOnnxRuntime, type OnnxInferenceSession, type OnnxRuntimeModule } from "./runtime.js";
-import { deriveWordTimings } from "./timing.js";
+import { attachSentencePunctuation, deriveWordTimings } from "./timing.js";
 import { tokenisePhonemes } from "./tokens.js";
 import { readVoicePack, STYLE_DIMENSION, styleRow, type VoicePack } from "./voice.js";
 
@@ -127,6 +129,18 @@ export type OnnxSynthesiserOptions = {
   /** Where `setup` put the ONNX Runtime: a package directory or an entry file. */
   readonly runtimeLocation: string;
   /**
+   * Pronunciations from the user's own `<state>/lexicon.txt`, already parsed.
+   *
+   * Parsed by the caller rather than read here, for the reason `speech/user-lexicon.ts` gives:
+   * `phonemise()` promises no I/O, and this option is how a path-aware caller supplies what it
+   * read. Absent means the machine has no user lexicon, which is the ordinary case.
+   */
+  readonly extraLexicon?: ExtraLexicon;
+  /** Where to tell a listener to write a pronunciation they disagree with. */
+  readonly lexiconPath?: string;
+  /** Lines of that file the parser refused, so the narration can say so once. */
+  readonly lexiconProblems?: readonly LexiconProblem[];
+  /**
    * Where the derived-pronunciation lines go (plan D5).
    *
    * Defaults to this process's stdout, which in the narration worker *is* the job's log tail — the
@@ -149,12 +163,22 @@ function writeToJobLog(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
-/** The sentence a derived pronunciation gets in the log (plan D5). */
-function derivedLine(derived: DerivedPronunciation): string {
+/**
+ * The sentence a derived pronunciation gets in the log (plan D5).
+ *
+ * **It names the listener's own file, not one inside the installed package.** This line used to end
+ * "Add it to packages/render-core/src/g2p/data/lexicon.txt" — a path inside `node_modules` on every
+ * machine that installed from npm, so following the advice meant editing a file that the next
+ * `npm i -g xplainer@latest` would throw away. The state directory's `lexicon.txt` is read first
+ * and survives upgrades, so that is the one to name. The IPA is quoted because it is the starting
+ * point: paste the line, then change what sounds wrong.
+ */
+function derivedLine(derived: DerivedPronunciation, lexiconPath: string | undefined): string {
+  const where = lexiconPath === undefined ? "your state directory's lexicon.txt" : lexiconPath;
   return (
     `[xplainer] speech derived a pronunciation for ${JSON.stringify(derived.word)}: ` +
-    `/${derived.ipa}/ (${derived.source}). Add it to ` +
-    "packages/render-core/src/g2p/data/lexicon.txt to fix it in place."
+    `/${derived.ipa}/ (${derived.source}). To change it, add a line to ${where}:  ` +
+    `${derived.word}  ${derived.ipa}`
   );
 }
 
@@ -210,6 +234,17 @@ export function createOnnxSynthesiser(options: OnnxSynthesiserOptions): SpeechSy
   }
   const pack: VoicePack = readVoicePack(voicePath, voice);
 
+  // **Said once, at construction, not per segment.** A rejected line is the same rejected line for
+  // every segment of the narration, and repeating it once per sentence would bury the derived-
+  // pronunciation lines that are the other half of this log. Saying it here also means it appears
+  // before any audio exists, so somebody watching the job sees it while they can still act on it.
+  for (const problem of options.lexiconProblems ?? []) {
+    log(
+      `[xplainer] ${options.lexiconPath ?? "lexicon.txt"}:${String(problem.line)} was skipped — ` +
+        problem.reason,
+    );
+  }
+
   // One session per synthesiser, opened once and awaited by every segment after the first. Held as
   // the promise rather than as the resolved session so two overlapping calls cannot each open one:
   // the model is ~92 MB of weights and the peak RSS of this worker is a recorded budget.
@@ -259,9 +294,11 @@ export function createOnnxSynthesiser(options: OnnxSynthesiserOptions): SpeechSy
       // of this product may drop a word from the audio. It is rethrown untouched — it already
       // carries the word as a field and the one-line fix in its message, and wrapping it would
       // leave a caller regexing a message for the spelling to add.
-      const spoken = phonemise(request.text);
+      const spoken = phonemise(request.text, {
+        ...(options.extraLexicon === undefined ? {} : { extra: options.extraLexicon }),
+      });
       for (const derived of spoken.derived) {
-        log(derivedLine(derived));
+        log(derivedLine(derived, options.lexiconPath));
       }
 
       const tokens = tokenisePhonemes(spoken.ipa);
@@ -292,7 +329,7 @@ export function createOnnxSynthesiser(options: OnnxSynthesiserOptions): SpeechSy
           format: { channels: 1, sampleWidth: 2, sampleRate: DEFAULT_SAMPLE_RATE },
           data: toPcm16(waveform),
         }).toString("base64"),
-        timestamps: timing.timestamps,
+        timestamps: attachSentencePunctuation(spoken.ipa, spoken.words, timing.timestamps),
       };
     },
   };

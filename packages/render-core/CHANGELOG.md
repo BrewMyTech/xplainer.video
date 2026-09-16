@@ -1,5 +1,46 @@
 # @xplainer/render-core
 
+## 0.0.4
+
+### Patch Changes
+
+- Pronunciations you can edit, and captions that break where sentences do.
+
+  **`<state>/lexicon.txt` is yours.** Narration has always reported the words it had to guess at, but
+  the only place to act on one was a `lexicon.txt` inside the installed package — advice to edit
+  `node_modules`, discarded by the next `npm i -g xplainer@latest`. There is now a file in your state
+  directory, seeded by `setup` with worked examples and an IPA key, consulted _before_ the built-in
+  lexicon and before CMUdict. So it both adds words and overrides shipped pronunciations you
+  disagree with, and it survives upgrades. The "speech derived a pronunciation for …" line now names
+  that file and prints the entry to paste.
+
+  It cannot fail a render. A malformed line is reported and skipped rather than thrown, and the
+  pronunciation itself is checked against the speech model's vocabulary — `good  gʊd` with an ASCII
+  `g` instead of the IPA `ɡ` used to parse cleanly and then kill the narration minutes into a render.
+  Skipped lines are printed once, at the start of the job, because silently ignoring them is how
+  somebody "fixes" a pronunciation four times without learning their entry was rejected.
+
+  `g2p` still promises no I/O beyond its three committed data files: the CLI reads the file and hands
+  it to `phonemise(text, { extra })`.
+
+  **`ID` and `AI` said "id" and "eye".** Both are real words in CMUdict, which answers before the
+  initialism speller is ever reached. `AI` is now A-I for any case; `ID` is capitalised on purpose, so
+  "the id and ego" is untouched.
+
+  **Captions break on sentences.** A user reported the first word of a sentence stuck to the end of
+  the previous line. Two things were wrong. Pagination grouped purely by elapsed time, so a page still
+  inside its window when a sentence ended kept absorbing the next one — now the window restarts at
+  each sentence. And more fundamentally, no caption had ever carried punctuation at all: the G2P emits
+  one span per word that has a _sound_, so a full stop never became a token, and `buildCaptions`'s
+  fold for exactly that case was dead code. 0 of 234 tokens in this project's own intro video carried
+  a `.`, `!` or `?`. The marks do survive into the IPA, so they are reattached to the words they were
+  spoken after.
+
+  Also from review: a page now uses its own measured duration capped at the next page's start rather
+  than a fixed 1400 ms cutoff, which could hide words still being spoken; and the caption highlight
+  clock comes from the composition instead of being recomputed from the page's start, which drifted
+  once the page's first frame was quantised.
+
 ## 0.0.3
 
 ### Patch Changes
