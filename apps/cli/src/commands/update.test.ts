@@ -18,11 +18,20 @@
  * honestly hold is the arithmetic, the advice and the branch each fact leads to.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { attachedForm, compareVersions, planDaemonReconcile, upgradeCommand } from "./update.js";
+import { updateDaemonState } from "../daemon/daemon-state.js";
+import { stageRuntime } from "../install/stage.js";
+import { buildFixturePayload } from "../install/testing/payload.js";
+import {
+  attachedForm,
+  compareVersions,
+  planDaemonReconcile,
+  stagedRuntimeVersion,
+  upgradeCommand,
+} from "./update.js";
 
 describe("compareVersions", () => {
   it("says the installed build is behind only when it really is", () => {
@@ -226,5 +235,69 @@ describe("planDaemonReconcile", () => {
     expect(plan.kind).toBe("skip");
     expect(plan.kind === "skip" && plan.line).toContain("xplainer daemon update --build");
     expect(plan.kind === "skip" && plan.line).toContain("0.0.2 installed, 0.0.8 here");
+  });
+});
+
+describe("stagedRuntimeVersion", () => {
+  let scratch = "";
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), "xplainer-update-runtime-"));
+  });
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  const stateFor = (name: string): string => {
+    const stateDir = join(scratch, name);
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    return stateDir;
+  };
+
+  it("answers null where no runtime is registered, which is the machine with no daemon", () => {
+    expect(stagedRuntimeVersion(stateFor("none"))).toBeNull();
+  });
+
+  it("reads the version of the runtime `daemon.json` registers", () => {
+    const stateDir = stateFor("one");
+    const payload = buildFixturePayload({
+      outDir: join(scratch, "payload-one"),
+      version: "1.2.3",
+      marker: "one",
+      runnable: false,
+    });
+    const staged = stageRuntime({ payloadDir: payload.outDir, stateDir });
+    updateDaemonState(stateDir, { runtime_dir: staged.path });
+
+    expect(stagedRuntimeVersion(stateDir)).toBe("1.2.3");
+  });
+
+  it("still answers once a SECOND runtime is staged, which is what an update leaves behind", () => {
+    // **The regression this exists for.** A first version asked `resolveProgram({ stateDir })` with
+    // no `runtimeDir`, which refuses as `ambiguous` the moment two payloads sit under `runtime/` —
+    // and an update stages the new one *beside* the old. The refusal was swallowed by the catch, so
+    // the very first successful update would have made every later `xplainer update` answer "none
+    // installed" and quietly stop updating the daemon for ever. Caught on a real machine holding
+    // 0.0.2 and 0.0.8 together.
+    const stateDir = stateFor("two");
+    const older = buildFixturePayload({
+      outDir: join(scratch, "payload-older"),
+      version: "1.2.3",
+      marker: "older",
+      runnable: false,
+    });
+    const newer = buildFixturePayload({
+      outDir: join(scratch, "payload-newer"),
+      version: "4.5.6",
+      marker: "newer",
+      runnable: false,
+    });
+    stageRuntime({ payloadDir: older.outDir, stateDir });
+    const stagedNewer = stageRuntime({ payloadDir: newer.outDir, stateDir });
+    updateDaemonState(stateDir, { runtime_dir: stagedNewer.path });
+
+    // Not "whichever is staged" — the registration decides, and it names the newer one.
+    expect(stagedRuntimeVersion(stateDir)).toBe("4.5.6");
   });
 });

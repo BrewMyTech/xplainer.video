@@ -41,6 +41,7 @@ import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
 import { codexConfigPath } from "../connect/codex.js";
 import { copilotConfigPath } from "../connect/copilot.js";
+import { readDaemonState } from "../daemon/daemon-state.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import {
@@ -171,16 +172,30 @@ function runSelf(io: CliIo, argv: readonly string[]): boolean {
 }
 
 /**
- * The version of the runtime the supervisor executes, or `null` when this machine has none staged.
+ * The version of the runtime the supervisor executes, or `null` when none is registered here.
  *
  * Read from the staged payload's own manifest rather than from the daemon over HTTP, because the
  * question this answers is "what would start" and not "what is answering" — a daemon that is
  * stopped, crash-looping or mid-rollback still has a version, and a machine with no daemon at all
  * must produce a skip rather than a timeout.
+ *
+ * **It must be `daemon.json`'s `runtime_dir` and never "whichever runtime is staged", and that is
+ * not a preference.** `resolveProgram` with no `runtimeDir` refuses as `ambiguous` the moment a
+ * second payload appears under `runtime/` — and an update is precisely what puts one there, since
+ * the new runtime is staged *beside* the old one rather than over it. A first version of this
+ * function asked the ambiguous way and swallowed the refusal in the `catch` below, so the first
+ * successful update would have made every later run answer "none installed" and silently stop
+ * updating anything. Caught on a machine holding `0.0.2-7045caaf2367` and `0.0.8-016a142d1e7e`
+ * together. The registration is the only thing that knows which of the two is real, and the update
+ * transaction reads it the same way for the same reason.
  */
-function stagedRuntimeVersion(stateDir: string): string | null {
+export function stagedRuntimeVersion(stateDir: string): string | null {
   try {
-    const program = resolveProgram({ stateDir });
+    const runtimeDir = readDaemonState(stateDir).runtime_dir;
+    if (runtimeDir === null) {
+      return null;
+    }
+    const program = resolveProgram({ stateDir, runtimeDir });
     return program.manifest === null ? null : rootPackageOf(program.manifest).version;
   } catch {
     return null;
