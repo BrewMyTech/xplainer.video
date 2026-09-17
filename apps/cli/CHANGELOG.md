@@ -1,5 +1,12 @@
 # @xplainer/cli
 
+## 0.0.10
+
+### Patch Changes
+
+- Updated dependencies [7bb8798]
+  - @xplainer/skill@0.0.3
+
 ## 0.0.9
 
 ### Patch Changes

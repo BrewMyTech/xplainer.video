@@ -1,5 +1,11 @@
 # xplainer
 
+## 0.0.10
+
+### Patch Changes
+
+- @xplainer/cli@0.0.10
+
 ## 0.0.9
 
 ### Patch Changes
