@@ -158,6 +158,38 @@ export type StatusReport = {
  * `status.test.ts`, and a classifier a test could reach directly is a classifier a test could agree
  * with while the command did something else.
  */
+/**
+ * Whether no daemon has ever bound in this state directory, so there is no address of *ours* to ask.
+ *
+ * **A state directory with neither file names no daemon, and the fallback port names somebody
+ * else's.** `serve` writes `daemon.json`'s port in the same breath as it binds, so a directory
+ * holding neither that record nor a `runtime.json` has never had a daemon of ours in it — and
+ * probing `DEFAULT_PORT` anyway asks whatever is listening on 8787, which by construction belongs
+ * to a *different* state directory. That answered `401`, and the report came back `token_absent`:
+ * "a 401 and no token to present", said about a daemon the user does not own, on a machine where
+ * the truthful answer is that nothing is installed here.
+ *
+ * Nobody ordinary is affected, which is what makes this safe: any daemon that has actually bound
+ * recorded its port, so the probe still goes to the right place. What changes is the pristine
+ * directory, which now answers from its own files instead of from whatever holds the default port.
+ *
+ * A configured URL is exempt — that is an explicit instruction to ask a particular address, and
+ * `classifyStatus` already refuses to call any of those cases `absent`.
+ */
+function neverBound(
+  source: string,
+  recordedPort: number | null,
+  runtime: Record<string, unknown> | null,
+): boolean {
+  return source !== "configured" && recordedPort === null && runtime === null;
+}
+
+/** What a probe that was never sent answers, so the classifier sees one shape rather than two. */
+const NOTHING_TO_PROBE: Probe = {
+  kind: "unreachable",
+  reason: "no daemon has ever bound in this state directory, so there was no address to ask",
+};
+
 function classifyStatus(facts: {
   probe: Probe;
   token: string | null;
@@ -312,7 +344,9 @@ export function createStatusCommand(io: CliIo): Command {
         }`,
         `token file:      ${tokenPath}${token === null ? " (absent or empty)" : ""}`,
         `socket:          ${daemonState.socket_path ?? "unrecorded — no run has bound here yet"}`,
-        `probing:         ${endpoint.url}/healthz (port from ${endpoint.source})`,
+        neverBound(endpoint.source, daemonState.port, runtime)
+          ? `probing:         nothing — neither file above records a daemon, so ${endpoint.url} would be somebody else's`
+          : `probing:         ${endpoint.url}/healthz (port from ${endpoint.source})`,
       ];
       if (daemonState.stalled !== null) {
         lines.push(
@@ -320,7 +354,9 @@ export function createStatusCommand(io: CliIo): Command {
         );
       }
 
-      const result = await probe(endpoint.url, token);
+      const result = neverBound(endpoint.source, daemonState.port, runtime)
+        ? NOTHING_TO_PROBE
+        : await probe(endpoint.url, token);
       const condition = classifyStatus({
         probe: result,
         token,

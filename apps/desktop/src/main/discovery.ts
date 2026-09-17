@@ -543,7 +543,16 @@ function classify(
 
   // Nothing answered. The port being held by a process that is not the daemon we were probing for
   // is exit 10's condition, and it is the difference between "start one" and "you cannot".
+  // **…and only about a port this machine has claimed.** Exit 10 is *serve-time ownership* — "the
+  // port this daemon recorded is taken by something else" — whereas a machine with neither a
+  // recorded port nor a run has claimed nothing, and the fallback the CLI reports is simply where
+  // an install *would* go. A clash there is `install`'s preflight and exit **7**, which is a
+  // different sentence with a different remedy. Without this guard a developer running their own
+  // daemon on the default port saw a pristine state directory reported as `occupied`, told to
+  // resolve an ownership conflict for a daemon that does not exist here.
+  const claimedAPort = report.recordedPort !== null || report.runtimePid !== null;
   if (
+    claimedAPort &&
     report.probe.holderPid !== null &&
     (report.runtimePid === null || report.probe.holderPid !== report.runtimePid)
   ) {

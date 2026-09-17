@@ -1049,9 +1049,14 @@ describe("daemon status — the three queries, and nothing that parses launchctl
         environment: fixtureEnvironment(scratchDirectory()),
         run: harness.run,
         uid: 501,
+        // No `probe` seam on purpose: this case is now about the product declining to send one.
+        // Neither state file records a daemon, so `daemonStatus` answers from its own files — which
+        // is what stops it reaching whatever else holds DEFAULT_PORT on the machine running the
+        // suite and reporting that stranger's `401` as this machine's condition.
       });
 
       expect(report.condition).toBe("absent");
+      expect(report.probe.http_status).toBeNull();
       expect(report.supervisor.switch.state).toBe("unregistered");
       expect(report.supervisor.switch.query).toBeNull();
       expect(report.sentences).toEqual([]);

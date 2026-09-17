@@ -721,7 +721,20 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
 
   const tokenPath = daemon.token_file ?? resolveTokenPath(request.stateDir, env);
   const token = readTokenQuietly(tokenPath);
-  const answer = await probe(url, token);
+  // **Neither file records a daemon, so there is no address of ours to ask.** `serve` writes
+  // `daemon.json`'s port as it binds, so a directory holding neither that nor a `runtime.json` has
+  // never had one of ours in it — and the fallback port then names whatever else is listening on
+  // 8787, which belongs to a different state directory. It answered `401`, and an uninstalled
+  // machine was reported as `token_absent`. `commands/status.ts`'s `neverBound` is the same rule for
+  // the other command, and both leave a *configured* URL alone.
+  const answer: StatusProbe =
+    daemon.port === null && runtime === null
+      ? {
+          kind: "unreachable",
+          reason:
+            "no daemon has ever bound in this state directory, so there was no address to ask",
+        }
+      : await probe(url, token);
 
   const failedStarts = countTrailingFailures(daemon.recentStarts);
   const hold: PortHold | null = preflight.port.held
