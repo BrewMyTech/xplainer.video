@@ -125,7 +125,8 @@ written relative to the scene. To land a beat on a specific spoken word, read
    fix changes. If there were three causes, that *is* the story.
 2. **Decide the visual direction** before writing components (below).
 3. **Storyboard as motion** — what moves, and what that movement means.
-4. `explainer_create`, then write the narration and `explainer_narrate`.
+4. `explainer_create`, then write the narration and `explainer_narrate`. Read
+   the job's output for words the voice had to guess at (below).
 5. **Design your scenes** against `timings.json` — one entry in `Scenes.tsx`
    per narration segment id, plus the components it imports — and send them all
    with `explainer_put_source`.
@@ -270,6 +271,53 @@ female, `am_` American male, `bf_`/`bm_` British. Voices blend by weight:
 
 Pass `dry_run: true` to skip synthesis and get silence of estimated length — the
 fast way to check pacing and layout before committing to real audio.
+
+## Words the voice has to guess at
+
+The voice knows ordinary English. For anything else — a tool name, an
+initialism, a product, a surname — it derives a pronunciation and **says so**.
+Read `explainer_job`'s output after every `explainer_narrate` and look for:
+
+```
+[xplainer] speech derived a pronunciation for "kubectl": /kjˈubɛktəl/ (letter-to-sound).
+```
+
+One line per word it had to guess, naming the word, the phonemes it chose, the
+file to correct them in, and a line you can paste straight into that file. That
+warning is the signal. **Do not go looking for hard words yourself before
+narrating** — you cannot hear the audio, most technical English is already
+correct, and an override you invent for a word that was fine is how a working
+pronunciation gets broken.
+
+So the loop is: narrate, read the warnings, decide which ones are actually
+wrong, fix those, narrate again. Re-narrating is cheap.
+
+To fix one, add a line to the `lexicon.txt` the warning names — spelling,
+spaces, then the phonemes:
+
+```text
+kubectl        kjˈubkˌʌtəl               # koob-CUT-ul
+```
+
+Start from the IPA in the warning and change only what sounds wrong. A rough
+key: `A` is "ay", `I` is "eye", `i` is "ee", `O` is "oh", `ɛ` is "eh", and `ˈ`
+marks the stressed syllable.
+
+Three things to know before you write to it:
+
+- **It is the user's file, not the video's.** One lexicon serves every video on
+  that machine, so an entry you add outlives this job. That is right for
+  `kubectl` and wrong for a one-off you are unsure about.
+- **Case decides matching.** A lower-case spelling matches any case, so `api`
+  catches `API`. A spelling with a capital matches exactly, which is what keeps
+  an entry for `ID` from also changing the word "id".
+- **Spelling it out in the narration is often the better fix.** `k8s` reads
+  fine as "kubernetes"; `psql` reads fine as "postgres shell". Reach for the
+  lexicon when the word itself has to be spoken.
+
+You may add an entry before narrating for a word you genuinely know is
+non-standard and whose pronunciation you are sure of. That is the exception,
+not the routine.
 
 ## Before you render
 
