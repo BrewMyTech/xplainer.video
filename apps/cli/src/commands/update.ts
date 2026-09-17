@@ -20,10 +20,18 @@
  * reimplementing a subset here that drifts the first time either changes. A child process running
  * this same binary cannot drift: whatever `xplainer setup` does today is what this runs.
  *
- * **It is `update`, not `self-update`, and it is deliberately not `daemon update`.** That verb
- * already means something precise — switch the installed daemon to another staged runtime and roll
- * back if it will not start — and this touches neither the supervisor nor the payload. A machine
- * with a daemon still runs `daemon update` for that.
+ * **It is `update`, not `self-update`.** Replacing the package is the half above; what this owns is
+ * everything an upgrade leaves behind, and that includes the daemon.
+ *
+ * **It used to exclude the daemon, and that was the bug.** The rule here read "it is deliberately
+ * not `daemon update` … a machine with a daemon still runs `daemon update` for that", which is a
+ * true statement about the *verb* and was false as advice. `npm i -g` replaces the global CLI and
+ * leaves the pinned runtime the supervisor executes exactly where it was, so the two drift with
+ * nothing saying so — measured on the author's own machine at a 0.0.2 daemon under an 0.0.8 CLI,
+ * four releases apart, which silently re-rendered a video with an engine four versions old. The
+ * command that exists to reconcile a machine after an upgrade cannot be the one that skips the
+ * largest stale thing on it. {@link reconcileDaemon} is that step, and it is a no-op on the
+ * majority case of a machine with no daemon at all.
  */
 
 import { spawnSync } from "node:child_process";
@@ -33,7 +41,15 @@ import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
 import { codexConfigPath } from "../connect/codex.js";
 import { copilotConfigPath } from "../connect/copilot.js";
-import { installedPackageRoot } from "../install/materialise.js";
+import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
+import { resolveStateDir } from "../daemon/state-dir.js";
+import {
+  installedPackageRoot,
+  type MaterialisedPayload,
+  materialiseProgramPayload,
+} from "../install/materialise.js";
+import { resolveProgram } from "../install/program.js";
+import { rootPackageOf } from "../install/stage.js";
 import type { CliIo } from "../io.js";
 import { CLI_VERSION } from "../version.js";
 
@@ -131,15 +147,133 @@ export function compareVersions(
   return "same";
 }
 
-/** Run one of this CLI's own verbs as a child, and say whether it succeeded. */
-function runSelf(io: CliIo, argv: readonly string[]): boolean {
+/**
+ * Run one of this CLI's own verbs as a child and return its exit code, or `null` when it could not
+ * be started at all.
+ *
+ * The code rather than a boolean because one caller needs to tell two failures apart: the daemon
+ * step treats `PRECONDITION_UNMET_EXIT_CODE` — nothing installed here to update — as a machine that
+ * is simply not in that shape, and anything else as a real failure worth the word FAILED.
+ */
+function runSelfStatus(io: CliIo, argv: readonly string[]): number | null {
   const entry = process.argv[1];
   if (entry === undefined) {
     io.writeErr("xplainer update: cannot identify this program's entry to re-run it.\n");
-    return false;
+    return null;
   }
   const result = spawnSync(process.execPath, [entry, ...argv], { stdio: "inherit" });
-  return result.status === 0;
+  return result.status;
+}
+
+/** Run one of this CLI's own verbs as a child, and say whether it succeeded. */
+function runSelf(io: CliIo, argv: readonly string[]): boolean {
+  return runSelfStatus(io, argv) === 0;
+}
+
+/**
+ * The version of the runtime the supervisor executes, or `null` when this machine has none staged.
+ *
+ * Read from the staged payload's own manifest rather than from the daemon over HTTP, because the
+ * question this answers is "what would start" and not "what is answering" — a daemon that is
+ * stopped, crash-looping or mid-rollback still has a version, and a machine with no daemon at all
+ * must produce a skip rather than a timeout.
+ */
+function stagedRuntimeVersion(stateDir: string): string | null {
+  try {
+    const program = resolveProgram({ stateDir });
+    return program.manifest === null ? null : rootPackageOf(program.manifest).version;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bring an installed daemon onto this version, or say in one line why it was left alone.
+ *
+ * **This is the seam that made a 0.0.2 daemon survive four upgrades of the CLI above it.** The
+ * docblock at the top of this file used to say updating the daemon was `daemon update`'s job and
+ * not this command's, which is true of the *verb* and was false as advice: a package manager
+ * replaces the global CLI and leaves the pinned copy the supervisor executes exactly where it was,
+ * so the machine ends up running two versions at once with nothing saying so. `update` already
+ * exists to reconcile the things an upgrade leaves stale, and the runtime under the supervisor is
+ * the largest of them.
+ *
+ * **ADR 0025's "never a default" is not weakened here.** That rule is about `daemon update`
+ * inventing a source nobody named — "whatever is on `PATH`" — and it still refuses to. What this
+ * does is *name* one: the payload assembled from the package this very process is executing, handed
+ * over as an explicit `--from`. The source is as specific as a path the user typed, and it is the
+ * only one that can be correct, because reconciling this install is the whole of what `update` is.
+ */
+function reconcileDaemon(io: CliIo): Step {
+  const label = "daemon";
+  const plan = planDaemonReconcile(
+    stagedRuntimeVersion(resolveStateDir()),
+    CLI_VERSION,
+    installedPackageRoot(),
+  );
+  if (plan.kind === "skip") {
+    return { label, line: plan.line };
+  }
+  let payload: MaterialisedPayload;
+  try {
+    payload = materialiseProgramPayload({ locateInstall: () => plan.installRoot });
+  } catch (error) {
+    return {
+      label,
+      line: `${plan.staged} left alone: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  try {
+    const status = runSelfStatus(io, ["daemon", "update", "--from", payload.payloadDir]);
+    if (status === 0) {
+      return { label, line: `${plan.staged} → ${CLI_VERSION}` };
+    }
+    // **Exit 3 is "this machine is not in that shape", not "the update broke".** A staged runtime
+    // with no supervisor registration behind it is a real state — `runtime build` leaves one — and
+    // calling that FAILED would teach people to ignore the word the first time they hit it.
+    if (status === PRECONDITION_UNMET_EXIT_CODE) {
+      return { label, line: `${plan.staged} left alone — see the refusal above` };
+    }
+    return { label, line: "FAILED — see the output above" };
+  } finally {
+    payload.discard();
+  }
+}
+
+/** Either a line to print and nothing to do, or the install to assemble the new runtime from. */
+export type DaemonPlan =
+  | { kind: "skip"; line: string }
+  | { kind: "update"; installRoot: string; staged: string };
+
+/**
+ * Decide what the daemon step should do, given three facts and no filesystem.
+ *
+ * Split out from {@link reconcileDaemon} because the branches are the part worth testing and the
+ * execution is a `spawnSync` of this same binary: a test that could only reach this table through a
+ * child process would be an integration test for a decision that is pure.
+ */
+export function planDaemonReconcile(
+  staged: string | null,
+  cliVersion: string,
+  installRoot: string | null,
+): DaemonPlan {
+  if (staged === null) {
+    return { kind: "skip", line: "none installed — nothing to update" };
+  }
+  if (staged === cliVersion) {
+    return { kind: "skip", line: `${staged}, already current` };
+  }
+  if (installRoot === null) {
+    // A checkout or an `npx` invocation has no installed package to assemble a payload from, and
+    // `--build` is the flag that covers exactly that case — so name it rather than fail.
+    return {
+      kind: "skip",
+      line:
+        `${staged} installed, ${cliVersion} here — this build is not a package install, so run ` +
+        "`xplainer daemon update --build` from the checkout",
+    };
+  }
+  return { kind: "update", installRoot, staged };
 }
 
 /** One configured agent, and the argv that re-writes it in the form it already has. */
@@ -283,6 +417,10 @@ export function createUpdateCommand(io: CliIo): Command {
         label: "setup",
         line: runSelf(io, ["setup"]) ? "reconciled" : "FAILED — see the output above",
       });
+
+      // Before the agents, because an attaching entry points at the daemon: refreshing the entry
+      // first would announce a reconciled machine while the thing it points at was still stale.
+      steps.push(reconcileDaemon(io));
 
       const agents = configuredAgents();
       if (agents.length === 0) {

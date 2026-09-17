@@ -61,6 +61,7 @@ import { resolveStateDir } from "../daemon/state-dir.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT } from "../server.js";
+import { CLI_VERSION } from "../version.js";
 
 /** How long the probe waits before calling the daemon unhealthy. */
 export const PROBE_TIMEOUT_MS = 3_000;
@@ -368,6 +369,18 @@ export function createStatusCommand(io: CliIo): Command {
           `daemon:          running and healthy — version ${String(result.body.version)}, ` +
             `contract ${String(result.body.contract_version)}`,
         );
+        // **A matching contract is not a matching version, and only one of the two is visible.**
+        // `mcp --attach` checks `contract_version` before it proxies, so a daemon several releases
+        // old goes on serving happily while the CLI beside it is new — which is how a 0.0.2 daemon
+        // rendered under an 0.0.8 CLI with every command reporting success. The contract is what
+        // makes the skew *safe*; saying so is what makes it *visible*.
+        const running = asReportedString(result.body.version);
+        if (running !== null && running !== CLI_VERSION) {
+          lines.push(
+            `                 ⚠ this CLI is ${CLI_VERSION}. The daemon is what renders, so it is ` +
+              `${running} that does the work — run \`xplainer update\` to bring them level.`,
+          );
+        }
         io.writeOut(`${lines.join("\n")}\n`);
         return;
       }

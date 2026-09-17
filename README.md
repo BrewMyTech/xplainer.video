@@ -255,8 +255,14 @@ and running setup again preserves your edits.
 xplainer update
 ```
 
-This re-runs setup and refreshes every configured agent's MCP entry and skill, preserving whether
-each one uses `--spawn` or attaches to a daemon.
+This re-runs setup, brings an installed daemon onto this version, and refreshes every configured
+agent's MCP entry and skill, preserving whether each one uses `--spawn` or attaches to a daemon.
+
+> [!IMPORTANT]
+> **Run this after every `npm i -g`, not instead of it.** Upgrading through a package manager
+> replaces the CLI and leaves the daemon's pinned runtime exactly where it was — and the daemon is
+> what renders. `xplainer status` warns when the two are out of step; `xplainer update` is what
+> brings them level. On a machine with no daemon the step does nothing.
 
 If you upgrade through npm instead, re-run `connect` for each agent you use:
 

@@ -6,17 +6,23 @@
  * `0.0.3` was told that `0.0.2` was available — an offer to downgrade, printed as an upgrade. The
  * direction is the whole decision this command makes, and `!==` cannot express a direction.
  *
- * What is deliberately not tested here is the reconcile half, which spawns `xplainer setup` and
- * `xplainer connect` as children. Those are real processes that download a browser and write into an
- * agent's configuration; asserting them belongs in `scripts/e2e/`, where the cost is expected. What
- * a unit suite can honestly hold is the arithmetic and the advice.
+ * The daemon plan is here for the same reason the comparison is: it is the table that decides
+ * whether a machine's runtime gets replaced, and every one of its four answers is a different
+ * sentence to a user. It shipped as no table at all — `update` skipped the daemon entirely, which
+ * is how a 0.0.2 runtime went on rendering under an 0.0.8 CLI.
+ *
+ * What is deliberately not tested here is the execution half, which spawns `xplainer setup`,
+ * `xplainer connect` and `xplainer daemon update` as children. Those are real processes that
+ * download a browser, write into an agent's configuration and replace a supervised runtime;
+ * asserting them belongs in `scripts/e2e/`, where the cost is expected. What a unit suite can
+ * honestly hold is the arithmetic, the advice and the branch each fact leads to.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { attachedForm, compareVersions, upgradeCommand } from "./update.js";
+import { attachedForm, compareVersions, planDaemonReconcile, upgradeCommand } from "./update.js";
 
 describe("compareVersions", () => {
   it("says the installed build is behind only when it really is", () => {
@@ -174,5 +180,51 @@ describe("upgradeCommand", () => {
     // This suite runs from the checkout, where `installedPackageRoot()` answers null by
     // construction — the same fact that makes `runtime-dir` the default program source here.
     expect(upgradeCommand()).toBeNull();
+  });
+});
+
+describe("planDaemonReconcile", () => {
+  it("does nothing on the majority case: a machine with no daemon at all", () => {
+    expect(planDaemonReconcile(null, "0.0.8", "/usr/local/lib/node_modules/xplainer")).toEqual({
+      kind: "skip",
+      line: "none installed — nothing to update",
+    });
+  });
+
+  it("does nothing when the runtime already matches, so a repeat update is free", () => {
+    // Without this branch every `xplainer update` would assemble a ~150 MB payload and restart a
+    // healthy service to arrive at the version it was already running.
+    expect(planDaemonReconcile("0.0.8", "0.0.8", "/usr/local/lib/node_modules/xplainer")).toEqual({
+      kind: "skip",
+      line: "0.0.8, already current",
+    });
+  });
+
+  it("updates when the runtime is behind the CLI above it — the case that went unnoticed", () => {
+    expect(planDaemonReconcile("0.0.2", "0.0.8", "/opt/node/lib/node_modules/xplainer")).toEqual({
+      kind: "update",
+      installRoot: "/opt/node/lib/node_modules/xplainer",
+      staged: "0.0.2",
+    });
+  });
+
+  it("updates a runtime that is AHEAD as well, because level is the goal, not newer", () => {
+    // Downgrading the CLI and leaving a newer daemon under it is skew in the other direction, and
+    // the contract check would not catch that one either.
+    expect(
+      planDaemonReconcile("0.0.9", "0.0.8", "/opt/node/lib/node_modules/xplainer"),
+    ).toMatchObject({
+      kind: "update",
+      staged: "0.0.9",
+    });
+  });
+
+  it("names `--build` rather than failing when there is no installed package to assemble from", () => {
+    // A checkout and an `npx -y xplainer` both land here: there is a daemon to update and nothing
+    // to update it from, and the flag that covers exactly that is worth printing.
+    const plan = planDaemonReconcile("0.0.2", "0.0.8", null);
+    expect(plan.kind).toBe("skip");
+    expect(plan.kind === "skip" && plan.line).toContain("xplainer daemon update --build");
+    expect(plan.kind === "skip" && plan.line).toContain("0.0.2 installed, 0.0.8 here");
   });
 });
