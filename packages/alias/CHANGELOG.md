@@ -1,5 +1,13 @@
 # xplainer
 
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [4f2b4d8]
+- Updated dependencies [bb7c64c]
+  - @xplainer/cli@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes

@@ -1,5 +1,45 @@
 # @xplainer/cli
 
+## 0.0.9
+
+### Patch Changes
+
+- 4f2b4d8: `xplainer update` now updates an installed daemon, and `xplainer status` says when it is behind.
+
+  Upgrading through a package manager replaces the global CLI and leaves the pinned runtime the
+  supervisor executes exactly where it was. `update` previously reconciled the toolchain and every
+  agent's MCP entry and skill, and deliberately skipped the daemon — so the two drifted with nothing
+  reporting it. Measured at four releases apart on a real machine, where a 0.0.2 daemon went on
+  serving renders under an 0.0.8 CLI and every command returned success, because `mcp --attach`
+  checks the _contract_ version and the contract had not changed.
+
+  `update` now assembles a payload from the package it is itself running from and hands it to
+  `daemon update` as an explicit `--from`. ADR 0025's rule that an update never invents a source is
+  unchanged: the source is named, it simply is not typed by hand. The step is a no-op on a machine
+  with no daemon, and on one whose runtime already matches, so the common case costs nothing.
+
+  `status` gains one line when the running daemon's version differs from the CLI's, naming which of
+  the two actually does the work.
+
+- bb7c64c: `status` and `daemon status` no longer report on a daemon that is not yours.
+
+  A state directory holding neither `daemon.json` nor `runtime.json` has never had a daemon of ours
+  in it — `serve` writes the port as it binds — so there is no address of ours to ask. Both commands
+  probed the fallback port anyway, which on any machine already running xplainer is somebody else's
+  daemon: it answered `401`, and a machine with nothing installed was reported as `token_absent`,
+  "a 401 and no token to present", about a daemon the user does not own.
+
+  Both now answer from their own files in that case and send no request. Nothing changes for a daemon
+  that has actually bound, because that one recorded its port.
+
+  The desktop's discovery gets the matching correction: a foreign process holding the _fallback_ port
+  is no longer reported as `occupied`. That outcome means exit `10`, serve-time ownership — "the port
+  this daemon recorded is taken" — and a machine that has claimed no port cannot be in it. A clash
+  there belongs to `install`'s preflight and exit `7`, which has a different remedy.
+
+  Found by three tests that had silently assumed nothing listens on the default port: they pass in CI,
+  where no daemon exists, and failed on any developer machine running the product.
+
 ## 0.0.8
 
 ### Patch Changes
