@@ -693,8 +693,12 @@ async function main() {
   say(`  state dir:   ${stateDir}`);
   say(`  workspace:   ${workspace}`);
 
+  // The provider level (ADR 0030) is removed rather than inherited: a shell left at
+  // `XPLAINER_TTS_PROVIDER=elevenlabs` would send this proof's script to a paid service, and this
+  // proof is about Kokoro speech at TTS_URL.
+  const { XPLAINER_TTS_PROVIDER: _provider, ELEVENLABS_API_KEY: _key, ...inherited } = process.env;
   const env = {
-    ...process.env,
+    ...inherited,
     XPLAINER_STATE_DIR: stateDir,
     XPLAINER_VIDEOS_DIR: workspace,
     XPLAINER_TTS_URL: TTS_URL,

@@ -1,8 +1,8 @@
 {
   "name": "@xplainer/tts-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
-  "description": "Kokoro-FastAPI request/response shaping: the two endpoints and the payload flags the narration phase depends on.",
+  "description": "Request/response shaping for narration speech: Kokoro-FastAPI's two endpoints and payload flags, and ElevenLabs' with-timestamps endpoint with its character alignment turned into word spans.",
   "homepage": "https://xplainer.video",
   "repository": {
     "type": "git",

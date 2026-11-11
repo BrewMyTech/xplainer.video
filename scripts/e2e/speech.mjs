@@ -156,8 +156,8 @@
  * Environment it reads: `COLLIE_ARTIFACTS_DIR` (default `<repo>/.session/artifacts`),
  * `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` (default: whatever is on `PATH`); the ffmpeg resolved
  * from them is the one the child renders with. It reads
- * `XPLAINER_TTS_URL`, `XPLAINER_TTS_FIXTURE`, `KOKORO_URL` and the `XPLAINER_ONNX_*` set only to
- * refuse to pass them on.
+ * `XPLAINER_TTS_URL`, `XPLAINER_TTS_FIXTURE`, `KOKORO_URL`, the `XPLAINER_ONNX_*` set,
+ * `XPLAINER_TTS_PROVIDER` and `ELEVENLABS_API_KEY` only to refuse to pass them on.
  *
  * Everything it prints is also written to `<artifacts>/e2e-speech.log`, line by line as it happens,
  * so a run that dies mid-render still leaves its transcript behind.
@@ -252,6 +252,11 @@ const HIDDEN_EXECUTABLES = ["docker", "python", "python3"];
  * discovery — so a value inherited from a developer's shell would point the engine at a model
  * `setup` did not acquire and this proof would be about that model. Nothing here sets one: since
  * plan S5 the product finds its own engine, and claim 5 in the docblock is what that means.
+ *
+ * The last two are the provider level above all of that (ADR 0030): `XPLAINER_TTS_PROVIDER` left
+ * at `elevenlabs` in a developer's shell would send this proof's script to a paid service and make
+ * it a proof about somebody else's voice, and `ELEVENLABS_API_KEY` is the key that would pay for
+ * it. The key is a secret, so the check below says whether it was set and never what it was.
  */
 const SCRUBBED_VARIABLES = [
   "XPLAINER_TTS_FIXTURE",
@@ -261,7 +266,12 @@ const SCRUBBED_VARIABLES = [
   "XPLAINER_ONNX_VOICE",
   "XPLAINER_ONNX_RUNTIME",
   "XPLAINER_ONNX_VOICE_NAME",
+  "XPLAINER_TTS_PROVIDER",
+  "ELEVENLABS_API_KEY",
 ];
+
+/** The one scrubbed variable whose value is a secret, and so is never printed. */
+const SECRET_VARIABLES = ["ELEVENLABS_API_KEY"];
 
 /** How long each job may take before the script gives up on it. */
 const JOB_TIMEOUT_MS = {
@@ -1335,7 +1345,13 @@ async function main() {
     check(
       env[variable] === undefined,
       `${variable} does not reach the child (it was ` +
-        `${process.env[variable] === undefined ? "unset here too" : `${JSON.stringify(process.env[variable])} in this shell`})`,
+        `${
+          process.env[variable] === undefined
+            ? "unset here too"
+            : SECRET_VARIABLES.includes(variable)
+              ? "set in this shell; the value is not printed"
+              : `${JSON.stringify(process.env[variable])} in this shell`
+        })`,
     );
   }
 

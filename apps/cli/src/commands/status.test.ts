@@ -19,12 +19,16 @@ import { join } from "node:path";
 import process from "node:process";
 import { MCP_CONTRACT_VERSION } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeCredential } from "../config/credentials.js";
+import { userConfigPath, writeUserConfigValue } from "../config/user-config.js";
 import { waitForReadyLine } from "../daemon/ready.js";
 import { DAEMON_STATE_FILE, STATE_DIR_ENV, stateDirLayout } from "../daemon/state-dir.js";
 import { CHILD_SERVE, type SpawnedChild, spawnEntry } from "../daemon/testing/spawn-child.js";
 import { TOKEN_FILE } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
+import { ELEVENLABS_API_KEY_ENV, TTS_PROVIDER_ENV } from "../tts/index.js";
+import { TEST_API_KEY } from "../tts/testing/elevenlabs-fixture.js";
 import { CLI_VERSION } from "../version.js";
 import {
   createStatusCommand,
@@ -59,8 +63,18 @@ function stateDirectory(): string {
   return dir;
 }
 
-/** Run `status` against `stateDir`, recording everything a user would have seen. */
-async function status(stateDir: string, args: readonly string[] = []): Promise<Invocation> {
+/**
+ * Run `status` against `stateDir`, recording everything a user would have seen.
+ *
+ * `env` sets — or, with `undefined`, removes — variables for this one invocation, and every one of
+ * them is put back afterwards, so a case about a shell's speech settings neither leaks into the
+ * next case nor depends on what the shell running the suite exported.
+ */
+async function status(
+  stateDir: string,
+  args: readonly string[] = [],
+  env: Readonly<Record<string, string | undefined>> = {},
+): Promise<Invocation> {
   const out: string[] = [];
   const err: string[] = [];
   const io: CliIo = {
@@ -75,8 +89,18 @@ async function status(stateDir: string, args: readonly string[] = []): Promise<I
     },
   };
 
-  const previous = process.env[STATE_DIR_ENV];
-  process.env[STATE_DIR_ENV] = stateDir;
+  const overrides: Record<string, string | undefined> = { ...env, [STATE_DIR_ENV]: stateDir };
+  const previous = new Map(Object.keys(overrides).map((name) => [name, process.env[name]]));
+  const assign = (values: ReadonlyMap<string, string | undefined>): void => {
+    for (const [name, value] of values) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  };
+  assign(new Map(Object.entries(overrides)));
   let exitCode: number | undefined;
   try {
     await createStatusCommand(io).parseAsync([...args], { from: "user" });
@@ -86,11 +110,7 @@ async function status(stateDir: string, args: readonly string[] = []): Promise<I
     }
     exitCode = error.code;
   } finally {
-    if (previous === undefined) {
-      delete process.env[STATE_DIR_ENV];
-    } else {
-      process.env[STATE_DIR_ENV] = previous;
-    }
+    assign(previous);
   }
 
   return { exitCode, stdout: out.join(""), stderr: err.join("") };
@@ -108,8 +128,9 @@ async function daemonOn(stateDir: string): Promise<{ child: SpawnedChild; port: 
 async function statusJson(
   stateDir: string,
   args: readonly string[] = [],
+  env: Readonly<Record<string, string | undefined>> = {},
 ): Promise<{ report: StatusReport; exitCode: number | undefined; stdout: string }> {
-  const invocation = await status(stateDir, ["--json", ...args]);
+  const invocation = await status(stateDir, ["--json", ...args], env);
   return {
     report: JSON.parse(invocation.stdout) as StatusReport,
     exitCode: invocation.exitCode,
@@ -418,4 +439,167 @@ describe("xplainer status --json", () => {
     expect(exitCode).toBe(11);
     expect(stdout).toBe("");
   });
+});
+
+/**
+ * The speech line: what this machine narrates with, read through the same resolver the narration
+ * worker asks. Every case asserts the three things spec §6 fixes beside the line itself — the
+ * condition and the exit code are what they would be with no speech settings at all, and the key
+ * appears in nothing written — because a status that changed its verdict over a voice, or printed
+ * the key it was reporting on, would be worse than no line.
+ *
+ * The shell's two speech variables are cleared for every case unless the case sets them, so the
+ * suite says the same thing on a machine whose owner exported `ELEVENLABS_API_KEY`.
+ */
+describe("xplainer status and speech", () => {
+  const unset = { [TTS_PROVIDER_ENV]: undefined, [ELEVENLABS_API_KEY_ENV]: undefined };
+
+  /** A state directory configured for ElevenLabs, with or without a stored key. */
+  function elevenLabsMachine(withKey: boolean): string {
+    const stateDir = stateDirectory();
+    writeUserConfigValue(stateDir, "tts.provider", "elevenlabs");
+    if (withKey) {
+      writeCredential(stateDir, "tts.elevenlabs.api_key", TEST_API_KEY);
+    }
+    return stateDir;
+  }
+
+  /** The lines between `socket:` and `probing:`, which is where spec §6 puts speech. */
+  function speechBlock(stdout: string): string[] {
+    const lines = stdout.split("\n");
+    const socket = lines.findIndex((line) => line.startsWith("socket:"));
+    const probing = lines.findIndex((line) => line.startsWith("probing:"));
+    return lines.slice(socket + 1, probing);
+  }
+
+  it("reports kokoro by default, and says the route is the job log's to tell", async () => {
+    const stateDir = stateDirectory();
+
+    const prose = await status(stateDir, [], unset);
+    const json = await statusJson(stateDir, [], unset);
+
+    expect(speechBlock(prose.stdout)).toEqual([
+      "speech:          kokoro (default) — the route is chosen per narration; see the job log",
+    ]);
+    expect(json.report.speech).toEqual({
+      provider: "kokoro",
+      provider_origin: "default",
+      voice: null,
+      model: null,
+      api_key: null,
+      api_key_origin: null,
+    });
+    expect(prose.exitCode).toBe(4);
+    expect(json.report.condition).toBe("absent");
+    expect(json.report.schema_version).toBe(STATUS_REPORT_VERSION);
+  });
+
+  it("reports ElevenLabs, its defaults and a stored key — by presence only", async () => {
+    const stateDir = elevenLabsMachine(true);
+
+    const prose = await status(stateDir, [], unset);
+    const json = await statusJson(stateDir, [], unset);
+
+    expect(speechBlock(prose.stdout)).toEqual([
+      "speech:          elevenlabs — voice JBFqnCBsd6RMkjVDRZzb (default), model " +
+        "eleven_multilingual_v2 (default); provider from config.json",
+      "                 api key: set (credentials.json)",
+    ]);
+    expect(json.report.speech).toEqual({
+      provider: "elevenlabs",
+      provider_origin: "config",
+      voice: "JBFqnCBsd6RMkjVDRZzb",
+      model: "eleven_multilingual_v2",
+      api_key: "set",
+      api_key_origin: "credentials",
+    });
+    expect(prose.exitCode).toBe(4);
+    expect(json.report.condition).toBe("absent");
+    expect(prose.stdout + prose.stderr + json.stdout).not.toContain(TEST_API_KEY);
+  });
+
+  it("says narration will be refused when ElevenLabs has no key", async () => {
+    const stateDir = elevenLabsMachine(false);
+    writeUserConfigValue(stateDir, "tts.elevenlabs.model", "eleven_flash_v2_5");
+
+    const prose = await status(stateDir, [], unset);
+    const json = await statusJson(stateDir, [], unset);
+
+    expect(speechBlock(prose.stdout)).toEqual([
+      "speech:          elevenlabs — voice JBFqnCBsd6RMkjVDRZzb (default), model " +
+        "eleven_flash_v2_5 (config.json); provider from config.json",
+      "                 api key: NOT SET — narration will be refused; run " +
+        "`xplainer config set tts.elevenlabs.api_key`",
+    ]);
+    expect(json.report.speech).toMatchObject({
+      model: "eleven_flash_v2_5",
+      api_key: "unset",
+      api_key_origin: null,
+    });
+    expect(prose.exitCode).toBe(4);
+    expect(json.report.condition).toBe("absent");
+  });
+
+  /** A supervised daemon does not inherit the shell, so a shell-only setting is flagged. */
+  it("flags settings taken from this shell's environment, and still never prints the key", async () => {
+    const stateDir = stateDirectory();
+    const shell = { [TTS_PROVIDER_ENV]: "elevenlabs", [ELEVENLABS_API_KEY_ENV]: TEST_API_KEY };
+
+    const prose = await status(stateDir, [], shell);
+    const json = await statusJson(stateDir, [], shell);
+
+    expect(speechBlock(prose.stdout)).toEqual([
+      "speech:          elevenlabs — voice JBFqnCBsd6RMkjVDRZzb (default), model " +
+        "eleven_multilingual_v2 (default); provider from XPLAINER_TTS_PROVIDER",
+      "                 api key: set (ELEVENLABS_API_KEY)",
+      "                 ⚠ XPLAINER_TTS_PROVIDER and ELEVENLABS_API_KEY are taken from this " +
+        "shell's environment, which a supervised daemon does not inherit — store them with " +
+        "`xplainer config set`",
+    ]);
+    expect(json.report.speech).toMatchObject({
+      provider_origin: "environment",
+      api_key: "set",
+      api_key_origin: "environment",
+    });
+    expect(prose.exitCode).toBe(4);
+    expect(json.report.condition).toBe("absent");
+    expect(prose.stdout + prose.stderr + json.stdout).not.toContain(TEST_API_KEY);
+  });
+
+  /** `status` is what a user runs to find out what is wrong, so a bad file is a line. */
+  it("reports an unreadable config.json as unknown without failing", async () => {
+    const stateDir = stateDirectory();
+    writeFileSync(userConfigPath(stateDir), "{ half a document");
+
+    const prose = await status(stateDir, [], unset);
+    const json = await statusJson(stateDir, [], unset);
+
+    const block = speechBlock(prose.stdout);
+    expect(block).toHaveLength(1);
+    expect(
+      block[0]?.startsWith(
+        `speech:          unknown — ${userConfigPath(stateDir)} cannot be read (it is not valid JSON`,
+      ),
+      block[0],
+    ).toBe(true);
+    expect(prose.stderr).toBe("");
+    expect(json.report.speech).toBeNull();
+    expect(prose.exitCode).toBe(4);
+    expect(json.report.condition).toBe("absent");
+  });
+
+  it("leaves a ready daemon ready whatever the speech settings say", async () => {
+    const stateDir = elevenLabsMachine(false);
+    await daemonOn(stateDir);
+
+    const prose = await status(stateDir, [], unset);
+    const json = await statusJson(stateDir, [], unset);
+
+    expect(prose.exitCode).toBeUndefined();
+    expect(prose.stdout).toContain("running and healthy");
+    expect(prose.stdout).toContain("api key: NOT SET");
+    expect(json.report.condition).toBe("ready");
+    expect(json.report.exit_code).toBe(0);
+    expect(json.report.speech?.api_key).toBe("unset");
+  }, 30_000);
 });

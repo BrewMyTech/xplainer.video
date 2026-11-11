@@ -100,6 +100,19 @@ export type HttpRequestInit = {
   readonly method: string;
   readonly headers: Record<string, string>;
   readonly body?: string;
+  /**
+   * Aborts the request. The ElevenLabs client passes `AbortSignal.timeout()` so a request that
+   * never answers fails by name instead of holding a narration job forever; the Kokoro client
+   * passes none. Optional, so an existing stub transport that ignores it still satisfies the type.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * What to do with a `3xx`. The ElevenLabs client passes `"error"`: `fetch` keeps a custom header
+   * such as `xi-api-key` across a cross-origin redirect (it strips only `Authorization`) and will
+   * follow one from `https` to `http`, so a redirect is a refusal rather than a hop the key rides
+   * along on. Optional, for the same reason `signal` is.
+   */
+  readonly redirect?: "error" | "follow" | "manual";
 };
 
 /**

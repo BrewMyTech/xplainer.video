@@ -147,3 +147,38 @@ at all: `aeneas` is **AGPL**. The larger thing option 3 did not see is that a sl
 in-process path would still have needed a phonemizer, and in this ecosystem the route to one runs
 through espeak-ng, which is GPL-3.0-or-later — the licence problem ADR 0028 exists to solve, and one
 this record had no reason to look for in 2026-09.
+
+## Note, 2026-11-11: a commercial voice is available locally, by the owner's choice, and the first driver is what admits it
+
+Added as a dated note rather than a rewrite. Nothing above is changed and this record stays
+`accepted`. [ADR 0030](0030-speech-providers-are-admitted-by-their-timestamps.md) is the decision
+that made the note necessary, and its body carries the argument.
+
+**Which sentences this note qualifies.** Two, and only two.
+
+- The fourth Decision Driver: *"Self-hostable and open-weight, because the local tier must work with
+  no account and no per-character billing."* That is still true of the **default** — a machine
+  nobody has configured, and every machine after `xplainer setup`, speaks through Kokoro with no
+  account and no bill. It is no longer true of **every** configuration: an owner who runs
+  `xplainer config set tts.provider elevenlabs` has an ElevenLabs account and is billed per
+  character, by their own choice and never by an agent's.
+- In §Decision Outcome: *"Option 2 was rejected for the local tier on cost and self-hostability,
+  not on quality; it remains available as a future hosted-only upgrade behind the same client
+  interface, which is the point of treating this as an interface."* Option 2 is now available **on
+  the local tier, opt-in**, and it sits exactly where this sentence said it would: behind the
+  narration port, with its wire client in `packages/tts-client` beside the Kokoro one. The cost
+  objection is answered by making it the owner's decision rather than the product's default; the
+  self-hostability objection still holds of ElevenLabs and is why it is not the default.
+
+**What is untouched, and it is what decided the new route.** The first Decision Driver — *"Word-level
+timestamps are non-negotiable; without them `timings.json` cannot be computed and captions cannot be
+aligned"* — is not amended. ADR 0030 makes it the **admissibility rule for every speech provider**:
+a provider that does not return word or character timestamps with its audio is refused by name at
+configuration and again at run time. ElevenLabs is admitted only through
+`POST /v1/text-to-speech/{voice_id}/with-timestamps`, whose character alignment is converted to the
+same `{word, start_time, end_time}` spans this record pinned; its plain speech endpoint is not
+modelled at all. Option 2's own caveat — *"word timing support that varies by vendor and by voice"*
+— is why the rule is checked on every response rather than assumed per vendor.
+
+**And the Kokoro contract is still the contract** for everything that speaks over HTTP to Kokoro:
+the two paths, `stream: false` and `return_timestamps: true` are unchanged and still asserted.

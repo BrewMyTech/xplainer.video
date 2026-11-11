@@ -40,11 +40,22 @@
  * refusals that happen *before* a report can exist — a state file that cannot be read (`11`) and a
  * `--url` that is not an endpoint (`1`) — write a sentence to stderr and nothing to stdout, so a
  * caller distinguishes them by exit code rather than by parsing an error object.
+ *
+ * **Speech is reported and never judged.** The `speech:` line (and `speech` in `--json`) says which
+ * provider this machine narrates with, its voice and model, and whether an API key is stored — read
+ * through `tts/resolve.ts`, the same function the narration worker asks, so the line and the job log
+ * cannot disagree. It never changes the condition or the exit code: a daemon that answers is ready
+ * whatever voice it will speak in, and a provider with no key fails its *narration*, by name, not
+ * the daemon. It never prints the key either — only where it is, or that it is not — and a
+ * `config.json` that cannot be read becomes one `unknown` line rather than a failed `status`, since
+ * `status` is what a user runs to find out what is wrong. The origins are this *shell's*: a setting
+ * taken from an environment variable is flagged, because a supervised daemon does not inherit it.
  */
 
 import { readFileSync } from "node:fs";
 import process from "node:process";
 import { Command } from "commander";
+import { StateDocumentUnreadableError } from "../config/user-config.js";
 import { type PortSource, resolveDaemonEndpoint } from "../daemon/binding.js";
 import {
   type DaemonState,
@@ -61,6 +72,16 @@ import { resolveStateDir } from "../daemon/state-dir.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT } from "../server.js";
+import {
+  type ApiKeyOrigin,
+  ELEVENLABS_API_KEY_ENV,
+  resolveTtsSelection,
+  type SettingOrigin,
+  TTS_PROVIDER_ENV,
+  TtsProviderError,
+  type TtsProviderId,
+  type TtsSelection,
+} from "../tts/index.js";
 import { CLI_VERSION } from "../version.js";
 
 /** How long the probe waits before calling the daemon unhealthy. */
@@ -148,7 +169,137 @@ export type StatusReport = {
   };
   /** The `/healthz` body, present only for a `200`. */
   health: { status: string | null; version: string | null; contract_version: string | null } | null;
+  /**
+   * The speech provider this machine narrates with, or `null` when `config.json` or
+   * `credentials.json` cannot be read. Additive, so {@link STATUS_REPORT_VERSION} stays `1`.
+   */
+  speech: StatusSpeech | null;
 };
+
+/**
+ * What `status --json` says about speech: the provider, its settings and their origins.
+ *
+ * `api_key` is a presence word — `"set"` or `"unset"` — and never the key; it and `voice`, `model`
+ * and `api_key_origin` are `null` under `kokoro`, which has none of them.
+ */
+export type StatusSpeech = {
+  provider: TtsProviderId;
+  provider_origin: SettingOrigin;
+  voice: string | null;
+  model: string | null;
+  api_key: "set" | "unset" | null;
+  api_key_origin: ApiKeyOrigin | null;
+};
+
+/** The speech selection, or why there is none — an unreadable file is a line, not a failure. */
+type SpeechFacts =
+  | { kind: "selected"; selection: TtsSelection }
+  | { kind: "unknown"; reason: string };
+
+/** Ask the narration worker's own resolver, turning its refusal into a sentence to print. */
+function readSpeech(stateDir: string): SpeechFacts {
+  try {
+    return { kind: "selected", selection: resolveTtsSelection(process.env, stateDir) };
+  } catch (error) {
+    if (!(error instanceof TtsProviderError)) {
+      throw error;
+    }
+    const cause = error.cause;
+    return {
+      kind: "unknown",
+      reason:
+        cause instanceof StateDocumentUnreadableError
+          ? `${cause.path} cannot be read (${cause.reason})`
+          : error.message,
+    };
+  }
+}
+
+/** The `speech` object of the `--json` report. Carries where the key is, never what it is. */
+function speechReport(facts: SpeechFacts): StatusSpeech | null {
+  if (facts.kind === "unknown") {
+    return null;
+  }
+  const { selection } = facts;
+  if (selection.provider === "kokoro") {
+    return {
+      provider: "kokoro",
+      provider_origin: selection.providerOrigin,
+      voice: null,
+      model: null,
+      api_key: null,
+      api_key_origin: null,
+    };
+  }
+  return {
+    provider: "elevenlabs",
+    provider_origin: selection.providerOrigin,
+    voice: selection.voice,
+    model: selection.model,
+    api_key: selection.apiKeyOrigin === null ? "unset" : "set",
+    api_key_origin: selection.apiKeyOrigin,
+  };
+}
+
+/** Where a setting came from, as a reader would go and change it. */
+function originLabel(origin: SettingOrigin, variable: string): string {
+  switch (origin) {
+    case "environment":
+      return variable;
+    case "config":
+      return "config.json";
+    case "credentials":
+      return "credentials.json";
+    default:
+      return "default";
+  }
+}
+
+/** The `speech:` line, and the lines under it. Placed between `socket:` and `probing:`. */
+function speechLines(facts: SpeechFacts): string[] {
+  if (facts.kind === "unknown") {
+    return [`speech:          unknown — ${facts.reason}`];
+  }
+  const { selection } = facts;
+  const providerFrom = originLabel(selection.providerOrigin, TTS_PROVIDER_ENV);
+  const fromShell = selection.providerOrigin === "environment" ? [TTS_PROVIDER_ENV] : [];
+  const lines: string[] = [];
+
+  if (selection.provider === "kokoro") {
+    lines.push(
+      `speech:          kokoro (${providerFrom}) — the route is chosen per narration; see the job log`,
+    );
+  } else {
+    lines.push(
+      `speech:          elevenlabs — voice ${selection.voice} ` +
+        `(${originLabel(selection.voiceOrigin, "")}), model ${selection.model} ` +
+        `(${originLabel(selection.modelOrigin, "")}); provider from ${providerFrom}`,
+    );
+    if (selection.apiKeyOrigin === null) {
+      lines.push(
+        "                 api key: NOT SET — narration will be refused; run " +
+          "`xplainer config set tts.elevenlabs.api_key`",
+      );
+    } else {
+      lines.push(
+        `                 api key: set (${originLabel(selection.apiKeyOrigin, ELEVENLABS_API_KEY_ENV)})`,
+      );
+      if (selection.apiKeyOrigin === "environment") {
+        fromShell.push(ELEVENLABS_API_KEY_ENV);
+      }
+    }
+  }
+
+  if (fromShell.length > 0) {
+    const one = fromShell.length === 1;
+    lines.push(
+      `                 ⚠ ${fromShell.join(" and ")} ${one ? "is" : "are"} taken from this ` +
+        "shell's environment, which a supervised daemon does not inherit — store " +
+        `${one ? "it" : "them"} with \`xplainer config set\``,
+    );
+  }
+  return lines;
+}
 
 /**
  * Which condition the facts add up to.
@@ -333,6 +484,7 @@ export function createStatusCommand(io: CliIo): Command {
 
       const tokenPath = daemonState.token_file ?? resolveTokenPath(stateDir);
       const token = readTokenQuietly(tokenPath);
+      const speech = readSpeech(stateDir);
 
       const lines = [
         `state directory: ${stateDir}`,
@@ -344,6 +496,7 @@ export function createStatusCommand(io: CliIo): Command {
         }`,
         `token file:      ${tokenPath}${token === null ? " (absent or empty)" : ""}`,
         `socket:          ${daemonState.socket_path ?? "unrecorded — no run has bound here yet"}`,
+        ...speechLines(speech),
         neverBound(endpoint.source, daemonState.port, runtime)
           ? `probing:         nothing — neither file above records a daemon, so ${endpoint.url} would be somebody else's`
           : `probing:         ${endpoint.url}/healthz (port from ${endpoint.source})`,
@@ -392,6 +545,7 @@ export function createStatusCommand(io: CliIo): Command {
                   contract_version: asReportedString(result.body.contract_version),
                 }
               : null,
+          speech: speechReport(speech),
         };
         io.writeOut(`${JSON.stringify(report)}\n`);
         if (exitCode !== 0) {

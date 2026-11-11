@@ -41,6 +41,22 @@ function readNarration(path: string): Narration {
   return parsed as Narration;
 }
 
+/**
+ * How many characters a billed provider is sent: every segment's text after the whitespace
+ * collapsing render-core applies before it asks for speech, counted in code points.
+ */
+function billedCharacters(narration: Narration): number {
+  let total = 0;
+  for (const segment of narration.segments) {
+    const spoken = segment.text
+      .split(/\s+/)
+      .filter((part) => part !== "")
+      .join(" ");
+    total += [...spoken].length;
+  }
+  return total;
+}
+
 async function main(): Promise<void> {
   const [root, jobIdText] = process.argv.slice(2);
   if (root === undefined || jobIdText === undefined) {
@@ -62,6 +78,15 @@ async function main(): Promise<void> {
     `[xplainer] narrating ${request.slug}: ${narration.segments.length} segment(s) from ` +
       `${speech === null ? "an estimated dry run — no speech server was contacted" : speech.source}\n`,
   );
+  for (const note of speech?.notes ?? []) {
+    process.stdout.write(`[xplainer] ${note}\n`);
+  }
+  if (speech?.billed === true) {
+    process.stdout.write(
+      `[xplainer] ${speech.provider} is billed per character to that account: this narration is ` +
+        `${billedCharacters(narration)} characters\n`,
+    );
+  }
 
   const result = await narrate({
     narration,
@@ -74,7 +99,10 @@ async function main(): Promise<void> {
     `[xplainer] wrote ${result.audioPath}, ${result.timingsPath} and ${result.captionsPath}\n`,
   );
   process.stdout.write(
-    `[xplainer] mode ${result.mode}: ${result.timings.segments.length} segment(s), ` +
+    // render-core's `mode` is "kokoro" for any measured run — a published literal that means
+    // "measured" (spec §11 C9) — so the provider that actually spoke is named from here instead.
+    `[xplainer] mode ${speech === null ? "dry_run" : speech.provider}: ` +
+      `${result.timings.segments.length} segment(s), ` +
       `${result.timings.durationInFrames} frames at ${result.timings.fps} fps ` +
       `(${(result.timings.totalMs / 1000).toFixed(2)} s)\n`,
   );

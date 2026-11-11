@@ -71,6 +71,12 @@ toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versio
                     sha256 and provider, and the workspace payload's platform and version. A
                     checked contract (`packages/protocol/schemas/toolchain.json`), because `setup`
                     writes it and the install preflight and `daemon update` both read it
+config.json         DURABLE. the owner's speech settings — tts.provider, tts.elevenlabs.voice,
+                    tts.elevenlabs.model — written 0600 by `xplainer config`, read per narration
+                    job. Nothing secret, so nothing in it needs redacting (ADR 0030)
+credentials.json    DURABLE. the ElevenLabs API key and nothing else: 0600, an owner-only entry on
+                    Windows, created wx → narrowed → written → renamed, by `xplainer config`
+                    only. `daemon uninstall` leaves it — it is the owner's, not the daemon's
 daemon.json         DURABLE. serve writes port, contract_version, token_file, token_origin,
                     socket_path, directory_flush, recentStarts[], stalled; `token rotate` writes
                     token_rotation (two timestamps and a path, never a value); install writes
@@ -121,16 +127,35 @@ runner because they take tens of seconds
 | `render/cdp.ts` | A zero-dependency Chrome DevTools Protocol client over `--remote-debugging-pipe` |
 | `render/capture.ts` | The readiness gate, page errors with the frame index, and one screenshot per frame |
 | `render/encode.ts` | ffmpeg from `XPLAINER_FFMPEG`, then `PATH`, then the Homebrew directories; libx264, AAC, BT.709 tags, `+faststart`, and a partial renamed only on success |
-| `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else a server somebody named, else the engine `toolchain.json` records, else the tts-client's own default |
+| `workers/speech.ts` | Where the speech comes from, in two levels: `XPLAINER_TTS_FIXTURE` first, always; then the **provider** `tts/resolve.ts` resolves; under `elevenlabs`, `tts/elevenlabs.ts` behind `requireWordSpans`, and under `kokoro` the unchanged route chain — a server somebody named, else the engine `toolchain.json` records, else the tts-client's own default |
 
 **The narration worker is told which state directory this daemon is using**, in the one
 `WorkerSpec.env` this registry sets (`XPLAINER_STATE_DIR`). It has to be: the worker resolves its
-speech route out of `<state>/toolchain.json`, and the state directory is a *setting* whose
+speech provider out of `<state>/config.json` and `<state>/credentials.json`, and its Kokoro route
+out of `<state>/toolchain.json`, all three per job — and the state directory is a *setting* whose
 precedence ends in a platform default — `serve --state-dir` moves it, and all three settings travel
 in argv on every platform because Task Scheduler's `<Exec>` action has no environment map. A worker
 left to resolve it for itself would read the platform-default marker on exactly the supervised
 machines the flag exists for. This is not the `PATH` injection D1 refuses: that leaks an interpreter
-onto the `PATH` of everything a worker spawns, and the narration worker spawns nothing.
+onto the `PATH` of everything a worker spawns, and the narration worker spawns nothing. It is also
+**the only route a speech setting has into a supervised worker**: `ELEVENLABS_API_KEY` and
+`XPLAINER_TTS_PROVIDER` override the files for a process they are set in, and a daemon started by
+launchd, systemd or Task Scheduler is never one.
+
+**What the narration worker prints** is read by `scripts/e2e/*.mjs`, so it is a contract. The first
+line names the provider and where its speech came from; the last is `mode <provider>`, or
+`mode dry_run`. **For every Kokoro route and for a dry run, both lines are byte-identical to what
+they were before providers existed.** Under `elevenlabs` the first line also names the voice and the
+model, each with its origin, and the file the provider and the key came from; it is followed by one
+line for each machine setting that was present and deliberately not used (a Kokoro URL, a non-empty
+`lexicon.txt`), and then by the number of characters this narration sends to be billed. Two more
+lines can come later, from the adapter as the first segment is spoken, because they are about the
+narration rather than the machine: a `langCode` that was not sent, and a narration whose own
+`voice` speaks instead of the configured one.
+The `mode` line prints the worker's own provider, **not** render-core's `NarrateResult.mode`, which
+stays `"kokoro"` for every measured run because it is a published type that means "measured, not
+estimated" ([ADR 0030](../../docs/adr/0030-speech-providers-are-admitted-by-their-timestamps.md)
+§Two known gaps).
 
 ### `src/speech/` — speech in this process, with no server and no Python
 
@@ -186,6 +211,63 @@ is `src/setup/`'s and route selection is `workers/speech.ts`'s. `locate.ts` decl
 **function type** for exactly that reason, and the reader that fills it —
 `setup/speech-locate.ts`'s `onnxSpeechFromToolchain`, which turns a recorded `onnx` component back
 into these three paths — lives beside the provider that wrote the record.
+
+### `src/tts/` — who speaks, and the rule that admits them
+
+The **provider** level above the Kokoro routes
+([ADR 0030](../../docs/adr/0030-speech-providers-are-admitted-by-their-timestamps.md)). A provider is
+who speaks — the built-in Kokoro voice, by whichever of its three routes, or a remote service the
+machine's owner opted into and pays for — and **a provider is admissible only if it returns word or
+character timestamps with its audio**, because `timings.json` and `captions.json` are built from
+measured spans. Internal, and not re-exported from `src/index.ts`, like `src/speech/`.
+
+| Module | What it owns |
+|---|---|
+| `provider.ts` | `TTS_PROVIDERS`, the registry — one descriptor per provider with its honest `timestamps` granularity, `remote` and `billed`; `admitProvider`, run over every descriptor when the module loads; `parseProviderId` and the one admissibility sentence every refusal of a name uses; `requireWordSpans`; `TtsProviderError` and its codes |
+| `resolve.ts` | Which provider, voice and model this machine uses and where each came from, and whether a key exists and where — **no secret**, so `xplainer status` asks it too and the status line and the job log read the same files the same way (the environment is the one input they do not share: `status` reads its shell's, the worker the daemon's). `readElevenLabsApiKey` is the one function that returns the key |
+| `elevenlabs.ts` | `createElevenLabsSynthesiser`: the ElevenLabs adapter behind render-core's `SpeechSynthesiser` port — the voice and speed rules checked before anything is billed, the retries, the token-equality and in-bounds checks on the answer, and the PCM wrapped with render-core's `encodeWav` |
+| `index.ts` | The directory's surface, for `workers/speech.ts` and `commands/status.ts` |
+
+**`readElevenLabsApiKey` is called by the narration worker and by nothing that prints.** `status`
+and `config` ask `resolveTtsSelection`, which reports only where the key is. A command that needed
+the value would be the first place it could leak from.
+
+**The wire is not here.** The request, the error body and the character-to-word conversion are
+`@xplainer/tts-client`'s `src/elevenlabs/`, which is pure and reads no environment. What lives here
+is everything that needs render-core (`encodeWav`, and render-core depends on tts-client, so this
+cannot move down) or the job (retries, the log, the decoded audio's duration).
+
+**Kokoro is one provider with three routes, not three providers.** `TTS_PROVIDERS.kokoro` is
+`timestamps: "word"`, local and unbilled for the in-process engine, a Kokoro-FastAPI server and a
+fixture alike. A Kokoro-FastAPI server somebody named may well be on another machine; it is still
+the voice the owner installed rather than a service billing an account, and the provider level
+exists for exactly that difference.
+
+### `src/config/` — the owner's settings, and the one file a third-party secret lives in
+
+The two files `xplainer config` writes and the narration worker reads per job. Each module has a
+colocated test.
+
+| Module | What it owns |
+|---|---|
+| `keys.ts` | The four settings — `tts.provider`, `tts.elevenlabs.voice`, `tts.elevenlabs.model`, `tts.elevenlabs.api_key` — each declared once with its default, its validation, the environment variable that overrides it and whether it is a **secret**; and `ELEVENLABS_VERIFIED_MODELS`, the models measured to return character timestamps |
+| `user-config.ts` | `<state>/config.json`, the `{format_version: 1, tts: {…}}` shape it shares with `credentials.json`, and `StateDocumentUnreadableError` (exit `11`) |
+| `credentials.ts` | `<state>/credentials.json`: `0600`, an empty `wx` file → owner-only ACL → the key → `rename` — `daemon/token.ts`'s rotation write, except that the ACL comes before the key and a failed `icacls` stores nothing |
+
+**The secret flag is the whole routing rule.** A secret lives in `credentials.json` and nowhere
+else, every other setting in `config.json`, so the non-secret file never holds a value that would
+need redacting. `credentials.ts` refuses a key that is not a secret and `user-config.ts` refuses one
+that is.
+
+**An unreadable file is an error, never "no config".** Invalid JSON, an unknown `format_version` or
+a known setting holding a non-string raise `StateDocumentUnreadableError`; answering "absent" would
+turn a typo in a hand-edited file into a silent switch back to Kokoro. A parse failure in
+`credentials.json` is reported as a fixed phrase, because the parser's own message quotes the text
+around the fault, which there is the key. Unknown keys survive every write.
+
+**A value is validated at `config set`, and again by whoever reads it**, because either file can be
+edited by hand: a value refused at the keyboard is a mistake caught before a narration fails on it
+minutes later.
 
 ### `src/api/` — the client surface a GUI talks to, and what it may never become
 
@@ -787,7 +869,7 @@ Then the root procedure: `pnpm verify`.
   refused, on either listener, carries an `access-control-*` header.
 - **The command surface is asserted with `toEqual`, never widened to `toContain`** (`AC-14b`). The
   listing is exactly `serve`, `status`, `mcp`, `setup`, `connect`, `daemon`, `runtime`, `token`,
-  `update`, and
+  `config`, `update`, and
   it only holds because commander's implicit `help [command]` is disabled. A `toContain` would let a stray command
   ship unnoticed. Top-level `status` and the group's `daemon status` are different commands and
   neither is an alias of the other: the first asks "is this machine's daemon up, and where", the
@@ -797,7 +879,9 @@ Then the root procedure: `pnpm verify`.
   lifecycle verbs, `update` and `recover` among them — for the same reason and with the same
   implicit `help [command]` disabled. So do `runtime` (`build`, `verify`) and `token`, whose one
   verb is `rotate`: ADR 0020 §Security R-SEC-8 names that and nothing else, and a second verb under
-  that group would be a second way to touch the credential.
+  that group would be a second way to touch the credential. And so does `config` — `set`, `get`,
+  `unset`, `list` and no fifth, for the same reason: a verb that printed or exported the stored
+  ElevenLabs key would be a second way to read it.
 - **Ownership, then reconciliation, then bind.** That order is an invariant, not an implementation
   note ([ADR 0024](../../docs/adr/0024-durable-jobs-and-boot-reconciliation.md) §Exclusive
   ownership). Reconciliation *rewrites other processes' records*, so a second `serve` has to be
@@ -1201,6 +1285,37 @@ Then the root procedure: `pnpm verify`.
 - **Nothing downloads at install.** No `postinstall` fetches a browser, a model or a binary
   (`AC-1d`); `xplainer setup` does that, deliberately and visibly
   ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)).
+- **A speech provider is admissible only if it returns word or character timestamps with its
+  audio** ([ADR 0030](../../docs/adr/0030-speech-providers-are-admitted-by-their-timestamps.md)),
+  enforced twice: by name at configuration (`parseProviderId`, and `admitProvider` over every
+  registry entry at module load) and on every response at run time (the client's
+  `alignment_missing`, and `requireWordSpans` around every **remote** provider). A descriptor
+  declaring `timestamps: "none"` is a refusal, not a registration.
+- **There is no fallback to Kokoro, for any failure.** A missing key, a refused request, an
+  exhausted retry, an alignment that does not match the script — each is a failed narration job
+  whose log names the cause and the remedy. Nothing is written until every segment has been
+  spoken, so the previous `narration.wav`, `timings.json` and `captions.json` survive. A video in a
+  voice the owner did not choose, with nothing saying so, is worse than a failed job.
+- **The ElevenLabs key never reaches argv, a log line, a job record or a request document, and is
+  never printed.** `xplainer config set tts.elevenlabs.api_key <value>` is refused, exit `1`, with
+  nothing written; the key arrives from a hidden prompt, from stdin or with `--from-env`. `get`,
+  `list` and `status` say `set (<origin>)`, `unset` or `NOT SET`. `credentials.json` is `0600` with
+  an owner-only entry on Windows (R-SEC-5, R-SEC-6), and every message built from text this package
+  did not write passes through a redactor first. A test asserts each of these against captured
+  stdout and stderr.
+- **`ELEVENLABS_API_KEY` overrides `credentials.json` and never selects the provider.** It supplies
+  the key once the provider is `elevenlabs`, and does nothing else: a key left in a shell profile for
+  another tool must not start billing anyone. The provider comes from `XPLAINER_TTS_PROVIDER`, then
+  `config.json`, then `kokoro` — and `XPLAINER_TTS_URL`/`KOKORO_URL` never beat it, because they are
+  Kokoro route settings and a stale one would silently undo `config set tts.provider elevenlabs`.
+- **An agent chooses the voice and nothing else about speech.** `explainer_narrate` has no
+  provider, model or key field and must not gain one. Under ElevenLabs a `voice` that is neither
+  omitted, `af_heart` nor a 20-character ElevenLabs id is refused (`VOICE_UNSUPPORTED`), and a
+  `speed` outside 0.7–1.2 is refused (`SPEED_UNSUPPORTED`), both before the first request.
+- **Retries are for `429` and `5xx` only** — at most two, after 1 s and 4 s, each one a log line. A
+  timeout or a transport error is **never** retried: the service may have spoken and billed that
+  request while the answer was lost, so the refusal says so and leaves re-running
+  `explainer_narrate` — paying again — to the owner. A `4xx` is never retried either.
 - **`isolatedDeclarations` is on `tsconfig.build.json`**, so `TS9010` surfaces under
   `pnpm turbo build` — not under `typecheck`, and not in your editor.
 - **`spikes/` is measurement, not product.** `spikes/p1-s1-ownership.mjs` settles
@@ -1272,6 +1387,23 @@ preferred to a file format reimplemented here, with a direct write only for the 
 documents. Test it as a real spawned `xplainer connect` with a temporary `HOME` and a temporary
 `PATH`, assert against the file on disk, and read that file back with a parser that is **not** the
 one that wrote it.
+
+**A speech provider:** it is admissible **only** if it returns word or character timestamps with
+its audio — check that against the vendor's API before writing anything, because a provider without
+them cannot be made to work here. Then, in this order: a descriptor in `TTS_PROVIDERS`
+(`src/tts/provider.ts`) with an **honest** `timestamps`, `remote` and `billed` — `admitProvider`
+refuses `"none"` at module load; the wire client in `@xplainer/tts-client` under its own directory,
+pure, with an injected `fetch`, its timings converted to `WordTimestamp[]` there, and a gated live
+test whose `.skipIf(` condition begins `process.env`; an adapter in `src/tts/` that returns
+render-core's `SpeechSynthesiser` envelope (a 24 kHz mono 16-bit WAV through `encodeWav`, word spans
+bounded by the decoded audio), refuses rather than repairs, retries only what cannot double-bill,
+and never falls back; a branch in `workers/speech.ts`'s `resolveSpeech()` wrapped in
+`requireWordSpans` if it is remote, with its first log line and `mode` line, leaving every Kokoro
+line byte-identical; its settings in `src/config/keys.ts` — a secret marked `secret: true`, so it
+lands in `credentials.json` and is never printed; its lines in `commands/status.ts`; and a dated note
+on [ADR 0030](../../docs/adr/0030-speech-providers-are-admitted-by-their-timestamps.md) naming it.
+README, `packages/skill/SKILL.md` and `narration.json`'s `voice` description say what it bills and
+what it sends off the machine. No MCP field, ever.
 
 **An export:** add it to `src/index.ts` explicitly, run `pnpm api:report`, commit the `.api.md`.
 

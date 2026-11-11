@@ -205,16 +205,21 @@ Each one, and the thing that catches you:
   now". *Enforcement: `AC-2c`, a CI grep over `apps/`, `packages/` and `services/` on a pristine
   tree.*
 - **`.skipIf(` is allowed, and only with the condition written at the call site.** It is the one
-  form of skip this repository uses on purpose — a live Kokoro server, a real render, a probe that
-  only `darwin` has — and the rule that keeps it honest is that the condition must **begin with
-  `process.env` or `process.platform` on the same line**. A `describe.skipIf(SKIPPED)` reads as an
-  unconditional skip to everyone but the author of the constant, and the gate cannot tell the two
-  apart; an inline `process.env.X === "1"` says what is being waited for and where to set it. There
-  is no `.skipIf` that is not gated on one of those two, and the nine in the tree are
-  `preflight.test.ts`, `chrome.test.ts`, `workspace.test.ts`, `speech/synthesiser.test.ts`,
-  `workers/render.test.ts`, `render/capture.test.ts`, `render/encode.test.ts`,
-  `daemon/shutdown.test.ts` and `tts-client/src/client.test.ts` — the four render ones all on
-  `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
+  form of skip this repository uses on purpose — a live Kokoro server, a live ElevenLabs request, a
+  real ONNX inference, a real render, a probe that only `darwin` has — and the rule that keeps it
+  honest is that the condition must **begin with `process.env` or `process.platform` on the same
+  line** (an opening parenthesis before it is allowed, as in `(process.env.X ?? "").trim()`). A
+  `describe.skipIf(SKIPPED)` reads as an unconditional skip to everyone but the author of the
+  constant, and the gate cannot tell the two apart; an inline `process.env.X === "1"` says what is
+  being waited for and where to set it. There is no `.skipIf` that is not gated on one of those
+  two, and the eleven files in the tree that carry one are `commands/config.test.ts`,
+  `daemon/shutdown.test.ts`, `install/preflight.test.ts`, `render/capture.test.ts` (twice),
+  `render/encode.test.ts`, `setup/providers/chrome.test.ts`, `setup/providers/workspace.test.ts`
+  (twice), `speech/synthesiser.test.ts` and `workers/render.test.ts` in `apps/cli/src/`, and
+  `tts-client/src/client.test.ts` and `tts-client/src/elevenlabs/client.test.ts`. The four render
+  ones are all on `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
+  The last one **bills** whoever exports `ELEVENLABS_API_KEY`; `packages/tts-client/AGENTS.md` says
+  when it runs.
   *Enforcement: `AC-2c`'s second grep, in the same CI step.*
 - **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
   `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the

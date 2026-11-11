@@ -69,7 +69,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
 | `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, the grapheme-to-phoneme port every speech engine reads through, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
 | `packages/skill` | `@xplainer/skill` | open-later | yes | no | no | TypeScript | The agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle. | [AGENTS.md](../packages/skill/AGENTS.md) |
-| `packages/tts-client` | `@xplainer/tts-client` | open-later | yes | yes | yes | TypeScript | Kokoro-FastAPI request and response shaping: the two endpoints and the payload flags narration depends on. | [AGENTS.md](../packages/tts-client/AGENTS.md) |
+| `packages/tts-client` | `@xplainer/tts-client` | open-later | yes | yes | yes | TypeScript | Kokoro-FastAPI and ElevenLabs request and response shaping: the endpoints, the payload flags and the alignment conversion narration depends on. | [AGENTS.md](../packages/tts-client/AGENTS.md) |
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
 <!-- /CHECKED:members -->
 
@@ -302,13 +302,30 @@ written by `serve` at bind, removed on clean shutdown, and never trusted without
 The port is decided once, at install, and the recorded port is a contract — `connect`, `status`,
 `logs` and the desktop client all read it rather than guessing.
 
+**Speech settings ([ADR 0030](adr/0030-speech-providers-are-admitted-by-their-timestamps.md)).**
+Two more files live in the state directory, and neither is the daemon's: `config.json`, the owner's
+non-secret speech settings (`tts.provider`, `tts.elevenlabs.voice`, `tts.elevenlabs.model`), and
+`credentials.json`, the ElevenLabs API key, `0600` with an owner-only entry on Windows under R-SEC-5
+and R-SEC-6. Both are `{"format_version": 1, "tts": {…}}`, both are written only by
+`xplainer config set|unset`, and both are read **per job** by the narration worker, so a change
+takes effect on the next narration with no restart; a file that exists and cannot be read is exit
+`11` at the command and a failed narration at the worker, never "no settings". The worker resolves
+speech in two levels — `XPLAINER_TTS_FIXTURE` first, always; then the **provider**, from
+`XPLAINER_TTS_PROVIDER`, else `config.json`, else `kokoro`; then, under `kokoro` only, the existing
+route chain (`XPLAINER_TTS_URL`/`KOKORO_URL`, then the engine `toolchain.json` records, then the
+tts-client's default). `ELEVENLABS_API_KEY` overrides `credentials.json` and never selects the
+provider. A provider is admissible only if it returns word or character timestamps with its audio,
+an agent chooses neither the provider nor the key, and a failure under ElevenLabs is a failed job —
+never Kokoro instead. `xplainer status` reports the provider and whether a key is stored, and never
+the key; `daemon uninstall` leaves both files where they are.
+
 **Exit codes.** One table, and a new code is added to it and to the successor of the record that
 owns it, never invented at the call site.
 
 | Code | Meaning | Owner | Status |
 |---:|---|---|---|
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
-| `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`) |
+| `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`, and `config set` for an unknown setting, an inadmissible value or a secret given on the command line) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built**. Every registered command is now implemented, so the code survives in one place: `install/program.ts`'s one remaining deferred **program source**, `sea-binary`, which is phase-4 packaging and refuses with the route that does work today. `package-manager` was the second until 2026-09-11 and is now implemented: `commands/daemon.ts` builds a payload out of an installed package and `install/materialise.ts` is the write |
 | `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`; `xplainer token rotate` with no token file to rotate; the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed; and `daemon update`'s two pre-drain refusals — template pins that differ, and a workspace that does not satisfy **both** the incoming runtime and the rollback target — each taken before anything is staged or drained) |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
@@ -317,7 +334,7 @@ owns it, never invented at the call site.
 | `7` | **Install-time preflight**: the port `install` is about to record is held, or a unit, label or task of that name is somebody else's. Nothing is registered and nothing is recorded — as against `10`, which is the same symptom found at `serve` time (`INSTALL_CONFLICT_EXIT_CODE`) | ADR 0020 | **built** in the install preflight for the port, which is bound and released rather than assumed, and named in words — the holding pid from `lsof` or `ss` where one answers |
 | `8` | Contract skew between shim and daemon | ADR 0025 | **built** (`xplainer mcp --attach`) |
 | `10` | **`serve`-time ownership**: another process holds this machine's runtime — the state directory is owned, or the recorded port is taken — by something that is running now (`OWNERSHIP_REFUSED_EXIT_CODE`) | ADR 0020, ADR 0024 | **built** |
-| `11` | State file unreadable | ADR 0020 | **built** |
+| `11` | State file unreadable | ADR 0020 | **built** — including `config.json` and `credentials.json` at `xplainer config` (ADR 0030) |
 | `12` | Token file missing — it cannot enforce authentication, so it must not serve | ADR 0020 | **built**, in `serve` and in `xplainer token rotate` |
 | `70` | Internal error | ADR 0020 | **built** |
 

@@ -150,6 +150,28 @@ Windows daemon that cannot bind its port takes about twenty minutes to reach fiv
 latch, and a latched one goes on being asked to run every five minutes, re-reading the flag and
 exiting `0`.
 
+**Speech settings come from the state directory, never from your shell.** The narration worker the
+daemon spawns gets the daemon's environment plus `XPLAINER_STATE_DIR`, and the daemon's environment
+is whatever launchd, systemd or Task Scheduler gave it — none of them inherits a shell. So an
+`export ELEVENLABS_API_KEY=…` or `export XPLAINER_TTS_PROVIDER=elevenlabs` in your profile reaches
+the commands typed in that terminal, and an `xplainer mcp` started from it, and **never** a supervised
+daemon. The route that does reach it is the two files the worker reads on every narration:
+
+```sh
+xplainer config set tts.elevenlabs.api_key   # hidden prompt; or pipe it on stdin, or --from-env
+xplainer config set tts.provider elevenlabs
+xplainer status                              # speech: elevenlabs …, and whether a key is stored
+```
+
+`credentials.json` is `0600` (an owner-only entry on Windows) under the same rules as the token
+([ADR 0030](adr/0030-speech-providers-are-admitted-by-their-timestamps.md), R-SEC-5 and R-SEC-6), the
+key is refused on the command line, and no restart is needed: the next narration reads both files.
+When a setting does come from the shell running `xplainer status` or `xplainer config list`, both
+say so, because that is exactly the setting the daemon cannot see. A narration whose provider is
+`elevenlabs` and whose key is missing fails by name and is **not** spoken by Kokoro instead.
+**`daemon uninstall` leaves `credentials.json` alone** — it is your credential for somebody else's
+service, not the daemon's — so remove it with `xplainer config unset tts.elevenlabs.api_key`.
+
 ## 4. Updating
 
 ```sh

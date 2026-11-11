@@ -439,11 +439,11 @@ export type JobType = "explainer_narrate" | "explainer_render" | "explainer_stil
  */
 export interface Narration {
     /**
-     * Kokoro voice id, or a blend such as "af_bella(2)+af_sky(1)". Blends are resolved server-side.
+     * Voice for the speech provider this machine is configured with. Under the default Kokoro provider: a Kokoro voice id, or a blend such as "af_bella(2)+af_sky(1)", resolved server-side. Under ElevenLabs: omitted, or the default "af_heart", means the voice the machine's owner configured; a 20-character ElevenLabs voice id is used as given; any other value is refused before anything is synthesised.
      */
     voice?: string;
     /**
-     * Speech rate multiplier passed straight through to Kokoro.
+     * Speech rate multiplier. Kokoro accepts the whole range. ElevenLabs accepts 0.7 to 1.2 and the narration is refused outside it.
      */
     speed?: number;
     /**
@@ -451,7 +451,7 @@ export interface Narration {
      */
     fps?: number;
     /**
-     * Optional Kokoro language code. Inferred from the voice when omitted.
+     * Optional Kokoro language code. Inferred from the voice when omitted. Ignored by other providers.
      */
     langCode?: string;
     /**
