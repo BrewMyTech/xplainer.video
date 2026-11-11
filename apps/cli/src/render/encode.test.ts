@@ -174,8 +174,15 @@ describe("encodeArgs", () => {
   });
 });
 
-/** PNG frames ffmpeg drew itself: `count` 64x36 frames of solid colour. */
-function pngFrames(ffmpeg: string, count: number): Buffer[] {
+/**
+ * PNG frames ffmpeg drew itself: `count` 64x36 frames of solid colour, or of `source` — a lavfi
+ * graph — when a test needs frames large enough to fill the pipe.
+ */
+function pngFrames(
+  ffmpeg: string,
+  count: number,
+  source = "color=c=0x3366cc:s=64x36:r=30",
+): Buffer[] {
   const stream = execFileSync(
     ffmpeg,
     [
@@ -184,7 +191,7 @@ function pngFrames(ffmpeg: string, count: number): Buffer[] {
       "-f",
       "lavfi",
       "-i",
-      "color=c=0x3366cc:s=64x36:r=30",
+      source,
       "-frames:v",
       String(count),
       "-f",
@@ -278,6 +285,38 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
       });
       expect(existsSync(output)).toBe(false);
       expect(existsSync(encoder.partial)).toBe(false);
+    });
+
+    /**
+     * The same failure on frames the size Chrome sends. A 1080p PNG is far past the pipe's
+     * buffer, so `write()` waits on `drain` — and when ffmpeg has already gone, that wait ends in
+     * the pipe's EPIPE, which must arrive as ENCODE_FAILED with ffmpeg's words, not as itself.
+     */
+    it("fails as ENCODE_FAILED, not as EPIPE, when ffmpeg dies while the pipe is full", async () => {
+      const ffmpeg = findFfmpeg();
+      const directory = temporaryDirectory();
+      const output = join(directory, "explainer.mp4");
+      const frames = pngFrames(ffmpeg, 3, "testsrc2=s=1920x1080:r=30");
+      expect(Math.min(...frames.map((frame) => frame.length))).toBeGreaterThan(64 * 1024);
+      const encoder = startEncoder({
+        ffmpeg,
+        fps: 30,
+        audio: join(directory, "no-such.wav"),
+        output,
+      });
+
+      const failure = (async () => {
+        for (let frame = 0; frame < 200; frame += 1) {
+          await encoder.write(frames[frame % frames.length] ?? Buffer.alloc(0));
+        }
+        await encoder.finish();
+      })();
+
+      await expect(failure).rejects.toMatchObject({
+        code: "ENCODE_FAILED",
+        message: expect.stringContaining("no-such.wav"),
+      });
+      expect(existsSync(output)).toBe(false);
     });
 
     it("aborts mid-stream leaving neither the MP4 nor the partial", async () => {

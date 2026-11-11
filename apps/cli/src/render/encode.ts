@@ -273,7 +273,9 @@ export function startEncoder(options: StartEncoderOptions): Encoder {
   });
   let failure: Error | null = null;
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("exit", (code, signal) => {
+    // `close`, not `exit`: it waits for stderr to end too, so the tail an ENCODE_FAILED quotes is
+    // ffmpeg's whole last word rather than whatever had arrived when the process went.
+    child.once("close", (code, signal) => {
       resolve({ code, signal });
     });
     child.once("error", (error) => {
@@ -303,14 +305,25 @@ export function startEncoder(options: StartEncoderOptions): Encoder {
     partial,
     async write(png: Buffer): Promise<void> {
       const stdin = child.stdin;
-      if (failure !== null || child.exitCode !== null || stdin === null) {
+      // Read through a call: `failure` is set by the listeners above, between awaits, which a
+      // narrowing from the first check below would not see.
+      const failed = (): Error | null => failure;
+      if (failed() !== null || child.exitCode !== null || stdin === null) {
         await exited;
         throw encodeFailed(
-          `stopped accepting frames (${failure?.message ?? `exit ${child.exitCode}`})`,
+          `stopped accepting frames (${failed()?.message ?? `exit ${child.exitCode}`})`,
         );
       }
       if (!stdin.write(png)) {
-        await Promise.race([once(stdin, "drain"), exited]);
+        // `once` rejects on the pipe's `error` — EPIPE, the moment ffmpeg has gone — and that must
+        // not escape as itself: the reason is in ffmpeg's stderr, which only `exited` waits for.
+        await Promise.race([once(stdin, "drain"), exited]).catch(() => undefined);
+        if (failed() !== null || child.exitCode !== null || child.signalCode !== null) {
+          await exited;
+          throw encodeFailed(
+            `stopped accepting frames (${failed()?.message ?? `exit ${child.exitCode}`})`,
+          );
+        }
       }
     },
     async finish(): Promise<void> {
