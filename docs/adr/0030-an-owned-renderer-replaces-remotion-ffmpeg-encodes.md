@@ -183,11 +183,13 @@ open questions above, and not a conclusion this record draws.
   **before** the video's `index.ts`, so the frozen clock exists before any scene module runs, as one
   classic script (`format: "iife"`, `target: "chrome149"`, `jsx: "automatic"`). React, React DOM
   (19.2.8) and `@xplainer/motion` resolve from the CLI's own install, never from the workspace, so
-  there is one React and it is the tested one; any other bare import is refused by name. Tailwind is
+  there is one React and it is the tested one; any other bare import is refused by name, and every
+  import — relative, absolute or a Tailwind `@import` — must resolve inside the workspace root or the
+  CLI's own install, or the bundle fails naming the path (`a830be3`). Tailwind is
   `tailwindcss` 4.2.0's own `compile()` over candidates split out of every bundled source file —
   no `@tailwindcss/oxide`, no `lightningcss`, no platform binary. `timings.json` and `captions.json`
-  travel in a generated `static-data.js`, because Chrome refuses `fetch` on `file://` and the
-  harness answers the composition's `fetch(staticFile(…))` from it. Bundling took **0.47–0.8 s**.
+  travel in a generated `static-data.js`, and the harness answers the composition's
+  `fetch(staticFile(…))` from it. Bundling took **0.47–0.8 s**.
 - **The browser.** `render/cdp.ts` speaks CDP as NUL-delimited JSON on fds 3 and 4 with flat
   sessions — no port, no WebSocket, nothing another process can connect to — and launches
   `toolchain.json`'s `chrome.path` with `--headless --remote-debugging-pipe --disable-gpu
@@ -198,6 +200,12 @@ open questions above, and not a conclusion this record draws.
   --disable-component-update --no-pings` and a temporary profile. On Linux it adds `--no-sandbox` as
   root, or once after Chrome's own "No usable sandbox" exit, and logs it. Chrome is a plain child in
   the worker's process group, so the daemon's group teardown reaches it.
+- **The page is served, not opened from a file (`a830be3`).** The worker serves the bundle at `/` and
+  the video's `public/<slug>/` at `/public/` from `127.0.0.1` on a port the OS picks, and answers
+  `404` to anything outside either root after decoding, `..` and symlinks, to any method but `GET`
+  and `HEAD`, and to any `Host` but its own. As first built the page was `file://`, from which a
+  scene's `<img src="file:///…">` could draw any image or font the daemon's user can read into a
+  frame; an `http:` origin cannot load `file:` at all.
 - **Capture.** Readiness is polled every 100 ms for up to 30 s, with the pending list logged once a
   second after the first ten and `READINESS_TIMEOUT` naming what never arrived. Each frame is
   `setFrame(n)` then `Page.captureScreenshot({format: "png", fromSurface: true,
@@ -235,9 +243,10 @@ open questions above, and not a conclusion this record draws.
 fires the timers due by then in due order, drains the queued callbacks with the film timestamp and
 commits the frame **inside one `flushSync`**, so whatever a timer sets lands in the frame it belongs
 to. Then every Web Animation — CSS animations, CSS transitions, `element.animate()` — is paused and
-seeked to film time, and the frame settles: render holds, then images (complete and decoded), then
-`document.fonts.ready`, then a forced layout and one `MessageChannel` task. Five decisions inside it
-are worth recording because each was argued or measured:
+seeked to film time, and the frame settles in passes: render holds, then images (complete and
+decoded), then `document.fonts.ready`, then a forced layout and two `MessageChannel` tasks — and
+another pass while the last one changed a node, left a font loading, or left a hold or an image
+outstanding. Five decisions inside it are worth recording because each was argued or measured:
 
 - **A `delayRender` released from a timer no longer deadlocks** — the spike's correction, fixed rather
   than documented away. `const h = delayRender(); setTimeout(() => continueRender(h), 100)`
@@ -245,12 +254,23 @@ are worth recording because each was argued or measured:
   timer. So **while a hold is out, the timers created since the previous frame was released run on
   the wall clock**; film time, `Date` and `performance.now` stay frozen. Moving *all* pending timers
   onto the wall clock was the obvious version and was **measured non-deterministic**: an interval
-  created at frame 0 ticked a frame early on the one frame that took a 100 ms hold.
-- **There is no `LATE_IMAGE` failure, because it is unreachable.** Every `<img>` in the document must
-  be complete and decoded before a frame is released, so an image can never be captured blank and
-  arrive later; past the budget the frame fails `IMAGE_TIMEOUT`, and an image that will not decode
-  fails `IMAGE_BROKEN`. **CSS `background-image` is not waited for** — it is not an `<img>` — and
-  that is a known gap rather than a guarantee.
+  created at frame 0 ticked a frame early on the one frame that took a 100 ms hold. The code review
+  added the two halves the first build missed (`320fa7b`): animation-frame callbacks requested since
+  the release follow the same rule, because `requestAnimationFrame(() => continueRender(h))` was the
+  same deadlock; and when the hold releases, every timer the wait created is **rebased** onto the
+  frame's film instant, because a timer scheduled from film time plus the wait's wall time landed on
+  frame 5, 23 or 50 as an image took 20, 600 or 1500 ms.
+- **There is no `LATE_IMAGE` failure, and the reason changed under review.** As first built, every
+  `<img>` present when the settle looked had to be complete and decoded, and the record called a
+  late image unreachable. The code review reached one: an `<img>` mounted two effect → `setState`
+  hops after the commit appeared after the settle had looked, and was first awaited on the next
+  frame. The settle now passes again while the last pass changed a node (`320fa7b`), so an image the
+  frame's own work mounts is awaited on that frame. What it still cannot see — a `fetch` with no
+  `delayRender`, renders that change no node, a chain longer than the pass bound — a check on a later
+  frame could not see either, and `delayRender` is how a scene says "wait for this". Past the budget
+  the frame fails `IMAGE_TIMEOUT`, and an image that will not decode fails `IMAGE_BROKEN`. **CSS
+  `background-image` is not waited for** — it is not an `<img>` — and that is a known gap rather than
+  a guarantee.
 - **CSS animations and transitions are deterministic now, and a still can disagree with the render.**
   Each is seeked to film time minus the film time at which the harness *first saw* it. A video
   rendered front to back therefore starts every animation at the frame its element mounted; a single
@@ -264,7 +284,8 @@ are worth recording because each was argued or measured:
   bisection — with a worst error of **7.3e-12**, and `bezier(1,0,0,1)`-like curves at 1e-5 because
   their inverse is ill-conditioned in double precision. **Values are not guaranteed identical to
   Remotion's**, and `random(seed)` returns different, equally deterministic numbers.
-
+  `overshootClamping` rests at the target from its first arrival, in closed form (`320fa7b`); as
+  first built it clamped each sample and sank back below the target after arriving.
 - **A frame is settled without waiting for a frame (`5af310d`).** As first built, the settle step
   waited one native animation frame before every capture "so the compositor has the committed DOM".
   `Page.captureScreenshot` draws a fresh frame of its own, so the wait bought no pixel and cost about
@@ -273,7 +294,9 @@ are worth recording because each was argued or measured:
   image loads the new DOM needs. The one thing a frame delivers that a layout read does not is an
   observer notification — `ResizeObserver` and `IntersectionObserver` report in a frame's rendering
   steps — so the harness installs subclasses of both that record their use, and once a page has made
-  either, every settle waits one native frame again.
+  either, every settle waits one native frame again. The pass's tail grew from one task to two under
+  review, because one was measured to release the frame between an effect and the commit its
+  `setState` asks for; the gate below measured no cost.
 
 ### `--disable-threaded-animation`, decided by measurement
 
@@ -321,7 +344,7 @@ used one, naming the file and the import to use instead. Beyond that:
 | Usage | Now |
 |---|---|
 | `<Video>` / `<OffthreadVideo>` | Throws `NOT_SUPPORTED_IN_V1: video assets …` when rendered; use `<Img>` stills |
-| A second `<Audio>` in a scene | Warned once and silent: the encoder muxes only the narration |
+| A second `<Audio>` in a scene | Fails `NOT_SUPPORTED_IN_V1`: the encoder muxes only the narration, and it would otherwise vanish from the MP4 |
 | Any other `@remotion/*` package (`three`, `lottie`, `transitions`, …) | `BUNDLE_FAILED` naming the specifier |
 | WebGL | Not supported; a 2D `<canvas>` works |
 | Remotion Studio, `npm run studio` | Gone; `explainer_still` is the preview |
@@ -347,7 +370,7 @@ on macOS.
 
 **Result, 2026-11-11** — macOS 27.0 on the Apple M5 Pro above (18 logical CPUs), the
 `chrome-headless-shell` 149.0.7790.0 the committed manifest pins, Homebrew's ffmpeg 8.1.1. **The
-machine was not idle**: other sessions kept the one-minute load average between 1.8 and 7.9 across
+machine was not idle**: other sessions kept the one-minute load average between 1.6 and 7.9 across
 the runs, and no quieter window came. Every number is the script's own output.
 
 | Harness | Scene | Runs | Loop fps | Total fps | Load before → after | Verdict |
@@ -355,9 +378,10 @@ the runs, and no quieter window came. Every number is the script's own output.
 | `61aa387` (a native frame per settle) | animated | 3 | **18.19–18.20** | 17.52–17.53 | 1.79 → 2.53 | **fail** |
 | `5af310d` (a forced layout per settle) | animated | 3 | **21.59–22.34** | 20.74–21.40 | 3.38 → 7.90 | **pass** |
 | `5af310d` | the scaffold with an empty `Scenes.tsx` | 1 | 25.25 | 24.18 | 7.49 → 5.87 | pass |
+| `320fa7b` + `a830be3` (settle in passes, page over loopback HTTP) | animated | 3 | **22.17–22.34** | 21.14–21.20 | 1.64 → 2.68 | **pass** |
 
-The animated MP4 was **1,991,045 bytes with sha256 `c9e7de71…f1f45d` under both harnesses**, so
-the change that passed the gate changed no pixel; the first run failing is what found it (§The page
+The animated MP4 was **1,991,045 bytes with sha256 `c9e7de71…f1f45d` under all three**, so neither
+the change that passed the gate nor the review's settle and serving changes moved a pixel; the first run failing is what found it (§The page
 runs on film time). Steady at 18.2 fps to the hundredth across three runs, at a load near 2, was
 the signature of a wait rather than of work.
 

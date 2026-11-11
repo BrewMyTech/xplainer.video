@@ -9,7 +9,8 @@ The main entry point is side-effect free and imports in Node: `useCurrentFrame` 
 `useVideoConfig`; `interpolate` (per-segment easing, `extend`/`clamp`/`identity`/`wrap` on each
 side, and a named error for a table it cannot read); `Easing`, the closed-form curves plus CSS
 `cubic-bezier`; `spring` and `measureSpring`, the closed-form damped harmonic oscillator with
-`delay`, `durationInFrames`, `reverse` and `overshootClamping`; a seeded `random`; the timing
+`delay`, `durationInFrames`, `reverse` and `overshootClamping` (which rests at the target from its
+first arrival); a seeded `random`, held bit for bit across releases; the timing
 components `Sequence`, `Series`, `Loop` and `Freeze`; `AbsoluteFill`, `Img`, the `<Audio>`
 narration marker and `staticFile`; the render holds `delayRender`, `continueRender` and
 `cancelRender`; `registerRoot`, `Composition` and `registerVideo` with `calculateMetadata`; and
@@ -18,12 +19,17 @@ pure function of the frame, so a still and the full render show the same picture
 to an independent derivation at 1e-9 in the test suite.
 
 `<Video>` and `<OffthreadVideo>` throw `NOT_SUPPORTED_IN_V1` when rendered: this renderer has no
-video decoder yet, so use `<Img>` stills. `random(seed)` is deterministic per seed, but its values
+video decoder yet, so use `<Img>` stills. So does a second `<Audio>`: the narration is the only
+track the encoder muxes, and a second one would otherwise vanish from the MP4. `staticFile()`
+refuses a leading `/` and any `..` segment. `random(seed)` is deterministic per seed, but its values
 are its own, not those of any other library.
 
 `@xplainer/motion/harness` runs the page on film time — `Date`, `performance.now`, timers and
 animation frames advance only when the renderer asks for the next frame, and CSS animations are
-paused and seeked to it — and waits for render holds, images and fonts before each capture. While a
-`delayRender` hold is outstanding, pending timers run on the wall clock, so
-`const h = delayRender(); setTimeout(() => continueRender(h), 100)` releases instead of
-deadlocking.
+paused and seeked to it — and releases a frame only once the page has stopped changing: no render
+hold out, every image complete and decoded, no font loading, and a pass that changed no node. While
+a `delayRender` hold is outstanding, the timers and animation-frame callbacks created since the
+previous frame run on the wall clock, so `const h = delayRender(); setTimeout(() =>
+continueRender(h), 100)` releases instead of deadlocking; when it releases, the timers the wait
+created are rebased onto the frame's film time, so how long the wait took never reaches the
+video.

@@ -6,8 +6,9 @@ The skill now describes xplainer's own renderer instead of Remotion.
 
 Every authoring API is imported from `@xplainer/motion`, and the skill says so in one place.
 `Easing.spring()` — which never existed — is now `spring()`. Images go through `<Img>` and
-`staticFile()`; video assets fail the render with `NOT_SUPPORTED_IN_V1`, and a second `<Audio>` is
-ignored, because the narration is the only audio track. CSS and Tailwind animations are no longer
+`staticFile()`; video assets and a second `<Audio>` fail the render with `NOT_SUPPORTED_IN_V1`,
+because the narration is the only audio track, and `staticFile()` stays inside the video's public
+directory. CSS and Tailwind animations are no longer
 described as frozen: the renderer seeks them to the frame being drawn, but a still taken partway
 through one shows it at its start, so motion stays `interpolate()`. The skill also explains the
 `delayRender` timer rule, that a render needs ffmpeg, and that frames are reproducible on one

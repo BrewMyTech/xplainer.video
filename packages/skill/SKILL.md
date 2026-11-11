@@ -251,7 +251,12 @@ specific size.
 - **No video assets.** `<Video>` and `<OffthreadVideo>` fail the render with
   `NOT_SUPPORTED_IN_V1`; show stills instead.
 - **The narration is the only audio track.** The engine adds it; a second
-  `<Audio>` is ignored with a warning in the job log.
+  `<Audio>` — music, a sound effect — fails the render with
+  `NOT_SUPPORTED_IN_V1` rather than vanishing from the MP4.
+- `staticFile()` names a file inside the video's own public directory:
+  `staticFile("media/name.png")`, never a leading `/` or a `..`, which it
+  refuses. A scene's imports stay inside the workspace too; one that reaches
+  elsewhere on the machine fails the bundle with `BUNDLE_FAILED`.
 - Scatter things with `random(seed)`, never `Math.random()` — a seeded value is
   the same on every frame. `Date.now()` and timers run on the video's clock, not
   the wall clock.

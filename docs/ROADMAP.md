@@ -1597,7 +1597,10 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
    removal in the release after it.
 
 **Booked, not scheduled:** a ticket for `daemon status` judging the toolchain by file existence while
-`/healthz` may say `toolchain_stale` (read in the code, never observed); WebGL, whose working flag
+`/healthz` may say `toolchain_stale` (read in the code, never observed); from the Phase 1 code
+review, `chrome.kill()` waiting its full grace on a zombie helper where orphans are not reaped (a
+container whose PID 1 is not an init), and no ageing-out of `xplainer-chrome-*` profiles a
+`SIGKILL`ed worker leaves in the temporary directory; WebGL, whose working flag
 set ADR 0030 records; video assets, which need a frame-accurate decoder in the page; sound effects
 beyond the narration; and the design's later capture work — page-side dedup, a second capture tab,
 and `HeadlessExperimental.beginFrame` on Linux only, behind a probe. musl/Alpine has no FFmpeg
