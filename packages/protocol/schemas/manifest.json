@@ -15,7 +15,7 @@
     {
       "name": "explainer_put_source",
       "title": "Upload source",
-      "description": "Write agent-authored Remotion source files into an existing video, overwriting any file of the same path. Refuses the engine-owned files that mount the audio and captions — index.ts, types.ts, Root.tsx, Captions.tsx, Video.tsx — so write scenes to Scenes.tsx and the files it imports.",
+      "description": "Write agent-authored scene source — React, written against @xplainer/motion — into an existing video, overwriting any file of the same path. Refuses the engine-owned files that mount the audio and captions — index.ts, types.ts, Root.tsx, Captions.tsx, Video.tsx — so write scenes to Scenes.tsx and the files it imports.",
       "input": { "$ref": "tools/explainer_put_source.input.json" },
       "output": { "$ref": "tools/explainer_put_source.output.json" }
     },

@@ -465,3 +465,31 @@ silent because this record is `accepted` and its body is not rewritten; the reda
 argument, no option and no outcome, and it exists because ROADMAP **P5-2** forbids an absolute
 home-directory path in a public file. The same treatment and the same reasoning are applied to
 ADR 0003, where the equivalent string is load-bearing; see its note of this date.
+
+## Note, 2026-11-11: two of the five disclosure surfaces said something that stopped being true
+
+Added as a dated note rather than a rewrite. The decision is unchanged.
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion as the
+renderer, and that changes what two of the five surfaces this record's item 2 names can truthfully
+say.
+
+**`packages/skill/SKILL.md`'s line and the three plugin and marketplace manifest `description`
+fields no longer carry the disclosure.** Each of them said that rendering uses Remotion, and from
+this date nothing renders through it: `@xplainer/cli` no longer depends on it, and the scaffolded
+`index.ts`, `Root.tsx`, `Captions.tsx` and `Video.tsx` import `@xplainer/motion` and no Remotion
+package.
+
+**The other three keep it, and so do the `LICENSE` and `NOTICE` files.** The root `README.md`,
+`apps/cli/README.md` and `packages/render-core/README.md` still say what this record told them to,
+because `packages/render-core/template/package.json` still declares Remotion and
+`xplainer setup --workspace` still installs that tree onto the user's machine. Phase 2 retires that
+payload, and removes those disclosures with it.
+
+**The narrower set never reaches a user while the install exists.** ADR 0031's hard condition is
+that a tree with Phase 1 and without Phase 2 is not released. So no published version carries the
+two retired surfaces' new wording while `setup --workspace` still fetches Remotion.
+
+The paragraph above headed "binding **today**" still describes `template/package.json` accurately.
+It no longer describes the video files the scaffold writes, which contain no Remotion code. This
+note records that fact and draws no licensing conclusion from it: ADR 0015's open question 5 is
+still open, and still relocated with it.

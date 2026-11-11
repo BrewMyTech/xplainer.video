@@ -11,8 +11,10 @@
  * **The two claims it makes, and how.**
  *
  *   1. *A finished 1920×1080 @ 30 fps MP4 with audio.* From `ffprobe`: the video stream's
- *      dimensions, its frame rate and its codec, the presence of an AAC audio stream, and the
- *      duration within 100 ms of `timings.json`'s own `totalMs`.
+ *      dimensions, its frame rate and its codec, the presence of an AAC audio stream, and **both**
+ *      streams' durations within 100 ms of `timings.json`'s own `totalMs` — the audio stream's
+ *      own, not only the container's, because a container can be the right length around a
+ *      narration track that is short.
  *   2. *Every scene duration derives from `timings.json` (P1-2).* Two mechanical proofs, because
  *      one of them alone can be satisfied by accident:
  *      - the container's frame count equals `timings.durationInFrames` exactly, which no
@@ -25,9 +27,12 @@
  *        noise on either side of it rather than against a threshold chosen here.
  *
  * **The only substitution is the speech server**, through `XPLAINER_TTS_FIXTURE`: recorded WAVs
- * and word spans, measured by the shipping narration port. Remotion is real, Chrome is real (it may
- * be downloaded on the first run, which is why the budget below is generous), the argv comes from
- * `@xplainer/render-core`'s builders, and the workspace is the template's own.
+ * and word spans, measured by the shipping narration port. The bundler is real, Chrome is real —
+ * `XPLAINER_TEST_CHROME`, or the committed manifest's headless shell acquired through the product's
+ * own provider, which may download it on the first run and is why the budget below is generous —
+ * ffmpeg is real, and the workspace is the template's own. Nothing is read from the workspace's
+ * `node_modules`: the renderer resolves React and `@xplainer/motion` from its own install, so the
+ * workspace here has none.
  *
  * **`XPLAINER_SKIP_RENDER_TEST=1` is the only way to skip it**, for a developer without ffmpeg or
  * without the patience. CI does not set it: a render pipeline whose render is never run in CI is a
@@ -35,20 +40,33 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RenderBackend } from "@xplainer/mcp-server";
 import type { ExplainerJobOutput, Timings } from "@xplainer/protocol";
-import { remotionBinary, stillOutput, videoPaths } from "@xplainer/render-core";
+import { stillOutput, videoPaths } from "@xplainer/render-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocalBackend } from "../backend.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "../daemon/runner.js";
+import { STATE_DIR_ENV } from "../daemon/state-dir.js";
+import { spawnEntry } from "../daemon/testing/spawn-child.js";
 import { selfIdentity } from "../daemon/worker-identity.js";
 import { createWorkerRegistry } from "../daemon/workers.js";
+import { writeJobRequest } from "../job-request.js";
+import { testChrome } from "../render/testing/chrome.js";
+import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import { TTS_FIXTURE_ENV } from "./speech.js";
 import { type NarrationFixture, writeNarrationFixture } from "./testing/narration-fixture.js";
@@ -108,6 +126,39 @@ const MARKER_SIZE = MARKER_WIDTH * MARKER_HEIGHT;
  * gap this threshold sits in the middle of.
  */
 const CHANGED_LEVEL = 32;
+
+/** The worker itself, spawned directly for the refusals the registry never lets it reach. */
+const RENDER_WORKER = fileURLToPath(new URL("./render.ts", import.meta.url));
+
+/** A 1×1 opaque PNG, for a scene that draws an image. */
+const PROBE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+/** A `Scenes.tsx` whose first scene draws one `<Img>` with `src` as its source expression. */
+function imageScenes(src: string): string {
+  return (
+    'import { AbsoluteFill, Img, staticFile } from "@xplainer/motion";\n' +
+    `const Probe = () => <AbsoluteFill><Img src={${src}} style={{ width: 64, height: 64 }} /></AbsoluteFill>;\n` +
+    "export const scenes = { hook: Probe };\n"
+  );
+}
+
+/**
+ * A `Scenes.tsx` whose `hook` scene is one box a CSS animation turns from black to red over one
+ * second, linearly, starting when the scene mounts.
+ */
+const WARMING_SCENES = `import { AbsoluteFill } from "@xplainer/motion";
+const css = "@keyframes warm { from { background-color: rgb(0, 0, 0); } to { background-color: rgb(255, 0, 0); } }";
+const Warming = () => (
+  <AbsoluteFill>
+    <style>{css}</style>
+    <div style={{ position: "absolute", left: 100, top: 100, width: 200, height: 200, animation: "warm 1s linear both" }} />
+  </AbsoluteFill>
+);
+export const scenes = { hook: Warming };
+`;
 
 const directories: string[] = [];
 let root = "";
@@ -203,6 +254,23 @@ function markerBand(mp4: string, frame: number): Buffer {
   return raw;
 }
 
+/** One pixel of a PNG as `[red, green, blue]`, decoded by ffmpeg rather than by code written here. */
+function pixel(png: string, x: number, y: number): [number, number, number] {
+  const raw = execFileSync(ffmpeg, [
+    "-v",
+    "error",
+    "-i",
+    png,
+    "-vf",
+    `crop=1:1:${x}:${y},format=rgb24`,
+    "-f",
+    "rawvideo",
+    "-",
+  ]);
+  expect(raw.length, `${png} produced no pixel`).toBe(3);
+  return [raw[0] ?? -1, raw[1] ?? -1, raw[2] ?? -1];
+}
+
 /** The share of the marker band whose grey level moved by more than {@link CHANGED_LEVEL}. */
 function changedShare(a: Buffer, b: Buffer): number {
   let changed = 0;
@@ -225,25 +293,28 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     root = temporaryDirectory("xplainer-render-workspace-");
     const fixtureDir = temporaryDirectory("xplainer-render-fixture-");
 
-    // A real workspace needs a real `node_modules`, and installing Remotion into a temporary
-    // directory on every test run is not a thing a test may do. This repository already has the
-    // pinned Remotion tree installed — `apps/cli` declares it as a devDependency precisely so this
-    // test can run — so the workspace gets a `node_modules` that points at it. What is exercised
-    // is exactly the shape of an installed workspace: `remotionBinary()` finds
-    // `<root>/node_modules/.bin/remotion` on its first try, as it would after `npm install`.
-    const installed = remotionBinary(fileURLToPath(new URL(".", import.meta.url)));
-    expect(installed, "this repository has no Remotion install to borrow").not.toBeNull();
-    symlinkSync(dirname(dirname(installed ?? "")), join(root, "node_modules"), "dir");
+    const chrome = await testChrome();
 
     const narration = writeNarrationFixture(fixtureDir, FIXTURES);
     process.env[TTS_FIXTURE_ENV] = fixtureDir;
 
     stateDir = temporaryDirectory("xplainer-render-state-");
     // The gate `daemon/workers.ts` applies before a still or a render: a machine where
-    // `xplainer setup` has run. The workspace here is the checkout's own Remotion tree, borrowed
-    // deliberately (see above), so the manifest records the pins that tree stands in for — the
-    // subject of this suite is the MP4, and the acquisition of a browser is `setup`'s own tests'.
-    recordTestToolchain({ stateDir, workspaceRoot: root });
+    // `xplainer setup` has run. The browser it records is a real headless shell, because the
+    // render worker launches whatever `toolchain.json` names; the speech half stays a stand-in,
+    // since the fixture above is what narrates. The acquisition itself is `setup`'s own tests'.
+    recordTestToolchain({
+      stateDir,
+      workspaceRoot: root,
+      overrides: {
+        chrome: {
+          version: chrome.version,
+          path: chrome.path,
+          sha256: chrome.sha256,
+          provider: CHROME_PROVIDER,
+        },
+      },
+    });
     const store = createJobStore(stateDir);
     runner = createJobRunner({
       store,
@@ -300,6 +371,10 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
 
     const seconds = Number(probeStream(mp4, "v:0", "duration"));
     expect(Math.abs(seconds * 1000 - timings.totalMs)).toBeLessThan(100);
+    // The audio stream's own duration, not the container's: a narration track that came out short
+    // still sits inside a container as long as its video stream.
+    const audioSeconds = Number(probeStream(mp4, "a:0", "duration"));
+    expect(Math.abs(audioSeconds * 1000 - timings.totalMs)).toBeLessThan(100);
 
     // The composition's length is timings.json's, exactly. `Root.tsx` carries a
     // `durationInFrames={300}` placeholder for Studio, so a frame count of 300 — or of anything
@@ -337,4 +412,161 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
       ).toBeGreaterThan(noise * 10);
     }
   }, 300_000);
+
+  /**
+   * A cancel from a terminal is a `SIGINT`, not the daemon's `SIGTERM`, and the shell's convention
+   * says what each exits with. The worker is spawned directly so the signal is the only one: Chrome
+   * and ffmpeg are stopped by the worker itself, and the previous render is left where it was.
+   */
+  it("stops a render on SIGINT with exit 130, leaving the previous MP4 and nothing else", async () => {
+    const video = videoPaths(root, "demo");
+    const previous = readFileSync(video.mp4);
+    writeJobRequest(root, 900, { job_type: "explainer_render", slug: "demo" });
+    const worker = spawnEntry(RENDER_WORKER, [root, "900"], { [STATE_DIR_ENV]: stateDir });
+
+    await worker.waitForLine('"event":"progress"', 120_000);
+    const profile = /started with profile (\S+)/.exec(worker.stdout())?.[1] ?? "";
+    expect(profile).not.toBe("");
+    worker.process.kill("SIGINT");
+    const exit = await worker.waitForExit();
+
+    expect(exit.code, worker.stderr()).toBe(130);
+    expect(worker.stderr()).toContain(
+      "RENDER_CANCELLED: the worker received SIGINT and stopped; nothing was written.",
+    );
+    expect(existsSync(profile)).toBe(false);
+    expect(readdirSync(video.out).filter((name) => name.startsWith("."))).toEqual([]);
+    expect(readFileSync(video.mp4).equals(previous)).toBe(true);
+  }, 300_000);
+
+  it("refuses a still past the last frame as FRAME_OUT_OF_RANGE", async () => {
+    const queued = await backend.explainer_still({ slug: "demo", frame: 100_000, scale: 0.5 });
+    const finished = await waitForJob(queued.job_id, 600_000);
+    const log = finished.output.lines.join("\n");
+
+    expect(finished.status, log).toBe("error");
+    expect(log).toContain(
+      `FRAME_OUT_OF_RANGE: frame 100000 is past the end of demo, whose last frame is ` +
+        `${timings.durationInFrames - 1}.`,
+    );
+    expect(existsSync(stillOutput(videoPaths(root, "demo"), 100_000))).toBe(false);
+  }, 900_000);
+
+  /**
+   * The page is served from 127.0.0.1, and an `http:` page cannot load `file:`. The same PNG,
+   * inside the video's own public directory, is drawn when the scene asks for it through
+   * `staticFile()` and refused when it asks for its `file:` URL — so what stops the second is the
+   * scheme, not the file. The still is taken inside the `hook` segment — frame 0 is the narration's
+   * lead-in, where no scene is drawn at all — and the refusal names the segment's first frame: the
+   * still is stepped through every frame before its own, and that is where the image first appears,
+   * as it is in a render. (These run last: they replace the scenes the render above drew.)
+   */
+  it("draws an image through staticFile(), and refuses the same file by its file:// URL", async () => {
+    const video = videoPaths(root, "demo");
+    const [hook] = timings.segments;
+    expect(hook?.id).toBe("hook");
+    const frame = (hook?.from ?? 0) + Math.floor((hook?.durationInFrames ?? 0) / 2);
+    const image = join(video.publicDir, "media", "probe.png");
+    mkdirSync(join(video.publicDir, "media"), { recursive: true });
+    writeFileSync(image, PROBE_PNG);
+
+    writeFileSync(join(video.source, "Scenes.tsx"), imageScenes('staticFile("media/probe.png")'));
+    const served = await waitForJob(
+      (await backend.explainer_still({ slug: "demo", frame, scale: 0.5 })).job_id,
+      600_000,
+    );
+    expect(served.status, served.output.lines.join("\n")).toBe("done");
+    expect(served.output.lines.join("\n")).toMatch(/served at http:\/\/127\.0\.0\.1:\d+/);
+
+    writeFileSync(
+      join(video.source, "Scenes.tsx"),
+      imageScenes(JSON.stringify(pathToFileURL(image).href)),
+    );
+    const refused = await waitForJob(
+      (await backend.explainer_still({ slug: "demo", frame, scale: 0.5 })).job_id,
+      600_000,
+    );
+    const log = refused.output.lines.join("\n");
+    expect(refused.status, log).toBe("error");
+    expect(log).toMatch(new RegExp(`IMAGE_BROKEN: frame ${hook?.from}: file:.*probe\\.png`));
+  }, 900_000);
+
+  /**
+   * The page keeps state from frame to frame: a CSS animation runs from the frame the harness first
+   * saw it on. This one starts when the `hook` scene mounts, so half a second into the scene the
+   * render draws its box half red. A still taken on a fresh page would see the animation for the
+   * first time on its own frame and draw the box black; stepped through every earlier frame first,
+   * it draws what the render draws. (It replaces the scenes too.)
+   */
+  it("pre-rolls a still, so a CSS animation shows the state the render shows on that frame", async () => {
+    const video = videoPaths(root, "demo");
+    const [hook] = timings.segments;
+    expect(hook?.id).toBe("hook");
+    const from = hook?.from ?? 0;
+    // Mounted on frame 0, the animation would start on time on a fresh page as well.
+    expect(from, "the hook scene must mount after frame 0").toBeGreaterThan(0);
+    const frame = from + 15; // 500 ms of film at 30 fps.
+    expect(frame).toBeLessThan(from + (hook?.durationInFrames ?? 0));
+
+    writeFileSync(join(video.source, "Scenes.tsx"), WARMING_SCENES);
+    const finished = await waitForJob(
+      (await backend.explainer_still({ slug: "demo", frame, scale: 0.5 })).job_id,
+      600_000,
+    );
+    const log = finished.output.lines.join("\n");
+    expect(finished.status, log).toBe("done");
+    expect(log).toMatch(new RegExp(`pre-rolled frames 0 to ${frame - 1} in \\d+ ms`));
+
+    // The box's middle, at scale 0.5: 500 ms into a linear 0 → 255 is 127.5, and a fresh page's 0
+    // is nowhere near it.
+    const [red, green, blue] = pixel(stillOutput(video, frame), 100, 100);
+    expect(Math.abs(red - 127.5), `red is ${red}`).toBeLessThan(4);
+    expect([green, blue]).toEqual([0, 0]);
+  }, 900_000);
+});
+
+/**
+ * Refusals the worker makes on its own, which the registry's gates normally stop it reaching —
+ * so the worker is spawned directly, with no browser and no daemon. On the way to the first, it
+ * sweeps the video's `out/` of what earlier workers left when they died.
+ */
+describe("the render worker, spawned on its own", () => {
+  it("sweeps dead workers' leftovers, then refuses with TOOLCHAIN_MISSING when XPLAINER_STATE_DIR is unset", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "xplainer-render-refusal-"));
+    try {
+      const out = videoPaths(workspace, "demo").out;
+      mkdirSync(join(out, ".render-41"), { recursive: true });
+      writeFileSync(join(out, ".render-41", "app.js"), "a bundle nobody removed");
+      writeFileSync(join(out, ".explainer.mp4.partial-99999"), "half an MP4");
+      writeFileSync(join(out, "frame-3.png.partial-99999"), "half a PNG");
+      writeFileSync(join(out, "explainer.mp4"), "the previous render, which stays");
+      writeJobRequest(workspace, 42, {
+        job_type: "explainer_still",
+        slug: "demo",
+        frame: 0,
+        scale: 1,
+      });
+
+      const stateDir = process.env[STATE_DIR_ENV];
+      delete process.env[STATE_DIR_ENV];
+      let worker: ReturnType<typeof spawnEntry>;
+      try {
+        worker = spawnEntry(RENDER_WORKER, [workspace, "42"]);
+      } finally {
+        if (stateDir !== undefined) {
+          process.env[STATE_DIR_ENV] = stateDir;
+        }
+      }
+      const exit = await worker.waitForExit();
+
+      expect(exit.code, worker.stderr()).toBe(1);
+      expect(worker.stderr()).toMatch(
+        /^TOOLCHAIN_MISSING: XPLAINER_STATE_DIR is not set, so there is no toolchain\.json/,
+      );
+      expect(readdirSync(out)).toEqual(["explainer.mp4"]);
+      expect(worker.stdout()).toContain("removed .render-41");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

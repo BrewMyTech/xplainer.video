@@ -2,10 +2,11 @@
 
 Four things that travel together:
 
-- **the Remotion workspace template** under `template/`, copied onto your machine as the
-  workspace your videos render inside — and `materialiseWorkspace()` / `videoPaths()`, which
-  lay it out and never overwrite a file that is already there;
-- **the ownership-aware scaffold generator**, which writes the six files of a new video;
+- **the workspace template** under `template/`, copied onto your machine as the workspace your
+  videos live in — and `materialiseWorkspace()` / `videoPaths()`, which lay it out and never
+  overwrite a file that is already there;
+- **the ownership-aware scaffold generator**, which writes the six files of a new video against
+  `@xplainer/motion`'s authoring API;
 - **the narration port**, which measures real speech into `narration.wav`, `captions.json` and
   the `timings.json` every scene length comes from; and
 - **the render preflight**, which refuses an unrenderable job before Chrome is ever launched.
@@ -23,29 +24,29 @@ the template, and an agent-owned file is never touched. That is what keeps a han
 composition shell from producing a silently wrong MP4.
 
 ```ts
-import { videoPaths, scaffoldVideo, narrate, assertRenderable, renderArgs } from "@xplainer/render-core";
+import { videoPaths, scaffoldVideo, narrate, assertRenderable } from "@xplainer/render-core";
 ```
 
-Nothing here installs anything. `materialiseWorkspace()` copies the template files and creates
-the directories; `remotionBinary()` answers `null` for a workspace you have not run
-`xplainer setup --workspace` for, so a caller can tell you that rather than failing
-inside `spawn`.
+Nothing here renders and nothing here installs anything. `materialiseWorkspace()` copies the
+template files and creates the directories; the renderer is `@xplainer/cli`'s, which bundles a
+video's files against its own copy of `@xplainer/motion` and React and never reads the
+workspace's `node_modules`.
 
 The scaffold templates and the workspace template ship as readable, editable text on purpose:
 they land on your disk and you edit them. The exported surface is recorded in
 `api/render-core.api.md` in the repository.
 
-## Remotion
+## Remotion, in the workspace template only
 
-Rendering depends on [Remotion](https://remotion.dev), which is licensed commercially by
-Remotion AG on its own terms. **This package declares Remotion; it never bundles it.** The
-`template/package.json` it scaffolds names `remotion` and the `@remotion/*` packages, so your
-own package manager fetches them under Remotion's terms, on your machine, in your name — which
-makes you, plainly, the party operating Remotion.
-
-**Depending on the size of your company and how you use it, you may need your own Remotion
-licence** — free for individuals and companies of up to three people, chargeable above that.
-See <https://remotion.pro/license>.
+Rendering no longer uses [Remotion](https://remotion.dev): `@xplainer/cli` renders with its own
+pipeline. The workspace template has not caught up yet — until it is retired,
+`template/package.json` still names Remotion's packages, so `xplainer setup --workspace` has
+your own package manager fetch them under Remotion's terms, on your machine, in your name. They
+are licensed commercially by Remotion AG; **this package declares them and never bundles them.**
+If you use that installed copy yourself — its Studio, its CLI — you are the party operating
+Remotion, and depending on the size of your company and how you use it you may need your own
+licence (free for individuals and companies of up to three people, chargeable above that). See
+<https://remotion.pro/license>.
 
 ## Docs
 

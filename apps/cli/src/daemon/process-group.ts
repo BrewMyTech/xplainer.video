@@ -5,8 +5,8 @@
  * asynchronous job type, and its children is the reason this file exists: "recovering a *record* is
  * not the whole job. The record's orphaned worker processes — Chrome, ffmpeg, a TTS request in
  * flight — race a retry over the same output directory if they are still running." A render is a
- * Remotion process that spawns a browser that spawns renderers; killing the pid the daemon holds
- * leaves the expensive half alive.
+ * worker process that spawns a browser and an encoder; killing the pid the daemon holds leaves the
+ * expensive half alive.
  *
  * So every worker is spawned `detached`, which makes it a **process-group leader** whose group id
  * equals its pid, and the group — not the pid — is what gets signalled. That is also the fourth of
@@ -336,7 +336,7 @@ export type Teardown = {
  * The closing `SIGKILL` is sent to the **group** even once the leader has exited, and that is safe
  * rather than a wrong kill waiting to happen: POSIX keeps a process-group id reserved until the
  * last member leaves the group, so `-pgid` cannot start meaning somebody else's group while any of
- * this job's processes are still in it. It is what makes a Chrome that outlived its Remotion parent
+ * this job's processes are still in it. It is what makes a Chrome that outlived its render worker
  * reachable at all.
  *
  * On Windows the same `SIGKILL` closes the Job Object, which is the platform's version of that

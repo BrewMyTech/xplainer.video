@@ -26,20 +26,16 @@ already sitting at, it has no quota, and the finished MP4 lands somewhere they
 can open. If none is registered, say so and stop — there is no second route to
 reach for.
 
-Rendering uses Remotion. Depending on the size of the user's company and how
-they use it, they may need their own Remotion licence — see
-<https://remotion.pro/license>.
-
 ## Nothing to install
 
-Remotion, React and Tailwind are already installed in the workspace the runtime
-owns. You never run `npm install`, never scaffold a project, and never touch
-`node_modules`. Everything goes through the tools:
+The renderer brings React, Tailwind and `@xplainer/motion` with it. There is
+nothing to install: you never run `npm install`, never scaffold a project, and
+never touch `node_modules`. Everything goes through the tools:
 
 | Tool | Does |
 |---|---|
 | `explainer_create(slug)` | Makes the video and scaffolds its files |
-| `explainer_put_source(slug, files)` | Writes your Remotion source files into the video |
+| `explainer_put_source(slug, files)` | Writes your scene source files (React, `@xplainer/motion`) into the video |
 | `explainer_put_media(slug, name, base64)` | Uploads one image, audio or video asset |
 | `explainer_narrate(slug, narration)` | Voiceover + captions + timings |
 | `explainer_still(slug, frame)` | One frame, for a layout check |
@@ -117,6 +113,15 @@ behind every scene, and `Overlay`, above the scenes and below the captions.
 Inside a scene, `useCurrentFrame()` restarts at zero, so scene animations are
 written relative to the scene. To land a beat on a specific spoken word, read
 `captions.json` — every word carries real `startMs`/`endMs`.
+
+Every authoring API comes from one package, `@xplainer/motion`:
+`useCurrentFrame`, `useVideoConfig`, `interpolate`, `Easing`, `spring`,
+`random`, `Sequence`, `Series`, `Loop`, `Freeze`, `AbsoluteFill`, `Img`,
+`staticFile`, `delayRender` and `continueRender`. React is plain `react`.
+
+```tsx
+import { AbsoluteFill, interpolate, useCurrentFrame } from "@xplainer/motion";
+```
 
 ## Workflow
 
@@ -211,19 +216,22 @@ out of the band reserved for captions.
 
 ## Styling: Tailwind is allowed
 
-Tailwind v4 is installed and enabled workspace-wide. Use utility classes or
-inline styles — whichever suits the video. Both are fine; don't mix them
-arbitrarily within one video.
+Tailwind v4 is built into the renderer: every utility class your files mention
+is compiled into the page. Use utility classes or inline styles — whichever suits
+the video. Both are fine; don't mix them arbitrarily within one video.
 
 The engine's `index.ts` imports the stylesheet already, so the utilities are live
 whether or not you reach for them — there is nothing to wire up, and nothing to
 remove if you style purely inline.
 
-**One hard limit:** Tailwind's animation and transition utilities — `animate-*`,
-`transition-*`, `duration-*` — **do not render**. Remotion draws each frame
-independently, so CSS-driven motion silently produces a static frame. Tailwind
-is for layout, colour, spacing and type; motion is always `interpolate()`. This
-is the single most common way a Remotion video comes out looking broken.
+**One rule:** motion is `interpolate()` on `useCurrentFrame()`, not
+Tailwind's `animate-*`, `transition-*` and `duration-*` utilities or CSS
+keyframes. The renderer does seek CSS animations and transitions to the frame
+being drawn, and `explainer_still` steps through every earlier frame first, so a
+still shows what the render will — but CSS timing runs from the moment an
+element first appears, ignores `<Sequence>`, `<Loop>` and `<Freeze>`, and cannot
+be timed to the narration. `interpolate()` is a pure function of the frame, so
+it does all three. Tailwind is for layout, colour, spacing and type.
 
 Note also that arbitrary Tailwind text sizes are usually easier to read at video
 scale than the default scale — `text-[96px]` beats `text-6xl` when you want a
@@ -232,13 +240,47 @@ specific size.
 ## Motion craft
 
 - Animate with `useCurrentFrame()` and `interpolate()`. **CSS transitions and
-  CSS/Tailwind animations do not render.**
-- Reach for `interpolate()` with `Easing.bezier()` first; `Easing.spring()` when
-  the motion should overshoot.
+  CSS/Tailwind animations ignore the timing components and the narration**
+  (above).
+- Reach for `interpolate()` with `Easing.bezier()` first; `spring()` when the
+  motion should overshoot.
 - Prefer the `scale`, `translate` and `rotate` CSS properties over `transform`
   strings — they stay readable and editable.
 - Stagger related elements by a few frames rather than moving them as a block.
-- Add video and audio with `@remotion/media`, images with Remotion's `<Img>`.
+- Images go through `<Img src={staticFile("media/name.png")} />`, both from
+  `@xplainer/motion`; the renderer waits for every `<img>` to load before it
+  draws a frame. A CSS `background-image` is not waited for, so a picture that
+  must be there uses `<Img>`.
+- **No video assets.** `<Video>` and `<OffthreadVideo>` fail the render with
+  `NOT_SUPPORTED_IN_V1`; show stills instead.
+- **The narration is the only audio track.** The engine adds it; a second
+  `<Audio>` — music, a sound effect — fails the render with
+  `NOT_SUPPORTED_IN_V1` rather than vanishing from the MP4.
+- `staticFile()` names a file inside the video's own public directory:
+  `staticFile("media/name.png")`, never a leading `/` or a `..`, which it
+  refuses. A scene's imports stay inside the workspace too; one that reaches
+  elsewhere on the machine fails the bundle with `BUNDLE_FAILED`.
+- Scatter things with `random(seed)`, never `Math.random()` — a seeded value is
+  the same on every frame, while `Math.random()` (reproducible from run to run)
+  returns a new number on every render, so whatever it places jumps each frame. `Date.now()` and timers run on the video's clock, not
+  the wall clock.
+- If a scene has to wait for something asynchronous before a frame is drawn, take
+  `const handle = delayRender("label")` and release it with
+  `continueRender(handle)`. Timers you start while a hold is out run on the wall
+  clock, so `setTimeout(() => continueRender(handle), 100)` works; every other
+  timer runs on the video's clock. A hold not released within 30 seconds fails
+  the render with `DELAY_RENDER_TIMEOUT` and names its label.
+
+**Videos written for the previous renderer.** Imports from `remotion`,
+`@remotion/media` and `@remotion/captions` still compile for one more release —
+they are mapped onto `@xplainer/motion`, and the job log prints a deprecation
+line naming each file that used one; switch the import when you next touch the
+file. What does not carry over: video assets and a second `<Audio>` (above); any
+other `@remotion/*` package, which fails the render with `BUNDLE_FAILED` naming
+it; Remotion Studio, whose job `explainer_still` now does; `remotion.config.ts`,
+which no longer exists; and WebGL, which is not supported (a 2D `<canvas>`
+works). `spring()` and the `Easing` curves follow their documented formulas, so
+an old overshoot can land a hair differently.
 
 ## Narration
 
@@ -356,7 +398,10 @@ Switching provider is theirs too, with `xplainer config set tts.provider …`.
 - Would this frame still make sense if it were on screen for half a second?
 
 Remember a still can catch a scene mid-reveal — if it looks sparse, check
-whether later elements simply haven't arrived yet.
+whether later elements simply haven't arrived yet. There is no Studio and no dev
+server: the still is the preview. A still steps through every earlier frame
+before it draws its own, so it shows what the render will, and a failure on any
+earlier frame fails the still too, naming that frame.
 
 Then render, and report the output path or URL and the duration.
 
@@ -366,9 +411,16 @@ Then render, and report the output path or URL and the duration.
   failed `explainer_narrate` usually means it is not running yet — the runtime's
   own setup command installs and starts it. Read the failure out of
   `explainer_job` before retrying.
+- **A render needs ffmpeg on the user's machine.** A render that fails with
+  `FFMPEG_NOT_FOUND` or `FFMPEG_NO_LIBX264` names the fix in its message; pass it
+  on to the user rather than retrying.
 - **Re-running is cheap on the built-in voice.** Change the narration and
   re-narrate, or change the components and re-render. There is no state to
   clean up. Under ElevenLabs, every real narration is billed.
+- **Frames are reproducible on the same machine, not across machines.** The
+  same video renders to the same frames every time here; on another operating
+  system the picture is the same design but not the same pixels — text, shadows
+  and SVG strokes differ most. Don't promise a pixel-identical render elsewhere.
 - **The workspace is a build area, not a repository.** Treat the MP4 as the
   deliverable and hand it over directly, rather than expecting the sources to
   still be sitting there later.

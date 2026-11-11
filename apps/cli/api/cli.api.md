@@ -275,7 +275,11 @@ export type LocalBackendCode =
  | "INVALID_STILL_ARGUMENT"
 /** The video has never been narrated, so no scene has a length yet. */
  | "NARRATION_MISSING"
-/** The shared Remotion workspace has no dependencies installed. */
+/**
+ * `checkToolchain` refused a still or a render: what `setup` records is missing or stale. The
+ * name is older than that gate — it once meant the workspace's own `node_modules` — and is kept
+ * because it is part of the `/api/*` error surface a client branches on.
+ */
  | "WORKSPACE_NOT_INSTALLED";
 
 /**
@@ -296,7 +300,7 @@ export type CreateLocalBackendOptions = {
     /** The daemon's job runner: where narrate, still and render go, and what `explainer_job` reads. */
     runner: JobRunner;
     /**
-     * The shared Remotion workspace root.
+     * The shared workspace root.
      *
      * Defaults to `XPLAINER_VIDEOS_DIR`, then `<state dir>/workspace`. `commands/serve.ts` passes the
      * root the daemon already resolved, so the backend and the worker registry cannot disagree about
@@ -336,7 +340,7 @@ export declare function createLocalBackend(options: CreateLocalBackendOptions): 
  *
  * It is about **commands** and nothing else. The eight tools once reported the
  * same wording through the MCP error channel; they no longer do, because
- * `backend.ts` implements them against the local Remotion workspace. Adding a
+ * `backend.ts` implements them against the local workspace. Adding a
  * tool back to this wording would be adding a tool that answers a poll with
  * prose instead of a job.
  *
@@ -617,7 +621,7 @@ export declare const CLI_VERSION: string;
 
 ```ts
 /**
- * Where this machine's shared Remotion workspace lives.
+ * Where this machine's shared video workspace lives.
  *
  * One directory holds every video and one `node_modules/` (see
  * `@xplainer/render-core`'s `workspace.ts` for the layout inside it), so the question this module
@@ -634,7 +638,7 @@ export declare const CLI_VERSION: string;
  * user who wants their videos on a bigger disk, and for every test in this package, which points it
  * at a temporary directory so a suite never touches a developer's own work.
  */
-/** The environment variable that relocates the Remotion workspace. */
+/** The environment variable that relocates the video workspace. */
 export declare const VIDEOS_DIR_ENV = "XPLAINER_VIDEOS_DIR";
 
 /** The workspace's directory name inside the state directory, when nothing overrides it. */

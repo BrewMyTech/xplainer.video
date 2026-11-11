@@ -94,7 +94,8 @@ rendering run on your machine.
 
 ## 🚀 Quick start
 
-Requires **Node 24 LTS**. Works on macOS, Linux and Windows.
+Requires **Node 24 LTS**, and **ffmpeg with libx264** to render — see
+[Rendering needs ffmpeg](#rendering-needs-ffmpeg). Works on macOS, Linux and Windows.
 
 ### Option 1: npm (recommended)
 
@@ -140,8 +141,8 @@ npx -y xplainer setup
 > [!IMPORTANT]
 > `setup` is required for every route, and must run on the machine that will render. Allow roughly
 > two minutes for the first downloads. **Intel Macs need an alternative speech route** — see
-> [Setup and speech](#-setup-and-speech). Rendering uses Remotion under
-> [its own licence terms](#-licence).
+> [Setup and speech](#-setup-and-speech). **Rendering also needs ffmpeg with libx264**, which `setup`
+> does not install yet — see [Rendering needs ffmpeg](#rendering-needs-ffmpeg).
 
 ## 📖 Your first video
 
@@ -153,7 +154,7 @@ What happens next:
 
 | Step | What your agent does |
 | --- | --- |
-| 1 | Scaffolds a video and writes the scenes as real Remotion components |
+| 1 | Scaffolds a video and writes the scenes as React components against `@xplainer/motion` |
 | 2 | Narrates them, and gets a timestamp back for every word |
 | 3 | Renders one frame as a PNG and checks it before committing to a full render |
 | 4 | Starts the render, gets a `job_id`, and polls until it finishes |
@@ -164,7 +165,7 @@ the state directory.
 
 ## 🔊 Setup and speech
 
-`xplainer setup` downloads a headless browser, prepares the Remotion workspace and installs the
+`xplainer setup` downloads a headless browser, prepares the video workspace and installs the
 built-in Kokoro ONNX speech engine: the model, one voice and your platform's ONNX Runtime. The
 speech downloads come from their upstream sources and are pinned by digest; the browser and
 workspace setup use the published
@@ -173,6 +174,23 @@ workspace setup use the published
 The voice produces word-level timestamps, which is what lets scene lengths follow the narration
 automatically. Render tools refuse to run until setup is complete — installing an agent plugin
 alone does not prepare the machine.
+
+### Rendering needs ffmpeg
+
+The final MP4 is encoded by **ffmpeg**, run as a separate program, and it must include the
+**libx264** encoder. In this release you install it yourself — `xplainer setup` acquires it in a
+coming release:
+
+```bash
+brew install ffmpeg        # macOS
+sudo apt install ffmpeg    # Debian or Ubuntu
+```
+
+On Windows, put an ffmpeg build that includes libx264 on `PATH`. xplainer looks for ffmpeg in
+`XPLAINER_FFMPEG` first, then on `PATH`, then in `/opt/homebrew/bin` and `/usr/local/bin` — the last
+two because a daemon started by launchd sees neither on its `PATH`. A render on a machine without a
+usable ffmpeg fails at once with `FFMPEG_NOT_FOUND` or `FFMPEG_NO_LIBX264`, naming the fix;
+`explainer_still` does not need it.
 
 **Intel Macs are the exception:** ONNX Runtime has no `darwin/x64` binding. Use a Kokoro-FastAPI
 server you already run:
@@ -364,16 +382,19 @@ Installers are currently unsigned, and macOS installers support **arm64 only**. 
 
 ## 🧠 How it works
 
-The agent writes [Remotion](https://remotion.dev) scenes and a narration spec, then drives:
+The agent writes React scenes against `@xplainer/motion` and a narration spec, then drives:
 
 ```text
 create → put_source → narrate → still → render
 ```
 
 Narration determines scene lengths from word timings. The still is a PNG preview; the final render
-is a 1920×1080 MP4 with burnt-in captions. The engine owns the composition shell (`Video.tsx`),
-which the agent cannot overwrite, so scene edits preserve the audio and the captions. Renders are
-asynchronous: the agent gets a `job_id` and polls for progress.
+is a 1920×1080 MP4 with burnt-in captions. The renderer is xplainer's own: it bundles the scenes into
+one page, has the headless browser `setup` acquired draw it one frame at a time on the video's own
+clock, and pipes every frame into ffmpeg, which encodes H.264 and AAC and muxes the narration
+([ADR 0031](docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The engine owns
+the composition shell (`Video.tsx`), which the agent cannot overwrite, so scene edits preserve the
+audio and the captions. Renders are asynchronous: the agent gets a `job_id` and polls for progress.
 
 The eight tools are:
 
@@ -466,7 +487,7 @@ pending a Remotion licensing decision; the local product does not depend on it. 
 
 | Layer | What it uses |
 | --- | --- |
-| Rendering | [Remotion](https://remotion.dev) on a pinned headless Chrome |
+| Rendering | xplainer's own renderer: scenes written against `@xplainer/motion`, drawn frame by frame in a pinned headless Chrome, encoded by ffmpeg (libx264, AAC) |
 | Speech | Kokoro-82M ONNX in-process, with word-level timestamps; Kokoro-FastAPI over HTTP or Docker as alternatives |
 | Agent interface | MCP over stdio; the daemon proxies it over a local socket or Windows named pipe |
 | CLI and daemon | Node 24, with launchd, `systemd --user` or Task Scheduler |
@@ -481,7 +502,7 @@ use the versions pinned in the repository. The quick development check is
 `pnpm turbo build lint typecheck test`, which covers both languages. Follow AGENTS.md for the full
 verification procedure.
 
-- [Architecture](docs/ARCHITECTURE.md): the ten workspace members, layout, dependency tiers,
+- [Architecture](docs/ARCHITECTURE.md): the eleven workspace members, layout, dependency tiers,
   generated TypeScript/Python contract and development recipes.
 - [Decision records](docs/adr/): the reasons behind the design, including alternatives rejected.
 - [Roadmap](docs/ROADMAP.md): what works, what remains and the criteria for each phase.
@@ -504,7 +525,8 @@ The **seven packages published to npm** are open source under the Apache Licence
 | `packages/skill` | `@xplainer/skill` |
 | `packages/tts-client` | `@xplainer/tts-client` |
 
-The unscoped `xplainer` package forwards to `@xplainer/cli`. See
+`packages/motion` (`@xplainer/motion`, the authoring API scenes import) is Apache-2.0 too and is
+published from the next release. The unscoped `xplainer` package forwards to `@xplainer/cli`. See
 [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0) and [NOTICE](NOTICE); both accompany the published
 packages, whose manifests declare `Apache-2.0`.
 

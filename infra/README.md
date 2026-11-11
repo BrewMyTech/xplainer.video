@@ -273,8 +273,8 @@ pnpm e2e:render:linux
 ```
 
 `e2e/Dockerfile` is `node:24-bookworm-slim` plus ffmpeg, the Chrome headless
-shell's Debian library set and a Liberation font, with this repository installed,
-built and its Remotion browser already downloaded. `scripts/e2e/linux.mjs` is what
+shell's Debian library set and a Liberation font, with this repository installed
+and built. `scripts/e2e/linux.mjs` is what
 runs it: it builds the image, creates a user-defined bridge network, starts its
 own Kokoro container on it, runs `pnpm e2e:render` inside the image against that
 container — which waits for `/v1/audio/voices` to answer before it narrates —
@@ -285,11 +285,10 @@ both containers and the network on the way out, on the failure path too.
 `render.mjs` runs a real `xplainer setup` inside it — the toolchain gate refuses
 `explainer_still` and `explainer_render` on a machine with no
 `<state>/toolchain.json` — so the run fetches a headless shell from the reviewed
-manifest and resolves the render workspace with `npm ci`. The image's own
-`remotion browser ensure` layer is still worth its place: the proof links
-`/repo/node_modules/.remotion` into the workspace `setup` materialised, so
-Remotion's copy of the same browser is not fetched again inside the measured
-still job.
+manifest and resolves the workspace with `npm ci`. That headless shell is the
+only browser in the run — the render worker launches the copy `setup` recorded —
+so the image carries none of its own. On arm64 the container is linux-arm64 with
+bookworm's glibc 2.36, which the manifest answers with `linux-arm64-glibc235`.
 
 **It starts its own Kokoro and publishes no host port.** A developer machine very
 often already has a Kokoro answering on 8880, and this proof must neither disturb

@@ -49,7 +49,7 @@
  *
  * What it serves the eight tools from is `../backend.ts`, built **after** those four things and
  * over this daemon's own runner and workspace root: `explainer_create`, `explainer_put_source`,
- * `explainer_put_media` and `explainer_list` write to and read from the shared Remotion workspace,
+ * `explainer_put_media` and `explainer_list` write to and read from the shared workspace,
  * and `explainer_narrate`, `explainer_still` and `explainer_render` enqueue against the runner
  * `startDaemon()` handed back, which `explainer_job` then reports on.
  *

@@ -56,8 +56,8 @@ Then the root procedure: `pnpm verify`.
 - **`tools/list` equals the manifest by construction** (`AC-14d`, asserted end-to-end from
   `apps/cli`). Anything that makes the two lists differ is a bug in this file, not a discrepancy to
   paper over downstream.
-- **The backend interface is the seam, so no render and no TTS code lives here.** Not a Remotion
-  import, not a Kokoro call. If you need one, you are in the wrong package.
+- **The backend interface is the seam, so no render and no TTS code lives here.** Not a
+  `@xplainer/motion` import, not a Kokoro call. If you need one, you are in the wrong package.
 - **No supervisor code here either.** Process supervision, state files and the daemon lifecycle
   belong to `apps/cli` — [ADR 0019](../../docs/adr/0019-sequencing-local-cli-before-hosted.md) kill
   criterion 6, restated in

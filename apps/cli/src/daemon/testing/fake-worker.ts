@@ -1,5 +1,5 @@
 /**
- * A worker that needs neither Remotion nor a TTS server.
+ * A worker that needs neither a browser nor a TTS server.
  *
  * The runner's contract with a worker is small — a command, some arguments, a process group, two
  * pipes and an exit code — so every property the job runner has to prove can be proved against a

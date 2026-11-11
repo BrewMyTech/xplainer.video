@@ -27,7 +27,9 @@ commands that install it. Nothing is uploaded and nothing renders anywhere but y
 
 Apache-2.0. `LICENSE` and `NOTICE` travel inside this tarball.
 
-Rendering depends on [Remotion](https://remotion.dev), which is licensed commercially by Remotion
-AG on its own terms. The Apache-2.0 grant here covers this software only and grants you nothing in
-respect of Remotion; depending on the size of your company and how you use it you may need your own
-Remotion licence. See <https://remotion.pro/license> and the `NOTICE` file.
+Rendering does not use Remotion: `@xplainer/cli` renders with its own pipeline. The video workspace
+`xplainer setup --workspace` installs still declares Remotion's packages until that workspace is
+retired, and those are licensed commercially by Remotion AG on its own terms. The Apache-2.0 grant
+here covers this software only and grants you nothing in respect of Remotion; if you use that
+installed copy yourself, depending on the size of your company and how you use it you may need
+your own Remotion licence. See <https://remotion.pro/license> and the `NOTICE` file.

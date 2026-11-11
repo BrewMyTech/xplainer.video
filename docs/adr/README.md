@@ -67,7 +67,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0002](0002-language-split-python-control-plane-ts-media-plane.md) | Language split: Python hosted control plane, TypeScript media plane and local runtime | accepted — **hosted half relocated (0023)** |
 | [0003](0003-tier-boundary-and-open-later-plan.md) | Tier boundary: `hosted` may import `open-later`, never the reverse — machine-checked from the first commit, with the open-source extraction checklist | accepted — note 2026-09-06 |
 | [0004](0004-electron-over-tauri.md) | Electron over Tauri for the desktop client, and the two `.npmrc` settings electron-builder requires | accepted |
-| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10 |
+| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10, 2026-09-11, 2026-11-11 |
 | [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — notes 2026-09-10, 2026-11-11 |
 | [0007](0007-mcp-tool-contract-and-put-source.md) | Eight MCP tools with `put_source`, and JSON Schema in `packages/protocol` as the single source of truth for both languages | accepted |
 | [0008](0008-async-job-model-poll-and-progress-no-agent-webhooks.md) | Async job model: return `job_id`, agent polls `explainer_job`, servers emit MCP progress — no webhooks to agents | accepted |
@@ -80,19 +80,20 @@ must resolve to "relocated" rather than looking like a typo.
 | 0015 | Remotion licensing for self-hosted VM rendering — tier settled against the not-yet-in-force v5.0 terms; what binds today, and two permission questions, still open | **proposed; relocated to `BrewMyTech/xplainer-hosted` (0023)** |
 | [0016](0016-cli-first-local-runtime-desktop-is-an-optional-client.md) | CLI-first local runtime: `xplainer serve` is the runtime, the desktop app is an optional client | accepted — notes 2026-09-05, 2026-09-06, 2026-09-08 |
 | 0017 | Cloudflare Queues as the hosted job queue, over HTTP pull consumers — supersedes 0012, and trades transactional enqueue for an outbox | **relocated to `BrewMyTech/xplainer-hosted` (0023)** |
-| [0018](0018-engine-owns-the-composition-shell.md) | The engine owns the composition shell; the agent writes scenes only, so it cannot delete the narration or captions | accepted |
+| [0018](0018-engine-owns-the-composition-shell.md) | The engine owns the composition shell; the agent writes scenes only, so it cannot delete the narration or captions | accepted — note 2026-11-11 |
 | [0019](0019-sequencing-local-cli-before-hosted.md) | Sequencing: the local CLI tier ships before the hosted tier — an external review's hosted-first recommendation is recorded and rejected, not dismissed | accepted — note 2026-09-06 |
 | [0020](0020-always-running-local-daemon.md) | The local runtime is an installed, supervised, per-user daemon — `systemd --user`, a LaunchAgent, a Scheduled Task; never root, and an always-on loopback listener means the token is a requirement, not a later nicety | accepted — dated notes, latest 2026-11-11 |
 | [0021](0021-proprietary-licence-free-to-use.md) | The published packages are proprietary and free to use — `SEE LICENSE IN LICENSE-BINARY`, not open source | **superseded by 0022** |
-| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — note 2026-09-06 |
+| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — notes 2026-09-06, 2026-11-11 |
 | [0023](0023-split-the-repository.md) | Split the repository: the local tier is public and open source here, the hosted tier is relocated to a private repository — deferred pending a vendor answer, not cancelled | accepted |
 | [0024](0024-durable-jobs-and-boot-reconciliation.md) | Render jobs are durable records under the daemon's state directory, reconciled at boot by the process that exclusively owns it — a job whose owner is gone ends `error` with an `error_code`, never a stuck `running` or a `404` | accepted — dated notes, latest 2026-09-08 |
 | [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted — dated notes, latest 2026-09-08 |
 | [0026](0026-agent-first-repository-contracts.md) | The repository's contracts are machine-checked — ten `tsconfig` flags, `isolatedDeclarations`, seven Biome rules, nine ruff groups, five committed API reports and a checked `docs/ARCHITECTURE.md` — and `AGENTS.md` is the one agent instruction surface | accepted |
-| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted |
+| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-11 |
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
 | [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
+| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted |
 
 ### The relocated five, and why each could not stay
 
@@ -217,6 +218,18 @@ driver, word-level timestamps, is not amended; it is the admissibility rule ADR 
 provider. ADR 0020 because R-SEC-5 and R-SEC-6, written for the daemon's bearer token, now govern a
 second credential in the same state directory — the owner's ElevenLabs key — and because
 `daemon uninstall`, which deletes the token, deliberately leaves that one alone.
+
+**Four records gained a dated note of 2026-11-11 pointing at
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md), and no body was rewritten in
+any of them.** ADR 0031 replaces Remotion with a renderer of our own and FFmpeg as a spawned encoder,
+and each note records only what happened underneath its own record:
+
+| Record | What its note adds |
+|---|---|
+| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | The browser `setup` acquires is now the one that draws, so the two-copies defect is gone by construction; the "pinned Remotion line" selector is already ours in code and becomes ours in name in Phase 2; ffmpeg is a fourth acquired component in Phase 2, and until then is found on the machine |
+| [0018](0018-engine-owns-the-composition-shell.md) | The ownership model is unchanged; the shell imports `@xplainer/motion`, `<Audio>` is a marker because the encoder muxes the narration itself, the provenance half of AC-7 is down to `types.ts`, and the `Video.tsx.max` test is retired |
+| [0022](0022-open-source-the-published-packages.md) | `SKILL.md` and the three plugin and marketplace `description` fields stop saying rendering uses Remotion, because it stopped being true; the three READMEs, `LICENSE` and `NOTICE` keep the disclosure while `setup --workspace` still installs Remotion, and no release carries the narrower set while it does |
+| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | Payload 1 gains the renderer's pure-JS dependencies, with no native code and no install script; payload 2 is read by no render and is removed in Phase 2 |
 
 ## Licence
 

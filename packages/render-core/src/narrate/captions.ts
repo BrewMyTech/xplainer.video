@@ -1,6 +1,6 @@
 /**
- * `captions.json`: word-level captions in `@remotion/captions` `Caption[]` form
- * (`narrate.py:226-254`) — roadmap P1-2, docs/ROADMAP.md.
+ * `captions.json`: word-level captions in the `Caption[]` form `@xplainer/motion`
+ * reads (`narrate.py:226-254`) — roadmap P1-2, docs/ROADMAP.md.
  *
  * Two details in the original are not cosmetic, and both are ported exactly.
  *
@@ -11,10 +11,11 @@
  * punctuation's own span is kept.
  *
  * **Every token but the very first carries a leading space — unless it is
- * punctuation.** `@remotion/captions` joins a page by concatenating `text`, so a
- * missing space silently welds two words together. The first token of the whole
- * track is bare: `createTikTokStyleCaptions` starts a new page precisely when a
- * token begins with a space, and trims that space off the token it opens the
+ * punctuation.** `@xplainer/motion`'s `paginateCaptions()` joins a page by
+ * concatenating `text`, so a missing space silently welds two words together.
+ * The first token of the whole track is bare: the pager opens a new page only at
+ * a token whose `text` begins with whitespace — once the window has elapsed from
+ * the page's `startMs` — and trims that whitespace off the token it opens the
  * page with, so a leading space is what *permits* a page break rather than what
  * spoils one. A segment boundary is not a page boundary — pages are cut by
  * elapsed time, not by segment — so the first *word* of a segment needs its
@@ -44,7 +45,10 @@ import type { PlannedSegment } from "./plan.js";
  */
 const PUNCTUATION_ONLY = /^[^\p{L}\p{N}_]+$/u;
 
-/** Midpoint of a span, which is what `@remotion/captions` pages on. */
+/**
+ * Midpoint of a span: a caption's `timestampMs`. `@xplainer/motion`'s pager does not read it — it
+ * pages on `startMs` — so it is the schema's single instant per word, for any other reader.
+ */
 function midpoint(startMs: number, endMs: number): number {
   return Math.floor((startMs + endMs) / 2);
 }

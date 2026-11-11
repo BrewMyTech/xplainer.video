@@ -1,5 +1,5 @@
 /**
- * Where this machine's shared Remotion workspace lives.
+ * Where this machine's shared video workspace lives.
  *
  * One directory holds every video and one `node_modules/` (see
  * `@xplainer/render-core`'s `workspace.ts` for the layout inside it), so the question this module
@@ -20,7 +20,7 @@
 import { join } from "node:path";
 import process from "node:process";
 
-/** The environment variable that relocates the Remotion workspace. */
+/** The environment variable that relocates the video workspace. */
 export const VIDEOS_DIR_ENV = "XPLAINER_VIDEOS_DIR";
 
 /** The workspace's directory name inside the state directory, when nothing overrides it. */

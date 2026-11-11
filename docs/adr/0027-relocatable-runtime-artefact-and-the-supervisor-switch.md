@@ -784,3 +784,43 @@ The general point is worth keeping, because this record made the mistake twice i
 first predicting the right shape in the wrong place, then describing a property the code held and
 the test did not. **A record may state what a design guarantees; it may not state how a gate holds
 it unless the gate has been run against a violation.**
+
+## Note, 2026-11-11: payload 1 carries the renderer, and payload 2 has a date to leave
+
+Added as a dated note rather than a rewrite.
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+renderer of our own. Nothing this record decides changes today; what changes is what each payload
+is for.
+
+**Payload 1 gains the renderer's dependencies, and every one is pure JavaScript.** `@xplainer/cli`
+now depends on `@xplainer/motion`, `esbuild-wasm` 0.28.2, `tailwindcss` 4.2.0, and `react` and
+`react-dom` 19.2.8, so the assembler's closure copier carries them into the
+`lib/node_modules/<externals>` this record lays out. None ships native code, none is a platform
+package, and none declares an install script — `esbuild-wasm` was taken over `esbuild` for exactly
+that, since the native package runs `node install.js` with a registry-download fallback. So payload 1
+stays one artefact per version and not one per platform. Its size after the change is not measured
+in this note.
+
+**The renderer adds two `import.meta.url` sites, and the table above is not amended.**
+`render/bundle.ts` resolves React, React DOM and `@xplainer/motion` from beside its own module — one
+directory and one `createRequire` — so that the bundle never reads the workspace's `node_modules`.
+That is the same mechanism §*What defines the payload* records and the same reason the payload is a
+directory. The table was "recorded here … and deliberately not asserted", and the packaging gate is
+what asserts that every runtime path resolves inside the artefact; this note does not claim that
+gate has been run against the new sites.
+
+**Payload 2 is no longer read by any render, and Phase 2 removes it.** The render worker bundles every
+video against payload 1's own React and `@xplainer/motion`, launches the browser `toolchain.json`
+records, and pipes frames into a spawned ffmpeg. The pinned Remotion tree is therefore dead weight —
+and it stays, deliberately, until ADR 0031's Phase 2: the template's pins and lockfile,
+`assembleWorkspace`, `remotionEntryPath`, `runtime verify --workspace`, the manifest's
+`remotion_entry`, `setup --workspace`, the toolchain gate's workspace check, the update's
+template-pin refusals and the D1/D2 proofs are all untouched, because removing `@remotion/cli` from
+the template changes the workspace manifest a rolled-back daemon reads. When it goes, decision A's
+cost goes with it — a template pin that never changes cannot refuse an update — and so does the
+about 120 MB §Consequences counts once per machine. D1's own argument survives the deletion of the
+thing it was about: the render worker is spawned as `process.execPath` plus an entry, exactly as the
+narration worker is, and nothing prepends an interpreter to a worker's `PATH` — which matters more
+now, since the worker's `PATH` is one of the places ffmpeg is looked for.
+
+This record stays `accepted` and no line above is rewritten.

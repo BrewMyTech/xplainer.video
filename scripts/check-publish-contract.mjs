@@ -36,7 +36,7 @@
  *                              declared through the `workspace:` protocol.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
- *   Whole workspace            the publishable set is exactly the declared seven.
+ *   Whole workspace            the publishable set is exactly the declared eight.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every
  * invocation — see SELF_TESTS. A gate whose rules cannot be shown to fire is
@@ -63,7 +63,7 @@
  * but because it points at paths that do not exist on a user's disk.
  * The `.d.ts` files ship a complete, precise specification of every export,
  * because that is what a consumer's `tsc` needs. The three assets that are
- * genuinely hard to reproduce — the JSON Schemas, SKILL.md, and the Remotion
+ * genuinely hard to reproduce — the JSON Schemas, SKILL.md, and the video
  * scaffold templates — ship as readable text BY PRODUCT NECESSITY, and are
  * asserted present below rather than hidden. What actually restricts a reader
  * is the licence itself, not this script.
@@ -197,6 +197,7 @@ const PUBLISHABLE_MEMBERS = [
   { dir: "apps/cli", name: "@xplainer/cli" },
   { dir: "packages/alias", name: "xplainer" },
   { dir: "packages/mcp-server", name: "@xplainer/mcp-server" },
+  { dir: "packages/motion", name: "@xplainer/motion" },
   { dir: "packages/protocol", name: "@xplainer/protocol" },
   { dir: "packages/render-core", name: "@xplainer/render-core" },
   { dir: "packages/skill", name: "@xplainer/skill" },
@@ -237,7 +238,7 @@ const WORKSPACE_MEMBER_NAMES = new Set(
  * not a judgement call. The fourth is, and it is in, for two reasons.
  *
  * The harm the rule exists to prevent is strictly worse there. Every one of the
- * seven publishable members takes `@xplainer/config` as a devDependency, and
+ * eight publishable members takes `@xplainer/config` as a devDependency, and
  * `@xplainer/config` is PRIVATE: it has never been published and is not going to
  * be. A literal `"0.0.1"` in that position does not merely unlink it from the
  * package next door, it names something the registry does not have — or, later,
@@ -617,17 +618,7 @@ function normaliseRepositoryUrl(url) {
  * An entry that no longer excuses anything is a hard failure, not a shrug. A
  * stale exemption is a hole nobody is watching.
  */
-const EXEMPTIONS = [
-  {
-    package: "@xplainer/render-core",
-    path: "template/remotion.config.ts",
-    rules: ["no-typescript-source"],
-    why:
-      "template/ is not our source. It is the Remotion workspace copied onto the user's " +
-      "machine, which their videos render inside, so it has to arrive as readable, editable " +
-      "TypeScript. Compiling or obfuscating it breaks rendering.",
-  },
-];
+const EXEMPTIONS = [];
 
 /**
  * ============================================================================
@@ -645,21 +636,16 @@ const EXEMPTIONS = [
  * formatter that reached these would change the bytes, and this fails.
  */
 const MUST_SHIP_FILES = [
-  // --- The Remotion render workspace, copied to the user's machine ---------
-  {
-    package: "@xplainer/render-core",
-    path: "template/remotion.config.ts",
-    why: "Remotion config for the user's own render workspace; read and edited as TypeScript.",
-  },
+  // --- The video workspace, copied to the user's machine -------------------
   {
     package: "@xplainer/render-core",
     path: "template/tsconfig.json",
-    why: "Compiler settings for the user's render workspace; without it their scenes fail to typecheck.",
+    why: "Compiler settings for the user's video workspace; without it their scenes fail to typecheck.",
   },
   {
     package: "@xplainer/render-core",
     path: "template/package.json",
-    why: "Declares the pinned remotion and @remotion/* versions the user's workspace installs.",
+    why: "Declares the pinned dependency set the user's workspace installs through setup.",
   },
   {
     package: "@xplainer/render-core",
@@ -800,9 +786,9 @@ const MUST_SHIP_TREES = [
     package: "@xplainer/render-core",
     dir: "template",
     why:
-      "The Remotion workspace copied onto the user's machine. A file added here has to ship " +
-      "the day it is added or the scaffolded workspace is incomplete on a user's disk and " +
-      "renders nothing — and the five files named individually above could not catch a sixth.",
+      "The video workspace copied onto the user's machine. A file added here has to ship " +
+      "the day it is added or the scaffolded workspace is incomplete on a user's disk — and " +
+      "the four files named individually above could not catch a fifth.",
   },
 ];
 

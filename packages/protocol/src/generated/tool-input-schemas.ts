@@ -39,7 +39,7 @@ export const TOOL_INPUT_SCHEMAS: Readonly<Record<ToolName, ToolInputSchema>> = O
   "explainer_put_source": {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExplainerPutSourceInput",
-  "description": "Arguments for explainer_put_source: upload agent-authored Remotion source into an existing video. Exists because an agent talking to a hosted backend has no disk to write to.",
+  "description": "Arguments for explainer_put_source: upload agent-authored scene source into an existing video. Exists because an agent talking to a hosted backend has no disk to write to.",
   "type": "object",
   "additionalProperties": false,
   "required": [

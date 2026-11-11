@@ -8,16 +8,31 @@
  * that `runtime.json` and the socket are gone before the exit code is chosen. Registration is
  * asserted by counting `process`'s own listeners, which is the only honest way to say "this daemon
  * would answer a `SIGTERM`" without sending one to the test runner.
+ *
+ * The last suite is the one place the drain meets a **real** render: a real job runner, the real
+ * render worker, a real headless shell and a real ffmpeg, stopped part-way by the same sequence a
+ * `SIGTERM` starts. What it asserts is what a user would find afterwards — no browser from the job
+ * still running, no `explainer.mp4`, no partial file, no bundle directory — because a drain that
+ * only *reported* stopping a render is the failure ADR 0024 §Drain exists to prevent.
  */
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { videoPaths } from "@xplainer/render-core";
 import { afterEach, describe, expect, it } from "vitest";
+import { createLocalBackend } from "../backend.js";
+import { testChrome } from "../render/testing/chrome.js";
+import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
+import { TTS_FIXTURE_ENV } from "../workers/speech.js";
+import { writeNarrationFixture } from "../workers/testing/narration-fixture.js";
 import { writeRuntimeState } from "./daemon-state.js";
 import { DAEMON_INTERNAL_EXIT_CODE } from "./exit-codes.js";
-import { DEFAULT_DRAIN_TIMEOUT_MS } from "./runner.js";
+import { createJobStore } from "./job-store.js";
+import { createJobRunner, DEFAULT_DRAIN_TIMEOUT_MS } from "./runner.js";
 import {
   CLEAN_SHUTDOWN_EXIT_CODE,
   installShutdownHandlers,
@@ -25,6 +40,8 @@ import {
   type ShutdownHandle,
 } from "./shutdown.js";
 import { stateDirLayout } from "./state-dir.js";
+import { selfIdentity } from "./worker-identity.js";
+import { createWorkerRegistry } from "./workers.js";
 
 const scratch: string[] = [];
 const handles: ShutdownHandle[] = [];
@@ -258,3 +275,166 @@ describe("installShutdownHandlers", () => {
     expect([...SHUTDOWN_SIGNALS]).toEqual(["SIGTERM", "SIGINT"]);
   });
 });
+
+/** Every running process whose command line mentions `needle`, as `ps` prints them. */
+function processesMentioning(needle: string): string[] {
+  return execFileSync("ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" })
+    .split("\n")
+    .filter((line) => line.includes(needle));
+}
+
+/** The process group `pid` is in. */
+function groupOf(pid: number): number {
+  return Number(
+    execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim(),
+  );
+}
+
+/**
+ * Every live process in group `pgid`, as `ps` prints them: the worker, Chrome and each helper it
+ * started, and ffmpeg. A zombie is already dead and only waiting to be reaped, so it is not one.
+ */
+function processesInGroup(pgid: number): string[] {
+  return execFileSync("ps", ["-A", "-o", "pid=,pgid=,stat=,command="], { encoding: "utf8" })
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([, group, stat]) => Number(group) === pgid && stat?.startsWith("Z") !== true)
+    .map((fields) => fields.join(" "));
+}
+
+/** Whether `pid` is still a process this user can signal. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A real browser and a real ffmpeg, so the render test's switch; CI never sets it.
+describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
+  "a SIGTERM drain during a real render",
+  () => {
+    it("stops the job's Chrome and ffmpeg and leaves no MP4, no partial and no bundle", async () => {
+      const root = mkdtempSync(join(tmpdir(), "xplainer-drain-render-"));
+      const fixtures = mkdtempSync(join(tmpdir(), "xplainer-drain-fixture-"));
+      scratch.push(root, fixtures);
+      const stateDir = stateDirectory();
+      const chrome = await testChrome();
+      recordTestToolchain({
+        stateDir,
+        workspaceRoot: root,
+        overrides: {
+          chrome: {
+            version: chrome.version,
+            path: chrome.path,
+            sha256: chrome.sha256,
+            provider: CHROME_PROVIDER,
+          },
+        },
+      });
+      // Six seconds of narration: long enough that the render is still capturing when the drain
+      // gives up on it, short enough that the narration itself is quick.
+      const narration = writeNarrationFixture(fixtures, [
+        {
+          id: "long",
+          text: "A render long enough to be interrupted.",
+          seconds: 6,
+          frequency: 262,
+          words: ["A", "render", "long", "enough", "to", "be", "interrupted."].map(
+            (word, index) => ({
+              word,
+              start_time: 0.1 + index * 0.8,
+              end_time: 0.7 + index * 0.8,
+            }),
+          ),
+        },
+      ]);
+      process.env[TTS_FIXTURE_ENV] = fixtures;
+      const runner = createJobRunner({
+        store: createJobStore(stateDir),
+        owner: { ...selfIdentity(), run_id: "drain-render-test" },
+        workers: createWorkerRegistry({ root, stateDir }),
+      });
+      const backend = createLocalBackend({ runner, root, stateDir });
+
+      try {
+        await backend.explainer_create({ slug: "demo" });
+        const narrated = (await backend.explainer_narrate({ slug: "demo", narration })).job_id;
+        for (
+          let state = runner.get({ job_id: narrated });
+          state.status !== "done";
+          state = runner.get({ job_id: narrated })
+        ) {
+          expect(state.status, state.output.lines.join("\n")).not.toBe("error");
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        const { job_id } = await backend.explainer_render({ slug: "demo" });
+        // Wait for the first progress line: Chrome and ffmpeg are both running from then on.
+        let lines: string[] = [];
+        while (!lines.some((line) => line.includes('"event":"progress"'))) {
+          const state = runner.get({ job_id, output_lines: 200 });
+          expect(state.status, state.output.lines.join("\n")).not.toMatch(/done|error/);
+          lines = state.output.lines;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const started = /chrome (\d+) started with profile (\S+)/.exec(lines.join("\n"));
+        expect(started, lines.join("\n")).not.toBeNull();
+        const chromePid = Number(started?.[1]);
+        const profile = started?.[2] ?? "";
+        expect(alive(chromePid)).toBe(true);
+        expect(processesMentioning(profile).length).toBeGreaterThan(0);
+        // The group the runner made the worker lead. Chrome, every helper Chrome started — none
+        // of which carries the profile in its argv — and ffmpeg are all in it.
+        const jobGroup = groupOf(chromePid);
+        expect(processesInGroup(jobGroup).length).toBeGreaterThan(3);
+
+        const exits: number[] = [];
+        const handle = installShutdownHandlers({
+          stateDir,
+          drain: (timeoutMs) => runner.drain(timeoutMs),
+          listeners: [],
+          // Far shorter than the render, so the drain has to stop it rather than wait it out.
+          drainTimeoutMs: 100,
+          exit: (code) => {
+            exits.push(code);
+          },
+        });
+        handles.push(handle);
+        await handle.shutdown("SIGTERM");
+
+        expect(exits).toEqual([CLEAN_SHUTDOWN_EXIT_CODE]);
+        const record = runner.get({ job_id, output_lines: 200 });
+        expect(record.status).toBe("error");
+        expect(record.error_code).toBe("daemon_shutdown");
+        // The worker cleaned up after itself on the SIGTERM, rather than being killed mid-write.
+        expect(record.output.lines.join("\n")).toContain(
+          "RENDER_CANCELLED: the worker received SIGTERM",
+        );
+
+        // Chrome is gone — the browser's pid, and every process the job's group held.
+        const deadline = Date.now() + 5_000;
+        while (
+          (alive(chromePid) || processesInGroup(jobGroup).length > 0) &&
+          Date.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        expect(alive(chromePid)).toBe(false);
+        expect(processesMentioning(profile)).toEqual([]);
+        expect(processesInGroup(jobGroup)).toEqual([]);
+        expect(existsSync(profile)).toBe(false);
+
+        // And nothing was written: no MP4, no partial, no bundle directory.
+        const video = videoPaths(root, "demo");
+        expect(existsSync(video.mp4)).toBe(false);
+        expect(readdirSync(video.out)).toEqual([]);
+      } finally {
+        delete process.env[TTS_FIXTURE_ENV];
+        await runner.drain(0);
+      }
+    }, 180_000);
+  },
+);

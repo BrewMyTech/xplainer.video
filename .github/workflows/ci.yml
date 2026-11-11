@@ -180,12 +180,15 @@ jobs:
 
       # Same placement argument as AC-2c above, and the same shape: a pattern
       # scan over repository sources that needs no toolchain, so it fails in
-      # seconds on a pristine tree. The command is the one AC-14f names,
-      # unchanged. `package.json` is in the path list deliberately — the way
-      # render or TTS code arrives in this app is a dependency, not a file.
+      # seconds on a pristine tree. The command is the one AC-14f names, with
+      # `@xplainer/motion` added on 2026-11-11 — the renderer's own authoring
+      # API is render code exactly as the previous renderer's packages were;
+      # docs/acceptance-criteria.md carries the amendment. `package.json` is in
+      # the path list deliberately — the way render or TTS code arrives in this
+      # app is a dependency, not a file.
       - name: apps/desktop holds no render or TTS code (AC-14f)
         run: |
-          if grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' \
+          if grep -rnE '@remotion/|\bremotion\b|@xplainer/motion|kokoro|captioned_speech|tts' \
             apps/desktop/src apps/desktop/*.ts apps/desktop/package.json; then
             echo "::error::render or TTS code reached apps/desktop; see AC-14f"
             exit 1
@@ -199,11 +202,13 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
-      # The render test in apps/cli (US-006, P1-1/P1-2) shells out to ffmpeg and
-      # ffprobe to inspect the MP4 it produced, and a missing binary is an ENOENT
-      # test failure rather than a skip — the test is deliberately un-skippable
-      # in CI. GitHub's ubuntu runner image does not ship ffmpeg, so it is
-      # installed here, before the build, from the distribution package.
+      # The renderer in apps/cli pipes every frame into ffmpeg, which it finds
+      # on PATH and which must carry libx264; the render tests then read the
+      # MP4 back with ffprobe and ffmpeg. A missing binary is a test failure
+      # rather than a skip — the tests are deliberately un-skippable in CI.
+      # GitHub's ubuntu runner image does not ship ffmpeg, so it is installed
+      # here, before the build, from the distribution package, whose build is
+      # linked against libx264.
       - name: Install ffmpeg for the render test
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && ffprobe -version | head -1
 
@@ -242,6 +247,20 @@ jobs:
       - name: pnpm install --frozen-lockfile
         run: pnpm install --frozen-lockfile
 
+      # The render suites in apps/cli acquire their headless shell the way the
+      # product does — through acquireChrome() and the committed manifest — into
+      # node_modules/.cache/xplainer-test-toolchain, and re-verify a warm copy
+      # against its recorded digest rather than trusting it. So the cache can
+      # only save the download, never admit different bytes, and its key is the
+      # manifest that names them. Restored after the install so nothing the
+      # install does to node_modules can disturb it. XPLAINER_TEST_CHROME is
+      # deliberately never set here: CI renders with the reviewed artefact.
+      - name: Cache the test headless shell
+        uses: actions/cache@v6
+        with:
+          path: node_modules/.cache/xplainer-test-toolchain
+          key: xplainer-test-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/cli/src/setup/toolchain.manifest.json') }}
+
       - name: uv sync --all-packages --frozen
         run: uv sync --all-packages --frozen
 
@@ -261,7 +280,7 @@ jobs:
       # LICENSE actually inside every tarball with a matching `license` field
       # (Apache-2.0 since f07d06c; LICENSE-BINARY no longer exists), the
       # publishable set still exactly six, and — the other direction
-      # — that the Remotion templates, scaffold templates and SKILL.md still
+      # — that the workspace template, scaffold templates and SKILL.md still
       # ship byte-identical, because those have to be readable to work at all.
       - name: Published tarballs leak no source, maps or licence
         run: pnpm check:publish-contract
@@ -300,13 +319,15 @@ jobs:
       - name: Assert task coverage per member (AC-2b, AC-2f, AC-2g)
         run: |
           set -euo pipefail
-          # Ten workspace members: apps/cli, apps/desktop, the seven packages
-          # and services/tts-sidecar. Nine of them build — tts-sidecar is the
+          # Eleven workspace members: apps/cli, apps/desktop, the eight packages
+          # and services/tts-sidecar. Ten of them build — tts-sidecar is the
           # only Python-only member and declares no `build` script. These were
-          # twelve and ten before the hosted tier moved out, and nine and eight
-          # before packages/alias added the unscoped `xplainer` name; the
-          # numbers are the assertion, so they are restated rather than relaxed.
-          for entry in test:10 lint:10 typecheck:10 build:9; do
+          # twelve and ten before the hosted tier moved out, nine and eight
+          # before packages/alias added the unscoped `xplainer` name, and ten
+          # and nine before packages/motion became the renderer's authoring
+          # API; the numbers are the assertion, so they are restated rather
+          # than relaxed.
+          for entry in test:11 lint:11 typecheck:11 build:10; do
             task="${entry%%:*}"
             expected="${entry##*:}"
             echo "checking that turbo run $task reaches $expected members"

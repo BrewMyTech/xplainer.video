@@ -1,5 +1,5 @@
 /**
- * The eight tools, implemented against one shared Remotion workspace on this machine.
+ * The eight tools, implemented against one shared video workspace on this machine.
  *
  * This is the local half of `RenderBackend` ([ADR 0016](../../../docs/adr/0016-cli-first-local-runtime-desktop-is-an-optional-client.md)).
  * The split inside it is [ADR 0008](../../../docs/adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)'s:
@@ -10,8 +10,8 @@
  *   handed to the daemon's job runner and answered with a `job_id`;
  * - `explainer_job` **is** `runner.get()`, relayed. The runner already returns the contract shape.
  *
- * The layout, the scaffold, the argv builders and the preflight all come from
- * `@xplainer/render-core`; nothing about a video's shape is decided here. What is decided here is
+ * The layout, the scaffold and the preflight all come from `@xplainer/render-core`; nothing about
+ * a video's shape is decided here. What is decided here is
  * the boundary: which refusals an agent gets immediately, and which become a failed job.
  *
  * **Every argument arrives unvalidated.** This phase publishes an open object as each tool's input
@@ -55,7 +55,6 @@ import {
   DEFAULT_STILL_FRAME,
   DEFAULT_STILL_SCALE,
   ENGINE_OWNED_FILES,
-  isWorkspaceInstalled,
   listVideoSlugs,
   materialiseWorkspace,
   SCAFFOLD_FILES,
@@ -63,7 +62,6 @@ import {
   scaffoldVideo,
   type VideoPaths,
   videoPaths,
-  workspaceNotInstalledMessage,
 } from "@xplainer/render-core";
 import type { JobRunner } from "./daemon/runner.js";
 import { resolveStateDir } from "./daemon/state-dir.js";
@@ -106,7 +104,11 @@ export type LocalBackendCode =
   | "INVALID_STILL_ARGUMENT"
   /** The video has never been narrated, so no scene has a length yet. */
   | "NARRATION_MISSING"
-  /** The shared Remotion workspace has no dependencies installed. */
+  /**
+   * `checkToolchain` refused a still or a render: what `setup` records is missing or stale. The
+   * name is older than that gate — it once meant the workspace's own `node_modules` — and is kept
+   * because it is part of the `/api/*` error surface a client branches on.
+   */
   | "WORKSPACE_NOT_INSTALLED";
 
 /**
@@ -132,7 +134,7 @@ export type CreateLocalBackendOptions = {
   /** The daemon's job runner: where narrate, still and render go, and what `explainer_job` reads. */
   runner: JobRunner;
   /**
-   * The shared Remotion workspace root.
+   * The shared workspace root.
    *
    * Defaults to `XPLAINER_VIDEOS_DIR`, then `<state dir>/workspace`. `commands/serve.ts` passes the
    * root the daemon already resolved, so the backend and the worker registry cannot disagree about
@@ -334,19 +336,14 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
   /**
    * Refuse a render this machine's toolchain cannot carry out, with the worker factory's own answer.
    *
-   * The two gates asked different questions before this: the tool call asked `isWorkspaceInstalled`
-   * — is there a `.bin/remotion` shim anywhere up the tree — while the worker factory resolved
-   * `@remotion/cli`'s own package and read `toolchain.json`. Two predicates over one condition is
-   * how a tool call succeeds and the job it queued then fails, which is precisely the outcome an
-   * agent holding a `job_id` cannot act on. So the call now asks `checkToolchain`, the same
-   * judgement `daemon/workers.ts` applies a moment later, and the shim check stays as the first
-   * thing said about a workspace nobody has installed at all — its sentence names the one command
-   * that fixes it, and the toolchain's names whichever component is actually absent.
+   * The call asks `checkToolchain`, the same judgement `daemon/workers.ts` applies a moment later:
+   * two predicates over one condition is how a tool call succeeds and the job it queued then
+   * fails, which is precisely the outcome an agent holding a `job_id` cannot act on. Its sentence
+   * names whichever component is absent and the command that fixes it. The workspace's own
+   * `node_modules` is not asked about at all: the render worker bundles every video against this
+   * program's own install and reads nothing from it.
    */
   function requireInstalledWorkspace(): void {
-    if (!isWorkspaceInstalled(root)) {
-      throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", workspaceNotInstalledMessage(root));
-    }
     const toolchain = checkToolchain({ stateDir, workspaceRoot: root });
     if (!toolchain.ok) {
       throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", toolchain.detail);

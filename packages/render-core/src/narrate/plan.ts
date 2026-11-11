@@ -73,7 +73,7 @@ export type PlannedSegment = {
   readonly startMs: number;
   /** Segment end — after its hold padding and the gap that follows it. */
   readonly endMs: number;
-  /** `startMs` as a frame number, for Remotion's `Sequence`. */
+  /** `startMs` as a frame number, for the composition's `Sequence`. */
   readonly from: number;
   /** Segment length in frames, never below 1. */
   readonly durationInFrames: number;

@@ -170,7 +170,7 @@ a silently unchecked member.
 
 ## The members
 
-Ten of them. The table — path, package name, tier, published or not, whether it emits declarations,
+Eleven of them. The table — path, package name, tier, published or not, whether it emits declarations,
 whether it has an API report, and what it is responsible for — is
 [`docs/ARCHITECTURE.md` §3 Members](docs/ARCHITECTURE.md#3-members), and it is machine-checked
 against the workspace. There is no second copy here on purpose: a hand-maintained duplicate is a
@@ -212,11 +212,14 @@ Each one, and the thing that catches you:
   `describe.skipIf(SKIPPED)` reads as an unconditional skip to everyone but the author of the
   constant, and the gate cannot tell the two apart; an inline `process.env.X === "1"` says what is
   being waited for and where to set it. There is no `.skipIf` that is not gated on one of those
-  two, and the seven files in the tree that carry one are `install/preflight.test.ts`,
-  `setup/providers/chrome.test.ts`, `setup/providers/workspace.test.ts` (twice),
-  `speech/synthesiser.test.ts` and `workers/render.test.ts` in `apps/cli/src/`, and
-  `tts-client/src/client.test.ts` and `tts-client/src/elevenlabs/client.test.ts`. The last one
-  **bills** whoever exports `ELEVENLABS_API_KEY`; `packages/tts-client/AGENTS.md` says when it runs.
+  two, and the eleven files in the tree that carry one are `commands/config.test.ts`,
+  `daemon/shutdown.test.ts`, `install/preflight.test.ts`, `render/capture.test.ts` (twice),
+  `render/encode.test.ts`, `setup/providers/chrome.test.ts`, `setup/providers/workspace.test.ts`
+  (twice), `speech/synthesiser.test.ts` and `workers/render.test.ts` in `apps/cli/src/`, and
+  `tts-client/src/client.test.ts` and `tts-client/src/elevenlabs/client.test.ts`. The four render
+  ones are all on `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
+  The last one **bills** whoever exports `ELEVENLABS_API_KEY`; `packages/tts-client/AGENTS.md` says
+  when it runs.
   *Enforcement: `AC-2c`'s second grep, in the same CI step.*
 - **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
   `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the
@@ -224,9 +227,9 @@ Each one, and the thing that catches you:
   reached for to satisfy a gate. If a gate is wrong, change the gate deliberately.
   *Enforcement: `pnpm check:no-suppressions` (`AC-15e`), early in CI.*
 - **`apps/desktop` contains no render or TTS code, ever.** *Enforcement: `AC-14f`, a grep for
-  `@remotion/`, `remotion`, `kokoro`, `captioned_speech` and `tts` across `apps/desktop` —
-  `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own CI step beside
-  AC-2c's.*
+  `@remotion/`, `remotion`, `@xplainer/motion`, `kokoro`, `captioned_speech` and `tts` across
+  `apps/desktop` — `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own
+  CI step beside AC-2c's.*
 - **After changing any `export` in a built package, run `pnpm api:report` and commit the result.**
   The `.api.md` diff is the review. *Enforcement: `pnpm check:api-report`.*
 - **`isolatedDeclarations` errors only appear under `build`.** It is set on the
@@ -274,7 +277,7 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 ## Before editing a member, read that member's `AGENTS.md`
 
-Each of the ten has one, with the same five headings: `## What this package is`,
+Each of the eleven has one, with the same five headings: `## What this package is`,
 `## Public surface`, `## Commands`, `## Invariants`, `## How to add`. The invariants there are
 specific and are not repeated at the root.
 
@@ -282,8 +285,8 @@ specific and are not repeated at the root.
 files automatically in every configuration: Codex walks `AGENTS.md` hierarchically and never reads
 `CLAUDE.md`; Claude Code reads `CLAUDE.md` from directories it works in and never reads
 `AGENTS.md`. That is why each member also carries a one-line `CLAUDE.md` importing its `AGENTS.md`.
-The ten member files are deliberately **not** imported from the root — importing them would load
-all ten every session and destroy the locality that makes them useful.
+The eleven member files are deliberately **not** imported from the root — importing them would load
+all eleven every session and destroy the locality that makes them useful.
 
 ## What belongs where
 

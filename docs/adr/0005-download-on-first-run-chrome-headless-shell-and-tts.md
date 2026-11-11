@@ -202,3 +202,42 @@ acquires browser, speech and workspace. Speech is the route that needed none of 
 note of 2026-09-10 argues; the browser is the one that did, and the digest it is admitted on is still
 an *expected* value captured at manifest-build time rather than a trust anchor, which the note of
 2026-09-08 states in full and this note does not weaken.
+
+## Note, 2026-11-11: the browser `setup` acquires is the one that draws, and ffmpeg is the next component
+
+Added as a dated note rather than a rewrite. The decision is unchanged.
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+renderer of our own, and three things happened underneath this record.
+
+**Chrome is launched by our renderer, from `toolchain.json`'s `chrome.path`, and the "two copies"
+defect is gone by construction.** Until this date the browser `setup` acquired was checked for
+existence and then never used: Remotion fetched the same `chrome-headless-shell` build again into a
+cache of its own. The render worker now starts the recorded headless shell over
+`--remote-debugging-pipe` and nothing else, so one acquired artefact serves the still, the render
+and every test, and no render downloads anything.
+
+**"The pinned Remotion line" becomes ours in Phase 2, and is already ours in code.** This record's
+fourth Consequence ties the two acquisition paths for one browser together by "the same pinned
+Remotion line", and the note of 2026-09-08 says the URL `setup` fetches is "the one the pinned
+Remotion line itself chooses". Both stay accurate as descriptions of *which* artefact is fetched:
+`apps/cli/src/setup/manifest.ts` mirrors that line's URL selector, and the committed manifest's
+recorded URLs and expected digests are unchanged. What changed is that `@xplainer/cli` no longer
+installs Remotion, so the mirror is now a selector this package owns, frozen at the pinned line, and
+checked against the manifest rather than against the function it copied. Renaming it — the
+`remotion` provider token, the `remotion.media` URLs — and giving linux-arm64 a source, since Chrome
+for Testing publishes none, is Phase 2's Chrome-manifest work.
+
+**ffmpeg is a new acquired component, in Phase 2; today it is found rather than acquired.** The
+owner decided on 2026-11-11 how it arrives: on macOS our own CI-built static FFmpeg with its source
+bundle beside it on `cdn.xplainer.video`, which would be the first binary of ours that CDN serves;
+on Linux and Windows the pinned BtbN build fetched from upstream. That is this record's option 2,
+applied to a fourth artefact. Until Phase 2 builds it, the renderer resolves `XPLAINER_FFMPEG`, then
+`PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and otherwise refuses with
+`FFMPEG_NOT_FOUND` naming the install command — which is this record's rejected option 3, "require
+the user to install them", for one component. It is tolerable only because ADR 0031's hard
+condition holds: nothing is released between that record's Phase 1 and its Phase 2. The render
+workspace, this record's third artefact since 2026-09-08, is still acquired by `setup --workspace`
+and is no longer read by any render; Phase 2 removes it.
+
+Nothing above is rewritten. Download-on-first-run is still the decision, and it now covers the one
+component that a render cannot run without and that this record never named.

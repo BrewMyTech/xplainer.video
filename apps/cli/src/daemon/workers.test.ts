@@ -4,35 +4,24 @@
  * A factory runs in the daemon, in process, at the moment a job leaves the queue, so this is where
  * the last gate before Chrome starts lives (ADR 0018, layer 4). The tests below are about that
  * gate as much as about the argv: an engine file that drifted is restored *here*, a video with no
- * captions is refused *here*, and a workspace nobody installed is refused with the one command that
- * fixes it rather than with an `ENOENT` from `spawn`.
+ * captions is refused *here*, and a machine `xplainer setup` never prepared is refused with the one
+ * command that fixes it rather than with an `ENOENT` from `spawn`.
  *
- * The argv itself is compared against `@xplainer/render-core`'s own builders rather than against a
- * string written here — those builders are what pin the Remotion CLI contract, and a copy of their
- * output in this file would be a second contract that only used to agree.
- *
- * **What the Remotion cases now assert is D1.** The command is the *interpreter*, the first
- * argument is `@remotion/cli`'s own `bin` entry, and `node_modules/.bin/remotion` — the symlink to
- * a `#!/usr/bin/env node` script that measured exit `127` under `PATH=/usr/bin:/bin` — is never
- * spawned, is not what makes a workspace count as installed, and is present in the fixture
- * precisely so that a factory that reached for it again would be caught.
+ * **What every worker case asserts is D1.** The command is the *interpreter* — `process.execPath`
+ * — and the first argument is this package's own worker entry, never a `#!/usr/bin/env node`
+ * shim, which measured exit `127` under `PATH=/usr/bin:/bin`. `env` carries the state directory
+ * and nothing else: `runner.ts` merges it into the child's environment, where a `PATH` entry would
+ * reach Chrome and ffmpeg as well as the worker.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import {
-  REMOTION_BIN,
-  readScaffoldTemplate,
-  renderArgs,
-  scaffoldVideo,
-  stillArgs,
-  stillOutput,
-  videoPaths,
-} from "@xplainer/render-core";
+import { readScaffoldTemplate, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeJobRequest } from "../job-request.js";
+import { readJobRequest, writeJobRequest } from "../job-request.js";
+import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
 import { recordTestToolchain, writeTestWorkspaceManifest } from "../setup/testing/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import { makeJobRecord } from "./testing/records.js";
@@ -76,37 +65,12 @@ function narratedVideo(slug: string): void {
 }
 
 /**
- * Give the workspace a Remotion CLI the way npm installs one, and answer with the entry file a
- * factory should spawn.
- *
- * Both halves are real: the package with its own `bin` map, and the `.bin` shim npm creates beside
- * it. The shim is written on every platform under both names, so a factory that resolved through it
- * would find something and the assertions below would still catch it — the entry file is the only
- * path that is not a shim.
+ * A machine where `xplainer setup` has run: the marker, its two acquisitions, and the workspace
+ * manifest. The factory reads all three before it builds a spec. There is no `node_modules`: the
+ * render worker reads nothing from the workspace's own install.
  */
-function pretendInstalled(): string {
-  // A machine where `xplainer setup` has run: the marker, its two acquisitions, and the workspace
-  // manifest. The factory reads all three before it builds a spec, so a fixture that gave only the
-  // tree would be a fixture every Remotion case now refuses.
+function pretendSetUp(): void {
   recordTestToolchain({ stateDir, workspaceRoot: root });
-  const packageDir = join(root, "node_modules", "@remotion", "cli");
-  mkdirSync(packageDir, { recursive: true });
-  writeFileSync(
-    join(packageDir, "package.json"),
-    JSON.stringify({
-      name: "@remotion/cli",
-      version: "4.0.495",
-      bin: { remotion: "remotion-cli.js", remotionb: "remotionb-cli.js" },
-    }),
-  );
-  const entry = join(packageDir, "remotion-cli.js");
-  writeFileSync(entry, "#!/usr/bin/env node\n");
-  const bin = join(root, "node_modules", ".bin");
-  mkdirSync(bin, { recursive: true });
-  for (const name of ["remotion", "remotion.cmd"]) {
-    writeFileSync(join(bin, name), "#!/bin/sh\n");
-  }
-  return entry;
 }
 
 beforeEach(() => {
@@ -121,67 +85,56 @@ afterEach(() => {
 });
 
 describe("the render worker", () => {
-  it("is this interpreter running Remotion's own entry, with render-core's argv after it", () => {
+  it("is this build's own entry, told only where the workspace and the job are", () => {
     narratedVideo("demo");
-    const entry = pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
       record(1, "explainer_render", "demo"),
     );
 
-    const video = videoPaths(root, "demo");
     expect(spec?.command).toBe(process.execPath);
-    expect(spec?.args).toEqual([
-      entry,
-      ...renderArgs({ slug: "demo", output: video.mp4, publicDir: video.publicDir }),
-    ]);
+    expect(spec?.args.slice(-2)).toEqual([root, "1"]);
+    expect(spec?.args.at(-3)).toMatch(/[\\/]workers[\\/]render\.(ts|js)$/);
     expect(spec?.cwd).toBe(root);
-    expect(spec?.env).toBeUndefined();
     // The fifth field is the video's write lock, asserted for what it does further down.
     expect(typeof spec?.release).toBe("function");
   });
 
   /**
-   * D1, stated as the two things that must both hold. The shim exists in the fixture under both
-   * names, so "never the shim" is a claim about what was chosen and not about what was available;
-   * and `env` stays absent because `runner.ts` merges `WorkerSpec.env` into the child's
-   * environment, where a `PATH` entry would reach Chrome and ffmpeg as well as Remotion.
+   * The worker reads `chrome.path` out of `toolchain.json`, so it has to be told which state
+   * directory this daemon is using — and told nothing else: `runner.ts` merges `env` into the
+   * child's environment, where a `PATH` entry would reach Chrome and ffmpeg as well.
    */
-  it("spawns neither the .bin shim nor a PATH the worker's own children would inherit", () => {
+  it("tells the worker this daemon's state directory, and puts nothing on its PATH", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
       record(1, "explainer_render", "demo"),
     );
 
-    const shim = join(root, "node_modules", ".bin");
-    expect(existsSync(join(shim, "remotion"))).toBe(true);
-    const spawned = [spec?.command ?? "", ...(spec?.args ?? [])];
-    expect(spawned.some((part) => part.startsWith(shim))).toBe(false);
-    expect(spec?.env).toBeUndefined();
+    expect(spec?.env).toEqual({ XPLAINER_STATE_DIR: stateDir });
   });
 
-  it("refuses a workspace that has only the .bin shim, because the shim is not the CLI", () => {
+  it("needs no node_modules in the workspace: the renderer bundles against its own install", () => {
     narratedVideo("demo");
-    recordTestToolchain({ stateDir, workspaceRoot: root });
-    const bin = join(root, "node_modules", ".bin");
-    mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, REMOTION_BIN), "#!/usr/bin/env node\n");
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
+    expect(existsSync(join(root, "node_modules"))).toBe(false);
     expect(() =>
       createWorkerRegistry({ root, stateDir }).explainer_render?.(
         record(1, "explainer_render", "demo"),
       ),
-    ).toThrow(/xplainer setup --workspace/);
+    ).not.toThrow();
   });
 
   it("restores an engine-owned file that drifted, before the render is built", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
     const shell = join(videoPaths(root, "demo").source, "Video.tsx");
     writeFileSync(shell, "// hand-edited through write_source_to");
@@ -195,7 +148,7 @@ describe("the render worker", () => {
 
   it("refuses a video whose captions are missing, before Chrome is started", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
     rmSync(videoPaths(root, "demo").captions);
 
@@ -206,9 +159,10 @@ describe("the render worker", () => {
     ).toThrow(/captions/);
   });
 
-  it("refuses a workspace nobody installed, naming the command that fixes it", () => {
+  it("refuses a workspace nobody set up, naming the command that fixes it", () => {
     narratedVideo("demo");
     recordTestToolchain({ stateDir, workspaceRoot: root });
+    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     expect(() =>
@@ -227,7 +181,7 @@ describe("the render worker", () => {
    */
   it("refuses a machine where setup has never run, before it looks at the workspace at all", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     rmSync(join(stateDir, "toolchain.json"));
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
@@ -242,7 +196,7 @@ describe("the render worker", () => {
   it("refuses when a path the marker recorded is no longer on this machine", () => {
     narratedVideo("demo");
     const marker = recordTestToolchain({ stateDir, workspaceRoot: root });
-    pretendInstalled();
+    pretendSetUp();
     rmSync(marker.chrome.path);
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
@@ -256,7 +210,7 @@ describe("the render worker", () => {
   /** The skew D2 is about: the workspace is intact and is not the one this build's template wants. */
   it("refuses a workspace resolved for a template this build no longer ships", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeTestWorkspaceManifest({
       stateDir,
       workspaceRoot: root,
@@ -274,30 +228,23 @@ describe("the render worker", () => {
 });
 
 describe("the still worker", () => {
-  it("carries the frame and the scale the request recorded, behind the same interpreter", () => {
+  it("is the same render worker, which reads the frame and the scale off the request", () => {
     narratedVideo("demo");
-    const entry = pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_still", slug: "demo", frame: 12, scale: 1 });
 
     const spec = createWorkerRegistry({ root, stateDir }).explainer_still?.(
       record(1, "explainer_still", "demo"),
     );
 
-    const video = videoPaths(root, "demo");
     expect(spec?.command).toBe(process.execPath);
-    expect(spec?.args).toEqual([
-      entry,
-      ...stillArgs({
-        slug: "demo",
-        output: stillOutput(video, 12),
-        publicDir: video.publicDir,
-        frame: 12,
-        scale: 1,
-      }),
-    ]);
+    expect(spec?.args.slice(-2)).toEqual([root, "1"]);
+    expect(spec?.args.at(-3)).toMatch(/[\\/]workers[\\/]render\.(ts|js)$/);
     expect(spec?.cwd).toBe(root);
-    expect(spec?.env).toBeUndefined();
+    expect(spec?.env).toEqual({ XPLAINER_STATE_DIR: stateDir });
     expect(typeof spec?.release).toBe("function");
+    // What the worker will act on is the document, not anything in its argv.
+    expect(readJobRequest(root, 1, "explainer_still")).toMatchObject({ frame: 12, scale: 1 });
   });
 });
 
@@ -361,7 +308,7 @@ describe("the narrate worker", () => {
     expect(spec?.env).toEqual({ XPLAINER_STATE_DIR: stateDir });
   });
 
-  it("needs no installed workspace: narration is this package's own code, not Remotion", () => {
+  it("needs no installed workspace: narration is this package's own code", () => {
     writeJobRequest(root, 4, { job_type: "explainer_narrate", slug: "demo", dry_run: true });
 
     expect(() =>
@@ -405,7 +352,7 @@ describe("the video write lock", () => {
 
   it("is taken by the factory and given back by release()", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
     const spec = createWorkerRegistry({ root, stateDir }).explainer_render?.(
@@ -419,7 +366,7 @@ describe("the video write lock", () => {
 
   it("refuses a render of a video another live process is already writing", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     heldByALiveProcess("demo");
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
@@ -443,7 +390,7 @@ describe("the video write lock", () => {
 
   it("lets a different video through: the exclusion is per video, not per workspace", () => {
     narratedVideo("other");
-    pretendInstalled();
+    pretendSetUp();
     heldByALiveProcess("demo");
     writeJobRequest(root, 2, { job_type: "explainer_render", slug: "other" });
 
@@ -460,7 +407,7 @@ describe("the video write lock", () => {
    */
   it("is not taken by a job the gates above it refuse", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
     rmSync(videoPaths(root, "demo").captions);
 
@@ -484,7 +431,7 @@ describe("a job whose two halves disagree", () => {
 
   it("is refused when the record and the request name different videos", () => {
     narratedVideo("demo");
-    pretendInstalled();
+    pretendSetUp();
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "other" });
 
     expect(() =>

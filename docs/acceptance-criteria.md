@@ -91,6 +91,7 @@ test.
 - **2b** `pnpm turbo run test --dry=json` lists a `test` task for all **twelve** members.
   - *Amended 2026-09-06 (ADR 0023):* **nine**.
   - *Amended 2026-09-11 (`packages/alias`):* **ten**.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0031):* **eleven**.
 - **2c** `grep -rnE '\.(skip|only)\(|\bTODO\b|\bFIXME\b' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' apps packages services` returns no hits.
   - *Amended 2026-09-08 (phase 2):* a second grep, in the same CI step, for the form the first one never matched. `.skipIf(` is **allowed** — it is how a live-server suite, a real render and a macOS-only probe stay out of `pnpm verify` on a machine that cannot run them — but only with the condition at the call site: `grep -rnE '\.skipIf\(' <the same paths> | grep -vE '\.skipIf\(\(?process\.(env|platform)\b'` returns no hits. A `describe.skipIf(SKIPPED)` reads as an unconditional skip to every reader but the author of the constant, and no grep can tell those apart; an inline `process.env.X === "1"` names the variable and where to set it. Added because the original pattern banned `.skip(` and `.only(` and matched neither `.skipIf(` nor anything else about it, so the exception the repository relied on was documented nowhere.
 - **2d** Each member's test asserts behaviour, not existence.
@@ -98,9 +99,11 @@ test.
 - **2f** **Every task reaches every member it should.** `pnpm turbo run lint --dry=json` and `pnpm turbo run typecheck --dry=json` each list all **twelve** members, mirroring 2b's assertion for `test`. Turbo skips an undeclared script silently, so a member that never declares `lint` produces a green run over unlinted code; only counting the tasks catches it.
   - *Amended 2026-09-06 (ADR 0023):* **nine** each.
   - *Amended 2026-09-11 (`packages/alias`):* **ten** each.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0031):* **eleven** each.
 - **2g** **The `build` task covers exactly the ten members that declare it:** `pnpm turbo run build --dry=json` lists **ten** — the ten TypeScript members — and does **not** list `@xplainer/api` or `@xplainer/tts-sidecar`, which have nothing to compile. Ten is the expected number, not a shortfall.
   - *Amended 2026-09-06 (ADR 0023):* **eight**, and the exclusion list is `@xplainer/tts-sidecar` alone; `@xplainer/api` relocated.
   - *Amended 2026-09-11 (`packages/alias`):* **nine**, the ninth being the unscoped `xplainer`. Its `build` is `tsc -p tsconfig.emit.json` rather than the usual `tsconfig.build.json`, because it emits no declarations and the **Declarations** column of `docs/ARCHITECTURE.md` §3 is derived from that filename; the task count is what this criterion asserts and it is unaffected.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0031):* **ten**, the tenth being `@xplainer/motion`; the exclusion list is still `@xplainer/tts-sidecar` alone.
 
 ## AC-3 — Tier boundary
 
@@ -153,10 +156,13 @@ test.
 > byte-identical to its golden.
 
 - **7a** `packages/render-core/template/` holds all four template files with the pinned versions (`remotion@4.0.495`, `react@19.2.3`, `tailwindcss@4.0.0`, `typescript@5.7.3`).
+  - *Amended 2026-11-11 (the owned renderer):* `remotion.config.ts` left the template, because nothing renders through the previous renderer's CLI any more. The template holds `package.json`, `package-lock.json`, `tailwind.css` and `tsconfig.json`, and `package.json` still carries the four pins above: `xplainer setup --workspace` installs that tree until phase 2 retires the payload, although no render reads it.
 - **7b** The four *inherited* wiring files — `index.ts`, `types.ts`, `Root.tsx`, `Captions.tsx` — are produced **byte-identically to the upstream reference implementation's scaffold**, compared with `Buffer.compare` against `test/fixtures/scaffold/*.golden`, extracted from the reference implementation's `server/explainer_mcp.py::_SCAFFOLD` at commit `d11615e1`.
   - *Note 2026-09-06 (ADR 0023):* the criterion is unchanged. What changed is that a public reader cannot open the repository the bytes came from, so the assertion is real but not independently reproducible from this repository alone. `packages/render-core/test/fixtures/README.md` says so in those words.
+  - *Amended 2026-11-11 (the owned renderer):* **one** inherited file, `types.ts`. `index.ts`, `Root.tsx` and `Captions.tsx` now import `@xplainer/motion` and so can no longer be upstream's bytes; they are change detectors under 7e from this date. `test/fixtures/README.md` carries the note.
 - **7c** The generator never overwrites the agent-owned `Scenes.tsx`, and restores any engine-owned file that is missing or whose bytes differ from the template, reporting it in `restored`. A second `scaffoldVideo()` call on the same directory returns all five names as `skipped`, an empty `created`, and leaves the on-disk bytes unchanged.
 - **7d** `Video.tsx` **deliberately diverges from the upstream copy** (ADR 0018): upstream's is agent-owned and mounts the narration audio and captions; xplainer's is engine-owned and `explainer_put_source` refuses to write it. The upstream bytes are retained at `test/fixtures/scaffold/upstream/Video.tsx.max`, and a test asserts both that the template differs from them and that the difference is the intended one — audio, captions and per-segment sequencing present in the engine file and absent from the agent file.
+  - *Amended 2026-11-11 (the owned renderer):* the retained upstream copy and the "differs from them" half are retired. Once the template imported `@xplainer/motion` it differed from upstream by construction, so that assertion could not fail. The half that carries the reason — audio, captions and per-segment sequencing in the engine file and absent from the agent file — is unchanged and still asserted.
 - **7e** `Video.tsx` and the agent-owned `Scenes.tsx` are each produced byte-identically to their own goldens (`Video.tsx.golden`, `Scenes.tsx.golden`). These two are xplainer-authored **change detectors, not provenance fixtures**: editing either template without updating its fixture in the same commit fails the test. The distinction from AC-7b is deliberate and is recorded in `test/fixtures/README.md`.
 
 ## AC-8 — RELOCATED
@@ -286,6 +292,7 @@ and asserted**.
   - *Note 2026-09-06 (ADR 0023):* this was written as the TypeScript mirror of AC-8c's pytest, with an explicit rule that the two must not drift. AC-8 relocated; 14d did not change, and it is now the only place the tool contract is asserted against the manifest in this repository.
 - **14e** `apps/desktop/package.json` lists `@xplainer/cli` in `dependencies`.
 - **14f** **`apps/desktop` contains no render or TTS code**, asserted by grep rather than by reading: `grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' apps/desktop/src apps/desktop/*.ts apps/desktop/package.json` returns no hits. **It runs as its own CI step, beside AC-2c's and on the same pristine tree**, for AC-15e's reason: a criterion that only a human executes is advisory in everything but name.
+  - *Amended 2026-11-11 (the owned renderer):* the pattern gains `@xplainer/motion` — `'@remotion/|\bremotion\b|@xplainer/motion|kokoro|captioned_speech|tts'` — because the renderer's own authoring API is render code exactly as the previous renderer's packages were. The old names stay in the pattern: the renderer still accepts them through its alias table for one release.
 - **14g** `apps/cli/packaging/README.md` exists and states per-OS standalone-binary steps for the Node single-executable route, marked explicitly as not run in CI.
   - *Note 2026-09-08 (phase 2, P2-6):* the recipe is still there and still runs nowhere, and phase 2
     did **not** turn it into a built artefact — standalone binaries are deferred to phase 4 on

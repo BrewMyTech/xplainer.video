@@ -8,7 +8,7 @@
  * the real worker registry: a stdio session deliberately does **not** take the state directory's
  * lock (`mcp/stdio-server.ts` records why — a bundle entry that refused to start because a daemon
  * was running would defeat its own purpose), while it resolves the *same* workspace root, so a
- * daemon and two `npx -y @xplainer/cli mcp` sessions can each spawn Remotion against one
+ * daemon and two `npx -y @xplainer/cli mcp` sessions can each spawn a render against one
  * `out/<slug>/explainer.mp4` or one `public/<slug>/timings.json`. Ownership of the *store* says
  * nothing about that: the job ids are private to each store and the files are not.
  *
@@ -87,7 +87,7 @@ export class VideoBusyError extends Error {
 
 /** What {@link acquireVideoWriteLock} needs. */
 export type AcquireVideoWriteLockOptions = {
-  /** The shared Remotion workspace root the lock lives under. */
+  /** The shared workspace root the lock lives under. */
   root: string;
   slug: string;
   jobType: JobType;

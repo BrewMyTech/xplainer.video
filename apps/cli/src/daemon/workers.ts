@@ -1,27 +1,25 @@
 /**
  * Which job kinds this daemon can run, and the exact command each one becomes.
  *
- * `runner.ts` deliberately knows nothing about narration or Remotion: it starts a process group,
+ * `runner.ts` deliberately knows nothing about narration or rendering: it starts a process group,
  * captures a bounded log tail and writes the record down. Everything host-specific lives behind
- * {@link WorkerSpec}, and this file is the only place that builds one. Three kinds exist, and they
- * are two different shapes:
+ * {@link WorkerSpec}, and this file is the only place that builds one. Three kinds exist, and all
+ * three are this package's own code in a child process:
  *
- * - **`explainer_narrate`** is *this* package's own code in a child process: the narration port
- *   from `@xplainer/render-core`, driven against `@xplainer/tts-client`. It runs out of process
- *   because the daemon must stay answerable while a segment is being synthesised, and because a
- *   `SIGTERM` mid-narration has to reach one killable process group like every other job.
- * - **`explainer_still` and `explainer_render`** are the pinned Remotion CLI, spawned with the argv
- *   `@xplainer/render-core`'s `stillArgs()` / `renderArgs()` build. Not `npx`: `REMOTION_BIN`
- *   records why, and {@link remotionWorker} resolves the workspace's own install.
+ * - **`explainer_narrate`** runs `workers/narrate`: the narration port from
+ *   `@xplainer/render-core`, driven against `@xplainer/tts-client`.
+ * - **`explainer_still` and `explainer_render`** run `workers/render`: the video bundled with
+ *   esbuild, stepped frame by frame in the headless shell `toolchain.json` records, and — for a
+ *   render — piped into a spawned ffmpeg. The worker starts Chrome and ffmpeg itself, as plain
+ *   children, so both are inside the process group the runner signals.
  *
- * **All three are `<interpreter> <entry file>`, and that is decision D1.**
- * `node_modules/.bin/remotion` is a symlink to a file whose first line is `#!/usr/bin/env node`,
- * so spawning it directly makes
- * the kernel hand it to `/usr/bin/env`, which searches the **child's** `PATH`: measured exit `127`
- * under `PATH=/usr/bin:/bin`, on exactly the machine class this runtime is built for. So the two
- * Remotion workers resolve `@remotion/cli`'s own `bin` entry with `runtime/launch-spec.ts` and run
- * it under `process.execPath` — which is `<runtime>/bin/node` when the daemon came out of a payload
- * — the same shape the narration worker has always had. `PATH` is **not** injected through
+ * Each runs out of process because the daemon must stay answerable while it works, and because a
+ * `SIGTERM` mid-job has to reach one killable process group.
+ *
+ * **All three are `<interpreter> <entry file>`, and that is decision D1.** The interpreter is
+ * `process.execPath` — `<runtime>/bin/node` when the daemon came out of a payload — never a
+ * `#!/usr/bin/env node` shim, which the kernel hands to `/usr/bin/env` to search the **child's**
+ * `PATH` (measured exit `127` under `PATH=/usr/bin:/bin`). `PATH` is **not** injected through
  * `WorkerSpec.env`: `runner.ts` would merge it happily, and it would leak an interpreter onto the
  * `PATH` of everything the worker starts, Chrome and ffmpeg included.
  *
@@ -35,11 +33,11 @@
  * `<state>/toolchain.json` is the record `xplainer setup` leaves and the only thing on the machine
  * that says the browser and the speech provider a render needs are present — neither this daemon
  * nor `daemon install` ever downloads (ADR 0005). So `explainer_still` and `explainer_render` read
- * it before they build a `WorkerSpec`, and a missing or stale toolchain — including a workspace
- * whose resolved Remotion no longer matches the template this build ships — is a **named refusal**
- * on the job record rather than an `ENOENT` or a Chrome that quietly downloads itself inside a
- * worker whose log tail is the only evidence anybody gets. `setup/toolchain.ts` owns the judgement;
- * this file owns the moment it is asked.
+ * it before they build a `WorkerSpec`, and a missing or stale toolchain is a **named refusal** on
+ * the job record rather than an `ENOENT` in a worker whose log tail is the only evidence anybody
+ * gets. `setup/toolchain.ts` owns the judgement; this file owns the moment it is asked. The render
+ * worker then reads the same marker for the browser's path, from the state directory this registry
+ * hands it in `XPLAINER_STATE_DIR`.
  *
  * **And it is where the video's write lock is taken** (`video-lock.ts`), last, once every refusal
  * above has had its chance — so a job that is going to be refused never takes a lock, and a job
@@ -53,18 +51,8 @@ import { existsSync } from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { JobType } from "@xplainer/protocol";
-import {
-  assertRenderable,
-  REMOTION_BIN,
-  renderArgs,
-  scaffoldVideo,
-  stillArgs,
-  stillOutput,
-  videoPaths,
-  workspaceNotInstalledMessage,
-} from "@xplainer/render-core";
+import { assertRenderable, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { readJobRequest } from "../job-request.js";
-import { findInstalledPackage, type NodeEntry, resolveNodeEntry } from "../runtime/launch-spec.js";
 import { assertToolchainReady } from "../setup/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
@@ -73,7 +61,7 @@ import { acquireVideoWriteLock } from "./video-lock.js";
 
 /** What {@link createWorkerRegistry} needs. */
 export type CreateWorkerRegistryOptions = {
-  /** The shared Remotion workspace root every job reads and writes under. */
+  /** The shared workspace root every job reads and writes under. */
   root: string;
   /**
    * The daemon's state directory, where `xplainer setup` wrote `toolchain.json`.
@@ -86,11 +74,11 @@ export type CreateWorkerRegistryOptions = {
 };
 
 /**
- * How to start the narration worker with this build's own sources.
+ * How to start one of this package's own workers with this build's own sources.
  *
  * Two shapes, chosen by what is actually on disk beside this module. After a build it is
- * `dist/workers/narrate.js` and plain `node` runs it. Under Vitest this module is still
- * `src/daemon/workers.ts`, so the entry is `src/workers/narrate.ts` and the child needs the same
+ * `dist/workers/<name>.js` and plain `node` runs it. Under Vitest this module is still
+ * `src/daemon/workers.ts`, so the entry is `src/workers/<name>.ts` and the child needs the same
  * `--import` hook every other spawned test child uses — `turbo.json` gives `test` a `dependsOn` of
  * `^build`, the *dependencies'* builds and not this package's, so `dist/` may be absent or stale
  * while the tests run and spawning it would be a green test over code that is not the code.
@@ -99,12 +87,12 @@ export type CreateWorkerRegistryOptions = {
  * `src/**\/testing/**`, so a `dist/` never contains the hook, and it never contains a `.ts` entry
  * to run under it either.
  */
-function narrateWorkerCommand(): { command: string; args: string[] } {
-  const compiled = fileURLToPath(new URL("../workers/narrate.js", import.meta.url));
+function workerCommand(name: "narrate" | "render"): { command: string; args: string[] } {
+  const compiled = fileURLToPath(new URL(`../workers/${name}.js`, import.meta.url));
   if (existsSync(compiled)) {
     return { command: process.execPath, args: [compiled] };
   }
-  const source = fileURLToPath(new URL("../workers/narrate.ts", import.meta.url));
+  const source = fileURLToPath(new URL(`../workers/${name}.ts`, import.meta.url));
   // The entry is a path and the hook is a **URL**: `--import` takes a module specifier, and
   // `C:\\Users\\…` parses as one with the scheme `c:`, which Node rejects with
   // ERR_UNSUPPORTED_ESM_URL_SCHEME. `spawn-child.ts` states the same rule for every other spawned
@@ -115,29 +103,19 @@ function narrateWorkerCommand(): { command: string; args: string[] } {
     return { command: process.execPath, args: ["--import", hookUrl.href, source] };
   }
   throw new Error(
-    `the narration worker is missing: neither ${compiled} nor ${source} exists. This build is ` +
+    `the ${name} worker is missing: neither ${compiled} nor ${source} exists. This build is ` +
       "incomplete; reinstall @xplainer/cli.",
   );
 }
 
-/**
- * The Remotion CLI for this workspace as an interpreter and an argv, or a refusal naming the one
- * command that fixes it.
- *
- * Resolved per job rather than once, so a workspace installed while the daemon is running starts
- * working without a restart.
- *
- * The package directory is what is looked for, not `node_modules/.bin/remotion`: the shim is the
- * thing D1 removes, and a package present without an entry is a different failure from a package
- * that was never installed — `findInstalledPackage()` answering `null` is the second one, and it is
- * the one a user fixes with `npm install`.
- */
-function remotionWorker(root: string, args: readonly string[]): NodeEntry {
-  const packageDir = findInstalledPackage(root, "@remotion/cli");
-  if (packageDir === null) {
-    throw new Error(workspaceNotInstalledMessage(root));
-  }
-  return resolveNodeEntry(packageDir, REMOTION_BIN, { args });
+/** The narration worker. */
+function narrateWorkerCommand(): { command: string; args: string[] } {
+  return workerCommand("narrate");
+}
+
+/** The still and render worker: one entry for both, which reads the job type off the request. */
+function renderWorkerCommand(): { command: string; args: string[] } {
+  return workerCommand("render");
 }
 
 /**
@@ -225,20 +203,14 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const video = videoPaths(root, slug);
       assertToolchainReady({ stateDir, workspaceRoot: root });
       assertReadyToRender(video.source, video.publicDir);
-      const worker = remotionWorker(
-        root,
-        stillArgs({
-          slug,
-          output: stillOutput(video, request.frame),
-          publicDir: video.publicDir,
-          frame: request.frame,
-          scale: request.scale,
-        }),
-      );
+      const { command, args } = renderWorkerCommand();
       return {
-        command: worker.executable,
-        args: worker.argv,
+        command,
+        args: [...args, root, String(record.job_id)],
         cwd: root,
+        // The render worker reads `chrome.path` out of `toolchain.json`, from this daemon's state
+        // directory rather than the platform default, for the reason the narration worker is told.
+        env: { [STATE_DIR_ENV]: stateDir },
         release: lockVideo(slug, "explainer_still", record.job_id),
       };
     },
@@ -249,14 +221,12 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const video = videoPaths(root, slug);
       assertToolchainReady({ stateDir, workspaceRoot: root });
       assertReadyToRender(video.source, video.publicDir);
-      const worker = remotionWorker(
-        root,
-        renderArgs({ slug, output: video.mp4, publicDir: video.publicDir }),
-      );
+      const { command, args } = renderWorkerCommand();
       return {
-        command: worker.executable,
-        args: worker.argv,
+        command,
+        args: [...args, root, String(record.job_id)],
         cwd: root,
+        env: { [STATE_DIR_ENV]: stateDir },
         release: lockVideo(slug, "explainer_render", record.job_id),
       };
     },

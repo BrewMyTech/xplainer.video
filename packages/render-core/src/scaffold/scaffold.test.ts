@@ -3,18 +3,20 @@
  *
  * Every comparison uses `Buffer.compare`, never normalised string equality: a
  * trailing-newline or CRLF difference is a real difference and must fail here
- * rather than surface as a broken Remotion build later.
+ * rather than surface as a broken bundle later.
  *
  * The goldens do not all mean the same thing, and the tests below are split so
  * that the difference stays visible:
  *
- *   * `index.ts`, `types.ts`, `Root.tsx`, `Captions.tsx` are PROVENANCE
- *     fixtures. They were extracted from `_SCAFFOLD` in the reference
- *     implementation and assert "these are still max's bytes".
- *   * `Video.tsx` and `Scenes.tsx` are xplainer-authored CHANGE DETECTORS.
- *     They can only assert "these are still the reviewed bytes": editing a
- *     template without updating its fixture in the same commit fails here.
- *     AC-7d carries the guarantee a regenerated golden cannot.
+ *   * `types.ts` is a PROVENANCE fixture. It was extracted from `_SCAFFOLD` in
+ *     the reference implementation and asserts "these are still max's bytes".
+ *     `index.ts`, `Root.tsx` and `Captions.tsx` were provenance fixtures too
+ *     until 2026-11-11, when their import lines moved to `@xplainer/motion`.
+ *   * `index.ts`, `Root.tsx`, `Captions.tsx`, `Video.tsx` and `Scenes.tsx` are
+ *     CHANGE DETECTORS. They can only assert "these are still the reviewed
+ *     bytes": editing a template without updating its fixture in the same
+ *     commit fails here. AC-7d carries the guarantee a regenerated golden
+ *     cannot.
  *
  * See `test/fixtures/README.md`.
  */
@@ -38,11 +40,14 @@ const FIXTURE_DIR = fileURLToPath(new URL("../../test/fixtures/scaffold/", impor
 
 const golden = (name: ScaffoldFile): Buffer => readFileSync(join(FIXTURE_DIR, `${name}.golden`));
 
-/** Max's original agent-owned `Video.tsx`, retained for the divergence test (AC-7d). */
-const upstreamVideo = (): Buffer => readFileSync(join(FIXTURE_DIR, "upstream", "Video.tsx.max"));
+/**
+ * The one file still byte-for-byte the reference implementation's (AC-7b). The other three it
+ * once covered changed their import lines on 2026-11-11; `test/fixtures/README.md` records it.
+ */
+const INHERITED_FILES = ["types.ts"] as const;
 
-/** The four files inherited byte-for-byte from the reference implementation (AC-7b). */
-const INHERITED_FILES = ["index.ts", "types.ts", "Root.tsx", "Captions.tsx"] as const;
+/** The package names a scaffolded file may import: what the renderer resolves itself. */
+const PROVIDED_PACKAGES: ReadonlySet<string> = new Set(["react", "@xplainer/motion"]);
 
 const tempDirs: string[] = [];
 
@@ -105,11 +110,12 @@ describe("scaffoldVideo", () => {
         `${name} differs from test/fixtures/scaffold/${name}.golden`,
       ).toBe(0);
     }
+    expect(readFileSync(join(dir, "index.ts"), "utf8")).toContain('import "../../tailwind.css";');
   });
 
   // AC-7b. This is the assertion that carries provenance, and it covers only
-  // the four files xplainer inherited unchanged.
-  it("produces the four inherited wiring files byte-identically to max's scaffold", () => {
+  // the file xplainer still inherits unchanged.
+  it("produces the inherited types.ts byte-identically to max's scaffold", () => {
     const dir = freshVideoDir();
 
     scaffoldVideo(dir);
@@ -120,7 +126,22 @@ describe("scaffoldVideo", () => {
         `${name} is an inherited file and must still match max's bytes`,
       ).toBe(0);
     }
-    expect(readFileSync(join(dir, "index.ts"), "utf8")).toContain('import "../../tailwind.css";');
+  });
+
+  // The renderer resolves exactly these packages from its own install and refuses any other bare
+  // import, so a template naming another package is a video that fails at bundle time.
+  it("imports nothing by package name but react and @xplainer/motion", () => {
+    for (const name of SCAFFOLD_FILES) {
+      const text = golden(name).toString("utf8");
+      const specifiers = [...text.matchAll(/^import\s[^;]*?["']([^"']+)["'];?$/gm)].map(
+        (match) => match[1] ?? "",
+      );
+      const named = specifiers.filter((specifier) => !specifier.startsWith("."));
+      for (const specifier of named) {
+        expect(PROVIDED_PACKAGES.has(specifier), `${name} imports ${specifier}`).toBe(true);
+      }
+    }
+    expect(golden("Video.tsx").toString("utf8")).toContain('from "@xplainer/motion";');
   });
 
   // AC-7c, first half: the reference implementation's never-overwrite rule,
@@ -192,24 +213,20 @@ describe("scaffoldVideo", () => {
 // assertions encode the reason, so an edit that walked the divergence back —
 // moving <Audio> or <Captions> into the agent's file — fails here even if both
 // goldens were dutifully refreshed alongside it.
+//
+// Note, 2026-11-11: two cases here compared the template against a retained
+// copy of max's Video.tsx. They were retired with that copy when the template's
+// import lines moved to @xplainer/motion — a template that shares no import with
+// the upstream file differs from it by construction, so "really diverges" could
+// no longer fail. The reason the divergence exists is asserted below as content.
 describe("the deliberate divergence from max's Video.tsx", () => {
   const engine = (): string => golden("Video.tsx").toString("utf8");
   const agent = (): string => golden("Scenes.tsx").toString("utf8");
 
-  it("really diverges: the shipped Video.tsx is not max's Video.tsx", () => {
-    expect(Buffer.compare(golden("Video.tsx"), upstreamVideo())).not.toBe(0);
-  });
-
-  it("keeps max's retained copy as the agent-owned REPLACE THIS stub it was", () => {
-    const upstream = upstreamVideo().toString("utf8");
-    expect(upstream).toContain("REPLACE THIS");
-    expect(upstream).toContain('import { Audio } from "@remotion/media";');
-    expect(upstream).toContain("<Captions");
-    expect(upstream).toContain("<Sequence");
-  });
-
   it("mounts the audio, the captions and the per-segment sequencing in the engine file", () => {
-    expect(engine()).toContain('import { Audio } from "@remotion/media";');
+    expect(engine()).toContain(
+      'import { AbsoluteFill, Audio, Sequence, staticFile } from "@xplainer/motion";',
+    );
     expect(engine()).toContain("<Audio src={staticFile(timings.audio)} />");
     expect(engine()).toContain("<Captions captions={captions} />");
     expect(engine()).toContain("from={segment.from}");
@@ -218,7 +235,7 @@ describe("the deliberate divergence from max's Video.tsx", () => {
   });
 
   it("keeps all three out of the agent-owned Scenes.tsx", () => {
-    expect(agent()).not.toContain("@remotion/media");
+    expect(agent()).not.toContain("<Audio");
     expect(agent()).not.toContain("<Captions");
     expect(agent()).not.toContain("<Sequence");
   });
@@ -250,8 +267,8 @@ describe("the deliberate divergence from max's Video.tsx", () => {
 });
 
 // The composition-level half of the loud-failure design (ADR 0018, "Loud
-// failure, in the direction that matters"). These guards run inside Remotion,
-// which this scaffold-phase package does not host, so they are asserted as
+// failure, in the direction that matters"). These guards run inside the
+// renderer, which this package does not host, so they are asserted as
 // template content; the executable proof of "refuses rather than ships
 // something silent" is in `preflight.test.ts`.
 describe("the render guards in the engine shell", () => {

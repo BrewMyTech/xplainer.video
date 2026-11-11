@@ -2,10 +2,10 @@
  * The three files a narration run leaves behind (`narrate.py:287-298`) —
  * roadmap P1-2, docs/ROADMAP.md.
  *
- * They are written into the video's public directory, which is what Remotion
- * serves `staticFile()` from and what `preflight()` reads before a render. The
- * writers are separate from the builders so a caller can build the documents,
- * inspect or validate them, and only then commit them to disk.
+ * They are written into the video's public directory, which is what the
+ * renderer serves `staticFile()` from and what `preflight()` reads before a
+ * render. The writers are separate from the builders so a caller can build the
+ * documents, inspect or validate them, and only then commit them to disk.
  *
  * JSON is written with the reference implementation's two-space indent, plus a
  * trailing newline so the files behave in a terminal and in a diff.

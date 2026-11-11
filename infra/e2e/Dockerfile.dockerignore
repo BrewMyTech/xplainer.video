@@ -13,8 +13,9 @@
 # receiving it than the install takes.
 
 # Reproduced by `pnpm install --frozen-lockfile` inside the image, for Linux
-# rather than for this laptop: node_modules here holds the darwin-arm64 Remotion
-# compositor and the darwin esbuild, neither of which can run in the container.
+# rather than for this laptop: node_modules here holds the darwin esbuild and
+# other platform binaries built for this machine, none of which can run in the
+# container.
 **/node_modules
 
 # Reproduced by `pnpm turbo build`. Copying a host build in would also copy the

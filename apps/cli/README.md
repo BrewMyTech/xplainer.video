@@ -28,11 +28,15 @@ yet implemented says so on stderr and exits `2`.
 
 - **Node 24.** Enforced by `engines`, so a wrong version fails the install rather than warning.
 - **Docker**, for the Kokoro text-to-speech container that narration talks to.
-- **A Remotion licence, depending on who you are.** Remotion is free for individuals and for
-  companies of up to three people; above that **you need your own Remotion licence** — see
-  <https://remotion.pro/license>. `@xplainer/render-core` *declares* Remotion as a dependency
-  of the video workspace it scaffolds and never bundles it, so your own install fetches
-  Remotion under Remotion's terms, on your machine, in your name.
+- **ffmpeg with libx264**, for `explainer_render`. It is found through `XPLAINER_FFMPEG`, then
+  `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`; `xplainer setup` does not acquire it —
+  `brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Debian or Ubuntu.
+- **Rendering does not use Remotion.** The video workspace `xplainer setup --workspace` installs
+  still declares Remotion's packages until that workspace is retired, and your own install
+  fetches them under Remotion's terms, on your machine, in your name; this package never bundles
+  them. If you use that installed copy yourself, Remotion is free for individuals and for
+  companies of up to three people, and above that you need your own licence — see
+  <https://remotion.pro/license>.
 
 ## Programmatic use
 

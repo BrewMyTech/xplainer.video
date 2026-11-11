@@ -29,18 +29,13 @@
  * what a user pays. Measured on macOS arm64, 2026-09-09: **14.3 s**, all of it the 98 MB browser
  * and `npm ci` resolving 247 packages.
  *
- * One thing is still borrowed, and it is not part of what is proved: Remotion's **browser cache**.
- * Remotion resolves it from the render worker's cwd, so a freshly resolved workspace has none and
- * would fetch its own copy of the same headless shell inside the measured still job;
- * `infra/e2e/Dockerfile` fills the checkout's cache at build time to keep that download out of the
- * measurement, and this script links it in where it exists. On a machine with no cache to borrow
- * the link is skipped and Remotion fetches, exactly as it did before.
- *
- * **The browser `setup` acquires is not the browser the render uses**, and that is the product's
- * own shape rather than something this script arranges: `toolchain.json`'s `chrome.path` is checked
- * for existence by the gate and is never handed to Remotion, which fetches the same
- * `chrome-headless-shell` 149.0.7790.0 into its own cache. Two copies of one artefact. Worth fixing
- * in the product; not fixable from a proof.
+ * **The browser `setup` acquires is the browser the render uses.** The render worker launches
+ * `toolchain.json`'s `chrome.path` and nothing else, so one headless shell serves the still, the
+ * render and the control, and nothing is downloaded during a render. Until 2026-11-11 the previous
+ * renderer fetched a second copy of the same build into a cache of its own, which this script
+ * borrowed from the checkout to keep the download out of the measurement; the second copy and the
+ * borrowing went together. The MP4 is encoded by the ffmpeg the worker finds — `XPLAINER_FFMPEG`,
+ * then `PATH`, then Homebrew's two directories — and needs libx264.
  *
  * **Nothing in it is specific to *either POSIX platform*.** It resolves `ffmpeg` and `ffprobe` from
  * `PATH` and takes every other coordinate from the environment: P1-1 is judged on macOS **and** on
@@ -50,14 +45,13 @@
  *
  * **It is not Windows-capable, and this is the list.** Worth writing down rather than discovering
  * on a runner, because the two faults that *would* have made a Windows dispatch fail silently — a
- * `runLogged` that never read `result.error`, and a spawn of the extensionless `.bin/remotion` that
- * `CreateProcess` refuses — were fixed on 2026-09-11 and moved into `scripts/e2e/spawn.mjs`. What
+ * `runLogged` that never read `result.error`, and a spawn of the previous renderer's extensionless
+ * `.bin` shim that `CreateProcess` refuses — were fixed on 2026-09-11 and moved into
+ * `scripts/e2e/spawn.mjs`. What
  * is left fails loudly, by name, in the first seconds of a run: {@link resolveTool} spawns
  * `/usr/bin/which`, which does not exist there; the `pnpm turbo build` below is spawned as a bare
  * `pnpm`, and a `pnpm.cmd` is what libuv refuses without `shell: true` since the CVE-2024-27980 fix
- * (`runtime.mjs` and `speech.mjs` both carry a `PNPM_BUILD` for exactly this); and the browser cache
- * is borrowed with a `symlinkSync(…, "dir")`, which needs Developer Mode or an elevated shell. A
- * Windows leg would also need a Kokoro this proof can reach, which is a decision about what P1-1
+ * (`runtime.mjs` and `speech.mjs` both carry a `PNPM_BUILD` for exactly this). A Windows leg would also need a Kokoro this proof can reach, which is a decision about what P1-1
  * claims rather than a portability fix. `pnpm e2e:speech` is the proof that runs on all three.
  *
  * **It is not part of `pnpm verify`, and it must not become part of it.** It needs Docker, a
@@ -96,14 +90,11 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -112,7 +103,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE, workspaceShim } from "./spawn.mjs";
+import { transcript, WORKSPACE_MANIFEST_FILE, workerStill } from "./spawn.mjs";
 
 /** The repository root, three levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -204,7 +195,7 @@ const NARRATION = {
 const SOURCE_FILES = [
   {
     path: "Scenes.tsx",
-    content: `import { useCurrentFrame } from "remotion";
+    content: `import { useCurrentFrame } from "@xplainer/motion";
 import type { SceneMap } from "./Video";
 import { Panel } from "./scenes/Panel";
 
@@ -239,7 +230,7 @@ export const scenes: SceneMap = { hook: Hook, answer: Answer };
   },
   {
     path: "scenes/Panel.tsx",
-    content: `import { AbsoluteFill, interpolate } from "remotion";
+    content: `import { AbsoluteFill, interpolate } from "@xplainer/motion";
 
 export const Panel: React.FC<{
   accent: string;
@@ -284,8 +275,9 @@ export const Panel: React.FC<{
  * The control render cannot go through `explainer_still`: the daemon runs `scaffoldVideo()` in the
  * moment before Chrome starts (ADR 0018, layer 4), so an engine-owned file edited on disk is put
  * back before it can affect a frame. That guard is the product working as designed, and stepping
- * around it is exactly what a control has to do — so the control video is rendered by the pinned
- * Remotion CLI directly, out of the daemon's sight.
+ * around it is exactly what a control has to do — so the control is rendered by the product's own
+ * render worker spawned directly, which is the renderer `explainer_still` uses without the factory
+ * in front of it (`workerStill` in `scripts/e2e/spawn.mjs`).
  */
 const CAPTIONS_DISABLED = `export const Captions: React.FC<{ captions: unknown[] }> = () => null;
 `;
@@ -749,38 +741,6 @@ async function main() {
     "the workspace describes what it resolved, which is the half of the gate a borrowed " +
       "node_modules can never satisfy",
   );
-  // The shim and the entry are two different assertions, and this proof needs both. The **shim** is
-  // what says npm *linked* the CLI rather than merely unpacking it, and `workspaceShim` spells it
-  // under the name npm's linking writes on this platform. The **entry** is the file the burned
-  // captions section actually spawns, and it is stat-ed here so a missing one fails in the section
-  // about the workspace rather than 170 lines later in the section about captions — a gate that
-  // stats a different path than the spawn is how the extensionless `.bin/remotion` survived in this
-  // file until 2026-09-11. `scripts/e2e/spawn.mjs`'s docblock is the whole argument.
-  const remotionShim = workspaceShim(workspace, "remotion");
-  check(
-    existsSync(remotionShim),
-    `and ${remotionShim} resolves in it, which is what says npm linked the CLI`,
-  );
-  const remotionCli = remotionEntry(workspace);
-  check(
-    existsSync(remotionCli),
-    `…and so does ${remotionCli}, the entry its own manifest names and the file the control ` +
-      "render below is actually spawned as",
-  );
-
-  // Remotion's **browser cache**, and nothing else, is borrowed from the checkout. It resolves it
-  // from the worker's cwd — `<workspace>/node_modules/.remotion` — and a fresh workspace has none,
-  // so without this the still job pays for a second copy of the same headless shell inside the
-  // measurement. `infra/e2e/Dockerfile` fills the checkout's cache at build time for exactly that
-  // reason. Where there is none to borrow (a GitHub runner), the link is skipped and Remotion
-  // fetches its own, which is what happened there before this section existed.
-  const remotionCache = join(REPO, "node_modules", ".remotion");
-  if (existsSync(remotionCache)) {
-    symlinkSync(remotionCache, join(workspace, "node_modules", ".remotion"), "dir");
-    say(`  browser cache borrowed from ${remotionCache}`);
-  } else {
-    say(`  no browser cache at ${remotionCache}; Remotion will fetch its own inside the still job`);
-  }
 
   section("daemon");
   const daemon = startDaemon(env);
@@ -928,37 +888,27 @@ async function main() {
 
   section("burned captions");
   // The control: the same sources, the same measured narration, the same frame — with the caption
-  // component replaced by one that draws nothing. Rendered by the pinned Remotion CLI directly,
-  // because the daemon restores an engine-owned file before every render.
-  //
-  // The CLI is reached as the manifest's own `remotion_entry` under an explicit interpreter, never
-  // through `.bin`: neither file npm writes there is spawnable on Windows — the extensionless one
-  // is a `#!/bin/sh` script `CreateProcess` refuses, and the `.cmd` is what libuv refuses without
-  // `shell: true`, which would hand this argv's absolute paths to `cmd.exe` to re-parse.
-  // `toolchain.mjs`, `runtime.mjs` and `speech.mjs` all spawn the entry this way; the interpreter
-  // is this process's own because this proof runs from a checkout and has no payload to take one
-  // from.
+  // component replaced by one that draws nothing. Rendered by the product's own render worker,
+  // spawned directly because the daemon restores an engine-owned file before every still: the same
+  // bundler, browser and capture `explainer_still` used a moment ago, with only the factory's
+  // restore stepped around. The worker is a script under this process's own interpreter, which is
+  // spawnable on every platform; `scripts/e2e/spawn.mjs` carries both halves of that argument.
   const controlSource = join(workspace, "videos", CONTROL_SLUG);
   const controlPublic = join(workspace, "public", CONTROL_SLUG);
   cpSync(join(workspace, "videos", SLUG), controlSource, { recursive: true });
   cpSync(publicDir, controlPublic, { recursive: true });
   writeFileSync(join(controlSource, "Captions.tsx"), CAPTIONS_DISABLED, "utf8");
-  const controlPng = join(workspace, "out", `${CONTROL_SLUG}.png`);
-  runLogged(
-    "control",
-    process.execPath,
-    [
-      remotionCli,
-      "still",
-      `videos/${CONTROL_SLUG}/index.ts`,
-      "Explainer",
-      controlPng,
-      `--frame=${captionFrame}`,
-      "--scale=1",
-      `--public-dir=${controlPublic}`,
-    ],
-    { cwd: workspace },
-  );
+  const controlPng = workerStill({
+    runLogged,
+    label: "control",
+    repo: REPO,
+    workspace,
+    stateDir,
+    env,
+    slug: CONTROL_SLUG,
+    frame: captionFrame,
+    scale: 1,
+  });
   check(existsSync(controlPng), `the captions-disabled control rendered frame ${captionFrame}`);
   check(probeStream(controlPng, "v:0", "width") === "1920", "the control frame is 1920 wide");
 
@@ -1041,13 +991,6 @@ async function main() {
 main().then(
   () => {
     if (scratch !== null) {
-      // The borrowed Remotion browser cache, unlinked by hand before the tree it sits in goes.
-      // `rmSync` unlinks a symlink rather than following it, so this is belt and braces — and the
-      // braces are worth having when what is on the other end of it is inside the checkout.
-      const link = join(scratch, "workspace", "node_modules", ".remotion");
-      if (existsSync(link) && lstatSync(link).isSymbolicLink()) {
-        unlinkSync(link);
-      }
       rmSync(scratch, { recursive: true, force: true });
     }
     process.exit(0);

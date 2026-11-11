@@ -754,8 +754,9 @@ async function startProvider(plan, marker) {
  *
  * It keeps this process's `PATH` — it runs the checkout's own sources through the source hook and
  * assembles two payloads with them, which is not the scrubbed machine phase 2 is about — and it
- * takes this run's `HOME` so the headless shell Remotion downloaded during the render is the one
- * six more renders find already there. **`XPLAINER_STATE_DIR` is removed rather than overridden**:
+ * takes this run's `HOME`, the one `setup` ran under. The headless shell every rerun renders with
+ * is the one `setup` recorded, reached through the marker each case is handed, so nothing is
+ * downloaded during a render. **`XPLAINER_STATE_DIR` is removed rather than overridden**:
  * every case makes a state directory of its own, and a variable naming this run's would be
  * inherited by every daemon those cases start. The speech provider and its key (ADR 0030) are
  * removed for the same reason: a shell left at `XPLAINER_TTS_PROVIDER=elevenlabs` would bill a paid
@@ -1223,7 +1224,19 @@ async function main() {
       narrationEnv = { XPLAINER_TTS_URL: provider.url };
     }
 
-    const daemon = await startDaemon(paths.runtime, paths, narrationEnv);
+    // The render worker's encoder, handed over as a file, as `speech.mjs` does: the scrubbed `PATH`
+    // holds no ffmpeg on Windows, and the worker's Homebrew fallback is macOS's alone.
+    // `XPLAINER_FFMPEG` is the first place the worker looks, and the parent's own ffmpeg means the
+    // frames the daemon encodes and the frames this script decodes go through the same build.
+    const childFfmpeg = isAbsolute(ffmpeg) ? ffmpeg : onPath(process.env.PATH ?? "", ffmpeg);
+    check(
+      childFfmpeg !== null && existsSync(childFfmpeg),
+      `the ffmpeg this run uses is a file the daemon can be handed (${childFfmpeg ?? `no ${ffmpeg} on PATH`})`,
+    );
+    const daemon = await startDaemon(paths.runtime, paths, {
+      ...narrationEnv,
+      XPLAINER_FFMPEG: childFfmpeg,
+    });
     const transport = new StdioClientTransport({
       command: interpreter,
       args: [entry, "mcp", "--attach"],

@@ -17,12 +17,13 @@
  * WHAT THE CONTAINER REACHES BESIDES KOKORO. Since 2026-09-09 `render.mjs` runs a real
  * `xplainer setup` inside the container — the batch-6 toolchain gate refuses `explainer_still` and
  * `explainer_render` on a machine with no `<state>/toolchain.json`, and there is no honest way past
- * it — so the run now fetches a ~100 MB headless shell and resolves the render workspace with
- * `npm ci` from the public registry. The user-defined bridge below gives it that, exactly as it
- * gives Kokoro its image; a machine that can build the image can run the proof. The image's own
- * `remotion browser ensure` layer stays where it is and is now borrowed explicitly: `render.mjs`
- * links `/repo/node_modules/.remotion` into the workspace `setup` materialised, so Remotion's own
- * copy of the same browser is not fetched a second time inside the measured still job.
+ * it — so the run now fetches a ~100 MB headless shell and resolves the workspace with `npm ci`
+ * from the public registry. The user-defined bridge below gives it that, exactly as it gives Kokoro
+ * its image; a machine that can build the image can run the proof. That headless shell is the only
+ * browser in the run: the render worker launches the copy `setup` recorded, so the image carries
+ * no browser of its own and nothing is downloaded inside the measured still job. On an arm64 host
+ * (OrbStack on Apple silicon) the container is linux-arm64 with bookworm's glibc 2.36, which the
+ * committed manifest answers with its `linux-arm64-glibc235` entry.
  *
  * WHY ITS OWN NETWORK AND ITS OWN KOKORO. A developer machine very often already has a Kokoro
  * container answering on host port 8880, and this script must neither disturb it nor depend on it.

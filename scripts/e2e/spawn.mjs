@@ -50,7 +50,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 
@@ -151,4 +151,65 @@ export function remotionEntry(workspace, manifest = null) {
   const document =
     manifest ?? JSON.parse(readFileSync(join(workspace, WORKSPACE_MANIFEST_FILE), "utf8"));
   return join(workspace, ...document.remotion_entry.split("/"));
+}
+
+/**
+ * The job id a {@link workerStill} request document is written under.
+ *
+ * Far above anything the daemon in the same proof allocates — its store counts up from 1 — so the
+ * one document this writes can never be read back as the request of a job the daemon ran.
+ */
+export const WORKER_STILL_JOB_ID = 999_999;
+
+/**
+ * One still, rendered by the product's own render worker with no daemon in front of it.
+ *
+ * This is what the captions-disabled control in `render.mjs` and `speech.mjs` needs. The daemon's
+ * worker factory runs `scaffoldVideo()` before every still (ADR 0018, layer 4) and would restore
+ * the edited `Captions.tsx` before it could affect a frame, so the control steps around the
+ * factory — and only around the factory. The worker, the bundler, the browser and the capture are
+ * the ones `explainer_still` uses, spawned exactly as `apps/cli/src/daemon/workers.ts` spawns them:
+ * the compiled `dist/workers/render.js` under an explicit interpreter, the workspace root and a job
+ * id as its two arguments, the workspace as its cwd, and `XPLAINER_STATE_DIR` naming the directory
+ * whose `toolchain.json` records the browser.
+ *
+ * The request document is the one `apps/cli/src/job-request.ts` defines — `job_type`, `slug`,
+ * `frame` and `scale` at `<workspace>/requests/job-<id, six digits>.json` — spelled here rather than
+ * imported for the reason {@link WORKSPACE_MANIFEST_FILE} is: these scripts run outside the CLI's
+ * module graph on purpose. The PNG lands where the worker puts every still,
+ * `<workspace>/out/<slug>/frame-<frame>.png`, and that path is returned.
+ *
+ * `runLogged` is the caller's own, from {@link transcript}, so the worker's output reaches the
+ * proof's transcript under `label` like every other child's.
+ */
+export function workerStill({
+  runLogged,
+  label,
+  repo,
+  workspace,
+  stateDir,
+  env,
+  slug,
+  frame,
+  scale,
+}) {
+  const requests = join(workspace, "requests");
+  mkdirSync(requests, { recursive: true });
+  const request = { job_type: "explainer_still", slug, frame, scale };
+  writeFileSync(
+    join(requests, `job-${String(WORKER_STILL_JOB_ID).padStart(6, "0")}.json`),
+    `${JSON.stringify(request, null, 2)}\n`,
+    "utf8",
+  );
+  runLogged(
+    label,
+    process.execPath,
+    [
+      join(repo, "apps", "cli", "dist", "workers", "render.js"),
+      workspace,
+      String(WORKER_STILL_JOB_ID),
+    ],
+    { cwd: workspace, env: { ...env, XPLAINER_STATE_DIR: stateDir } },
+  );
+  return join(workspace, "out", slug, `frame-${frame}.png`);
 }

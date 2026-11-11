@@ -5,7 +5,7 @@
  * steps between a signal and exit `0`, and the only honest way to assert them is to signal a real
  * `serve` that really has a worker under it. The shipped backend can put one there — since
  * `1a95fee` the three job-shaped tools reach the real runner — but every worker it builds needs
- * Remotion or a TTS server, and a drain test must run on a machine that has neither. That leaves
+ * a browser or a TTS server, and a drain test must run on a machine that has neither. That leaves
  * two gaps: a worker this machine can run regardless, and a way to start one without a tool call.
  * `fake-worker.ts` fills the first; this entry fills the second, through the `ServeSeams` that
  * `program.ts` never passes.
