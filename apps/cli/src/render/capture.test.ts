@@ -219,7 +219,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a page that fail
     const { port } = server.address() as AddressInfo;
 
     const root = fixture(
-      `import { useEffect, useState } from "react";
+      `import { useEffect, useRef, useState } from "react";
 import {
   AbsoluteFill,
   Audio,
@@ -247,6 +247,19 @@ const TimerRelease = () => {
   return <div className="text-white">released</div>;
 };
 
+const ObserverRelease = () => {
+  const box = useRef<HTMLDivElement>(null);
+  const [handle] = useState(() => delayRender("released by a ResizeObserver"));
+  useEffect(() => {
+    const observer = new ResizeObserver(() => continueRender(handle));
+    if (box.current) {
+      observer.observe(box.current);
+    }
+    return () => observer.disconnect();
+  }, [handle]);
+  return <div ref={box} className="h-10 w-10 bg-white" />;
+};
+
 const Cancel = () => {
   useEffect(() => {
     cancelRender(new Error("the data never came"));
@@ -265,6 +278,7 @@ const Scene = () => {
       {scenario === "slow-image" && frame >= 1 ? <Img src="http://127.0.0.1:${port}/never.png" /> : null}
       {scenario === "hold" && frame >= 1 ? <Hold /> : null}
       {scenario === "timer-release" && frame >= 1 ? <TimerRelease /> : null}
+      {scenario === "observer-release" && frame >= 1 ? <ObserverRelease /> : null}
       {scenario === "cancel" && frame >= 1 ? <Cancel /> : null}
       {scenario === "second-audio" ? <Audio src={staticFile("narration.wav")} /> : null}
     </AbsoluteFill>
@@ -339,6 +353,17 @@ export const scenes = { hook: Scene };
   /** The deadlock the Phase 0 spike found on a pure film clock, fixed rather than documented. */
   it("renders a delayRender released from setTimeout(…, 100)", async () => {
     await expect(run("timer-release")).resolves.toBe(3);
+  }, 60_000);
+
+  /**
+   * The harness replaces `ResizeObserver` with a subclass that records it was used (`settleTick`
+   * then waits one native frame per settle). This proves the subclass is still a working observer:
+   * it constructs, observes, and its first report — delivered only inside a native frame — releases
+   * the hold. It does not prove the frame wait itself, which a hold released on the wall clock
+   * would pass without.
+   */
+  it("renders a delayRender released by a ResizeObserver's first report", async () => {
+    await expect(run("observer-release")).resolves.toBe(3);
   }, 60_000);
 
   /** Warnings are the job log's, never the render's: a second `<Audio>` is one, not a failure. */

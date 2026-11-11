@@ -20,8 +20,10 @@
  *    animation-frame callbacks with the film timestamp and commits the new frame — so everything a
  *    timer sets lands in the same commit as the frame it belongs to. Then every Web Animation is
  *    paused and seeked to film time (`animations.ts`), and the frame settles.
- * 5. **Settles before a capture**, in order: render holds, images, fonts, then one native animation
- *    frame and a `MessageChannel` tick so the compositor has the committed DOM.
+ * 5. **Settles before a capture**, in order: render holds, images, fonts, then a forced layout and
+ *    one `MessageChannel` task — or, once the page has made a `ResizeObserver` or an
+ *    `IntersectionObserver`, one native animation frame first, because that is where those report
+ *    (`settleTick`).
  *
  * **Render holds and timers — the one place film time yields to the wall clock.** A scene that
  * writes `const h = delayRender(); setTimeout(() => continueRender(h), 100)` deadlocks on a pure
@@ -200,6 +202,26 @@ host.requestAnimationFrame = (callback: FrameRequestCallback): number =>
   frameCallbacks.request(callback);
 host.cancelAnimationFrame = (id: number): void => frameCallbacks.cancel(id);
 
+// --------------------------------------------------------------------------- frame observers
+
+/** Whether the page has made an observer that reports only inside a frame (`settleTick`). */
+let observersInUse = false;
+
+const NativeResizeObserver = globalThis.ResizeObserver;
+globalThis.ResizeObserver = class extends NativeResizeObserver {
+  constructor(callback: ResizeObserverCallback) {
+    super(callback);
+    observersInUse = true;
+  }
+};
+const NativeIntersectionObserver = globalThis.IntersectionObserver;
+globalThis.IntersectionObserver = class extends NativeIntersectionObserver {
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    super(callback, options);
+    observersInUse = true;
+  }
+};
+
 // -------------------------------------------------------------------------------- static fetch
 
 host.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -289,17 +311,36 @@ function nativeSleep(ms: number): Promise<void> {
   });
 }
 
-/** One native animation frame, then one `MessageChannel` task after it. */
-function nativeTick(): Promise<void> {
+/**
+ * Let the committed frame's consequences run before it is captured, without waiting for a frame.
+ *
+ * Reading layout forces style and layout synchronously, which is what starts the font and image
+ * loads the new DOM needs; one `MessageChannel` task after it lets every task already queued run.
+ * Waiting for a native animation frame as well buys no pixel: `Page.captureScreenshot` draws a
+ * fresh frame of its own. On the Phase 1 fps gate's animated scene the MP4 was byte-identical with
+ * and without that wait, and the wait alone held the render at 18.2 fps against 22.4 without it —
+ * one vsync on every frame (`apps/cli/spikes/p1-render-fps.mjs`, ADR 0030).
+ *
+ * The one thing a frame delivers that a layout read does not is observer notifications:
+ * `ResizeObserver` and `IntersectionObserver` report in a frame's rendering steps. So once the page
+ * has made either, every settle waits one native frame first, as it always did before this rule.
+ */
+function settleTick(): Promise<void> {
   return new Promise((resolve) => {
-    native.requestAnimationFrame(() => {
+    const task = (): void => {
       const channel = new MessageChannel();
       channel.port1.onmessage = () => {
         channel.port1.close();
         resolve();
       };
       channel.port2.postMessage(0);
-    });
+    };
+    if (observersInUse) {
+      native.requestAnimationFrame(task);
+      return;
+    }
+    void document.documentElement.getBoundingClientRect();
+    task();
   });
 }
 
@@ -391,7 +432,7 @@ async function settle(frame: number): Promise<void> {
     await settleHolds();
     await settleImages(frame);
     await document.fonts.ready;
-    await nativeTick();
+    await settleTick();
     seekAnimations();
     throwIfFailed();
     const holds = renderHolds();
