@@ -16,7 +16,9 @@ That bar is met by **showing the mechanism**, not by narrating a slide deck.
 
 The eight tools are served by a runtime on the user's own machine. Nothing is
 uploaded and nothing renders anywhere else: the workspace, the speech service
-and every frame stay where this session already is.
+and every frame stay where this session already is. The one exception is the
+user's to make: with ElevenLabs chosen for speech, the narration text is sent
+there (see *Which voice is speaking*).
 
 **Prefer the local tools when they are present.** If this session has an
 xplainer server registered, call it: it renders on the machine the user is
@@ -265,9 +267,12 @@ The narration spec passed to `explainer_narrate`:
 }
 ```
 
-Voices are `<language><gender>_<name>` — `af_heart` (default) is American
-female, `am_` American male, `bf_`/`bm_` British. Voices blend by weight:
-`"af_bella(2)+af_sky(1)"`. `speed` runs 0.25–4.0.
+Leave `voice` out unless the user named one; the default, `af_heart`, means the
+same thing. Which voice speaks is the machine's choice, not yours — see *Which
+voice is speaking* below. On the built-in Kokoro voice, ids are
+`<language><gender>_<name>` — `af_` American female, `am_` American male,
+`bf_`/`bm_` British — and blend by weight: `"af_bella(2)+af_sky(1)"`. `speed`
+runs 0.25–4.0 on Kokoro and 0.7–1.2 under ElevenLabs.
 
 Pass `dry_run: true` to skip synthesis and get silence of estimated length — the
 fast way to check pacing and layout before committing to real audio.
@@ -290,7 +295,7 @@ correct, and an override you invent for a word that was fine is how a working
 pronunciation gets broken.
 
 So the loop is: narrate, read the warnings, decide which ones are actually
-wrong, fix those, narrate again. Re-narrating is cheap.
+wrong, fix those, narrate again. Re-narrating is cheap on the built-in voice.
 
 To fix one, add a line to the `lexicon.txt` the warning names — spelling,
 spaces, then the phonemes:
@@ -319,6 +324,28 @@ You may add an entry before narrating for a word you genuinely know is
 non-standard and whose pronunciation you are sure of. That is the exception,
 not the routine.
 
+## Which voice is speaking
+
+The machine's owner chooses the speech provider, not you. The first line of the
+narration job's output names it — `from kokoro …` is the built-in voice,
+`from elevenlabs …` is ElevenLabs — and the closing `mode` line repeats it.
+
+Under `elevenlabs`:
+
+- **Every narration is billed per character to the user's account.** Iterate
+  with `dry_run: true`, and narrate for real once the script is settled.
+- `voice` is left out (or the default `af_heart`, which means the voice the
+  owner configured) or is a 20-character ElevenLabs voice id the user gave you.
+  Anything else is refused before a word is spoken.
+- `speed` must be 0.7–1.2.
+- `lexicon.txt` applies to the built-in Kokoro voice only, so no pronunciation
+  warnings appear. To fix a word, respell it in the narration text.
+
+Never ask for, read, print or write the API key, and never change the provider:
+both are the user's. If narration fails because the key is missing or refused,
+tell the user to run `xplainer config set tts.elevenlabs.api_key` themselves.
+Switching provider is theirs too, with `xplainer config set tts.provider …`.
+
 ## Before you render
 
 `explainer_still(slug, frame)` and actually look at the image:
@@ -339,8 +366,9 @@ Then render, and report the output path or URL and the duration.
   failed `explainer_narrate` usually means it is not running yet — the runtime's
   own setup command installs and starts it. Read the failure out of
   `explainer_job` before retrying.
-- **Re-running is cheap.** Change the narration and re-narrate, or change the
-  components and re-render. There is no state to clean up.
+- **Re-running is cheap on the built-in voice.** Change the narration and
+  re-narrate, or change the components and re-render. There is no state to
+  clean up. Under ElevenLabs, every real narration is billed.
 - **The workspace is a build area, not a repository.** Treat the MP4 as the
   deliverable and hand it over directly, rather than expecting the sources to
   still be sitting there later.

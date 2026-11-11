@@ -572,11 +572,11 @@ class Narration(BaseModel):
     )
     voice: str | None = Field(
         'af_heart',
-        description='Kokoro voice id, or a blend such as "af_bella(2)+af_sky(1)". Blends are resolved server-side.',
+        description='Voice for the speech provider this machine is configured with. Under the default Kokoro provider: a Kokoro voice id, or a blend such as "af_bella(2)+af_sky(1)", resolved server-side. Under ElevenLabs: omitted, or the default "af_heart", means the voice the machine\'s owner configured; a 20-character ElevenLabs voice id is used as given; any other value is refused before anything is synthesised.',
     )
     speed: float | None = Field(
         1,
-        description='Speech rate multiplier passed straight through to Kokoro.',
+        description='Speech rate multiplier. Kokoro accepts the whole range. ElevenLabs accepts 0.7 to 1.2 and the narration is refused outside it.',
         ge=0.25,
         le=4.0,
     )
@@ -587,7 +587,7 @@ class Narration(BaseModel):
     )
     langCode: str | None = Field(
         None,
-        description='Optional Kokoro language code. Inferred from the voice when omitted.',
+        description='Optional Kokoro language code. Inferred from the voice when omitted. Ignored by other providers.',
     )
     segments: list[NarrationSegment] = Field(
         ...,
