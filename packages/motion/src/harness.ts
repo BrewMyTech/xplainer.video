@@ -10,9 +10,13 @@
  *    moves only when the renderer calls `setFrame`. `setTimeout`/`setInterval` run on film time,
  *    and `requestAnimationFrame` callbacks are queued until the next frame (`clock.ts`). React and
  *    its scheduler keep the native timers: `react-dom` is imported above the patches, and both
- *    capture the timer functions when their modules evaluate.
+ *    capture the timer functions when their modules evaluate. They do not capture the clock: the
+ *    scheduler calls `performance.now()` each time it asks, so it reads film time — its work loop
+ *    never sees its time slice run out while a frame is held (it still yields to paint after a
+ *    commit), and every throttle React measures with it, a Suspense fallback's included, is
+ *    measured in film time.
  * 2. **Answers `fetch` for the static files** the bundle carries in `window.__XPLAINER_STATIC__`
- *    (`static-fetch.ts`), because Chrome refuses `fetch` on `file://`.
+ *    (`static-fetch.ts`), so the composition's metadata never waits on the network.
  * 3. **Mounts the registered video** once `calculateMetadata` has run, into `#root` sized to the
  *    video and clipped to it.
  * 4. **Drives frames.** `setFrame(n)` sets film time and, inside one `flushSync`, fires the timers
@@ -50,15 +54,21 @@
  * on film time even during a hold. Letting them run on the wall clock too would fire them early by
  * however long the hold happened to last, which differs from run to run: measured in Chrome, a
  * 100 ms interval created at frame 0 ticked a frame early on the one frame that took a 100 ms hold.
- * A release timer is created in the same frame as its hold (or between frames, by whatever async
- * work took the hold), so the narrower set still releases every hold the deadlock caught. "Since
- * the previous release" includes this frame's own drain, so a timeout chain the drain re-armed and
- * a `requestAnimationFrame` loop do run during a hold — the loop once per poll, every time with the
- * same film timestamp, which a loop that draws from its timestamp cannot tell apart from one call.
+ * The narrower set assumes a release timer is created in the same frame as its hold (or between
+ * frames, by whatever async work took the hold), and **that is the documented trade-off rather
+ * than a guarantee**: a hold that only an earlier frame's `setInterval` would release is not
+ * released by this rule — the interval stays on film time, the frame cannot advance, and the hold
+ * fails `DELAY_RENDER_TIMEOUT` after its budget. A scene that waits on something takes the hold
+ * where it starts the wait. "Since the previous release" includes this frame's own drain, so a
+ * timeout chain the drain re-armed and a `requestAnimationFrame` loop do run during a hold — the
+ * loop once per poll, every time with the same film timestamp, which a loop that draws from its
+ * timestamp cannot tell apart from one call.
  *
  * **Images: what is waited for, and why there is no late-image failure.** Every `<img>` in the
  * document must be complete and decoded before a frame is released — the frame waits, up to the
- * image budget, and fails `IMAGE_TIMEOUT` past it — and the settle passes again while the DOM is
+ * image budget, and fails `IMAGE_TIMEOUT` past it; one found complete and empty at the end of any
+ * pass fails `IMAGE_BROKEN` on this frame, though it failed too fast ever to be pending, rather
+ * than on the next frame's first look — and the settle passes again while the DOM is
  * still changing. So an image the frame's own work mounts is in the frame: in the commit, after
  * effect → setState hops that each change the DOM, or behind a render hold. What the settle cannot
  * see is work that changes nothing it watches until later — a `fetch` with no `delayRender`, a run
@@ -220,7 +230,15 @@ function timerCallback(handler: TimerHandler, args: unknown[]): () => void {
   };
 }
 
-globalThis.Date = createFrozenDate(Date, () => filmMs);
+const NativeDate = Date;
+globalThis.Date = createFrozenDate(NativeDate, () => filmMs);
+// A date reads `constructor` off the native prototype, so without this `new Date().constructor`
+// would be the native constructor rather than the `Date` the page sees.
+Object.defineProperty(NativeDate.prototype, "constructor", {
+  value: globalThis.Date,
+  writable: true,
+  configurable: true,
+});
 Object.defineProperty(performance, "now", {
   configurable: true,
   writable: true,
@@ -356,7 +374,7 @@ function HarnessApp({
 }
 
 function seekAnimations(): void {
-  seeker.seek(document.getAnimations(), filmMs);
+  seeker.seek(document.getAnimations(), filmMs, document.timeline);
 }
 
 // ---------------------------------------------------------------------------------------- settle
@@ -471,6 +489,11 @@ function imageSource(image: HTMLImageElement): string {
   return image.currentSrc || image.src || "(an <img> with no src)";
 }
 
+/** An image that has finished and has no picture — a broken one — or `undefined`. */
+function brokenImage(): HTMLImageElement | undefined {
+  return Array.from(document.images).find((image) => image.complete && image.naturalWidth === 0);
+}
+
 function pendingImages(): string[] {
   return Array.from(document.images)
     .filter((image) => !image.complete)
@@ -525,6 +548,12 @@ async function settle(frame: number): Promise<void> {
     throwIfFailed();
     const holds = renderHolds();
     const images = pendingImages();
+    // An image this pass's own work mounted is already complete if it failed fast, so it is not
+    // pending; it is still this frame's, and so is the failure.
+    const broken = brokenImage();
+    if (broken !== undefined) {
+      throw failWith(failure("IMAGE_BROKEN", `${imageSource(broken)} at frame ${frame}`));
+    }
     const changed = domChangedSinceForget();
     if (holds.size === 0 && images.length === 0 && !changed && document.fonts.status === "loaded") {
       return;

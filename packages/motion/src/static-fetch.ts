@@ -1,13 +1,14 @@
 /**
  * `fetch(staticFile(name))` answered from memory.
  *
- * The renderer loads the bundle from `file://`, and Chrome refuses `fetch` on `file:` URLs. The
- * scaffold's `Root.tsx` fetches `timings.json` and `captions.json` exactly that way at metadata
- * time, and is a byte-identity fixture that must not change. So the bundle's classic
- * `static-data.js` carries both files' text in `window.__XPLAINER_STATIC__`, and the harness's
- * `fetch` answers a request for one of those names before the network ever sees it. A URL matches
- * when it resolves to the same absolute URL as `staticFile(name)` does; anything else goes to the
- * real `fetch`.
+ * The scaffold's `Root.tsx` fetches `timings.json` and `captions.json` with `fetch(staticFile(…))`
+ * at metadata time, and is a fixture that must not change. The renderer serves the page over
+ * loopback HTTP, which would answer those requests too, but the two documents are what decides the
+ * video's length, so they travel in the bundle instead and never depend on a request. The
+ * bundle's classic `static-data.js` carries both files' text in `window.__XPLAINER_STATIC__`, and
+ * the harness's `fetch` answers a request for one of those names before the network ever sees it.
+ * A URL matches when it resolves to the same absolute URL as `staticFile(name)` does; anything else
+ * goes to the real `fetch`.
  */
 
 import { staticFile } from "./static-file.js";

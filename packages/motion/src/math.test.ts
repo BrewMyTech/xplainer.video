@@ -391,6 +391,29 @@ describe("interpolate against a re-derivation", () => {
     }
   });
 
+  it("returns each breakpoint's own output to the last bit, whatever the easing does at its ends", () => {
+    // exp starts at 2⁻¹⁰ and sin and back() end an ulp or two short of 1; the outputs are values
+    // where `a + (b − a)` is not `b` in doubles.
+    const inputRange = [0, 0.3, 1.1, 2, 7];
+    const outputRange = [0.1, 0.7, -0.3, 1000 / 7, 0.30000000000000004];
+    const easings: readonly [string, EasingFunction][] = [
+      ["exp", Easing.exp],
+      ["sin", Easing.sin],
+      ["back()", Easing.back()],
+      ["inOut(cubic)", Easing.inOut(Easing.cubic)],
+      ["bounce", Easing.bounce],
+      ["linear", Easing.linear],
+    ];
+    for (const [name, easing] of easings) {
+      for (const [index, x] of inputRange.entries()) {
+        const value = interpolate(x, inputRange, outputRange, { easing });
+        if (value !== outputRange[index]) {
+          expect.fail(`${name} at breakpoint ${x}: got ${value}, expected ${outputRange[index]}`);
+        }
+      }
+    }
+  });
+
   it("holds a flat segment flat whatever the easing does", () => {
     compare(interpolate(5, [0, 10], [7, 7], { easing: Easing.elastic(3) }), 7, "flat");
   });
@@ -676,6 +699,37 @@ describe("spring against an RK4 integration of the oscillator", () => {
       }
     });
   }
+
+  /**
+   * ζ = 1e8 (ω₀ = 10): the roots are r₁ ≈ −ω₀/2ζ = −5e-8 and r₂ ≈ −2ζω₀ = −2e9, and once r₂'s term
+   * has died (a nanosecond) the motion is 1 − e^(r₁·t) — written here with `expm1` so it carries
+   * every digit. Computing r₁ as −ω₀(ζ − √(ζ² − 1)) cancels it to 0 and holds the spring at 0.
+   */
+  it("moves a very heavy spring at its slow rate rather than cancelling it to a standstill", () => {
+    const config = { mass: 1, stiffness: 100, damping: 2e9 };
+    const slow = -10 / 2e8;
+    for (const seconds of [1, 30, 600]) {
+      const value = spring({ frame: seconds * 30, fps: 30, config });
+      const expected = -Math.expm1(slow * seconds);
+      expect(Math.abs(value / expected - 1), `${seconds} s`).toBeLessThan(1e-6);
+    }
+  });
+
+  it("refuses, by name and quickly, a spring that would take more than an hour to settle", () => {
+    const started = performance.now();
+    expect(() => measureSpring({ fps: 30, config: { damping: 2e9 } })).toThrow(
+      /^measureSpring: this spring takes more than 3600 s .*give it less damping or more stiffness/,
+    );
+    expect(() => measureSpring({ fps: 30, config: { damping: 2e-5 } })).toThrow(
+      /^measureSpring: this spring takes more than 3600 s .*give it more damping/,
+    );
+    expect(() =>
+      spring({ frame: 10, fps: 30, config: { damping: 2e9 }, durationInFrames: 60 }),
+    ).toThrow(/more than 3600 s/);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    // A slow but reasonable spring is still measured: ζ = 0.001 rings for about nine minutes.
+    expect(measureSpring({ fps: 30, config: { damping: 0.02 } })).toBeGreaterThan(15_000);
+  });
 
   it("is at `from` before release and refuses a spring that never settles", () => {
     expect(spring({ frame: -3, fps: 30, from: 5, to: 9 })).toBe(5);

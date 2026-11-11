@@ -495,7 +495,9 @@ export type MeasureSpringOptions = {
 /**
  * The number of frames until the spring stays within `threshold` of its target for good: the
  * first frame `F` such that every frame from `F` on is inside. A spring with no damping never
- * settles, and is refused rather than looped over.
+ * settles, and is refused rather than looped over; so is one that takes more than an hour to
+ * settle — so lightly damped it rings for that long, or so heavily that it creeps — with a
+ * `RangeError` that says which.
  */
 export declare function measureSpring(options: MeasureSpringOptions): number;
 
@@ -509,7 +511,8 @@ export declare function spring(options: SpringOptions): number;
  * `staticFile(name)` — the URL of a file the narration step wrote beside the video.
  *
  * A scene never knows where its bundle will be opened from: the renderer writes it to a per-job
- * directory and loads it over `file://`. So the base is not baked into the scene; the bundle's
+ * directory and serves it from a loopback address on a port of its own. So the base is not baked
+ * into the scene; the bundle's
  * classic `static-data.js` sets `globalThis.__XPLAINER_PUBLIC_BASE__` (a URL ending in `/`, pointing
  * at `public/<slug>/`) before any module runs, and this function appends the name to it. In Node,
  * where nothing sets it, the base is empty and the result is the encoded name alone — which is

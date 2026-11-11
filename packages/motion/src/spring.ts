@@ -108,7 +108,9 @@ function assertFps(fps: number, caller: string): void {
  *
  * The over-damped branch is written with the two real roots `r₁, r₂ = −ω₀(ζ ∓ √(ζ² − 1))` rather
  * than `cosh`/`sinh` of the envelope, because those two overflow long before their product with
- * the decaying exponential would have.
+ * the decaying exponential would have. The slow root is computed as `r₁ = −ω₀ / (ζ + √(ζ² − 1))`,
+ * the same number without the subtraction: for a heavy spring `ζ` and `√(ζ² − 1)` agree to every
+ * digit, `ζ − √(ζ² − 1)` cancels to 0 (from ζ ≈ 1e8), and the spring would never move at all.
  */
 function position(seconds: number, config: SpringConfig): number {
   const omega = Math.sqrt(config.stiffness / config.mass);
@@ -126,7 +128,7 @@ function position(seconds: number, config: SpringConfig): number {
     return 1 - Math.exp(-omega * seconds) * (1 + omega * seconds);
   }
   const root = Math.sqrt(zeta * zeta - 1);
-  const r1 = -omega * (zeta - root);
+  const r1 = -omega / (zeta + root);
   const r2 = -omega * (zeta + root);
   return 1 + (r2 * Math.exp(r1 * seconds) - r1 * Math.exp(r2 * seconds)) / (r1 - r2);
 }
@@ -159,6 +161,15 @@ function shown(seconds: number, config: SpringConfig): number {
 
 const settleCache = new Map<string, number>();
 
+/** The longest settle `measureSpring` will look for. An explainer is minutes long, not hours. */
+const MAX_SETTLE_SECONDS = 3600;
+
+function tooSlowToSettle(fps: number, zeta: number, threshold: number): RangeError {
+  return new RangeError(
+    `measureSpring: this spring takes more than ${MAX_SETTLE_SECONDS} s to stay within ${threshold} of its target at ${fps} fps (damping ratio ζ = ${zeta}); ${zeta < 1 ? "give it more damping" : "give it less damping or more stiffness"}.`,
+  );
+}
+
 function settleFrames(fps: number, config: SpringConfig, threshold: number): number {
   const key = `${fps}|${config.mass}|${config.damping}|${config.stiffness}|${config.overshootClamping}|${threshold}`;
   const cached = settleCache.get(key);
@@ -169,15 +180,20 @@ function settleFrames(fps: number, config: SpringConfig, threshold: number): num
 
   const omega = Math.sqrt(config.stiffness / config.mass);
   const zeta = config.damping / (2 * Math.sqrt(config.stiffness * config.mass));
+  const limit = Math.ceil(MAX_SETTLE_SECONDS * fps);
   let frames = 0;
   if (zeta < 1 && !config.overshootClamping) {
     // |x − 1| ≤ e^(−ζω₀t) / √(1 − ζ²) for every t, so past the frame where that envelope drops
-    // under the threshold nothing can leave it again. Every frame before it is checked.
+    // under the threshold nothing can leave it again. Every frame before it is checked. The swing
+    // touches the envelope every half period, so a horizon past the cap is a settle past it too.
     const amplitude = 1 / Math.sqrt(1 - zeta * zeta);
     const horizon =
       amplitude <= threshold
         ? 0
         : Math.ceil((Math.log(amplitude / threshold) / (zeta * omega)) * fps);
+    if (horizon > limit) {
+      throw tooSlowToSettle(fps, zeta, threshold);
+    }
     for (let frame = 0; frame <= horizon; frame += 1) {
       if (distance(frame) >= threshold) {
         frames = frame + 1;
@@ -189,6 +205,9 @@ function settleFrames(fps: number, config: SpringConfig, threshold: number): num
     // either way the first frame inside is the frame it stays inside from.
     while (distance(frames) >= threshold) {
       frames += 1;
+      if (frames > limit) {
+        throw tooSlowToSettle(fps, zeta, threshold);
+      }
     }
   }
   settleCache.set(key, frames);
@@ -198,7 +217,9 @@ function settleFrames(fps: number, config: SpringConfig, threshold: number): num
 /**
  * The number of frames until the spring stays within `threshold` of its target for good: the
  * first frame `F` such that every frame from `F` on is inside. A spring with no damping never
- * settles, and is refused rather than looped over.
+ * settles, and is refused rather than looped over; so is one that takes more than an hour to
+ * settle — so lightly damped it rings for that long, or so heavily that it creeps — with a
+ * `RangeError` that says which.
  */
 export function measureSpring(options: MeasureSpringOptions): number {
   const { fps, threshold = DEFAULT_THRESHOLD } = options;

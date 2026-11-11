@@ -9,9 +9,31 @@ import { describeFailure, FAILURE_CODES, failure, messageOf } from "./failures.j
 import { contentTypeFor, findStaticText, requestUrl } from "./static-fetch.js";
 import { staticFile } from "./static-file.js";
 
+const DOCUMENT_TIMELINE = { kind: "the document's timeline" };
+
 class FakeAnimation implements SeekableAnimation {
   currentTime: number | null = 999;
   paused = false;
+  readonly timeline: unknown;
+  constructor(timeline: unknown = DOCUMENT_TIMELINE) {
+    this.timeline = timeline;
+  }
+  pause(): void {
+    this.paused = true;
+  }
+}
+
+/** A scroll timeline's animation: its time is a percentage, and a number of ms is refused. */
+class ScrollDrivenAnimation implements SeekableAnimation {
+  readonly timeline = { kind: "a scroll timeline" };
+  paused = false;
+  #time = 0;
+  get currentTime(): number {
+    return this.#time;
+  }
+  set currentTime(_value: CSSNumberish | null) {
+    throw new TypeError("CSSNumericValue must be a percentage for progress based animations.");
+  }
   pause(): void {
     this.paused = true;
   }
@@ -21,15 +43,15 @@ describe("AnimationSeeker", () => {
   it("pauses each animation and seeks it to film time since it was first seen", () => {
     const seeker = new AnimationSeeker();
     const early = new FakeAnimation();
-    expect(seeker.seek([early], 1000)).toBe(1);
+    expect(seeker.seek([early], 1000, DOCUMENT_TIMELINE)).toBe(1);
     expect(early).toMatchObject({ paused: true, currentTime: 0 });
 
     const late = new FakeAnimation();
-    seeker.seek([early, late], 1500);
+    seeker.seek([early, late], 1500, DOCUMENT_TIMELINE);
     expect(early.currentTime).toBe(500);
     expect(late.currentTime).toBe(0);
 
-    seeker.seek([early, late], 2500);
+    seeker.seek([early, late], 2500, DOCUMENT_TIMELINE);
     expect(early.currentTime).toBe(1500);
     expect(late.currentTime).toBe(1000);
   });
@@ -37,10 +59,21 @@ describe("AnimationSeeker", () => {
   it("goes back in time when the frames do, from the same start", () => {
     const seeker = new AnimationSeeker();
     const animation = new FakeAnimation();
-    seeker.seek([animation], 1000);
-    seeker.seek([animation], 3000);
-    seeker.seek([animation], 1200);
+    seeker.seek([animation], 1000, DOCUMENT_TIMELINE);
+    seeker.seek([animation], 3000, DOCUMENT_TIMELINE);
+    seeker.seek([animation], 1200, DOCUMENT_TIMELINE);
     expect(animation.currentTime).toBe(200);
+  });
+
+  it("leaves an animation on any other timeline alone, a scroll timeline's included", () => {
+    const seeker = new AnimationSeeker();
+    const scrolled = new ScrollDrivenAnimation();
+    const detached = new FakeAnimation(null);
+    const timed = new FakeAnimation();
+    expect(seeker.seek([scrolled, detached, timed], 1000, DOCUMENT_TIMELINE)).toBe(1);
+    expect(scrolled.paused).toBe(false);
+    expect(detached).toMatchObject({ paused: false, currentTime: 999 });
+    expect(timed).toMatchObject({ paused: true, currentTime: 0 });
   });
 });
 

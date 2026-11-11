@@ -10,7 +10,10 @@
  *   silently missing from the picture.
  * - **The easing applies per segment, to the normalised position inside that segment.** A
  *   three-point table with `Easing.quad` eases into each of its two breakpoints, not once across
- *   the whole range.
+ *   the whole range. **An input exactly on a breakpoint returns that breakpoint's output**, to the
+ *   last bit and whatever the easing does at a segment's ends — `Easing.exp` starts at `2⁻¹⁰`, not
+ *   0, and `Easing.sin` ends one ulp short of 1 — so a table always passes through its points. An
+ *   interior breakpoint belongs to the segment ending there.
  * - **Each side extrapolates independently.** `extend` (the default) continues the outer segment's
  *   formula, easing included; `clamp` holds the endpoint value; `identity` returns the input
  *   unchanged; `wrap` folds the input back into the whole input range, so a three-segment table
@@ -141,10 +144,10 @@ export function interpolate(
     }
   }
 
-  // The segment whose start is the last breakpoint at or below x, held inside [0, last − 1] so an
-  // extended input uses the outer segment's formula.
+  // The first segment that reaches x, held inside [0, last − 1] so an extended input uses the
+  // outer segment's formula. At an interior breakpoint that is the segment ending there.
   let segment = 0;
-  while (segment < last - 1 && x >= (inputRange[segment + 1] ?? 0)) {
+  while (segment < last - 1 && x > (inputRange[segment + 1] ?? 0)) {
     segment += 1;
   }
   const inMin = inputRange[segment] ?? 0;
@@ -155,5 +158,14 @@ export function interpolate(
     return outMin;
   }
   const t = (x - inMin) / (inMax - inMin);
+  // A breakpoint reads its own output, whatever the easing does at the segment's ends: `Easing.exp`
+  // starts at 2⁻¹⁰ rather than 0, `Easing.sin` ends one ulp short of 1, and
+  // `outMin + 1·(outMax − outMin)` is not always `outMax` to the last bit either.
+  if (t === 1) {
+    return outMax;
+  }
+  if (t === 0) {
+    return outMin;
+  }
   return outMin + easing(t) * (outMax - outMin);
 }

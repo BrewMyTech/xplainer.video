@@ -390,6 +390,34 @@ const LateFont = () => {
   );
 };
 
+/** A broken image two effect hops after the commit: it fails fast, so it is complete when seen. */
+const LateBrokenImage = () => {
+  const [hop, setHop] = useState(0);
+  useEffect(() => {
+    if (hop < 2) {
+      setHop(hop + 1);
+    }
+  }, [hop]);
+  return <div data-hop={hop}>{hop === 2 ? <Img src={staticFile("media/missing.png")} /> : null}</div>;
+};
+
+/** An animation on a scroll timeline, whose time is a percentage and refuses milliseconds. */
+const ScrollDriven = () => (
+  <>
+    <style>{"@keyframes widen { from { width: 10px; } to { width: 400px; } } .scroll-driven { animation: widen linear both; animation-timeline: scroll(root); }"}</style>
+    <div className="scroll-driven" style={{ position: "absolute", left: 100, top: 100, height: 40, background: "#f59e0b" }} />
+  </>
+);
+
+/** Throws, so the frame fails, unless a date's constructor is the Date the scene sees. */
+const DateConstructor = () => {
+  const date = new Date();
+  if (date.constructor !== Date || Date.prototype.constructor !== Date) {
+    throw new Error("new Date().constructor is not Date");
+  }
+  return <div className="text-white">{date.getUTCFullYear()}</div>;
+};
+
 const latency = scenario.startsWith("late-timer-") ? Number(scenario.slice("late-timer-".length)) : 0;
 
 const Scene = () => {
@@ -410,6 +438,9 @@ const Scene = () => {
       {scenario === "hops" && frame >= 1 ? <Hops /> : null}
       {latency > 0 && frame >= 1 ? <LateTimer latency={latency} /> : null}
       {scenario === "late-font" && frame >= 1 ? <LateFont /> : null}
+      {scenario === "late-broken-image" && frame >= 1 ? <LateBrokenImage /> : null}
+      {scenario === "scroll-timeline" && frame >= 1 ? <ScrollDriven /> : null}
+      {scenario === "date-constructor" && frame >= 1 ? <DateConstructor /> : null}
     </AbsoluteFill>
   );
 };
@@ -454,6 +485,14 @@ export const scenes = { hook: Scene };
 
   it("names a broken image IMAGE_BROKEN, on the frame that drew it", async () => {
     await expect(run("broken-image")).rejects.toMatchObject({
+      code: "IMAGE_BROKEN",
+      message: expect.stringMatching(/^IMAGE_BROKEN: frame 1: .*missing\.png/),
+    });
+  }, 60_000);
+
+  /** Mounted two effect hops after the commit; the failure is still frame 1's, not frame 2's. */
+  it("names a broken image a later settle pass found IMAGE_BROKEN, on the frame that drew it", async () => {
+    await expect(run("late-broken-image")).rejects.toMatchObject({
       code: "IMAGE_BROKEN",
       message: expect.stringMatching(/^IMAGE_BROKEN: frame 1: .*missing\.png/),
     });
@@ -548,6 +587,20 @@ export const scenes = { hook: Scene };
    */
   it("renders a delayRender released by a ResizeObserver's first report", async () => {
     await expect(run("observer-release")).resolves.toBe(FRAMES);
+  }, 60_000);
+
+  /**
+   * The harness seeks Web Animations to film time in milliseconds; an animation on a scroll timeline
+   * measures its time as a percentage and throws on a number, so the seeker must leave it alone
+   * rather than turn every frame that has one into a PAGE_ERROR.
+   */
+  it("renders a scroll-driven CSS animation, leaving it to its scroll timeline", async () => {
+    await expect(run("scroll-timeline")).resolves.toBe(FRAMES);
+  }, 60_000);
+
+  /** Under the film-time Date, a date's constructor is still the page's Date. */
+  it("keeps new Date().constructor === Date under the film-time clock", async () => {
+    await expect(run("date-constructor")).resolves.toBe(FRAMES);
   }, 60_000);
 
   /**
