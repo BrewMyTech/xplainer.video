@@ -91,6 +91,7 @@ test.
 - **2b** `pnpm turbo run test --dry=json` lists a `test` task for all **twelve** members.
   - *Amended 2026-09-06 (ADR 0023):* **nine**.
   - *Amended 2026-09-11 (`packages/alias`):* **ten**.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0030):* **eleven**.
 - **2c** `grep -rnE '\.(skip|only)\(|\bTODO\b|\bFIXME\b' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.py' apps packages services` returns no hits.
   - *Amended 2026-09-08 (phase 2):* a second grep, in the same CI step, for the form the first one never matched. `.skipIf(` is **allowed** — it is how a live-server suite, a real render and a macOS-only probe stay out of `pnpm verify` on a machine that cannot run them — but only with the condition at the call site: `grep -rnE '\.skipIf\(' <the same paths> | grep -vE '\.skipIf\(\(?process\.(env|platform)\b'` returns no hits. A `describe.skipIf(SKIPPED)` reads as an unconditional skip to every reader but the author of the constant, and no grep can tell those apart; an inline `process.env.X === "1"` names the variable and where to set it. Added because the original pattern banned `.skip(` and `.only(` and matched neither `.skipIf(` nor anything else about it, so the exception the repository relied on was documented nowhere.
 - **2d** Each member's test asserts behaviour, not existence.
@@ -98,9 +99,11 @@ test.
 - **2f** **Every task reaches every member it should.** `pnpm turbo run lint --dry=json` and `pnpm turbo run typecheck --dry=json` each list all **twelve** members, mirroring 2b's assertion for `test`. Turbo skips an undeclared script silently, so a member that never declares `lint` produces a green run over unlinted code; only counting the tasks catches it.
   - *Amended 2026-09-06 (ADR 0023):* **nine** each.
   - *Amended 2026-09-11 (`packages/alias`):* **ten** each.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0030):* **eleven** each.
 - **2g** **The `build` task covers exactly the ten members that declare it:** `pnpm turbo run build --dry=json` lists **ten** — the ten TypeScript members — and does **not** list `@xplainer/api` or `@xplainer/tts-sidecar`, which have nothing to compile. Ten is the expected number, not a shortfall.
   - *Amended 2026-09-06 (ADR 0023):* **eight**, and the exclusion list is `@xplainer/tts-sidecar` alone; `@xplainer/api` relocated.
   - *Amended 2026-09-11 (`packages/alias`):* **nine**, the ninth being the unscoped `xplainer`. Its `build` is `tsc -p tsconfig.emit.json` rather than the usual `tsconfig.build.json`, because it emits no declarations and the **Declarations** column of `docs/ARCHITECTURE.md` §3 is derived from that filename; the task count is what this criterion asserts and it is unaffected.
+  - *Amended 2026-11-11 (`packages/motion`, ADR 0030):* **ten**, the tenth being `@xplainer/motion`; the exclusion list is still `@xplainer/tts-sidecar` alone.
 
 ## AC-3 — Tier boundary
 
