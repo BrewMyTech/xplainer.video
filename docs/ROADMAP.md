@@ -380,7 +380,7 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     any more.* The amendments above measure Remotion rendering the video, and the one of 2026-09-09
     says "the one thing still borrowed is Remotion's **browser cache**" and that `chrome.path` is
     never handed to Remotion. Both stopped being true with
-    [ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md): the render worker
+    [ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md): the render worker
     launches `toolchain.json`'s `chrome.path` and nothing else, so there is no second copy and no
     cache to link in, and `scripts/e2e/render.mjs` renders its captions-disabled control through the
     product's own worker rather than through a pinned CLI. The criterion is unchanged; the run
@@ -1527,7 +1527,7 @@ owner's, and it is what turns those lines from pending into met or into defects.
 > against `@xplainer/motion`, drawn one frame at a time in the headless shell `setup` acquired, and
 > encoded by a spawned FFmpeg. Remotion leaves the product entirely.
 
-Decided in [ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) on
+Decided in [ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) on
 2026-11-11. This work has phases of its own, and they are **not** the roadmap's phases: "renderer
 Phase 1" below is not Phase 1 above. The eight tools, their schemas, the job envelope and the
 `timings.json` and `captions.json` contracts do not change in any of them.
@@ -1543,7 +1543,7 @@ captured (197–655 fps on macOS, 172–278 on Linux), every repeated capture is
 own host, and live capture into ffmpeg clears the throughput bar — 20 fps on macOS, 12 in the
 container — only with `optimizeForSpeed: true`, by a thin margin on busy content on macOS. The owner
 then chose FFmpeg as a spawned process with no fallback encoder, and how it will be distributed.
-ADR 0030 carries the numbers, the options measured and not chosen, and the licence position.
+ADR 0031 carries the numbers, the options measured and not chosen, and the licence position.
 
 **Renderer Phase 1 — built.** What it is, and where:
 
@@ -1568,7 +1568,7 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
   leaves no browser, no MP4 and no partial — and `render.test.ts` checks the audio stream's own
   duration as well as the container's. The remaining Phase 1 gates are the end-to-end proofs
   (`pnpm e2e:render` on macOS, `pnpm e2e:render:linux` where Docker is permitted) and the
-  idle-machine throughput re-measure that ADR 0030 §The idle-machine throughput gate describes.
+  idle-machine throughput re-measure that ADR 0031 §The idle-machine throughput gate describes.
 - **Not proven in Phase 1:** Windows' `--remote-debugging-pipe`; playback in QuickTime Player, the
   Safari app and VLC; any frame identity across operating systems, which is not promised (frames are
   reproducible per host and toolchain).
@@ -1583,7 +1583,7 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
    `.tar.xz`; the notice, provenance and re-pin rules for the fetch and the source, build-info and
    signing rules for our own build; a patent decision on the default macOS encoder before the first
    macOS release; and a pinned build, which is what makes MP4 bytes reproducible. Counsel's open
-   questions are listed in ADR 0030.
+   questions are listed in ADR 0031.
 2. **Payload 2 leaves.** The template's Remotion pins and lockfile, `setup --workspace`, the
    workspace payload in `runtime build` and `runtime verify`, the manifest's `remotion_entry`, the
    toolchain gate's workspace check, the update transaction's template-pin refusals, and the proofs
@@ -1594,7 +1594,7 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
    build for it.
 4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner, and the Linux
    container's 12 fps gate re-run on the shipped worker.
-5. **From the final design review (ADR 0030, Follow-up 8):** a decision on the page's network —
+5. **From the final design review (ADR 0031, Follow-up 8):** a decision on the page's network —
    deny by default, which would refuse CDN web fonts, or a recorded reason not to; the toolchain
    marker's shape across the cut, decided in a dated note before the code (`workspace` is required
    and describes the payload being deleted); ffmpeg judged in `assertToolchainReady` rather than in
@@ -1607,7 +1607,7 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
 review, `chrome.kill()` waiting its full grace on a zombie helper where orphans are not reaped (a
 container whose PID 1 is not an init), and no ageing-out of `xplainer-chrome-*` profiles a
 `SIGKILL`ed worker leaves in the temporary directory; WebGL, whose working flag
-set ADR 0030 records; video assets, which need a frame-accurate decoder in the page; sound effects
+set ADR 0031 records; video assets, which need a frame-accurate decoder in the page; sound effects
 beyond the narration; and the design's later capture work — page-side dedup, a second capture tab,
 and `HeadlessExperimental.beginFrame` on Linux only, behind a probe. musl/Alpine has no FFmpeg
 download candidate and win32-arm64 has no Chrome, so neither will render after Phase 2 either.

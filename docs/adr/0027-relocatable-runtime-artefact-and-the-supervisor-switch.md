@@ -788,7 +788,7 @@ it unless the gate has been run against a violation.**
 ## Note, 2026-11-11: payload 1 carries the renderer, and payload 2 has a date to leave
 
 Added as a dated note rather than a rewrite.
-[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
 renderer of our own. Nothing this record decides changes today; what changes is what each payload
 is for.
 
@@ -812,7 +812,7 @@ gate has been run against the new sites.
 **Payload 2 is no longer read by any render, and Phase 2 removes it.** The render worker bundles every
 video against payload 1's own React and `@xplainer/motion`, launches the browser `toolchain.json`
 records, and pipes frames into a spawned ffmpeg. The pinned Remotion tree is therefore dead weight —
-and it stays, deliberately, until ADR 0030's Phase 2: the template's pins and lockfile,
+and it stays, deliberately, until ADR 0031's Phase 2: the template's pins and lockfile,
 `assembleWorkspace`, `remotionEntryPath`, `runtime verify --workspace`, the manifest's
 `remotion_entry`, `setup --workspace`, the toolchain gate's workspace check, the update's
 template-pin refusals and the D1/D2 proofs are all untouched, because removing `@remotion/cli` from

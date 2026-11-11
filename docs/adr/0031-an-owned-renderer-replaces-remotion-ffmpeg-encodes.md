@@ -1,4 +1,4 @@
-# 0030. An owned renderer replaces Remotion, and a spawned FFmpeg encodes
+# 0031. An owned renderer replaces Remotion, and a spawned FFmpeg encodes
 
 - Status: accepted
 - Date: 2026-11-11

@@ -44,7 +44,7 @@ xplainer connect claude                 # write `xplainer mcp --attach` into the
 it writes (exit `3`).
 
 **A render also needs ffmpeg with libx264, and `setup` does not acquire it in this release**
-([ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The render worker
+([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The render worker
 looks in `XPLAINER_FFMPEG`, then on the `PATH` the daemon was started with, then in
 `/opt/homebrew/bin` and `/usr/local/bin` — the last two because a LaunchAgent's `PATH` contains
 neither — and otherwise fails the render with `FFMPEG_NOT_FOUND`. A supervisor's `PATH` is not your

@@ -213,7 +213,7 @@ scaffolds, writes source and media, lists, and enqueues narrate, still and rende
 runner, which `explainer_job` then reports on
 ([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)).
 Narration runs in `workers/narrate.ts`; a still or a render runs in `workers/render.ts`, which is
-**xplainer's own renderer** ([ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)):
+**xplainer's own renderer** ([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)):
 an esbuild-wasm bundle of the video against `@xplainer/motion` and the CLI's own React, the headless
 shell `toolchain.json` records driven one frame at a time over a `--remote-debugging-pipe` CDP
 client, and every PNG piped into a spawned ffmpeg found through `XPLAINER_FFMPEG`, `PATH` and the
@@ -232,7 +232,7 @@ without `--attach`, the tools inside the agent's own session — and it is the o
 **bypasses** the daemon check, because it is the remediation ADR 0020 prints when there is no daemon
 to check for. `xplainer setup` acquires the toolchain — a browser, a speech route and, with
 `--workspace`, the workspace payload resolved from the template's pins by `npm ci`, which no render
-reads any more and which ADR 0030's Phase 2 removes — and records
+reads any more and which ADR 0031's Phase 2 removes — and records
 what arrived in `toolchain.json` (a checked schema in `packages/protocol`); `xplainer runtime
 build` assembles the relocatable payloads that `install` and `update` then move around; and the
 `daemon` group is nine implemented verbs — `install`, `uninstall`, `update`, `recover`, `start`,

@@ -351,7 +351,7 @@ Narration determines scene lengths from word timings. The still is a PNG preview
 is a 1920×1080 MP4 with burnt-in captions. The renderer is xplainer's own: it bundles the scenes into
 one page, has the headless browser `setup` acquired draw it one frame at a time on the video's own
 clock, and pipes every frame into ffmpeg, which encodes H.264 and AAC and muxes the narration
-([ADR 0030](docs/adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The engine owns
+([ADR 0031](docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The engine owns
 the composition shell (`Video.tsx`), which the agent cannot overwrite, so scene edits preserve the
 audio and the captions. Renders are asynchronous: the agent gets a `job_id` and polls for progress.
 

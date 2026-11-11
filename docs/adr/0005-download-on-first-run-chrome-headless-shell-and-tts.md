@@ -206,7 +206,7 @@ an *expected* value captured at manifest-build time rather than a trust anchor, 
 ## Note, 2026-11-11: the browser `setup` acquires is the one that draws, and ffmpeg is the next component
 
 Added as a dated note rather than a rewrite. The decision is unchanged.
-[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
 renderer of our own, and three things happened underneath this record.
 
 **Chrome is launched by our renderer, from `toolchain.json`'s `chrome.path`, and the "two copies"
@@ -234,7 +234,7 @@ on Linux and Windows the pinned BtbN build fetched from upstream. That is this r
 applied to a fourth artefact. Until Phase 2 builds it, the renderer resolves `XPLAINER_FFMPEG`, then
 `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and otherwise refuses with
 `FFMPEG_NOT_FOUND` naming the install command — which is this record's rejected option 3, "require
-the user to install them", for one component. It is tolerable only because ADR 0030's hard
+the user to install them", for one component. It is tolerable only because ADR 0031's hard
 condition holds: nothing is released between that record's Phase 1 and its Phase 2. The render
 workspace, this record's third artefact since 2026-09-08, is still acquired by `setup --workspace`
 and is no longer read by any render; Phase 2 removes it.

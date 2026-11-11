@@ -279,7 +279,7 @@ working. A blank scene is visible in the first still; silent audio is not.
 ## Note, 2026-11-11: the shell imports `@xplainer/motion`, and the soundtrack no longer passes through it
 
 Added as a dated note rather than a rewrite.
-[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
 renderer of our own. **The ownership model this record decides is unchanged**: five engine-owned
 files, `Scenes.tsx` and everything it imports belong to the agent, the reserved list lives once in
 `engine_owned_files`, the four enforcement layers and the preflight codes are exactly as above, and a

@@ -4,7 +4,7 @@
  *
  * The Phase 0 spike measured the owned pipeline's throughput on a machine other sessions kept at a
  * one-minute load average of 4.7 to 14.4, and on the animated stress scene the macOS margin was
- * thin: 21.6 to 25.8 fps live against a 20 fps bar, and 18.3 fps on one capture-only run. ADR 0030
+ * thin: 21.6 to 25.8 fps live against a 20 fps bar, and 18.3 fps on one capture-only run. ADR 0031
  * makes an idle-machine re-measure a Phase 1 gate, and this script is that measurement. It drives
  * the **product's own worker** — `dist/workers/render.js`, spawned exactly as `daemon/workers.ts`
  * spawns it — rather than a copy of its loop, so what it times is what a user's render does.

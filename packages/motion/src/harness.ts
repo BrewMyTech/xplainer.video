@@ -421,7 +421,7 @@ function nativeSleep(ms: number): Promise<void> {
  * Waiting for a native animation frame as well buys no pixel: `Page.captureScreenshot` draws a
  * fresh frame of its own. On the Phase 1 fps gate's animated scene the MP4 was byte-identical with
  * and without that wait, and the wait alone held the render at 18.2 fps against 22.4 without it —
- * one vsync on every frame (`apps/cli/spikes/p1-render-fps.mjs`, ADR 0030).
+ * one vsync on every frame (`apps/cli/spikes/p1-render-fps.mjs`, ADR 0031).
  *
  * The one thing a frame delivers that a layout read does not is observer notifications:
  * `ResizeObserver` and `IntersectionObserver` report in a frame's rendering steps. So once the page

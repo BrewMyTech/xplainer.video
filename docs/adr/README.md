@@ -92,7 +92,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-11 |
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
-| [0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted |
+| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted |
 
 ### The relocated five, and why each could not stay
 
@@ -208,8 +208,8 @@ ADR 0018's addition and ADR 0020's reversal of a stated consequence, and it is r
 next one has a precedent to follow.
 
 **Four records gained a dated note of 2026-11-11 pointing at
-[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md), and no body was rewritten in
-any of them.** ADR 0030 replaces Remotion with a renderer of our own and FFmpeg as a spawned encoder,
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md), and no body was rewritten in
+any of them.** ADR 0031 replaces Remotion with a renderer of our own and FFmpeg as a spawned encoder,
 and each note records only what happened underneath its own record:
 
 | Record | What its note adds |

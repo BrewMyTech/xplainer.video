@@ -469,7 +469,7 @@ ADR 0003, where the equivalent string is load-bearing; see its note of this date
 ## Note, 2026-11-11: two of the five disclosure surfaces said something that stopped being true
 
 Added as a dated note rather than a rewrite. The decision is unchanged.
-[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion as the
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion as the
 renderer, and that changes what two of the five surfaces this record's item 2 names can truthfully
 say.
 
@@ -485,7 +485,7 @@ because `packages/render-core/template/package.json` still declares Remotion and
 `xplainer setup --workspace` still installs that tree onto the user's machine. Phase 2 retires that
 payload, and removes those disclosures with it.
 
-**The narrower set never reaches a user while the install exists.** ADR 0030's hard condition is
+**The narrower set never reaches a user while the install exists.** ADR 0031's hard condition is
 that a tree with Phase 1 and without Phase 2 is not released. So no published version carries the
 two retired surfaces' new wording while `setup --workspace` still fetches Remotion.
 
