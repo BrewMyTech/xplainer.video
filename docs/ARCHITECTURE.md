@@ -48,7 +48,7 @@ and [`daemon.md`](daemon.md) is the recipe for a host that has none.
 
 ## 3. Members
 
-Ten workspace members, from `pnpm-workspace.yaml`'s three globs `apps/*`, `packages/*` and
+Eleven workspace members, from `pnpm-workspace.yaml`'s three globs `apps/*`, `packages/*` and
 `services/*`.
 
 <!-- CHECKED:members -->
@@ -65,6 +65,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `packages/alias` | `xplainer` | open-later | yes | no | no | TypeScript | The unscoped `xplainer` name on npm: one pinned dependency on `@xplainer/cli` and a `bin` that hands over to that package's own. | [AGENTS.md](../packages/alias/AGENTS.md) |
 | `packages/config` | `@xplainer/config` | open-later | no | yes | no | TypeScript | Shared tsconfig presets, the tier-boundary rule, and the three `xplainer-*` build binaries. | [AGENTS.md](../packages/config/AGENTS.md) |
 | `packages/mcp-server` | `@xplainer/mcp-server` | open-later | yes | yes | yes | TypeScript | Backend-agnostic registration of the eight tools onto an MCP server, across a `RenderBackend` seam. | [AGENTS.md](../packages/mcp-server/AGENTS.md) |
+| `packages/motion` | `@xplainer/motion` | open-later | yes | yes | yes | TypeScript | The authoring API scenes import — frame hooks, `interpolate`, `Easing`, `spring`, `Sequence` — and the page-side harness the renderer drives one frame at a time. | [AGENTS.md](../packages/motion/AGENTS.md) |
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
 | `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, the grapheme-to-phoneme port every speech engine reads through, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
 | `packages/skill` | `@xplainer/skill` | open-later | yes | no | no | TypeScript | The agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle. | [AGENTS.md](../packages/skill/AGENTS.md) |
@@ -72,13 +73,13 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
 <!-- /CHECKED:members -->
 
-**Published, emits declarations and has a report are three different sets.** Seven members are
-published (`Published: yes`). Six emit declarations — the ones with a `tsconfig.build.json` — and
+**Published, emits declarations and has a report are three different sets.** Eight members are
+published (`Published: yes`). Seven emit declarations — the ones with a `tsconfig.build.json` — and
 they are not the same members: two of the published ones emit none, because neither has a
 TypeScript surface at all. `packages/skill` builds a bespoke bundle with `node scripts/build.mjs`,
 and `packages/alias` declares a `bin` and no `exports`, so nothing in it is importable. Pointing
 the other way, `packages/config` is `private: true` but does emit declarations for its consumers
-inside the workspace. **Five** members are in both sets, and those five are exactly the ones that
+inside the workspace. **Six** members are in both sets, and those six are exactly the ones that
 carry a committed `api/*.api.md` report. Reading the three columns as one is the mistake this table
 exists to prevent.
 
@@ -94,12 +95,13 @@ _These are the **actual** edges, compared for equality against the graph declare
 `package.json` files — not a permission list. Checked: the three table columns **From** (workspace
 path), **To** (package name) and **Kind** (`dependencies`, `devDependencies`, `peerDependencies` or
 `optionalDependencies`), plus the **banned-specifier list** below against `biome.json`'s
-`noRestrictedImports`. The eight `→ @xplainer/config` devDependency edges are excluded by rule:
+`noRestrictedImports`. The nine `→ @xplainer/config` devDependency edges are excluded by rule:
 every member takes the tsconfig presets, so the edge carries no architectural information._
 
 | From | To | Kind |
 |---|---|---|
 | `apps/cli` | `@xplainer/mcp-server` | dependencies |
+| `apps/cli` | `@xplainer/motion` | dependencies |
 | `apps/cli` | `@xplainer/protocol` | dependencies |
 | `apps/cli` | `@xplainer/render-core` | dependencies |
 | `apps/cli` | `@xplainer/skill` | dependencies |
@@ -140,9 +142,10 @@ An equality check that reads as a permission list is how a forbidden edge gets d
 legitimacy, so the two are stated apart on purpose.
 
 **Direction of travel.** `packages/protocol` is the sink — it depends on nothing in the workspace,
-and five members depend on it. `apps/cli` composes `mcp-server`, `protocol`, `render-core` and
-`tts-client`: the tool registration, the contract, the workspace and scaffold, and the speech client
-its narration worker drives. `apps/desktop`
+and five members depend on it. `apps/cli` composes `mcp-server`, `motion`, `protocol`, `render-core`
+and `tts-client`: the tool registration, the authoring API and page harness its render worker
+bundles, the contract, the workspace and scaffold, and the speech client its narration worker
+drives. `apps/desktop`
 depends on `apps/cli` and on `protocol`, and takes the first as an **injected** production dependency
 (`injectWorkspacePackages: true`, `dedupeInjectedDeps: false`) so that electron-builder packs a real
 directory rather than a symlink. The second is there for one reason: the desktop's discovery has to
@@ -410,7 +413,7 @@ surface without running a type checker, and a change to that surface should be v
 
 **`isolatedDeclarations`.** It does not change what is emitted; it makes the compiler *error* where
 emitting a declaration would need cross-file inference. It is set on the **`tsconfig.build.json`**
-files only — six of them — so:
+files only — seven of them — so:
 
 - `pnpm turbo build` is what surfaces `TS9010` and its siblings;
 - a member's `typecheck` script is `tsc --noEmit` against `tsconfig.json`, which does **not** carry
@@ -437,8 +440,9 @@ re-run is byte-identical.
 `apps/desktop` deliberately does **not** get the flag: it emits no declarations, and
 `electron.vite.config.ts`'s default export is required by Vite.
 
-**The API reports.** Five members carry a committed `api/<name>.api.md` — `apps/cli`,
-`packages/mcp-server`, `packages/protocol`, `packages/render-core`, `packages/tts-client` — the
+**The API reports.** Six members carry a committed `api/<name>.api.md` — `apps/cli`,
+`packages/mcp-server`, `packages/motion`, `packages/protocol`, `packages/render-core`,
+`packages/tts-client` — the
 intersection of published and declaration-emitting. `pnpm api:report` regenerates them and
 `pnpm check:api-report` fails if the committed file differs.
 

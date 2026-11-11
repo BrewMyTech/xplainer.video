@@ -170,7 +170,7 @@ a silently unchecked member.
 
 ## The members
 
-Ten of them. The table — path, package name, tier, published or not, whether it emits declarations,
+Eleven of them. The table — path, package name, tier, published or not, whether it emits declarations,
 whether it has an API report, and what it is responsible for — is
 [`docs/ARCHITECTURE.md` §3 Members](docs/ARCHITECTURE.md#3-members), and it is machine-checked
 against the workspace. There is no second copy here on purpose: a hand-maintained duplicate is a
@@ -269,7 +269,7 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 ## Before editing a member, read that member's `AGENTS.md`
 
-Each of the ten has one, with the same five headings: `## What this package is`,
+Each of the eleven has one, with the same five headings: `## What this package is`,
 `## Public surface`, `## Commands`, `## Invariants`, `## How to add`. The invariants there are
 specific and are not repeated at the root.
 
@@ -277,8 +277,8 @@ specific and are not repeated at the root.
 files automatically in every configuration: Codex walks `AGENTS.md` hierarchically and never reads
 `CLAUDE.md`; Claude Code reads `CLAUDE.md` from directories it works in and never reads
 `AGENTS.md`. That is why each member also carries a one-line `CLAUDE.md` importing its `AGENTS.md`.
-The ten member files are deliberately **not** imported from the root — importing them would load
-all ten every session and destroy the locality that makes them useful.
+The eleven member files are deliberately **not** imported from the root — importing them would load
+all eleven every session and destroy the locality that makes them useful.
 
 ## What belongs where
 

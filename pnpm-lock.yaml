@@ -53,6 +53,9 @@ importers:
       '@xplainer/mcp-server':
         specifier: workspace:*
         version: file:packages/mcp-server(supports-color@8.1.1)
+      '@xplainer/motion':
+        specifier: workspace:*
+        version: file:packages/motion(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@xplainer/protocol':
         specifier: workspace:*
         version: file:packages/protocol
@@ -68,9 +71,21 @@ importers:
       commander:
         specifier: 15.0.0
         version: 15.0.0
+      esbuild-wasm:
+        specifier: 0.28.2
+        version: 0.28.2
       hono:
         specifier: 4.13.5
         version: 4.13.5
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+      tailwindcss:
+        specifier: 4.2.0
+        version: 4.2.0
     devDependencies:
       '@remotion/captions':
         specifier: 4.0.495
@@ -96,21 +111,12 @@ importers:
       ajv-formats:
         specifier: 3.0.1
         version: 3.0.1(ajv@8.20.0)
-      react:
-        specifier: 19.2.8
-        version: 19.2.8
-      react-dom:
-        specifier: 19.2.8
-        version: 19.2.8(react@19.2.8)
       remotion:
         specifier: 4.0.495
         version: 4.0.495(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       smol-toml:
         specifier: 1.8.0
         version: 1.8.0
-      tailwindcss:
-        specifier: 4.0.0
-        version: 4.0.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -229,6 +235,33 @@ importers:
       '@xplainer/config':
         specifier: workspace:*
         version: file:packages/config
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(yaml@2.9.0))
+
+  packages/motion:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.4.1
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.7
+        version: 19.2.7(@types/react@19.2.18)
+      '@xplainer/config':
+        specifier: workspace:*
+        version: file:packages/config
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -2136,6 +2169,12 @@ packages:
   '@xplainer/mcp-server@file:packages/mcp-server':
     resolution: {directory: packages/mcp-server, type: directory}
 
+  '@xplainer/motion@file:packages/motion':
+    resolution: {directory: packages/motion, type: directory}
+    peerDependencies:
+      react: ^19.2.0
+      react-dom: ^19.2.0
+
   '@xplainer/protocol@file:packages/protocol':
     resolution: {directory: packages/protocol, type: directory}
 
@@ -2654,6 +2693,11 @@ packages:
 
   es6-error@4.1.1:
     resolution: {integrity: sha512-Um/+FxMr9CISWh0bi5Zv0iOD+4cFh5qLeks1qhAopKVAJw3drgKbKySikp7wGhDL0HPeaja0P5ULZrxLkniUVg==}
+
+  esbuild-wasm@0.28.2:
+    resolution: {integrity: sha512-GccVwhv3mmOUVQHCQm2Ox/rby8n/EqUwvZxE6Pjfikrq/lWw9g9WX/u9EykWnpot3Ko6j426DgQdea2xWKIAQA==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   esbuild@0.25.12:
     resolution: {integrity: sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==}
@@ -3935,9 +3979,6 @@ packages:
   svg-parser@2.1.0:
     resolution: {integrity: sha512-bwLf38YmY+TDYHJw1Ex0Co8c4yeXuJAo8YnXGZrscxrvYoVVIvLeniEkV1Ks/54VteMnL4FtyN1+P+TZJdUPmQ==}
     engines: {node: '>=8'}
-
-  tailwindcss@4.0.0:
-    resolution: {integrity: sha512-ULRPI3A+e39T7pSaf1xoi58AqqJxVCLg8F/uM5A3FadUbnyDTgltVnXJvdkTjwCOGA6NazqHVcwPJC5h2vRYVQ==}
 
   tailwindcss@4.2.0:
     resolution: {integrity: sha512-yYzTZ4++b7fNYxFfpnberEEKu43w44aqDMNM9MHMmcKuCH7lL8jJ4yJ7LGHv7rSwiqM0nkiobF9I6cLlpS2P7Q==}
@@ -6030,12 +6071,17 @@ snapshots:
       '@hono/node-server': 2.1.1(hono@4.13.5)
       '@modelcontextprotocol/sdk': 1.30.0(supports-color@8.1.1)(zod@4.5.4)
       '@xplainer/mcp-server': file:packages/mcp-server(supports-color@8.1.1)
+      '@xplainer/motion': file:packages/motion(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@xplainer/protocol': file:packages/protocol
       '@xplainer/render-core': file:packages/render-core
       '@xplainer/skill': file:packages/skill
       '@xplainer/tts-client': file:packages/tts-client
       commander: 15.0.0
+      esbuild-wasm: 0.28.2
       hono: 4.13.5
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+      tailwindcss: 4.2.0
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color
@@ -6053,6 +6099,11 @@ snapshots:
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color
+
+  '@xplainer/motion@file:packages/motion(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@xplainer/protocol@file:packages/protocol': {}
 
@@ -6619,6 +6670,8 @@ snapshots:
 
   es6-error@4.1.1:
     optional: true
+
+  esbuild-wasm@0.28.2: {}
 
   esbuild@0.25.12:
     optionalDependencies:
@@ -7943,8 +7996,6 @@ snapshots:
       has-flag: 4.0.0
 
   svg-parser@2.1.0: {}
-
-  tailwindcss@4.0.0: {}
 
   tailwindcss@4.2.0: {}
 

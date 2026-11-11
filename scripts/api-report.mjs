@@ -107,6 +107,7 @@ const REPORT_EXTENSION = ".api.md";
 const REPORTED_MEMBERS = [
   { dir: "apps/cli", name: "@xplainer/cli" },
   { dir: "packages/mcp-server", name: "@xplainer/mcp-server" },
+  { dir: "packages/motion", name: "@xplainer/motion" },
   { dir: "packages/protocol", name: "@xplainer/protocol" },
   { dir: "packages/render-core", name: "@xplainer/render-core" },
   { dir: "packages/tts-client", name: "@xplainer/tts-client" },

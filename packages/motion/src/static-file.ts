@@ -1,0 +1,41 @@
+/**
+ * `staticFile(name)` — the URL of a file the narration step wrote beside the video.
+ *
+ * A scene never knows where its bundle will be opened from: the renderer writes it to a per-job
+ * directory and loads it over `file://`. So the base is not baked into the scene; the bundle's
+ * classic `static-data.js` sets `globalThis.__XPLAINER_PUBLIC_BASE__` (a URL ending in `/`, pointing
+ * at `public/<slug>/`) before any module runs, and this function appends the name to it. In Node,
+ * where nothing sets it, the base is empty and the result is the encoded name alone — which is
+ * what makes this function testable without a page.
+ *
+ * Each path segment is `encodeURIComponent`-encoded and the slashes between them are kept, so
+ * `staticFile("shots/step 1.png")` is `<base>shots/step%201.png`. A name that is already encoded is
+ * encoded again; pass the name as it is on disk. A leading `/` is tolerated and dropped, because
+ * the name is always relative to `public/<slug>/`. A URL is refused rather than mangled.
+ */
+
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+function publicBase(): string {
+  const value: unknown = Reflect.get(globalThis, "__XPLAINER_PUBLIC_BASE__");
+  return typeof value === "string" ? value : "";
+}
+
+export function staticFile(name: string): string {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError(
+      'staticFile: pass the name of a file in this video\'s public directory, such as "logo.png".',
+    );
+  }
+  if (URL_SCHEME.test(name)) {
+    throw new TypeError(
+      `staticFile(${JSON.stringify(name)}): pass a file name inside this video's public directory, not a URL.`,
+    );
+  }
+  const path = name
+    .replace(/^\/+/, "")
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${publicBase()}${path}`;
+}

@@ -1,0 +1,60 @@
+{
+  "name": "@xplainer/motion",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The authoring API explainer scenes are written against — frame hooks, interpolate, Easing, spring, Sequence — and the page-side capture harness the xplainer renderer drives one frame at a time.",
+  "homepage": "https://xplainer.video",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrewMyTech/xplainer.video.git",
+    "directory": "packages/motion"
+  },
+  "author": "Rishav Anand <rishav@brewmytech.com>",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "xplainer": {
+    "tier": "open-later"
+  },
+  "sideEffects": [
+    "./dist/harness.js"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness.d.ts",
+      "default": "./dist/harness.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
+    "prepack": "xplainer-sync-license",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@xplainer/config": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

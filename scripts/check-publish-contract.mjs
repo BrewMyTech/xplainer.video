@@ -36,7 +36,7 @@
  *                              declared through the `workspace:` protocol.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
- *   Whole workspace            the publishable set is exactly the declared seven.
+ *   Whole workspace            the publishable set is exactly the declared eight.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every
  * invocation — see SELF_TESTS. A gate whose rules cannot be shown to fire is
@@ -197,6 +197,7 @@ const PUBLISHABLE_MEMBERS = [
   { dir: "apps/cli", name: "@xplainer/cli" },
   { dir: "packages/alias", name: "xplainer" },
   { dir: "packages/mcp-server", name: "@xplainer/mcp-server" },
+  { dir: "packages/motion", name: "@xplainer/motion" },
   { dir: "packages/protocol", name: "@xplainer/protocol" },
   { dir: "packages/render-core", name: "@xplainer/render-core" },
   { dir: "packages/skill", name: "@xplainer/skill" },
@@ -237,7 +238,7 @@ const WORKSPACE_MEMBER_NAMES = new Set(
  * not a judgement call. The fourth is, and it is in, for two reasons.
  *
  * The harm the rule exists to prevent is strictly worse there. Every one of the
- * seven publishable members takes `@xplainer/config` as a devDependency, and
+ * eight publishable members takes `@xplainer/config` as a devDependency, and
  * `@xplainer/config` is PRIVATE: it has never been published and is not going to
  * be. A literal `"0.0.1"` in that position does not merely unlink it from the
  * package next door, it names something the registry does not have — or, later,
