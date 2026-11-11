@@ -21,6 +21,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BASE_URL_ENV_VAR, DEFAULT_BASE_URL, KokoroClient } from "@xplainer/tts-client";
 import { afterEach, describe, expect, it } from "vitest";
+import { credentialsPath, writeCredential } from "../config/credentials.js";
+import { userConfigPath, writeUserConfigValue } from "../config/user-config.js";
 import { STATE_DIR_ENV } from "../daemon/state-dir.js";
 import { DOCKER_PROVIDER } from "../setup/providers/speech-docker.js";
 import { recordTestOnnxSpeech, recordTestToolchain } from "../setup/testing/toolchain.js";
@@ -35,6 +37,15 @@ import {
   STYLE_DIMENSION,
   voiceFromPackPath,
 } from "../speech/index.js";
+import { userLexiconPath } from "../speech/user-lexicon.js";
+import {
+  ELEVENLABS_API_KEY_ENV,
+  ELEVENLABS_DEFAULT_MODEL,
+  ELEVENLABS_DEFAULT_VOICE,
+  TTS_PROVIDER_ENV,
+  TtsProviderError,
+} from "../tts/index.js";
+import { TEST_API_KEY } from "../tts/testing/elevenlabs-fixture.js";
 import { createFixtureSynthesiser, resolveSpeech, TTS_FIXTURE_ENV, TTS_URL_ENV } from "./speech.js";
 import { writeNarrationFixture } from "./testing/narration-fixture.js";
 
@@ -272,6 +283,180 @@ describe("resolveSpeech and the in-process ONNX engine", () => {
 
   it("falls through to the server when this machine has no engine", () => {
     expect(resolveSpeech({}, () => null).source).toBe(`kokoro at ${DEFAULT_BASE_URL}`);
+  });
+});
+
+/**
+ * The provider level above the Kokoro routes (spec D1, §11 C1): a fixture beats everything, then
+ * the provider, and only under `kokoro` do the route variables mean anything.
+ *
+ * Every case builds a real state directory with WP-B's own writers, and passes a locator that
+ * records whether it was asked: "no Kokoro route was constructed" is asserted, not inferred from
+ * the absence of an error.
+ */
+describe("resolveSpeech and the speech provider", () => {
+  /** A state directory configured for ElevenLabs, with or without a stored key. */
+  function elevenLabsMachine(withKey: boolean): { env: Record<string, string>; stateDir: string } {
+    const stateDir = fixtureDirectory();
+    writeUserConfigValue(stateDir, "tts.provider", "elevenlabs");
+    if (withKey) {
+      writeCredential(stateDir, "tts.elevenlabs.api_key", TEST_API_KEY);
+    }
+    return { env: { [STATE_DIR_ENV]: stateDir }, stateDir };
+  }
+
+  /** A locator that answers like a machine with an engine, and remembers being asked. */
+  function watchedLocator(): { locate: () => OnnxSpeechPaths; asked: () => number } {
+    let asked = 0;
+    const paths = onnxArtefacts();
+    return {
+      locate: () => {
+        asked += 1;
+        return paths;
+      },
+      asked: () => asked,
+    };
+  }
+
+  it("reports every Kokoro route as provider kokoro, unbilled, with nothing to note", () => {
+    const routes = [
+      resolveSpeech(bareStateDir()),
+      resolveSpeech({ ...bareStateDir(), [TTS_URL_ENV]: "http://tts:9000" }),
+      resolveSpeech({}, () => onnxArtefacts()),
+    ];
+
+    for (const route of routes) {
+      expect(route.provider, route.source).toBe("kokoro");
+      expect(route.billed, route.source).toBe(false);
+      expect(route.notes, route.source).toEqual([]);
+    }
+  });
+
+  it("speaks through ElevenLabs when config.json says so and a key is stored", () => {
+    const machine = elevenLabsMachine(true);
+    const locator = watchedLocator();
+
+    const resolved = resolveSpeech(machine.env, locator.locate);
+
+    expect(resolved.provider).toBe("elevenlabs");
+    expect(resolved.billed).toBe(true);
+    expect(resolved.synthesiser).not.toBeInstanceOf(KokoroClient);
+    expect(resolved.source).toBe(
+      `elevenlabs — voice ${ELEVENLABS_DEFAULT_VOICE} (default), model ` +
+        `${ELEVENLABS_DEFAULT_MODEL} (default), provider from ${userConfigPath(machine.stateDir)}, ` +
+        `key from ${credentialsPath(machine.stateDir)}`,
+    );
+    expect(resolved.notes).toEqual([]);
+    expect(locator.asked()).toBe(0);
+  });
+
+  it("names the configured voice and model, and the environment as an origin", () => {
+    const stateDir = fixtureDirectory();
+    writeUserConfigValue(stateDir, "tts.elevenlabs.voice", "21m00Tcm4TlvDq8ikWAM");
+    writeUserConfigValue(stateDir, "tts.elevenlabs.model", "eleven_flash_v2_5");
+
+    const resolved = resolveSpeech({
+      [STATE_DIR_ENV]: stateDir,
+      [TTS_PROVIDER_ENV]: "elevenlabs",
+      [ELEVENLABS_API_KEY_ENV]: TEST_API_KEY,
+    });
+
+    expect(resolved.source).toBe(
+      "elevenlabs — voice 21m00Tcm4TlvDq8ikWAM (config.json), model eleven_flash_v2_5 " +
+        `(config.json), provider from ${TTS_PROVIDER_ENV}, key from ${ELEVENLABS_API_KEY_ENV}`,
+    );
+  });
+
+  /** A stale `KOKORO_URL` in a profile must not silently undo `config set tts.provider`. */
+  it("stays on ElevenLabs with a Kokoro URL set, and notes once that it was not consulted", () => {
+    const machine = elevenLabsMachine(true);
+
+    const one = resolveSpeech({ ...machine.env, [TTS_URL_ENV]: "http://tts:9000" });
+    const both = resolveSpeech({
+      ...machine.env,
+      [TTS_URL_ENV]: "http://tts:9000",
+      [BASE_URL_ENV_VAR]: "http://legacy:8880",
+    });
+
+    expect(one.provider).toBe("elevenlabs");
+    expect(one.notes).toEqual([
+      `${TTS_URL_ENV} names a Kokoro server and was not consulted: the speech provider is ` +
+        `elevenlabs (from ${userConfigPath(machine.stateDir)})`,
+    ]);
+    expect(both.provider).toBe("elevenlabs");
+    expect(both.notes).toHaveLength(1);
+    expect(both.notes[0]).toContain(`${TTS_URL_ENV} and ${BASE_URL_ENV_VAR} name a Kokoro server`);
+  });
+
+  /** Spec D9: the lexicon is Kokoro's phoneme alphabet, and the skill tells agents to edit it. */
+  it("notes that a user lexicon with entries was not used", () => {
+    const machine = elevenLabsMachine(true);
+    writeFileSync(userLexiconPath(machine.stateDir), "kubectl        kjˈubkˌʌtəl\n");
+
+    expect(resolveSpeech(machine.env).notes).toEqual([
+      `pronunciations in ${userLexiconPath(machine.stateDir)} apply to the built-in Kokoro voice ` +
+        "only and were not used",
+    ]);
+  });
+
+  it("still loses to a fixture directory, which never bills", () => {
+    const machine = elevenLabsMachine(true);
+    const dir = fixtureDirectory();
+    writeNarrationFixture(dir, [
+      { id: "hook", text: "It was.", seconds: 0.5, frequency: 330, words: [] },
+    ]);
+
+    const resolved = resolveSpeech({
+      ...machine.env,
+      [TTS_PROVIDER_ENV]: "elevenlabs",
+      [TTS_FIXTURE_ENV]: dir,
+    });
+
+    expect(resolved.source).toContain(dir);
+    expect(resolved.provider).toBe("kokoro");
+    expect(resolved.billed).toBe(false);
+  });
+
+  /** Spec §9 AC 9: refused, and no Kokoro route is constructed in its place. */
+  it("refuses ElevenLabs with no key, and builds no Kokoro route instead", () => {
+    const machine = elevenLabsMachine(false);
+    const locator = watchedLocator();
+
+    let thrown: unknown;
+    try {
+      resolveSpeech({ ...machine.env, [TTS_URL_ENV]: "http://tts:9000" }, locator.locate);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(TtsProviderError);
+    expect(thrown).toMatchObject({ code: "CREDENTIAL_MISSING" });
+    expect((thrown as Error).message).toBe(
+      `the speech provider is elevenlabs (from ${userConfigPath(machine.stateDir)}) and no API ` +
+        "key is stored. Run `xplainer config set tts.elevenlabs.api_key`. A key exported in a " +
+        "shell does not reach a supervised daemon. Kokoro was not used instead: to go back, run " +
+        "`xplainer config set tts.provider kokoro`.",
+    );
+    expect(locator.asked()).toBe(0);
+  });
+
+  it("refuses an unreadable config.json rather than narrating with Kokoro", () => {
+    const stateDir = fixtureDirectory();
+    writeFileSync(userConfigPath(stateDir), "{ half a document");
+    const locator = watchedLocator();
+
+    expect(() => resolveSpeech({ [STATE_DIR_ENV]: stateDir }, locator.locate)).toThrow(
+      /cannot be read/,
+    );
+    expect(locator.asked()).toBe(0);
+  });
+
+  it("never puts the key in what it returns to be logged", () => {
+    const machine = elevenLabsMachine(true);
+
+    const resolved = resolveSpeech({ ...machine.env, [TTS_URL_ENV]: "http://tts:9000" });
+
+    expect(JSON.stringify([resolved.source, resolved.notes])).not.toContain(TEST_API_KEY);
   });
 });
 

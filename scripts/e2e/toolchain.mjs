@@ -757,10 +757,17 @@ async function startProvider(plan, marker) {
  * takes this run's `HOME` so the headless shell Remotion downloaded during the render is the one
  * six more renders find already there. **`XPLAINER_STATE_DIR` is removed rather than overridden**:
  * every case makes a state directory of its own, and a variable naming this run's would be
- * inherited by every daemon those cases start.
+ * inherited by every daemon those cases start. The speech provider and its key (ADR 0030) are
+ * removed for the same reason: a shell left at `XPLAINER_TTS_PROVIDER=elevenlabs` would bill a paid
+ * service from every rollback case.
  */
 function rollbackEnvironment(paths, markerFile) {
-  const { XPLAINER_STATE_DIR: _removed, ...inherited } = process.env;
+  const {
+    XPLAINER_STATE_DIR: _removed,
+    XPLAINER_TTS_PROVIDER: _provider,
+    ELEVENLABS_API_KEY: _key,
+    ...inherited
+  } = process.env;
   return {
     ...inherited,
     HOME: paths.home,

@@ -1,7 +1,8 @@
 /**
- * `@xplainer/tts-client` — Kokoro-FastAPI request/response shaping.
+ * `@xplainer/tts-client` — request/response shaping for the speech services narration talks to:
+ * Kokoro-FastAPI, and ElevenLabs' with-timestamps endpoint.
  *
- * See `./client.ts` for what this package deliberately does not do.
+ * See `./client.ts` and `./elevenlabs/client.ts` for what this package deliberately does not do.
  */
 
 export {
@@ -17,6 +18,22 @@ export {
   resolveBaseUrl,
   VOICES_PATH,
 } from "./client.js";
+export {
+  alignmentToWordTimestamps,
+  buildElevenLabsSpeechPayload,
+  ELEVENLABS_DEFAULT_BASE_URL,
+  ELEVENLABS_OUTPUT_FORMAT,
+  ELEVENLABS_REQUEST_TIMEOUT_MS,
+  ELEVENLABS_SAMPLE_RATE,
+  type ElevenLabsAlignment,
+  ElevenLabsClient,
+  type ElevenLabsClientOptions,
+  ElevenLabsError,
+  type ElevenLabsSpeech,
+  type ElevenLabsSpeechPayload,
+  type ElevenLabsSpeechRequest,
+  timestampedSpeechPath,
+} from "./elevenlabs/index.js";
 export type {
   CaptionedSpeechPayload,
   CaptionedSpeechRequest,

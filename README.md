@@ -57,7 +57,9 @@ rendering run on your machine.
 
 > [!NOTE]
 > **Nothing is uploaded.** `setup` downloads a headless browser, a speech model and a voice, each
-> pinned by digest. After that, your source, your narration and your video stay on your disk.
+> pinned by digest. After that, your source, your narration and your video stay on your disk —
+> unless you [choose ElevenLabs](#using-elevenlabs-instead) for speech, which sends it the
+> narration text.
 
 ## 📋 Contents
 
@@ -83,7 +85,7 @@ rendering run on your machine.
 | 🗣 **Built-in voice** | Kokoro ONNX runs in-process. No Docker, no Python, no speech server |
 | ⏳ **Measured, never guessed** | Speech is generated first, so scene lengths come from the narration's own word timings |
 | 💬 **Captions already in sync** | Burnt in, aligned before the first frame is drawn, and broken on sentences |
-| 🔒 **Local by default** | Speech and rendering happen on your machine; nothing is uploaded |
+| 🔒 **Local by default** | Speech and rendering happen on your machine; nothing is uploaded unless you opt into ElevenLabs |
 | 🧩 **Three agents** | Claude Code, Codex and GitHub Copilot CLI, each one command |
 | 🖥 **Cross-platform** | macOS, Linux and Windows — including headless servers |
 | 🔁 **Optional daemon** | Renders outlive the agent session, and several agents share one queue |
@@ -200,10 +202,49 @@ At an interactive terminal, setup also asks once whether to star the repository 
 declines, the prompt expires after ten seconds, and `--no-star` skips it. It never asks in CI,
 during `xplainer update`, or if you have already starred the repository.
 
+### Using ElevenLabs instead
+
+The built-in voice stays the default. If you have an [ElevenLabs](https://elevenlabs.io) account,
+you can have narration spoken by it instead — on this machine, for every agent, until you switch
+back. Store the key first; the command never takes it as an argument, so it stays out of your shell
+history:
+
+```bash
+xplainer config set tts.elevenlabs.api_key                     # paste at the hidden prompt
+printf %s "$KEY" | xplainer config set tts.elevenlabs.api_key  # or pipe it on stdin
+xplainer config set tts.elevenlabs.api_key --from-env          # or read ELEVENLABS_API_KEY
+
+xplainer config set tts.provider elevenlabs
+xplainer status                                                # speech: elevenlabs — voice …
+```
+
+The voice and model default to `JBFqnCBsd6RMkjVDRZzb` ("George") and `eleven_multilingual_v2`.
+Change either with `xplainer config set tts.elevenlabs.voice <20-character voice id>` or
+`xplainer config set tts.elevenlabs.model <model id>`; `xplainer config list` shows every setting and
+where it came from, and shows the key only as `set` or `unset`. Settings take effect on the next
+narration, with no restart.
+
+Know three things before you switch:
+
+- **It is billed per character to your ElevenLabs account**, on every narration that is not a dry
+  run. Each narration's log says how many characters it sent.
+- **The narration text is sent to ElevenLabs** (`api.elevenlabs.io`). Your source, stills and video
+  are not.
+- **Your agent cannot change any of this.** It cannot pick the provider or the model, or read the
+  key; it can only pass a specific ElevenLabs voice id. If the key is missing or refused, narration
+  fails and says so — it never falls back to the built-in voice.
+
+Your [custom pronunciations](#-custom-pronunciations) apply to the built-in voice only; under
+ElevenLabs, respell a word in the narration to change how it is said. Set the key with
+`xplainer config` rather than exporting `ELEVENLABS_API_KEY`: an installed daemon does not see your
+shell's environment. To go back, run `xplainer config set tts.provider kokoro`, and
+`xplainer config unset tts.elevenlabs.api_key` to remove the key.
+
 ## 🗣 Custom pronunciations
 
-Available from **0.0.8**, for the built-in speech engine. When narration has to guess a word it
-prints `speech derived a pronunciation for X`. If the result sounds wrong, add your own to
+Available from **0.0.8**, for the built-in speech engine only — not for
+[ElevenLabs](#using-elevenlabs-instead). When narration has to guess a word it prints
+`speech derived a pronunciation for X`. If the result sounds wrong, add your own to
 `<state dir>/lexicon.txt`. You can also override a shipped pronunciation, including words that
 produced no warning.
 
@@ -361,9 +402,19 @@ directory and drains on `SIGTERM`. `xplainer status` reports its health in prose
 
 ### Does anything leave my machine?
 
-No. `setup` downloads a headless browser, the speech model, a voice and your platform's ONNX
-Runtime, each pinned by digest. Making a video after that uses none of them again: your source,
-narration, stills and MP4 stay on your disk.
+No, unless you choose a remote speech provider. `setup` downloads a headless browser, the speech
+model, a voice and your platform's ONNX Runtime, each pinned by digest, and making a video after
+that uses the network for nothing: your source, narration, stills and MP4 stay on your disk. With
+[ElevenLabs configured](#using-elevenlabs-instead), the narration text is sent to ElevenLabs to be
+spoken — and nothing else is. Only you can turn that on, with `xplainer config`; your agent cannot.
+
+### Can I use ElevenLabs voices?
+
+Yes, with your own account: `xplainer config set tts.elevenlabs.api_key`, then
+`xplainer config set tts.provider elevenlabs`. Every narration is then billed per character to that
+account, and its text is sent to ElevenLabs. See [Using ElevenLabs instead](#using-elevenlabs-instead).
+Only providers that return word timings with their audio can be used, because scene lengths and
+captions are built from them.
 
 ### Do I need Docker or Python?
 
@@ -385,7 +436,8 @@ ONNX Runtime publishes no `darwin/x64` binding, so the built-in engine cannot ru
 ### A word is pronounced wrong.
 
 Add it to `<state dir>/lexicon.txt`. See [Custom pronunciations](#-custom-pronunciations) — your
-entries win over both the built-in lexicon and CMUdict.
+entries win over both the built-in lexicon and CMUdict. The lexicon applies to the built-in voice
+only; under ElevenLabs, respell the word in the narration instead.
 
 ### Can a render survive closing my agent?
 

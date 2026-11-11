@@ -112,6 +112,209 @@ export declare class KokoroClient {
 }
 ```
 
+## `dist/elevenlabs/alignment.d.ts`
+
+```ts
+/**
+ * Convert a character alignment into one span per word.
+ *
+ * A word is a maximal run of characters that are not whitespace, so punctuation stays attached to
+ * the word it touches (`"failed."`, `"again,"`) — the shape the in-process ONNX route emits — and a
+ * free-standing mark such as `"—"` is a word of its own, which `buildCaptions` folds into the
+ * caption before it exactly as it does Kokoro's punctuation tokens.
+ *
+ * A word starts when its first character starts and ends when its **last character ends** — never
+ * when the next word starts. The gap between the two is the pause the voice took, and `plan.ts`
+ * places silence and caption changes on it; closing the gap would make every caption linger into
+ * the next word's breath.
+ *
+ * Refused, as `alignment_invalid`, rather than repaired:
+ *
+ *   * no characters, or three arrays of different lengths;
+ *   * a character or a word whose start or end is not finite, whose start is negative, or whose end
+ *     comes before its start — a word is checked again after it is assembled, because characters
+ *     inside it that run backwards make a word that ends before it starts;
+ *   * a word that starts before the word in front of it starts, or ends before it ends.
+ *
+ * Two words with equal times, and a word that starts before the one in front of it has ended, are
+ * both accepted: the service does report them, and neither puts the script out of order.
+ */
+export declare function alignmentToWordTimestamps(alignment: ElevenLabsAlignment): WordTimestamp[];
+```
+
+## `dist/elevenlabs/client.d.ts`
+
+```ts
+/** Where the ElevenLabs API is served. */
+export declare const ELEVENLABS_DEFAULT_BASE_URL = "https://api.elevenlabs.io";
+
+/**
+ * The output format every request asks for: raw signed 16-bit mono PCM at 24 kHz.
+ *
+ * Fixed rather than configurable. It is the format the Kokoro routes already produce, so nothing
+ * below the narration port sees a new sample rate; it is available on every tier, where 44.1 kHz
+ * PCM needs Pro; and it has no header to trust, where `wav_24000` would hand us one we have not
+ * seen.
+ */
+export declare const ELEVENLABS_OUTPUT_FORMAT = "pcm_24000";
+
+/** The sample rate {@link ELEVENLABS_OUTPUT_FORMAT} implies, in hertz. */
+export declare const ELEVENLABS_SAMPLE_RATE = 24000;
+
+/**
+ * How long one request may take before it fails as `timeout`, in milliseconds.
+ *
+ * Generous on purpose: a long segment on a busy account is tens of seconds, and a timeout that
+ * fires while the service is still speaking costs a request that was probably billed anyway.
+ */
+export declare const ELEVENLABS_REQUEST_TIMEOUT_MS = 120000;
+
+/**
+ * The path, query included, of the with-timestamps endpoint for one voice.
+ *
+ * The voice id is URL-encoded because it is a path segment: a caller that passed something other
+ * than a plain id gets a `404` naming it, not a request to some other endpoint.
+ */
+export declare function timestampedSpeechPath(voiceId: string): string;
+
+/**
+ * Build the exact JSON body posted to the with-timestamps endpoint.
+ *
+ * `voice_settings` is sent only for a speed other than `1`. Nothing else is sent: not
+ * `language_code` (the default model refuses it), not `previous_text`/`next_text` (each segment is
+ * an independent utterance with silence around it), and not a seed or a pronunciation dictionary.
+ * A field goes in when the narration port has a use for it, and not before.
+ */
+export declare function buildElevenLabsSpeechPayload(request: ElevenLabsSpeechRequest): ElevenLabsSpeechPayload;
+
+/**
+ * An ElevenLabs request that failed, or that answered with something narration cannot use.
+ *
+ * `code` is what a caller branches on:
+ *
+ *   * for an HTTP failure, the service's own code. Its error body is
+ *     `{"detail": {"type", "code", "status", "message", "request_id"}}`, and the two fields do not
+ *     mean what the documentation suggests: a `401` arrives as `code: "unauthorized"`,
+ *     `status: "invalid_api_key"`, and a bad model as `status: "model_not_found"` with no `code` at
+ *     all. So `code` here is `detail.status` when that is a string, and `detail.code` otherwise —
+ *     the specific reason first, the category only when there is nothing more specific;
+ *   * `"alignment_missing"`, `"alignment_invalid"`, `"audio_missing"` or `"response_invalid"` for
+ *     a `2xx` whose body is not usable;
+ *   * `"timeout"` when no answer came within the client's timeout, and `"network"` when the request
+ *     could not be sent or the answer could not be read.
+ *
+ * `retryable` is derived from the status and nothing else: it is `true` for `429` and `5xx`, the
+ * failures the service itself reports as "not now", and `false` for everything else — including a
+ * timeout and a transport failure. Those two can follow a request the service completed and
+ * billed, so repeating one is not a decision this flag makes on anyone's behalf.
+ */
+export declare class ElevenLabsError extends Error {
+    /** HTTP status, or `undefined` for a shape, timeout or transport failure. */
+    readonly status: number | undefined;
+    /** The service's `detail.status` or `detail.code`, or this client's own code; see the class. */
+    readonly code: string | undefined;
+    /** `true` exactly when `status` is `429` or `5xx`. */
+    readonly retryable: boolean;
+    constructor(message: string, status?: number, code?: string);
+}
+
+/**
+ * A client for `POST /v1/text-to-speech/{voice_id}/with-timestamps`.
+ *
+ * The key, the base URL, the transport and the timeout are all given to it, so it reads no
+ * environment and a test can drive every path through a stub `fetch`.
+ */
+export declare class ElevenLabsClient {
+    #private;
+    constructor(options: ElevenLabsClientOptions);
+    /**
+     * Speak one segment and return its raw PCM with the character alignment of the text as sent.
+     *
+     * One attempt. A response is refused unless it carries non-empty `audio_base64` and a non-empty
+     * `alignment`; `normalized_alignment` is never read, so a response that has only that one fails
+     * as `alignment_missing` rather than being timed over text the script does not contain.
+     */
+    timestampedSpeech(request: ElevenLabsSpeechRequest): Promise<ElevenLabsSpeech>;
+}
+```
+
+## `dist/elevenlabs/types.d.ts`
+
+```ts
+/**
+ * When each character of the text was spoken, as three parallel arrays.
+ *
+ * This is the response's `alignment` — the characters of the text **as it was sent**, digits and
+ * dashes included. The response also carries a `normalized_alignment`, timed over the text after
+ * the service rewrote it (the recorded `eleven_multilingual_v2` response turns `—` into `--` and
+ * pads both ends with a space), and this package never reads it: a caption must show the script,
+ * not the service's reading of it.
+ */
+export type ElevenLabsAlignment = {
+    readonly characters: readonly string[];
+    readonly character_start_times_seconds: readonly number[];
+    readonly character_end_times_seconds: readonly number[];
+};
+
+/**
+ * One synthesis request, in this package's idiom.
+ *
+ * {@link ElevenLabsSpeechPayload} is the body it becomes; `voiceId` goes into the path instead.
+ */
+export type ElevenLabsSpeechRequest = {
+    /** The text to speak, exactly as the captions should read it. */
+    text: string;
+    /** An ElevenLabs voice id. It is a path segment, so it is URL-encoded on the way out. */
+    voiceId: string;
+    /** An ElevenLabs model id, such as `eleven_multilingual_v2`. */
+    modelId: string;
+    /** Speaking rate. `1`, or absent, sends no `voice_settings` at all. */
+    speed?: number;
+};
+
+/**
+ * The exact JSON body posted to the with-timestamps endpoint.
+ *
+ * `voice_settings` is present only when a speed other than `1` was asked for. Sending it at `1`
+ * would be harmless today, but `voice_settings` carries other fields whose server-side defaults
+ * come from the voice itself, and a body that names only what was asked for cannot override them
+ * by accident.
+ */
+export type ElevenLabsSpeechPayload = {
+    readonly text: string;
+    readonly model_id: string;
+    readonly voice_settings?: {
+        readonly speed: number;
+    };
+};
+
+/**
+ * The parsed response, refused before it gets here unless both halves are present.
+ *
+ * `audio` stays base64 and stays **raw** signed 16-bit little-endian mono PCM at 24 kHz — the
+ * `pcm_24000` output format has no header. Wrapping it as a WAV is the caller's job, because that
+ * needs render-core's `encodeWav` and render-core already depends on this package.
+ */
+export type ElevenLabsSpeech = {
+    /** Base64 raw PCM, straight from the response's `audio_base64`. */
+    readonly audio: string;
+    /** The response's `alignment`, present and non-empty. */
+    readonly alignment: ElevenLabsAlignment;
+};
+
+/** Construction options for `ElevenLabsClient`. */
+export type ElevenLabsClientOptions = {
+    /** Sent as the `xi-api-key` header and never in any error message. */
+    apiKey: string;
+    /** Service base URL. Defaults to `https://api.elevenlabs.io`. */
+    baseUrl?: string;
+    /** Transport. Defaults to the platform `fetch`. */
+    fetch?: FetchLike;
+    /** How long one request may take, in milliseconds, before it fails as a timeout. */
+    timeoutMs?: number;
+};
+```
+
 ## `dist/types.d.ts`
 
 ```ts
@@ -207,6 +410,19 @@ export type HttpRequestInit = {
     readonly method: string;
     readonly headers: Record<string, string>;
     readonly body?: string;
+    /**
+     * Aborts the request. The ElevenLabs client passes `AbortSignal.timeout()` so a request that
+     * never answers fails by name instead of holding a narration job forever; the Kokoro client
+     * passes none. Optional, so an existing stub transport that ignores it still satisfies the type.
+     */
+    readonly signal?: AbortSignal;
+    /**
+     * What to do with a `3xx`. The ElevenLabs client passes `"error"`: `fetch` keeps a custom header
+     * such as `xi-api-key` across a cross-origin redirect (it strips only `Authorization`) and will
+     * follow one from `https` to `http`, so a redirect is a refusal rather than a hop the key rides
+     * along on. Optional, for the same reason `signal` is.
+     */
+    readonly redirect?: "error" | "follow" | "manual";
 };
 
 /**

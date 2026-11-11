@@ -1,11 +1,31 @@
 /**
  * Where the narration worker's speech comes from.
  *
- * **Three sources, and an agent chooses none of them.** Two are environment variables an operator
- * or a workflow sets; the third is what `xplainer setup` acquired on this machine, read out of the
- * record `setup` left. A tool call carries no flag that reaches here, which is the property to
- * preserve — the daemon speaking with whatever this machine has is not the same thing as a caller
- * picking an engine per request:
+ * **Two levels: first which provider, then which route inside it — and an agent chooses none of
+ * them.** The provider, its model, its key and the route are the machine owner's: environment
+ * variables an operator or a workflow sets, `<state>/config.json` and `<state>/credentials.json`
+ * that `xplainer config` writes, and what `xplainer setup` acquired. A tool call carries no flag
+ * that reaches here, which is the property to preserve — the daemon speaking with whatever this
+ * machine has is not the same thing as a caller picking an engine, or an account to bill, per
+ * request. The one thing a narration may still choose is the voice (`tts/elevenlabs.ts`).
+ *
+ * ```
+ * 1. XPLAINER_TTS_FIXTURE set                  -> a fixture directory (always wins, never bills)
+ * 2. provider = XPLAINER_TTS_PROVIDER          -> else config.json tts.provider -> else "kokoro"
+ * 3. provider == "elevenlabs"                  -> ElevenLabs; no Kokoro variable is consulted
+ * 4. provider == "kokoro"                      -> the Kokoro route chain below, unchanged:
+ *      XPLAINER_TTS_URL / KOKORO_URL -> XPLAINER_ONNX_* / toolchain.json -> tts-client default
+ * ```
+ *
+ * Steps 2 and 3 are `tts/resolve.ts`'s, which `xplainer status` asks too, so the status line and
+ * the job log cannot disagree about who is speaking. A Kokoro URL never beats a configured provider
+ * (spec §11 C1): it is a *route* setting, and a stale `KOKORO_URL` in a shell profile would
+ * otherwise silently undo `xplainer config set tts.provider elevenlabs`. When step 3 is taken with
+ * one set anyway, the job log says once that it was not consulted. **There is no fallback from
+ * ElevenLabs to Kokoro** — not for a missing key, not for a refused request. A video in a different
+ * voice than the owner pays for, with nothing in the log to say so, is worse than a failed job.
+ *
+ * **The Kokoro routes.** Three, all of them the same provider reached three ways:
  *
  * - **The in-process ONNX engine**, when this machine has one, which is the product from plan
  *   P2-4 on (`.omc/plans/ralplan-speech-onnx.md`). Kokoro-82M runs inside the narration worker
@@ -23,13 +43,14 @@
  *   below it (decoding, measuring, planning, concatenating, writing) is the shipping code path.
  *
  * **The precedence is fixture, then URL, then whatever `toolchain.json` records, then the
- * tts-client's own default**, and each step of it is deliberate. A fixture wins over everything
- * because a test environment must not reach a developer's running container *or* spend six seconds
- * a segment in a real model. An explicit `XPLAINER_TTS_URL` beats the local engine because someone
- * who named a server meant it — a hosted voice, a variant, a comparison against the reference
- * implementation — and a machine that has run `setup` is exactly the machine where that intent would
- * otherwise be silently overridden. The marker then beats the tts-client's default, which is a
- * `localhost:8880` guess at a container that is usually not running.
+ * tts-client's own default**, and each step of it is deliberate. A fixture wins over everything —
+ * the provider included — because a test environment must not reach a developer's running
+ * container, spend six seconds a segment in a real model, *or bill an ElevenLabs account*. An
+ * explicit `XPLAINER_TTS_URL` beats the local engine because someone who named a server meant it —
+ * a hosted voice, a variant, a comparison against the reference implementation — and a machine
+ * that has run `setup` is exactly the machine where that intent would otherwise be silently
+ * overridden. The marker then beats the tts-client's default, which is a `localhost:8880` guess at
+ * a container that is usually not running.
  *
  * **Step three is the marker and not three environment variables, which is plan S5 and the whole
  * point of it.** Until it landed, {@link resolveSpeech}'s locator defaulted to
@@ -56,12 +77,30 @@ import {
   BASE_URL_ENV_VAR,
   type CaptionedSpeechRequest,
   type CaptionedSpeechResponse,
+  ElevenLabsClient,
   KokoroClient,
   resolveBaseUrl,
   type WordTimestamp,
 } from "@xplainer/tts-client";
+import { credentialsPath } from "../config/credentials.js";
+import { userConfigPath } from "../config/user-config.js";
+import { resolveStateDir } from "../daemon/state-dir.js";
 import { onnxSpeechFromToolchain } from "../setup/speech-locate.js";
 import { createOnnxSynthesiser, type OnnxSpeechLocator } from "../speech/index.js";
+import { readUserLexicon } from "../speech/user-lexicon.js";
+import {
+  createElevenLabsSynthesiser,
+  ELEVENLABS_API_KEY_ENV,
+  readElevenLabsApiKey,
+  requireWordSpans,
+  resolveTtsSelection,
+  type SettingOrigin,
+  TTS_PROVIDER_ENV,
+  TTS_PROVIDERS,
+  TtsProviderError,
+  type TtsProviderId,
+  type TtsSelection,
+} from "../tts/index.js";
 
 /** Names the Kokoro server this daemon narrates against. */
 export const TTS_URL_ENV = "XPLAINER_TTS_URL";
@@ -85,11 +124,20 @@ export type SpeechFixture = {
 /** The environment this module reads, narrowed to what it uses. */
 export type SpeechEnvironment = Readonly<Record<string, string | undefined>>;
 
-/** A synthesiser, and the one line the worker logs about where its speech came from. */
+/** A synthesiser, and what the worker logs about where its speech came from. */
 export type ResolvedSpeech = {
   synthesiser: SpeechSynthesiser;
-  /** Human-readable provenance, for the job's log tail. */
+  /** Human-readable provenance, for the first line of the job's log tail. */
   source: string;
+  /** Who speaks: `"kokoro"` for all three Kokoro routes, the fixture included. */
+  provider: TtsProviderId;
+  /** The owner pays per character, so the job log says how many this narration sends. */
+  billed: boolean;
+  /**
+   * Settings that were present and deliberately not used, one line each, for the job log right
+   * after the first line. Empty for every Kokoro route, whose log stays byte-identical.
+   */
+  notes: readonly string[];
 };
 
 /** A fixture directory that is missing, malformed, or has no clip for a segment. */
@@ -194,14 +242,94 @@ function namedServer(env: SpeechEnvironment): string | null {
   return null;
 }
 
+/** The ElevenLabs half of a {@link TtsSelection}. */
+type ElevenLabsSelection = Extract<TtsSelection, { provider: "elevenlabs" }>;
+
+/** Where a setting came from, as the job log's first line names it. */
+function originLabel(origin: SettingOrigin): string {
+  return origin === "config" ? "config.json" : origin;
+}
+
+/**
+ * The ElevenLabs route: the key, the adapter, and the notes about what was not consulted.
+ *
+ * Refuses with `CREDENTIAL_MISSING` rather than falling through to a Kokoro route: the owner chose a
+ * provider, and a narration in another voice is not a degraded form of that choice but a different
+ * one, made by nobody.
+ */
+function elevenLabsSpeech(
+  env: SpeechEnvironment,
+  stateDir: string,
+  selection: ElevenLabsSelection,
+): ResolvedSpeech {
+  const providerFrom =
+    selection.providerOrigin === "environment" ? TTS_PROVIDER_ENV : userConfigPath(stateDir);
+  const apiKey = readElevenLabsApiKey(env, stateDir);
+  if (apiKey === null) {
+    throw new TtsProviderError(
+      "CREDENTIAL_MISSING",
+      `the speech provider is elevenlabs (from ${providerFrom}) and no API key is stored. Run ` +
+        "`xplainer config set tts.elevenlabs.api_key`. A key exported in a shell does not reach a " +
+        "supervised daemon. Kokoro was not used instead: to go back, run " +
+        "`xplainer config set tts.provider kokoro`.",
+    );
+  }
+  const keyFrom =
+    selection.apiKeyOrigin === "environment" ? ELEVENLABS_API_KEY_ENV : credentialsPath(stateDir);
+
+  const notes: string[] = [];
+  const kokoroVariables = [TTS_URL_ENV, BASE_URL_ENV_VAR].filter(
+    (variable) => (env[variable] ?? "").trim() !== "",
+  );
+  if (kokoroVariables.length > 0) {
+    const one = kokoroVariables.length === 1;
+    notes.push(
+      `${kokoroVariables.join(" and ")} ${one ? "names" : "name"} a Kokoro server and ` +
+        `${one ? "was" : "were"} not consulted: the speech provider is elevenlabs (from ${providerFrom})`,
+    );
+  }
+  // The file's second column is Kokoro's phoneme alphabet and feeds only render-core's G2P, so it
+  // cannot apply here (spec D9) — and the skill tells agents to edit it, so silence would mislead.
+  const lexicon = readUserLexicon(stateDir);
+  if (lexicon.entries > 0) {
+    notes.push(
+      `pronunciations in ${lexicon.path} apply to the built-in Kokoro voice only and were not used`,
+    );
+  }
+
+  const adapter = createElevenLabsSynthesiser({
+    client: new ElevenLabsClient({ apiKey }),
+    voice: selection.voice,
+    model: selection.model,
+    redact: (text) => text.replaceAll(apiKey, "[redacted]"),
+  });
+  const descriptor = TTS_PROVIDERS.elevenlabs;
+  return {
+    // The run-time half of the admissibility rule applies to remote providers only (spec §11 C10).
+    synthesiser: descriptor.remote ? requireWordSpans(adapter, "elevenlabs") : adapter,
+    source:
+      `elevenlabs — voice ${selection.voice} (${originLabel(selection.voiceOrigin)}), ` +
+      `model ${selection.model} (${originLabel(selection.modelOrigin)}), ` +
+      `provider from ${providerFrom}, key from ${keyFrom}`,
+    provider: "elevenlabs",
+    billed: descriptor.billed,
+    notes,
+  };
+}
+
 /**
  * Decide where this narration run's speech comes from.
+ *
+ * The state directory is resolved from `env` exactly as the daemon resolved it, which is why the
+ * worker is handed `XPLAINER_STATE_DIR`: `config.json`, `credentials.json` and `toolchain.json` are
+ * all read from the directory this daemon owns, never from the platform default of whoever ran it.
  *
  * @param env the environment to read; defaults to this process's
  * @param locateOnnx how to ask whether this machine has an in-process engine. Defaults to
  *   `setup/speech-locate.ts`'s reader — the three `XPLAINER_ONNX_*` variables, else what
  *   `toolchain.json` records — and stays an argument rather than a call so that a route test can
  *   assert the *precedence* without a marker on the machine running it.
+ * @throws {TtsProviderError} for a provider setting that cannot be used, or ElevenLabs with no key
  */
 export function resolveSpeech(
   env: SpeechEnvironment = process.env,
@@ -213,12 +341,27 @@ export function resolveSpeech(
     return {
       synthesiser: createFixtureSynthesiser(dir),
       source: `recorded speech from ${dir} (${TTS_FIXTURE_ENV})`,
+      provider: "kokoro",
+      billed: false,
+      notes: [],
     };
+  }
+
+  const stateDir = resolveStateDir(env);
+  const selection = resolveTtsSelection(env, stateDir);
+  if (selection.provider === "elevenlabs") {
+    return elevenLabsSpeech(env, stateDir, selection);
   }
 
   const named = namedServer(env);
   if (named !== null) {
-    return { synthesiser: new KokoroClient({ baseUrl: named }), source: `kokoro at ${named}` };
+    return {
+      synthesiser: new KokoroClient({ baseUrl: named }),
+      source: `kokoro at ${named}`,
+      provider: "kokoro",
+      billed: false,
+      notes: [],
+    };
   }
 
   const onnx = locateOnnx(env);
@@ -231,6 +374,9 @@ export function resolveSpeech(
       source:
         `kokoro in this process, voice ${onnx.voice} (${onnx.modelPath}), ` +
         `route ${onnx.origin}`,
+      provider: "kokoro",
+      billed: false,
+      notes: [],
     };
   }
 
@@ -238,5 +384,8 @@ export function resolveSpeech(
   return {
     synthesiser: new KokoroClient({ baseUrl }),
     source: `kokoro at ${baseUrl}`,
+    provider: "kokoro",
+    billed: false,
+    notes: [],
   };
 }
