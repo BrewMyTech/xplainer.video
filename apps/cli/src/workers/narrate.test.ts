@@ -10,7 +10,7 @@
  * comes from — unasserted.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -19,10 +19,12 @@ import type { ExplainerJobOutput, Timings } from "@xplainer/protocol";
 import { decodeWav, GAP_MS, LEAD_IN_MS, pcmDurationMs, TAIL_MS } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLocalBackend } from "../backend.js";
+import { userConfigPath, writeUserConfigValue } from "../config/user-config.js";
 import { createJobStore } from "../daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "../daemon/runner.js";
 import { selfIdentity } from "../daemon/worker-identity.js";
 import { createWorkerRegistry } from "../daemon/workers.js";
+import { ELEVENLABS_API_KEY_ENV, TTS_PROVIDER_ENV } from "../tts/index.js";
 import { TTS_FIXTURE_ENV } from "./speech.js";
 import { type NarrationFixture, writeNarrationFixture } from "./testing/narration-fixture.js";
 
@@ -183,5 +185,46 @@ describe("the narrate worker", () => {
     expect(finished.status).toBe("error");
     expect(finished.error_code).toBe("tts_failed");
     expect(finished.output.lines.join("\n")).toContain("no recorded speech");
+  }, 90_000);
+  /**
+   * Spec §9 AC 9, through the real worker: the owner chose ElevenLabs and stored no key, so the
+   * job fails naming the remedy — and no Kokoro route speaks in its place, which is why no file is
+   * written. The two variables a developer's shell might carry are taken out of the environment
+   * the worker inherits, so the case is the same on every machine and can never send a request.
+   */
+  it("fails the job, naming the missing key, when ElevenLabs is configured without one", async () => {
+    const saved = {
+      key: process.env[ELEVENLABS_API_KEY_ENV],
+      provider: process.env[TTS_PROVIDER_ENV],
+    };
+    delete process.env[ELEVENLABS_API_KEY_ENV];
+    delete process.env[TTS_PROVIDER_ENV];
+    try {
+      const narration = writeNarrationFixture(fixtureDir, FIXTURES);
+      writeUserConfigValue(stateDir, "tts.provider", "elevenlabs");
+      await backend.explainer_create({ slug: "demo" });
+
+      const queued = await backend.explainer_narrate({ slug: "demo", narration });
+      const finished = await waitForJob(queued.job_id);
+
+      expect(finished.status).toBe("error");
+      expect(finished.error_code).toBe("tts_failed");
+      const lines = finished.output.lines.join("\n");
+      expect(lines).toContain(
+        `[xplainer] narration failed: the speech provider is elevenlabs (from ${userConfigPath(stateDir)}) and no API key is stored.`,
+      );
+      expect(lines).toContain("Kokoro was not used instead");
+      expect(lines).not.toContain("[xplainer] narrating");
+      expect(existsSync(join(root, "public", "demo", "narration.wav"))).toBe(false);
+    } finally {
+      for (const [variable, value] of [
+        [ELEVENLABS_API_KEY_ENV, saved.key],
+        [TTS_PROVIDER_ENV, saved.provider],
+      ] as const) {
+        if (value !== undefined) {
+          process.env[variable] = value;
+        }
+      }
+    }
   }, 90_000);
 });

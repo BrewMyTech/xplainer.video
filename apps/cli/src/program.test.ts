@@ -2,7 +2,7 @@
  * What the binary does, driven through the real commander program.
  *
  * The things asserted here — the version it prints, the commands it offers, and
- * the verbs each of its four groups offers — are AC-14a and AC-14b. All of them
+ * the verbs each of its five groups offers — are AC-14a and AC-14b. All of them
  * are observable only through stdout, stderr and an exit code, so the program is
  * built with a recording `CliIo` (see `io.ts`) and everything else is real: the
  * real command registrations, the real help generation, the real exit codes
@@ -132,7 +132,7 @@ describe("xplainer", () => {
     expect(exitCode).toBe(0);
   });
 
-  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime, token and update under --help", async () => {
+  it("lists exactly serve, status, mcp, setup, connect, daemon, runtime, token, config and update under --help", async () => {
     const { stdout, exitCode } = await run(["--help"]);
 
     expect(listedCommands(stdout)).toEqual([
@@ -144,6 +144,7 @@ describe("xplainer", () => {
       "daemon",
       "runtime",
       "token",
+      "config",
       "update",
     ]);
     expect(exitCode).toBe(0);
@@ -189,6 +190,17 @@ describe("xplainer", () => {
     const { stdout, exitCode } = await run(["token", "--help"]);
 
     expect(listedCommands(stdout)).toEqual(["rotate"]);
+    expect(exitCode).toBe(0);
+  });
+
+  /**
+   * Four verbs over four settings, and no fifth: a verb that printed or exported the stored key
+   * would be a second way to read the credential `credentials.json` exists to contain.
+   */
+  it("lists exactly set, get, unset and list under `config --help`", async () => {
+    const { stdout, exitCode } = await run(["config", "--help"]);
+
+    expect(listedCommands(stdout)).toEqual(["set", "get", "unset", "list"]);
     expect(exitCode).toBe(0);
   });
 

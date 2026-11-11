@@ -1,17 +1,20 @@
 /**
  * The `xplainer` command surface.
  *
- * Eight entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
+ * Ten entries, fixed here and asserted in `program.test.ts`: `serve`, `status`
  * and `mcp`; `setup`, which acquires the render toolchain and records what
- * arrived (`commands/setup.ts`); `connect`, a group of two verbs — `claude` and
- * `codex` — which write an agent's stdio configuration (`commands/connect.ts`);
- * `daemon`, a group of nine verbs — `install`, `uninstall`, `update`, `recover`,
- * `start`, `stop`, `restart`, `status`, `logs` — over the installed supervisor
- * (`commands/daemon.ts`); `runtime`, a group of two verbs — `build` and `verify`
- * — that assemble and re-hash the two relocatable payloads
- * (`commands/runtime.ts`); and `token`, a group of one verb — `rotate` — which
- * is ADR 0020 §Security R-SEC-8's rotation with its grace window
- * (`commands/token.ts`).
+ * arrived (`commands/setup.ts`); `connect`, a group of three verbs — `claude`,
+ * `codex` and `copilot` — which write an agent's stdio configuration
+ * (`commands/connect.ts`); `daemon`, a group of nine verbs — `install`,
+ * `uninstall`, `update`, `recover`, `start`, `stop`, `restart`, `status`, `logs`
+ * — over the installed supervisor (`commands/daemon.ts`); `runtime`, a group of
+ * two verbs — `build` and `verify` — that assemble and re-hash the two
+ * relocatable payloads (`commands/runtime.ts`); `token`, a group of one verb —
+ * `rotate` — which is ADR 0020 §Security R-SEC-8's rotation with its grace
+ * window (`commands/token.ts`); `config`, a group of four verbs — `set`, `get`,
+ * `unset`, `list` — over the owner's speech settings and the ElevenLabs API key
+ * in the state directory (`commands/config.ts`); and `update`, which reconciles
+ * the machine after an upgrade (`commands/update.ts`).
  *
  * **`runtime` is a build-time command living in the shipped binary on purpose.**
  * `runtime build --workspace` installs the template that ships inside
@@ -37,11 +40,11 @@
  *
  * **`helpCommand(false)` is load-bearing.** Commander adds an implicit
  * `help [command]` subcommand as soon as a program has subcommands, so `--help`
- * would list a ninth entry and AC-14b could never pass on a correct
+ * would list an eleventh entry and AC-14b could never pass on a correct
  * implementation. Disabling it removes the *subcommand* only; `-h` and `--help`
  * are unaffected. The call is `helpCommand(false)` because this package pins
  * commander 15; on commander 12 and earlier it would be `addHelpCommand(false)`.
- * All four groups have subcommands too, so each repeats the call.
+ * All five groups have subcommands too, so each repeats the call.
  *
  * Output and termination go through `CliIo` rather than straight to the process
  * (see `io.ts`), and commander's own exits are routed the same way with
@@ -50,11 +53,12 @@
  * commander's behaviour is unchanged: it writes help or a usage error and the
  * process ends with the code commander chose. Neither call is inherited by an
  * added subcommand, which is why each group makes both again for itself — and
- * `runtime` and `token` make them on every verb too, because a verb's own usage
- * error has to be observable as well.
+ * `runtime`, `token` and `config` make them on every verb too, because a verb's
+ * own usage error has to be observable as well.
  */
 
 import { Command } from "commander";
+import { createConfigCommand } from "./commands/config.js";
 import { createConnectCommand } from "./commands/connect.js";
 import { createDaemonCommand } from "./commands/daemon.js";
 import { createMcpCommand } from "./commands/mcp.js";
@@ -94,6 +98,7 @@ export function createProgram(io: CliIo = processIo): Command {
   program.addCommand(createDaemonCommand(io));
   program.addCommand(createRuntimeCommand(io));
   program.addCommand(createTokenCommand(io));
+  program.addCommand(createConfigCommand(io));
   program.addCommand(createUpdateCommand(io));
 
   return program;
