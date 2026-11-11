@@ -1,7 +1,12 @@
 import { useMemo } from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import { createTikTokStyleCaptions } from "@remotion/captions";
-import type { Caption, TikTokPage } from "@remotion/captions";
+import {
+  AbsoluteFill,
+  paginateCaptions,
+  Sequence,
+  useCurrentFrame,
+  useVideoConfig,
+} from "@xplainer/motion";
+import type { Caption, TikTokPage } from "@xplainer/motion";
 
 /** How often the caption line turns over. Higher = more words on screen. */
 const SWITCH_EVERY_MS = 1400;
@@ -47,7 +52,7 @@ function endsSentence(text: string): boolean {
  * Group words into pages, restarting the grouping window at every sentence.
  *
  * **The window is reset before grouping rather than after, and that is the whole fix.**
- * `createTikTokStyleCaptions` groups purely by elapsed time: a page still under
+ * `paginateCaptions` groups purely by elapsed time: a page still under
  * `SWITCH_EVERY_MS` when a sentence ends keeps absorbing words from the next one, so a line reads
  * "…before one frame has been drawn. It" and the eye trips on a word belonging to a thought that
  * has not started yet. Splitting the finished pages instead would not help — by then the previous
@@ -57,8 +62,8 @@ function endsSentence(text: string): boolean {
  * remainder forward is how the original defect comes back, and a page that flashes briefly is a
  * smaller cost than one carrying the opening word of the next sentence.
  *
- * Pure: no clock, no frame, no order-dependence, so Remotion rendering frames out of order and in
- * parallel cannot change the answer.
+ * Pure: no clock, no frame, no order-dependence, so a frame rendered on its own — a still — pages
+ * exactly as the same frame does inside the full render.
  */
 function paginate(captions: readonly Caption[]): TikTokPage[] {
   const pages: TikTokPage[] = [];
@@ -68,11 +73,7 @@ function paginate(captions: readonly Caption[]): TikTokPage[] {
     if (sentence.length === 0) {
       return;
     }
-    const grouped = createTikTokStyleCaptions({
-      captions: sentence,
-      combineTokensWithinMilliseconds: SWITCH_EVERY_MS,
-    });
-    pages.push(...grouped.pages);
+    pages.push(...paginateCaptions(sentence, { combineWithinMs: SWITCH_EVERY_MS }));
     sentence = [];
   };
 

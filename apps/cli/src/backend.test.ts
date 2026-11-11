@@ -16,7 +16,7 @@
  *     agree.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ import { createJobRunner, type JobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import { readJobRequest } from "./job-request.js";
 import { WORKSPACE_MANIFEST_FILE } from "./runtime/manifest.js";
-import { recordTestToolchain } from "./setup/testing/toolchain.js";
+import { recordTestToolchain, writeTestWorkspaceManifest } from "./setup/testing/toolchain.js";
 
 /** `packages/protocol/schemas/`, from this file rather than from a hard-coded depth. */
 const SCHEMAS = fileURLToPath(new URL("../../../packages/protocol/schemas/", import.meta.url));
@@ -77,19 +77,13 @@ afterEach(async () => {
 });
 
 /**
- * A machine where `xplainer setup` has run: a Remotion CLI in the workspace, and the marker.
+ * A machine where `xplainer setup` has run: the marker, and the workspace manifest it describes.
  *
- * Both halves, because the two render tools now ask the same question the worker factory asks a
- * moment later — a tool call that succeeded and a job that then failed on the toolchain is exactly
- * the outcome an agent holding a `job_id` cannot act on.
+ * Because the two render tools ask the same question the worker factory asks a moment later — a
+ * tool call that succeeded and a job that then failed on the toolchain is exactly the outcome an
+ * agent holding a `job_id` cannot act on.
  */
 function pretendInstalled(): void {
-  const bin = join(root, "node_modules", ".bin");
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(
-    join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion"),
-    "#!/bin/sh\n",
-  );
   recordTestToolchain({ stateDir, workspaceRoot: root });
 }
 
@@ -355,12 +349,7 @@ describe("explainer_still and explainer_render", () => {
   it("refuse a machine where setup has never run, even with a workspace installed", async () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");
-    const bin = join(root, "node_modules", ".bin");
-    mkdirSync(bin, { recursive: true });
-    writeFileSync(
-      join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion"),
-      "#!/bin/sh\n",
-    );
+    writeTestWorkspaceManifest({ stateDir, workspaceRoot: root });
 
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
     await expect(backend.explainer_still({ slug: "demo" })).rejects.toThrow(/xplainer setup/);

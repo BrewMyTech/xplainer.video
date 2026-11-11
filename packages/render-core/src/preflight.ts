@@ -3,16 +3,15 @@
  * shipping as a plausible-looking file (ADR 0018, layer 4).
  *
  * The defect this exists for: a render whose narration was never produced, or
- * whose composition shell was hand-edited, used to succeed. Remotion drew the
- * frames, ffmpeg wrote the container, the job reported done, and the MP4 was
- * silent. Nothing in the pipeline noticed, because nothing looked.
+ * whose composition shell was hand-edited, used to succeed. The renderer drew
+ * the frames, ffmpeg wrote the container, the job reported done, and the MP4
+ * was silent. Nothing in the pipeline noticed, because nothing looked.
  *
- * This module looks, before Remotion is spawned. It is deliberately pure: it
- * spawns no process, renders nothing, imports no Remotion package and writes
- * no file, which is what lets it live in a scaffold-phase package and be
- * unit-tested against a temp directory today. Roadmap phase 1 wires
- * `assertRenderable()` into the job runner in front of `renderArgs()` and
- * `stillArgs()`; the failure then costs a second instead of the minutes a
+ * This module looks, before the render worker launches Chrome. It is
+ * deliberately pure: it spawns no process, renders nothing and writes no file,
+ * which is what lets it be unit-tested against a temp directory. The worker
+ * factory in `@xplainer/cli` calls `assertRenderable()` before a still or a
+ * render starts; the failure then costs a second instead of the minutes a
  * doomed render would have taken.
  *
  * Purity is also why `ENGINE_FILE_ALTERED` is reported rather than repaired
@@ -110,7 +109,7 @@ function sizeOf(path: string): number | null {
  * Everything wrong with one video, cheapest check first, in a fixed order.
  *
  * @param videoDir  the video's source directory, `<workspace>/videos/<slug>`
- * @param publicDir the directory Remotion serves `staticFile()` from,
+ * @param publicDir the directory the renderer serves `staticFile()` from,
  *                  `public/<slug>` — where narration writes `timings.json`,
  *                  `captions.json` and the audio track it names
  * @returns every problem found; an empty array means the render may proceed

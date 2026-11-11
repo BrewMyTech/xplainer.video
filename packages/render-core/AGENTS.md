@@ -4,16 +4,24 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 
 ## What this package is
 
-Six things that travel together: the **Remotion workspace template** under `template/`, the
+Six things that travel together: the **workspace template** under `template/`, the
 **layout of the workspace that template becomes** in `src/workspace.ts`, the **ownership-aware
 scaffold generator** under `src/scaffold/`, the **narration port** under `src/narrate/`, the
 **grapheme-to-phoneme port** under `src/g2p/`, and the
 **render preflight** that refuses an unrenderable job before Chrome is launched.
 
+**Nothing here renders.** The renderer is `@xplainer/cli`'s (`apps/cli/src/render/`): it bundles
+the files this package scaffolds against its own `@xplainer/motion` and React, and never reads the
+workspace's `node_modules`. The scaffold templates import `@xplainer/motion` and nothing else by
+package name. The template is still an npm workspace whose `package.json` and `package-lock.json`
+pin the previous renderer's packages, because `xplainer setup --workspace` and the update
+transaction still install it; retiring that payload is phase 2's, and until then nothing in the
+render path depends on it.
+
 `src/workspace.ts` is the map: `videoPaths(root, slug)` is the only place `videos/<slug>` and
-`public/<slug>` are paired, `materialiseWorkspace()` copies the template files in without ever
-overwriting one, and `remotionBinary()` answers `null` for a workspace nobody has installed. It
-writes directories and copies files; it spawns nothing, renders nothing and installs nothing.
+`public/<slug>` are paired, and `materialiseWorkspace()` copies the template files in without ever
+overwriting one. It writes directories and copies files; it spawns nothing, renders nothing and
+installs nothing.
 
 The narration port is where a scene duration comes from. It synthesises each segment through
 `@xplainer/tts-client`, measures the audio it got back, and writes `narration.wav`,
@@ -53,20 +61,19 @@ one, `Scenes.tsx`.
 
 From `src/index.ts`: `scaffoldVideo`, `readScaffoldTemplate`, `isEngineOwned`,
 `ENGINE_OWNED_FILES`, `AGENT_OWNED_FILES`, `SCAFFOLD_FILES` and their types; `preflight`,
-`assertRenderable`, `PreflightError` and the preflight problem types; `renderArgs`, `stillArgs`,
-`entryPoint`, `COMPOSITION_ID`, `REMOTION_BIN`, `DEFAULT_STILL_FRAME`, `DEFAULT_STILL_SCALE`; and
+`assertRenderable`, `PreflightError` and the preflight problem types; and
 the narration port — `narrate`, `planSegments`, `buildCaptions`, `buildTimings`, `buildTrack`,
 `reconcileFormat`, `estimateSpeech`, the writers `writeTimings` / `writeCaptions` /
 `writeNarrationTrack`, the WAV primitives `decodeWav` / `encodeWav` / `silentFrames` /
 `silenceSamples` / `pcmFrameBytes` / `pcmDurationMs` / `samePcmFormat`, `NarrationError`, and the
 pacing constants `LEAD_IN_MS`, `GAP_MS`, `TAIL_MS`, `DEFAULT_SAMPLE_RATE`, `DEFAULT_FPS`,
 `DEFAULT_VOICE`, `NARRATION_AUDIO_FILE`, `TIMINGS_FILE`, `CAPTIONS_FILE`; and the workspace layout —
-`videoPaths`, `stillOutput`, `materialiseWorkspace`, `remotionBinary`, `isWorkspaceInstalled`,
-`workspaceNotInstalledMessage`, `listVideoSlugs`, `WORKSPACE_FILES`, `VIDEOS_DIR`, `PUBLIC_DIR`,
-`OUT_DIR`, `MEDIA_DIR`, `RENDERED_FILE`, `NARRATION_SPEC_FILE` and their types; and the G2P port —
+`videoPaths`, `stillOutput`, `materialiseWorkspace`, `listVideoSlugs`, `WORKSPACE_FILES`,
+`VIDEOS_DIR`, `PUBLIC_DIR`, `OUT_DIR`, `MEDIA_DIR`, `RENDERED_FILE`, `NARRATION_SPEC_FILE`,
+`DEFAULT_STILL_FRAME`, `DEFAULT_STILL_SCALE` and their types; and the G2P port —
 `phonemise`, `kokoroVocabulary`, `kokoroTokenIds`, `unsupportedSymbols`, `G2pError`, and the types
 `Phonemisation`, `WordSpan`,
-`DerivedPronunciation`, `PhonemeSource` and `G2pErrorCode`. The Remotion template
+`DerivedPronunciation`, `PhonemeSource` and `G2pErrorCode`. The workspace template
 itself is not a JavaScript export — it is files, reached through `./template/*`. Neither are the
 G2P data files: they are read at runtime through `import.meta.url` and shipped by
 `scripts/copy-g2p-data.mjs`.
@@ -84,16 +91,24 @@ Then the root procedure: `pnpm verify`.
 
 ## Invariants
 
-- **The five engine-owned scaffold files are byte-identity fixtures.** Editing a template without
-  updating its golden in the same commit fails `AC-7b` (the four inherited wiring files, compared
-  against the upstream reference extraction) or `AC-7e` (`Video.tsx` and `Scenes.tsx`, compared
-  against xplainer's own goldens). The two sets are different in kind — provenance fixtures versus
-  change detectors — and `test/fixtures/README.md` records why.
+- **The six scaffold files are byte-identity fixtures.** Editing a template without updating its
+  golden in the same commit fails `AC-7b` or `AC-7e`. Since 2026-11-11 only `types.ts` is still a
+  **provenance** fixture — byte-identical to the upstream reference extraction — because it is the
+  one inherited file with no import in it; `index.ts`, `Root.tsx` and `Captions.tsx` stopped being
+  upstream's bytes when the scaffold stopped importing the previous renderer, and they are now
+  **change detectors** like `Video.tsx` and `Scenes.tsx`. `test/fixtures/README.md` records why the
+  two kinds differ.
+- **The scaffold imports `@xplainer/motion` and nothing else by package name.** The renderer
+  resolves exactly `react`, `react-dom` and `@xplainer/motion` from its own install and refuses
+  every other bare import, so a template naming another package is a render that fails at bundle
+  time. The one place the old names are still accepted is the renderer's alias table, for agent
+  files written before the change.
 - **`Video.tsx` diverges from upstream deliberately** ([ADR 0018](../../docs/adr/0018-engine-owns-the-composition-shell.md)).
   Upstream's is agent-owned; ours is engine-owned, mounts the narration audio, the captions track
-  and the per-segment sequences, and `explainer_put_source` **refuses to write it**. The upstream
-  bytes are kept at `test/fixtures/scaffold/upstream/Video.tsx.max` so the difference stays a tested
-  claim rather than a memory.
+  and the per-segment sequences, and `explainer_put_source` **refuses to write it**.
+  `scaffold.test.ts` asserts the reason as content — audio, captions and sequencing in the engine
+  file and absent from the agent's. The retained upstream copy that test once compared against was
+  retired on 2026-11-11, when the template stopped sharing an import line with it.
 - **`scaffoldVideo()` never overwrites `Scenes.tsx`**, and restores any engine-owned file that is
   missing or whose bytes differ (`AC-7c`). A second call on the same directory reports all five
   engine names plus `Scenes.tsx` as skipped and changes nothing on disk.
@@ -106,9 +121,11 @@ Then the root procedure: `pnpm verify`.
   reads as lag. `plan.test.ts` asserts the 100 ms gap the fixture carries survives into
   `captions.json`.
 - **Every caption *word* but the first of the whole track carries a leading space; punctuation
-  never does.** `@remotion/captions` builds a page by concatenating `text` and cuts a new page by
-  elapsed time, never at a segment boundary it cannot see, so two segments routinely share a page.
-  A bare first word of a segment welded the burned caption into `segment one.Segment two`. The
+  never does.** `@xplainer/motion`'s `paginateCaptions()` builds a page by concatenating `text`,
+  and opens a new page only at a caption whose `text` begins with whitespace once the window has
+  elapsed from the page's `startMs` — never at a segment boundary it cannot see, so two segments
+  routinely share a page. A bare first word of a segment can never open a page, and welded the
+  burned caption into `segment one.Segment two`. The
   exception is a segment whose *first* token is punctuation-only: it cannot fold — the fold extends
   the previous caption's `endMs`, and the previous segment's last word is a whole inter-segment gap
   away — so it is emitted as its own caption and emitted bare, or `"Alpha"` and `", beta"` read as
@@ -131,16 +148,16 @@ Then the root procedure: `pnpm verify`.
   a track, so only the exact sentinel is honoured.
 - **A dry run is labelled.** `narrate()` reports `mode: "dry_run"` when it estimated rather than
   measured, so nothing downstream can mistake an invented timing for a measured one.
-- **`--public-dir` is `public/<slug>`, never the video's source directory.** `Root.tsx` fetches
-  `timings.json` and `captions.json` through `staticFile()` at metadata time, so pointing it at the
-  source directory does not fail — it renders the `durationInFrames={300}` placeholder, silently.
-  `videoPaths()` is the one place the pair is built, which is what keeps them from drifting apart.
+- **The public directory is `public/<slug>`, never the video's source directory.** `Root.tsx`
+  fetches `timings.json` and `captions.json` through `staticFile()` at metadata time, and the
+  renderer serves both from the public directory `videoPaths()` names; the source directory holds
+  neither. `videoPaths()` is the one place the pair is built, which is what keeps them from
+  drifting apart.
 - **`materialiseWorkspace()` never overwrites, and never installs.** `package.json` is what a
   package manager recorded `node_modules/` against, so rewriting it from the template on every
   `explainer_create` would un-pin a workspace someone had already installed; and installing is a
   visible step a user takes ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)),
-  never something a tool call does. `remotionBinary()` returning `null` — rather than a guessed path
-  — is what lets a caller say "run `xplainer setup --workspace`" instead of failing inside `spawn`.
+  never something a tool call does.
 - **`package-lock.json` is a member of `WORKSPACE_FILES`, and that is what makes the install
   possible.** `npm ci` — the command both ends of the pinned resolution run, the staged payload at
   build time and `xplainer setup --workspace` on a user's machine — exits `EUSAGE` in a directory

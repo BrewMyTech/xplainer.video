@@ -21,7 +21,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { type ClientRequestArgs, type IncomingHttpHeaders, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import process from "node:process";
 import type { RenderBackend } from "@xplainer/mcp-server";
 import { stillOutput, videoPaths } from "@xplainer/render-core";
 import { createLocalBackend } from "../../backend.js";
@@ -451,17 +450,11 @@ export function openBody(
  * A machine where `xplainer setup` has run, so `explainer_still` and `explainer_render` get past
  * their toolchain gate.
  *
- * The same two halves `backend.test.ts` stands up — a Remotion shim in the workspace and the real
- * marker, written by the real writer — because the two render tools ask `checkToolchain` the same
- * question the worker factory asks a moment later.
+ * What `backend.test.ts` stands up — the real marker and the workspace manifest it describes,
+ * written by the real writers — because the two render tools ask `checkToolchain` the same question
+ * the worker factory asks a moment later.
  */
 export function pretendInstalled(harness: ApiHarness): void {
-  const bin = join(harness.root, "node_modules", ".bin");
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(
-    join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion"),
-    "#!/bin/sh\n",
-  );
   recordTestToolchain({ stateDir: harness.stateDir, workspaceRoot: harness.root });
 }
 

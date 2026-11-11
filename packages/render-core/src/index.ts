@@ -1,20 +1,18 @@
 /**
- * `@xplainer/render-core` — the Remotion workspace template, the scaffold
- * generator that writes one video's engine-owned shell and the agent's entry
- * point, the narration port that measures scene durations from real speech,
- * the render preflight, the pure argv builders for the Remotion CLI, and the
- * layout of the shared workspace all four of those write into.
+ * `@xplainer/render-core` — the workspace template, the scaffold generator that writes one video's
+ * engine-owned shell and the agent's entry point, the narration port that measures scene durations
+ * from real speech, the render preflight, and the layout of the shared workspace all of those
+ * write into.
  *
- * Nothing here renders, and nothing here decides a duration by hand. The
- * package holds the byte-fidelity guarantee that the wiring it writes is the
- * wiring the reference implementation writes, the ownership split that keeps
- * the narration audio and the caption track out of the agent's reach
- * (ADR 0018), and the narration port whose `timings.json` is the one place a
- * scene length comes from.
+ * Nothing here renders, and nothing here decides a duration by hand. The renderer is
+ * `@xplainer/cli`'s: it bundles the files this package scaffolds against `@xplainer/motion` and
+ * drives Chrome itself. This package holds the ownership split that keeps the narration audio and
+ * the caption track out of the agent's reach (ADR 0018), and the narration port whose
+ * `timings.json` is the one place a scene length comes from.
  *
- * The Remotion workspace template itself is not a JavaScript export: it is the
- * `template/` directory (`package.json`, `remotion.config.ts`, `tailwind.css`,
- * `tsconfig.json`), reachable through this package's `./template/*` export.
+ * The workspace template itself is not a JavaScript export: it is the `template/` directory
+ * (`package.json`, `package-lock.json`, `tailwind.css`, `tsconfig.json`), reachable through this
+ * package's `./template/*` export.
  *
  * `src/g2p/` is the grapheme-to-phoneme port that feeds an in-process
  * synthesiser: English text to Kokoro's IPA and per-word spans, through four
@@ -89,16 +87,6 @@ export type {
   PreflightSeverity,
 } from "./preflight.js";
 export { assertRenderable, PreflightError, preflight } from "./preflight.js";
-export type { RenderArgsInput, StillArgsInput } from "./render/args.js";
-export {
-  COMPOSITION_ID,
-  DEFAULT_STILL_FRAME,
-  DEFAULT_STILL_SCALE,
-  entryPoint,
-  REMOTION_BIN,
-  renderArgs,
-  stillArgs,
-} from "./render/args.js";
 export type {
   AgentOwnedFile,
   EngineOwnedFile,
@@ -115,7 +103,8 @@ export {
 } from "./scaffold/index.js";
 export type { VideoPaths, WorkspaceFile, WorkspaceResult } from "./workspace.js";
 export {
-  isWorkspaceInstalled,
+  DEFAULT_STILL_FRAME,
+  DEFAULT_STILL_SCALE,
   listVideoSlugs,
   MEDIA_DIR,
   materialiseWorkspace,
@@ -123,10 +112,8 @@ export {
   OUT_DIR,
   PUBLIC_DIR,
   RENDERED_FILE,
-  remotionBinary,
   stillOutput,
   VIDEOS_DIR,
   videoPaths,
   WORKSPACE_FILES,
-  workspaceNotInstalledMessage,
 } from "./workspace.js";

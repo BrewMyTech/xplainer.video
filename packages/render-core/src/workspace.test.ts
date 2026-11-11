@@ -2,22 +2,19 @@
  * The workspace layout, asserted against a real temporary directory.
  *
  * Two of these are load-bearing rather than incidental. The `videos/` ↔ `public/` split is what
- * makes `--public-dir` point at the narration rather than at the source, and a workspace whose
- * `package.json` was rewritten from the template would be a workspace whose `node_modules/` no
- * longer matches its manifest — so "never overwrite" is asserted with real bytes on disk, not
+ * makes the renderer's public directory the narration's rather than the source's, and a workspace
+ * whose `package.json` was rewritten from the template would be a workspace whose `node_modules/`
+ * no longer matches its manifest — so "never overwrite" is asserted with real bytes on disk, not
  * inferred from the code.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  isWorkspaceInstalled,
   listVideoSlugs,
   materialiseWorkspace,
-  remotionBinary,
   stillOutput,
   videoPaths,
   WORKSPACE_FILES,
@@ -74,7 +71,10 @@ describe("materialiseWorkspace", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
       dependencies: Record<string, string>;
     };
-    expect(manifest.dependencies.remotion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(Object.keys(manifest.dependencies).length).toBeGreaterThan(0);
+    for (const version of Object.values(manifest.dependencies)) {
+      expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    }
     expect(listVideoSlugs(root)).toEqual([]);
   });
 
@@ -112,28 +112,6 @@ describe("materialiseWorkspace", () => {
     expect(second.created).toEqual([]);
     expect(second.skipped).toEqual([...WORKSPACE_FILES]);
     expect(readFileSync(join(root, "package.json"), "utf8")).toBe('{"name":"installed"}\n');
-  });
-});
-
-describe("remotionBinary", () => {
-  it("answers null for a workspace nothing has been installed into", () => {
-    const root = temporaryRoot();
-    materialiseWorkspace(root);
-
-    expect(remotionBinary(root)).toBeNull();
-    expect(isWorkspaceInstalled(root)).toBe(false);
-  });
-
-  it("finds the CLI an install put in the workspace's own node_modules", () => {
-    const root = temporaryRoot();
-    materialiseWorkspace(root);
-    const bin = join(root, "node_modules", ".bin");
-    mkdirSync(bin, { recursive: true });
-    const name = process.platform === "win32" ? "remotion.cmd" : "remotion";
-    writeFileSync(join(bin, name), "#!/bin/sh\n");
-
-    expect(remotionBinary(root)).toBe(join(bin, name));
-    expect(isWorkspaceInstalled(root)).toBe(true);
   });
 });
 

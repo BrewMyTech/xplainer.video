@@ -31,9 +31,10 @@
  * `getChromeDownloadUrl({platform, version, chromeMode})` branches on Amazon Linux 2023, on
  * `chromeMode`, and on whether the host's glibc is at least 2.35, so one platform and architecture
  * resolve to **several different artefacts**. {@link chromeDownloadUrl} mirrors that function
- * branch for branch — `manifest.test.ts` compares the two over the whole 80-row matrix, driving
- * the real module — and a configuration with no recorded entry is a named refusal, because a key
- * that ignores the C library selects an artefact that installs and cannot run.
+ * branch for branch — `manifest.test.ts` compared the two over the whole 80-row matrix, driving
+ * the real module, until this package stopped installing it on 2026-11-11; the mirror is now the
+ * selector this package owns — and a configuration with no recorded entry is a named refusal,
+ * because a key that ignores the C library selects an artefact that installs and cannot run.
  */
 
 import { readFileSync } from "node:fs";
@@ -276,10 +277,10 @@ export type ChromeSelection = {
   remotionMediaBinaries: boolean;
 };
 
-/** `@remotion/renderer`'s `TESTED_VERSION` at the pinned line, mirrored and asserted against it. */
+/** `@remotion/renderer`'s `TESTED_VERSION` at the pinned line, mirrored. */
 export const REMOTION_TESTED_CHROME_VERSION = "149.0.7790.0";
 
-/** The Playwright build number that line falls back to on arm64, mirrored and asserted. */
+/** The Playwright build number that line falls back to on arm64, mirrored. */
 export const REMOTION_PLAYWRIGHT_BUILD = "1421";
 
 /** The glibc floor Remotion's own `MINIMUM_GLIBC_FOR_REMOTION_MEDIA` sets for its Linux builds. */
@@ -291,10 +292,10 @@ export const REMOTION_MEDIA_MIN_GLIBC: readonly [number, number] = [2, 35];
  * This is a **mirror**, and it is a mirror on purpose: `getChromeDownloadUrl` is not part of
  * `@remotion/renderer`'s public surface — the package's `exports` map offers `.`, `./client`,
  * `./pure` and `./error-handling`, and the function is in none of their declarations — so calling
- * it from product code would be reaching into somebody else's internals. What the test does
- * instead is drive the real module by absolute path and compare every branch, so the mirror is
- * checked rather than assumed, and a Remotion upgrade that changes a URL fails the suite here
- * instead of failing a user's render.
+ * it from product code would be reaching into somebody else's internals. Until 2026-11-11 the
+ * test drove the real module by absolute path and compared every branch; this package no longer
+ * installs it, so the mirror is frozen at the pinned line, and a URL it produces that the
+ * committed manifest does not record is a named refusal rather than a download.
  */
 export function chromeDownloadUrl(selection: ChromeSelection): string {
   const { platform, version, chromeMode, amazonLinux2023, remotionMediaBinaries } = selection;

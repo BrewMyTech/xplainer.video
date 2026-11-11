@@ -56,15 +56,10 @@
     "tailwindcss": "4.2.0"
   },
   "devDependencies": {
-    "@remotion/captions": "4.0.495",
-    "@remotion/cli": "4.0.495",
-    "@remotion/media": "4.0.495",
-    "@remotion/tailwind-v4": "4.0.495",
     "@types/node": "catalog:",
     "@xplainer/config": "workspace:*",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "remotion": "4.0.495",
     "smol-toml": "1.8.0",
     "typescript": "catalog:",
     "vitest": "catalog:"

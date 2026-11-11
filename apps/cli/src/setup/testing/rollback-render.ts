@@ -27,9 +27,10 @@
  * **What is real here that is not real in B5's step 1.** The payloads: `assembleRuntime()` produces
  * A from this checkout, and B is A with its own version and an entry that binds nothing, rescanned
  * by the shipped scanner. So the daemon that comes back after each rollback is a real
- * `xplainer serve` out of a real payload 1, reading the real `toolchain.json` `setup` wrote and the
- * real `node_modules` `setup` materialised — and the still it is then asked for spawns the pinned
- * Remotion CLI through the interpreter D1 resolves.
+ * `xplainer serve` out of a real payload 1, reading the real `toolchain.json` `setup` wrote and
+ * gated on the real workspace `setup` materialised — and the still it is then asked for spawns the
+ * payload's own render worker through the interpreter D1 resolves, against the browser `setup`
+ * acquired.
  *
  * **What stays a seam, and why that is not a weakening.** The supervisor: `updateHarness()`'s `run`
  * is what `launchctl`, `systemctl` and Task Scheduler would be, and it really does start and stop
@@ -431,8 +432,8 @@ try {
           "recorded digest — that is what proves the pins — while the files a live workspace " +
           "legitimately holds beside them are allowed, because the manifest describes only " +
           "node_modules/, package.json and package-lock.json and `materialiseWorkspace()` also " +
-          "copies in remotion.config.ts, tailwind.css and tsconfig.json, with videos/, out/, " +
-          "public/ and Remotion's node_modules/.cache/ arriving after that. So a refusal here is " +
+          "copies in tailwind.css and tsconfig.json, with videos/, out/, public/ and anything a " +
+          "tool leaves in node_modules/.cache/ arriving after that. So a refusal here is " +
           "a real one: something the manifest describes has changed, gone, or been shadowed by a " +
           "nested copy — and `xplainer daemon update` would refuse this machine too."),
   );

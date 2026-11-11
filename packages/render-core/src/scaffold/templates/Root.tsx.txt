@@ -1,6 +1,5 @@
-import { Composition, staticFile } from "remotion";
-import type { CalculateMetadataFunction } from "remotion";
-import type { Caption } from "@remotion/captions";
+import { Composition, staticFile } from "@xplainer/motion";
+import type { CalculateMetadataFunction, Caption } from "@xplainer/motion";
 import { Video } from "./Video";
 import type { Timings } from "./types";
 

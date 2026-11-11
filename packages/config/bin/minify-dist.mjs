@@ -76,14 +76,14 @@ const MANGLE_IDENTIFIERS = process.env.XPLAINER_MANGLE === "1";
  *
  * Together these four are the parts of the product that are genuinely hard to
  * reproduce — the schemas ARE the protocol, SKILL.md IS the prompt engineering,
- * the templates ARE the Remotion know-how — and all four are readable by
+ * the templates ARE the composition know-how — and all four are readable by
  * necessity. Whatever is done to the `.js` does not change that.
  */
 const READABLE_SOURCE = [
   {
     package: "@xplainer/render-core",
     glob: "template/**",
-    why: "The Remotion workspace the user's videos render in. `remotion.config.ts` and `tsconfig.json` here are the user's own project files and must arrive as readable TypeScript.",
+    why: "The workspace the user's videos live in. `tsconfig.json`, `tailwind.css` and `package.json` here are the user's own project files and must arrive as readable text.",
   },
   {
     package: "@xplainer/render-core",

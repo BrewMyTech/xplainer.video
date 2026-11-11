@@ -1,36 +1,38 @@
 /**
  * The manifest's address, its shape, and the one question it exists to answer.
  *
- * Three things are checked against something outside this module rather than against a copy of it:
- * the **hostname** comes out of `infra/terraform`, the **selector** is compared with the pinned
- * Remotion line's own function over its whole branch matrix, and the **committed manifest** is read
- * as a document rather than as a fixture. A test that asserted the URL against a constant declared
- * beside it would agree with itself for ever.
+ * Two things are checked against something outside this module rather than against a copy of it:
+ * the **hostname** comes out of `infra/terraform`, and the **committed manifest** is read as a
+ * document rather than as a fixture — so every URL the selector can produce for a supported host
+ * has to be one a reviewed digest was recorded for. A test that asserted the URL against a constant
+ * declared beside it would agree with itself for ever.
+ *
+ * Note, 2026-11-11: the **selector** used to be a third such check, compared with the pinned
+ * Remotion line's own `getChromeDownloadUrl` over its whole 80-row branch matrix by loading that
+ * function out of this checkout's installed `@remotion/cli`. This package stopped depending on it
+ * when the renderer became its own, so there is no installed original left to drive and the three
+ * cases that did were retired here. The mirror in `manifest.ts` is now the selector this package
+ * owns, frozen at that line; its URL table and the committed digests are unchanged, and the cases
+ * under "the committed manifest" below are what still tie the two together.
  */
 
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   assertLibcSatisfied,
-  type ChromeMode,
-  type ChromeSelection,
   canUseRemotionMediaBinaries,
   chromeDownloadUrl,
-  DEFAULT_CHROME_MODE,
   deliveryPosition,
   type HostProbe,
   hostChromeSelection,
   isAmazonLinux2023,
   parseToolchainManifest,
   probeHost,
-  REMOTION_PLAYWRIGHT_BUILD,
   REMOTION_TESTED_CHROME_VERSION,
   REQUIRED_SPEECH_PLATFORMS,
-  type RemotionPlatform,
   remotionPlatform,
   selectChromeArtefact,
   selectSpeechBundle,
@@ -54,95 +56,6 @@ function readCommittedManifest(): ToolchainManifest {
     readFileSync(COMMITTED_MANIFEST, "utf8"),
     "apps/cli/src/setup/toolchain.manifest.json",
   );
-}
-
-/**
- * The real `getChromeDownloadUrl`, from the renderer the **pinned `@remotion/cli`** resolves.
- *
- * It is reached in two steps and neither is incidental. `@remotion/cli` is this package's declared
- * devDependency at 4.0.495, so resolving the renderer *through it* is the renderer a render
- * actually uses rather than whatever a hoisted tree happens to expose. And the function itself is
- * loaded by absolute path, because `@remotion/renderer`'s `exports` map publishes four entry points
- * and this is in none of them — which is exactly why `manifest.ts` mirrors it instead of importing
- * it, and why the mirror has to be compared with the original here.
- */
-type RealSelector = {
-  getChromeDownloadUrl: (options: {
-    platform: RemotionPlatform;
-    version: string | null;
-    chromeMode: ChromeMode;
-  }) => string;
-  TESTED_VERSION: string;
-  isAmazonLinux2023: () => boolean;
-  canUseRemotionMediaBinaries: () => boolean;
-};
-
-function realSelector(): RealSelector {
-  const fromHere = createRequire(import.meta.url);
-  const fromCli = createRequire(fromHere.resolve("@remotion/cli/package.json"));
-  const renderer = dirname(fromCli.resolve("@remotion/renderer/package.json"));
-  return fromHere(join(renderer, "dist", "browser", "get-chrome-download-url.js"));
-}
-
-/**
- * The two predicates as the shipped module defines them, captured before any case has run.
- *
- * `realSelector()` returns the **one** CommonJS instance of that module — `require` caches by
- * resolved filename — so a case that replaces a predicate on it replaces it for every case after
- * it, in this file and in any other. The matrix below has to replace them to drive branches this
- * machine is not; keeping the originals here is what lets {@link driveUnpatched} put them back, and
- * what lets the host case assert it is looking at the shipped module rather than at the last row of
- * the matrix.
- */
-const PRISTINE_PREDICATES = {
-  isAmazonLinux2023: realSelector().isAmazonLinux2023,
-  canUseRemotionMediaBinaries: realSelector().canUseRemotionMediaBinaries,
-};
-
-/**
- * Drive the real branching code for a configuration this machine is not, and put it back.
- *
- * Replacing the two exported predicates — and nothing else — is the only way to compare the Amazon
- * Linux and glibc branches from one host: the function under comparison is the shipped one,
- * entirely. The `finally` is the correction of 2026-09-08. Without it the last row of the matrix
- * left `canUseRemotionMediaBinaries` answering `false` for the rest of the file, and the case that
- * asks this machine's own question compared our mirror with a **patched** selector. On macOS and
- * Windows the answer is the same either way; on the ubuntu runner — linux-x64, glibc 2.39, where
- * the real predicate is `true` — it failed, reporting a disagreement that was the suite's own.
- */
-function driveUnpatched<T>(
-  real: RealSelector,
-  predicates: { amazonLinux2023: boolean; remotionMediaBinaries: boolean },
-  ask: () => T,
-): T {
-  real.isAmazonLinux2023 = () => predicates.amazonLinux2023;
-  real.canUseRemotionMediaBinaries = () => predicates.remotionMediaBinaries;
-  try {
-    return ask();
-  } finally {
-    real.isAmazonLinux2023 = PRISTINE_PREDICATES.isAmazonLinux2023;
-    real.canUseRemotionMediaBinaries = PRISTINE_PREDICATES.canUseRemotionMediaBinaries;
-  }
-}
-
-const PLATFORMS: RemotionPlatform[] = ["linux64", "linux-arm64", "mac-x64", "mac-arm64", "win64"];
-const MODES: ChromeMode[] = ["headless-shell", "chrome-for-testing"];
-
-/** Every configuration the real function branches on: 5 × 2 × 2 × 2 × 2 = 80. */
-function matrix(): ChromeSelection[] {
-  const rows: ChromeSelection[] = [];
-  for (const platform of PLATFORMS) {
-    for (const chromeMode of MODES) {
-      for (const version of [null, "1500"]) {
-        for (const amazonLinux2023 of [false, true]) {
-          for (const remotionMediaBinaries of [false, true]) {
-            rows.push({ platform, version, chromeMode, amazonLinux2023, remotionMediaBinaries });
-          }
-        }
-      }
-    }
-  }
-  return rows;
 }
 
 function probe(overrides: Partial<HostProbe> = {}): HostProbe {
@@ -276,84 +189,12 @@ describe("the delivery position, when the published address answers nothing", ()
 });
 
 describe("the mirror of the pinned Remotion line's Chrome selector", () => {
-  it("agrees with the real getChromeDownloadUrl on all 80 branch combinations", () => {
-    const real = realSelector();
-    const disagreements: string[] = [];
-
-    for (const selection of matrix()) {
-      // The real function reads `/etc/os-release` and `process.report` through two of its own
-      // exported predicates, and `driveUnpatched` is what stands them in for the length of one
-      // question and puts the shipped ones back afterwards.
-      const expected = driveUnpatched(real, selection, () =>
-        real.getChromeDownloadUrl({
-          platform: selection.platform,
-          version: selection.version,
-          chromeMode: selection.chromeMode,
-        }),
-      );
-      const found = chromeDownloadUrl(selection);
-      if (found !== expected) {
-        disagreements.push(`${JSON.stringify(selection)}\n  real: ${expected}\n  ours: ${found}`);
-      }
-    }
-
-    expect(disagreements).toEqual([]);
-    expect(matrix()).toHaveLength(80);
-  });
-
-  it("carries the same pinned versions the real module does", () => {
-    const real = realSelector();
-
-    expect(REMOTION_TESTED_CHROME_VERSION).toBe(real.TESTED_VERSION);
-    // The Playwright build number is not exported, so it is read out of the branch that uses it.
-    const fallback = driveUnpatched(
-      real,
-      { amazonLinux2023: false, remotionMediaBinaries: false },
-      () =>
-        real.getChromeDownloadUrl({
-          platform: "linux-arm64",
-          version: null,
-          chromeMode: "headless-shell",
-        }),
-    );
-    expect(fallback).toContain(`/builds/chromium/${REMOTION_PLAYWRIGHT_BUILD}/`);
-  });
-
-  it("resolves this machine's own configuration to what Remotion would download here", () => {
-    const real = realSelector();
-    const here = probeHost();
-    const platform = remotionPlatform(here.platform, here.arch);
-
-    // The claim below is that the *shipped* module answers for this machine, so the first thing
-    // asserted is that nothing above has left a stand-in on it. A leaked predicate makes this case
-    // compare the mirror with a configuration the host is not, which is a disagreement about the
-    // suite rather than about the mirror — and on a glibc-2.35-or-newer linux-x64 host that is
-    // exactly what it reported.
-    expect(real.isAmazonLinux2023).toBe(PRISTINE_PREDICATES.isAmazonLinux2023);
-    expect(real.canUseRemotionMediaBinaries).toBe(PRISTINE_PREDICATES.canUseRemotionMediaBinaries);
-    // And they answer for this machine the way our own probe does, which is what makes the two
-    // sides of the comparison below the same question.
-    expect(real.isAmazonLinux2023()).toBe(isAmazonLinux2023(here));
-    expect(real.canUseRemotionMediaBinaries()).toBe(canUseRemotionMediaBinaries(here));
-
-    expect(platform).not.toBeNull();
-    expect(hostChromeSelection(here)).toEqual({
-      platform,
-      version: null,
-      chromeMode: DEFAULT_CHROME_MODE,
-      amazonLinux2023: isAmazonLinux2023(here),
-      remotionMediaBinaries: canUseRemotionMediaBinaries(here),
-    });
-    // No patching here: this is the unmodified module answering for the machine the suite is on.
-    expect(chromeDownloadUrl(hostChromeSelection(here))).toBe(
-      real.getChromeDownloadUrl({
-        platform: platform as RemotionPlatform,
-        version: null,
-        chromeMode: DEFAULT_CHROME_MODE,
-      }),
-    );
-  });
-
+  // Note, 2026-11-11: three cases stood here — the mirror against the real getChromeDownloadUrl
+  // on all 80 branch combinations, the pinned TESTED_VERSION and Playwright build read out of the
+  // real module, and this machine's own configuration answered by the unpatched original. Each
+  // loaded the function out of this checkout's installed @remotion/cli, and this package no longer
+  // installs it: the renderer is its own, and the mirror is the selector it owns. They were retired
+  // rather than pointed at a copy, because a mirror compared with itself proves nothing.
   it("refuses a platform the pinned line has no build for, rather than inventing a URL", () => {
     expect(remotionPlatform("linux", "ia32")).toBeNull();
     expect(remotionPlatform("win32", "arm64")).toBeNull();
@@ -389,15 +230,15 @@ describe("the mirror of the pinned Remotion line's Chrome selector", () => {
 });
 
 describe("the committed manifest", () => {
-  it("parses, and pins the Remotion line and the Chrome build this package depends on", () => {
+  it("parses, and pins the selector's line and the Chrome build the selector names", () => {
     const manifest = readCommittedManifest();
-    const cliManifest = JSON.parse(
-      readFileSync(join(HERE, "..", "..", "package.json"), "utf8"),
-    ) as { devDependencies: Record<string, string> };
 
     expect(manifest.format_version).toBe(TOOLCHAIN_MANIFEST_FORMAT_VERSION);
-    expect(manifest.chrome.remotion).toBe(cliManifest.devDependencies.remotion);
-    expect(manifest.chrome.version).toBe(realSelector().TESTED_VERSION);
+    // Until 2026-11-11 this compared the line with this package's own devDependency on it, which
+    // the move to an owned renderer removed. What is left to assert is that the field names one
+    // exact release, which is what a refusal quotes back to the user.
+    expect(manifest.chrome.remotion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.chrome.version).toBe(REMOTION_TESTED_CHROME_VERSION);
   });
 
   it("records an expected digest for every URL the pinned selector can resolve to here", () => {

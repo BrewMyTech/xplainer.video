@@ -14,7 +14,7 @@
  * something is actually listening on it.
  *
  * The runner is built here, so the **worker registry** is registered here too: `workers.ts` turns a
- * job record into the narration worker or the pinned Remotion CLI, over the workspace root
+ * job record into the narration worker or the render worker, over the workspace root
  * `workspace-root.ts` resolves from this run's state directory. That root travels back out on
  * {@link StartedDaemon.workspaceRoot} so the backend `commands/serve.ts` builds serves the same
  * videos the workers render.
@@ -119,7 +119,7 @@ export type RuntimeIdentity = {
 export type StartedDaemon = {
   stateDir: string;
   /**
-   * The shared Remotion workspace root this run's workers read and write under.
+   * The shared workspace root this run's workers read and write under.
    *
    * Resolved here, once, and handed back so that `commands/serve.ts` builds the backend over the
    * same root the worker registry was built over. Two independent resolutions could disagree — a
@@ -178,8 +178,8 @@ export type StartDaemonOptions = {
    * Which job kinds this daemon can run.
    *
    * Defaults to the real registry from `workers.ts` over {@link StartedDaemon.workspaceRoot}: the
-   * narration worker and the two Remotion commands. Only the tests pass one, and they pass a worker
-   * that needs neither Remotion nor a TTS server.
+   * narration worker and the render worker. Only the tests pass one, and they pass a worker that
+   * needs neither a browser nor a TTS server.
    */
   workers?: WorkerRegistry;
   /** Where the start-up narrative goes. Silent by default. */
@@ -365,7 +365,7 @@ async function startOwnedDaemon(options: OwnedStartOptions): Promise<DaemonStart
     records: reconciliation.records,
     now,
     // The real three kinds, unless a caller substitutes its own — which only the tests do, with a
-    // worker that needs neither Remotion nor a TTS server.
+    // worker that needs neither a browser nor a TTS server.
     workers: options.workers ?? createWorkerRegistry({ root: workspaceRoot, stateDir }),
     ...(options.killGraceMs === undefined ? {} : { killGraceMs: options.killGraceMs }),
     ...(options.logFlushIntervalMs === undefined

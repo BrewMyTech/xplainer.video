@@ -8,7 +8,7 @@
  *
  * It is about **commands** and nothing else. The eight tools once reported the
  * same wording through the MCP error channel; they no longer do, because
- * `backend.ts` implements them against the local Remotion workspace. Adding a
+ * `backend.ts` implements them against the local workspace. Adding a
  * tool back to this wording would be adding a tool that answers a poll with
  * prose instead of a job.
  *

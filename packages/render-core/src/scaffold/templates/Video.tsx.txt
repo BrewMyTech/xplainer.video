@@ -1,6 +1,5 @@
-import { AbsoluteFill, Sequence, staticFile } from "remotion";
-import { Audio } from "@remotion/media";
-import type { Caption } from "@remotion/captions";
+import { AbsoluteFill, Audio, Sequence, staticFile } from "@xplainer/motion";
+import type { Caption } from "@xplainer/motion";
 import { Captions } from "./Captions";
 import type { Segment, Timings } from "./types";
 import * as authored from "./Scenes";
@@ -54,7 +53,8 @@ export type SceneModule = {
 const agent: SceneModule = authored;
 
 /**
- * Only reachable through Studio's defaultProps, which carry no timings until
+ * Only reachable through the declared defaultProps, which carry no timings;
+ * a render replaces them with what calculateMetadata reads once
  * explainer_narrate has run. A card rather than the black frame this branch
  * used to return: "nothing is wired yet" must not look like a design choice.
  */

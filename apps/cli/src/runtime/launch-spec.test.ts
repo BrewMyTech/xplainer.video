@@ -1,5 +1,5 @@
 /**
- * The launch contract, against real payload trees and against this checkout's own Remotion.
+ * The launch contract, against real payload trees.
  *
  * Three properties are what these cases exist for, and each one is a defect some earlier shape of
  * this code had:
@@ -12,17 +12,17 @@
  *    beginning `#!/usr/bin/env node`, and spawning it measured exit `127` under
  *    `PATH=/usr/bin:/bin`. The fixtures put the shim next to the package under both its POSIX and
  *    its Windows name, so "not the shim" is a statement about what was chosen and not about what
- *    happened to be missing. One case resolves the **real** `@remotion/cli` in this checkout and
- *    reads that shebang back, so the premise is asserted rather than quoted.
+ *    happened to be missing. One case resolved the **real** `@remotion/cli` in this checkout and
+ *    read that shebang back, until this checkout stopped installing it (2026-11-11); the fixture's
+ *    own `#!/usr/bin/env node` entry is what the remaining cases resolve.
  * 3. **A missing setting is a refusal, not a default.** Each of the four is dropped in turn and the
  *    builder is required to name it.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildLaunchSpec,
@@ -156,24 +156,13 @@ describe("resolveNodeEntry", () => {
     expect(resolved.argv[0]).not.toBe(join(bin, shim));
   });
 
-  /**
-   * The measurement D1 rests on, re-taken: this checkout's own `@remotion/cli` really does begin
-   * `#!/usr/bin/env node`, which is why exec'ing the shim needs a `node` on the child's `PATH` and
-   * why the entry file is what gets spawned instead.
-   */
-  it("resolves this checkout's real @remotion/cli to the file whose shebang is the problem", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const packageDir = findInstalledPackage(here, "@remotion/cli");
-    expect(packageDir, "this repository has no Remotion install to resolve").not.toBeNull();
-
-    const resolved = resolveNodeEntry(packageDir ?? "", "remotion");
-    const entry = resolved.argv[0] ?? "";
-
-    expect(entry).toBe(join(packageDir ?? "", "remotion-cli.js"));
-    expect(readFileSync(entry, "utf8").split("\n")[0]).toBe("#!/usr/bin/env node");
-    expect(entry.includes(join("node_modules", ".bin"))).toBe(false);
-  });
-
+  // Note, 2026-11-11: a case here resolved this checkout's own installed @remotion/cli and read
+  // its `#!/usr/bin/env node` shebang back — the measurement D1 rests on, re-taken. The checkout no
+  // longer installs it: the renderer is @xplainer/cli's own and Remotion left its devDependencies.
+  // The fabricated package these other cases build carries the same shebang on the same entry, and
+  // D1's measurement itself — exit 127 under `PATH=/usr/bin:/bin` — is recorded in ADR 0027 and in
+  // `launch-spec.ts`'s docblock, so the case was retired rather than pointed at a copy of what it
+  // used to read.
   it("runs the entry under the interpreter it is given, with the arguments after it", () => {
     const { packageDir, entry } = installedRemotion(root);
 

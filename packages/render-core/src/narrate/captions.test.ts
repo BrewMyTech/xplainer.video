@@ -12,9 +12,9 @@ import { type PlannedSegment, type PlannedWord, planSegments, type SegmentSpeech
 /**
  * The caption boundary between two adjacent segments.
  *
- * `@remotion/captions` builds a page by concatenating its tokens' `text`, and
- * it cuts a new page by elapsed time — never at a segment boundary, which it
- * cannot see. Two spoken segments therefore routinely share one page, so the
+ * `@xplainer/motion`'s `paginateCaptions()` builds a page by concatenating its
+ * tokens' `text`, and it cuts a new page by elapsed time — never at a segment
+ * boundary, which it cannot see. Two spoken segments therefore routinely share one page, so the
  * first word of a segment needs its leading space no less than every other word
  * does. Without it the burned caption read `segment one.Segment two`, which is
  * what this file exists to keep from coming back.
@@ -68,7 +68,7 @@ function measuredSpeech(): SegmentSpeech[] {
   ];
 }
 
-/** What a `@remotion/captions` page shows: the tokens, concatenated. */
+/** What a `paginateCaptions()` page shows: the tokens, concatenated. */
 function joined(captions: readonly { readonly text: string }[]): string {
   return captions.map((caption) => caption.text).join("");
 }

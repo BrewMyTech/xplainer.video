@@ -7,7 +7,7 @@ Workspace rules and the post-change procedure: root [`AGENTS.md`](../../AGENTS.m
 **The local runtime.** The `xplainer` binary, the Hono application it serves — `GET /healthz`, the
 Streamable HTTP MCP endpoint at `/mcp`, and the `/api/*` REST and SSE surface a GUI client reads
 (`src/api/`) — the **eight tools** behind that endpoint
-(`src/backend.ts`, over a shared Remotion workspace on this machine), and the **durable job daemon**
+(`src/backend.ts`, over a shared video workspace on this machine), and the **durable job daemon**
 under `src/daemon/`:
 exclusive ownership of the state directory, one JSON file per job, boot reconciliation, and a runner
 that executes each job's worker as a child process in its own process group. `serve` is also
@@ -114,8 +114,13 @@ runner because they take tens of seconds
 | `workspace-root.ts` | `XPLAINER_VIDEOS_DIR`, else `<state dir>/workspace` — one pure function, two callers |
 | `job-request.ts` | The per-job request document under `<workspace>/requests/`: the tool call's arguments, where the worker can read them |
 | `daemon/video-lock.ts` | `<workspace>/locks/<slug>.lock`: one writer per video, across processes — the shared workspace's own exclusion |
-| `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker, and the pinned Remotion CLI with render-core's argv |
+| `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker and the render worker, each spawned under this process's own interpreter |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
+| `workers/render.ts` | The spawned still and render worker: bundle, launch the recorded headless shell, capture each frame, and for a render pipe every PNG into ffmpeg |
+| `render/bundle.ts` | esbuild-wasm over a generated entry — `@xplainer/motion/harness` first, the video second — with React and motion from this package's own install, Tailwind compiled, and the one alias table for the previous renderer's import names |
+| `render/cdp.ts` | A zero-dependency Chrome DevTools Protocol client over `--remote-debugging-pipe` |
+| `render/capture.ts` | The readiness gate, page errors with the frame index, and one screenshot per frame |
+| `render/encode.ts` | ffmpeg from `XPLAINER_FFMPEG`, then `PATH`, then the Homebrew directories; libx264, AAC, BT.709 tags, `+faststart`, and a partial renamed only on success |
 | `workers/speech.ts` | Where the speech comes from: `XPLAINER_TTS_FIXTURE`, else a server somebody named, else the engine `toolchain.json` records, else the tts-client's own default |
 
 **The narration worker is told which state directory this daemon is using**, in the one
@@ -255,14 +260,13 @@ installed — and `--attach` is what a machine with a daemon gets. They share th
 deliberately not the *job store*, and because they share the workspace they take a per-video write
 lock in it: see the two invariants below.
 
-The workspace itself belongs to `@xplainer/render-core` — the layout, the template, the scaffold,
-the argv builders and the preflight all live there, and nothing about a video's shape is decided
-here:
+The workspace itself belongs to `@xplainer/render-core` — the layout, the template, the scaffold
+and the preflight all live there, and nothing about a video's shape is decided here:
 
 ```
 <XPLAINER_VIDEOS_DIR, or <state dir>/workspace>/
-  package.json remotion.config.ts tailwind.css tsconfig.json   copied from render-core/template/
-  node_modules/         NOT installed by any tool call — see the invariant below
+  package.json package-lock.json tailwind.css tsconfig.json   copied from render-core/template/
+  node_modules/         NOT installed by any tool call, and never read by the renderer
   videos/<slug>/        the engine-owned shell and the agent's Scenes.tsx
   public/<slug>/        timings.json, captions.json, narration.wav, narration.json, media/
   out/<slug>/           explainer.mp4 and frame-<n>.png
@@ -585,11 +589,11 @@ default branch, so what changed is what a dispatch means, not when one happens.
 `@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
 whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
 — and ADR 0020's "Alpine is blocked on rendering, not on init" is what a key ignoring the C library
-buys you. `manifest.ts` therefore **mirrors** that function, `manifest.test.ts` drives the real one
-over all 80 branch combinations and compares — putting the two predicates it stands in for **back**
-after each row, because the last case in that file asks this machine's own question of the
-unpatched module and a leaked stand-in made it disagree with the mirror on every glibc-2.35-or-newer
-linux-x64 host — and `selectChromeArtefact()` looks the URL up. Two
+buys you. `manifest.ts` therefore **mirrors** that function, and `selectChromeArtefact()` looks the
+URL up. Until 2026-11-11 `manifest.test.ts` also drove the real function over all 80 branch
+combinations and compared; this package stopped installing it when the renderer became its own, so
+the mirror is now the selector this package owns, frozen at the pinned line, and the committed
+manifest's recorded URLs are what it is checked against. Two
 consequences worth keeping: the manifest **cannot redirect a download**, because the URL fetched is
 the selector's rather than the document's; and a configuration with no recorded entry is a refusal
 naming the URL, never a download of unreviewed bytes.
@@ -678,8 +682,10 @@ reaching for one, which is what keeps that boundary a compile-time fact rather t
 pnpm --filter @xplainer/cli test
 pnpm turbo build --filter @xplainer/cli          # where TS9010 appears
 
-# The render test bundles a composition and drives Chrome; it takes ~10 s once Remotion has its
-# headless shell, and skips only on this:
+# The render test bundles a composition, drives Chrome and pipes frames into ffmpeg; it takes ~10 s
+# once it has a headless shell — XPLAINER_TEST_CHROME naming one `xplainer setup` acquired, or the
+# one it fetches through the committed manifest into node_modules/.cache/xplainer-test-toolchain —
+# and skips only on this:
 XPLAINER_SKIP_RENDER_TEST=1 pnpm --filter @xplainer/cli test
 
 # A throwaway state directory, so a hand-run daemon cannot take the real one — and every TCP
@@ -836,13 +842,17 @@ Then the root procedure: `pnpm verify`.
   keeper closes the job and takes the tree with it. `taskkill /T` is the fallback where no keeper
   could start, and it is weaker on purpose rather than by oversight: it walks the parent chain at
   kill time, so a grandchild whose parent has already gone is out of its reach.
-- **Nothing installs the workspace's `node_modules`.** `materialiseWorkspace()` copies four files
-  and creates three directories; it never runs a package manager, because installing hundreds of
-  megabytes is a visible step a user takes and never something a tool call does behind an agent's
-  back ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)).
-  `explainer_still` and `explainer_render` therefore refuse a workspace with no Remotion in it, by
-  name and with the command that fixes it — `remotionBinary()` answering `null` is a refusal, never
-  a guessed path that fails later inside `spawn`.
+- **Nothing installs the workspace's `node_modules`, and nothing renders from it.**
+  `materialiseWorkspace()` copies four files and creates three directories; it never runs a package
+  manager, because installing hundreds of megabytes is a visible step a user takes and never
+  something a tool call does behind an agent's back
+  ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)). The
+  render worker bundles every video against this package's own React and `@xplainer/motion` and
+  never reads that directory. `explainer_still` and `explainer_render` refuse a machine whose
+  toolchain is incomplete — `checkToolchain`: the recorded browser and speech route, and, until
+  phase 2 retires that payload, the workspace `setup --workspace` installed, which the gate still
+  asks about although no render reads it — by name and with the command that fixes it: a refusal at
+  the call, never a job that fails later inside `spawn`.
 - **A tool's arguments reach its worker on disk, not in the record.** ADR 0008 dropped the
   reference implementation's `command` field, so a job record carries no arguments; `job-request.ts`
   writes one document per job under `<workspace>/requests/` and `daemon/workers.ts` reads it back.
@@ -897,7 +907,7 @@ Then the root procedure: `pnpm verify`.
   documented rather than discovered: a `job_id` from one connection means nothing on another.
 - **One writer per video, across processes, and it is a lock in the *workspace*.** Owning the state
   directory says nothing about the workspace once `xplainer mcp` holds the same worker registry over
-  the same root without that lock, so a daemon and two stdio sessions could each drive Remotion at
+  the same root without that lock, so a daemon and two stdio sessions could each drive a render at
   one `out/<slug>/explainer.mp4`. `daemon/workers.ts` therefore takes
   `<workspace>/locks/<slug>.lock` (`daemon/video-lock.ts`) as the **last** thing a factory does —
   after every refusal, so a refused job leaves no lock — and `daemon/runner.ts` gives it back in

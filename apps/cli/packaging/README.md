@@ -182,10 +182,10 @@ data; the assertion is that the data is reachable, whatever the sites become. A 
 one of them cannot fail this gate by tidying, and a bundler that stops emptying them cannot fail it
 by improving.
 
-Rule 3 names `dist/` rather than every `.ts` on purpose. `render-core`'s
-`template/remotion.config.ts` is shipped deliberately and copied into a user's Remotion workspace,
-where that workspace's own toolchain compiles it; the spike reports it as data. A `.ts` inside
-`dist/` is the other thing entirely — it is `daemon/workers.ts`'s Vitest fallback, and a published
+Rule 3 names `dist/` rather than every `.ts` on purpose. A `.ts` outside it is data: `render-core`
+shipped one under `template/` — copied into a user's workspace and compiled by that workspace's own
+toolchain, never by Node — until it was removed on 2026-11-11, and the spike reported it as data. A
+`.ts` inside `dist/` is the other thing entirely — it is `daemon/workers.ts`'s Vitest fallback, and a published
 payload cannot run it: Node refuses to strip types under `node_modules`
 (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, measured 2026-09-07 by deleting the compiled worker
 from the artefact and shipping the sources instead).

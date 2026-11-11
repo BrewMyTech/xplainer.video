@@ -13,22 +13,23 @@
  *     never-overwrite rule, so the agent's work always survives a re-`create`.
  *
  * Four of the five engine files (`index.ts`, `types.ts`, `Root.tsx`,
- * `Captions.tsx`) are byte-identical ports of `explainer_mcp.py:254-260` in the
- * reference implementation. `Video.tsx` deliberately diverges (ADR 0018):
- * there it was an agent-owned "REPLACE THIS" stub that also mounted `<Audio>`
- * and `<Captions>`, so an agent rewriting it for a purely visual reason
- * dropped the soundtrack and shipped a silent video that rendered without
- * error. `test/fixtures/scaffold/upstream/Video.tsx.max` keeps the original
- * bytes and `scaffold.test.ts` proves the divergence is the intended one.
+ * `Captions.tsx`) are ports of `explainer_mcp.py:254-260` in the reference
+ * implementation; `types.ts` is still byte-identical to it, and the other three
+ * have differed since they began importing `@xplainer/motion` (2026-11-11).
+ * `Video.tsx` deliberately diverges (ADR 0018): there it was an agent-owned
+ * "REPLACE THIS" stub that also mounted `<Audio>` and `<Captions>`, so an agent
+ * rewriting it for a purely visual reason dropped the soundtrack and shipped a
+ * silent video that rendered without error. `scaffold.test.ts` proves the
+ * divergence is the intended one.
  *
  * Two load-bearing properties survive from the reference implementation:
  *
  *   1. The bytes written are the template bytes, verbatim. The templates live
  *      beside this file as `.txt` so neither Biome nor `tsc` reformats them or
- *      tries to resolve the `remotion`, `@remotion/captions`, `@remotion/media`
- *      and `../../tailwind.css` specifiers they contain, none of which are
- *      dependencies of this package. They are read as `Buffer` and written as
- *      `Buffer`, so no encoding or newline pass can touch them.
+ *      tries to resolve the `@xplainer/motion`, `react` and `../../tailwind.css`
+ *      specifiers they contain, none of which are dependencies of this package —
+ *      the renderer in `@xplainer/cli` resolves them. They are read as `Buffer`
+ *      and written as `Buffer`, so no encoding or newline pass can touch them.
  *   2. The agent's own file is never overwritten. A slug can be re-scaffolded
  *      at any time, which is why `explainer_create` stays safe to re-run. Only
  *      the narrower claim changed: engine files are now rewritten, and are

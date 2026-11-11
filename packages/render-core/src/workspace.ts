@@ -1,33 +1,30 @@
 /**
- * The shared Remotion workspace: one install, many videos (roadmap P1-1).
+ * The shared workspace: one directory, many videos (roadmap P1-1).
  *
  * The layout is the reference implementation's, and every path below is derived from it:
  *
  * ```
  * <root>/
- *   node_modules/          installed once, shared by every video
- *   package.json           the pinned Remotion versions, copied from this package's template/
- *   package-lock.json      the resolution `npm ci` reproduces them from
- *   remotion.config.ts     Tailwind, JPEG frames, overwrite
- *   tailwind.css
+ *   node_modules/          what `xplainer setup --workspace` installs from the two files below;
+ *                          the renderer never reads it
+ *   package.json           the template's pinned dependency set, copied from this package's template/
+ *   package-lock.json      the resolution `npm ci` reproduces it from
+ *   tailwind.css           the stylesheet a video's `index.ts` imports
  *   tsconfig.json
  *   videos/<slug>/         the engine-owned shell and the agent's Scenes.tsx
  *   public/<slug>/         narration.wav, captions.json, timings.json and media/
  *   out/<slug>/            the rendered MP4 and the stills
  * ```
  *
- * **The split between `videos/` and `public/` is load-bearing.** `--public-dir` is what Remotion
- * serves `staticFile()` from, and `Root.tsx` fetches `timings.json` and `captions.json` through it
- * at metadata time. Point it at the video's source directory instead and the composition still
- * renders — silently, at `Root.tsx`'s `durationInFrames={300}` placeholder — so the two directories
- * are separate here and {@link videoPaths} is the only place that pairs them.
+ * **The split between `videos/` and `public/` is load-bearing.** `public/<slug>` is what the
+ * renderer serves `staticFile()` from, and `Root.tsx` fetches `timings.json` and `captions.json`
+ * through it at metadata time. Point it at the video's source directory instead and the
+ * composition finds neither document, so the two directories are separate here and
+ * {@link videoPaths} is the only place that pairs them.
  *
  * **Nothing here installs anything.** {@link materialiseWorkspace} copies the template files and
- * creates three directories; it never runs a package manager. Installing hundreds of megabytes is a
- * visible step a user takes — `xplainer setup --workspace` — never something a tool call does
- * behind an agent's back, so {@link remotionBinary} answers `null` for a workspace that has never
- * been installed and {@link workspaceNotInstalledMessage} is the sentence a caller shows instead of
- * failing later with an `ENOENT` from `spawn`.
+ * creates three directories; it never runs a package manager. Installing is a visible step a user
+ * takes — `xplainer setup --workspace` — never something a tool call does behind an agent's back.
  *
  * **`package-lock.json` is one of the copied files, and that is what makes the install possible.**
  * `npm ci` is the command both ends of the pinned resolution run — build time for the staged
@@ -37,13 +34,12 @@
  * that cannot be installed at all, which is why the two travel together here rather than being
  * placed by whoever happens to run the installer.
  *
- * This module writes directories and copies files. It spawns nothing and renders nothing:
- * `render/args.ts` builds the argv, and the caller spawns it.
+ * This module writes directories and copies files. It spawns nothing and renders nothing: the
+ * renderer is `@xplainer/cli`'s.
  */
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import process from "node:process";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTIONS_FILE, NARRATION_AUDIO_FILE, TIMINGS_FILE } from "./narrate/pacing.js";
 
@@ -58,6 +54,12 @@ export const OUT_DIR = "out";
 
 /** The media subdirectory of a video's public directory, which `explainer_put_media` writes into. */
 export const MEDIA_DIR = "media";
+
+/** Default still frame, from `explainer_still`'s signature in the reference implementation. */
+export const DEFAULT_STILL_FRAME = 90;
+
+/** Default still scale, from `explainer_still`'s signature in the reference implementation. */
+export const DEFAULT_STILL_SCALE = 0.5;
 
 /** The MP4 `explainer_render` writes, from the reference implementation's own output name. */
 export const RENDERED_FILE = "explainer.mp4";
@@ -74,15 +76,15 @@ export const NARRATION_SPEC_FILE = "narration.json";
 /**
  * The workspace files copied verbatim out of this package's `template/`.
  *
- * `package.json` pins Remotion, React and Tailwind; `package-lock.json` is the resolution `npm ci`
- * reproduces those pins from; `remotion.config.ts` enables Tailwind and JPEG frames; `tailwind.css`
- * is what a video's `index.ts` imports; `tsconfig.json` is for the editor. They are copied rather
- * than generated so the shipped template stays the only copy of these bytes.
+ * `package.json` is the pinned dependency set `xplainer setup --workspace` installs;
+ * `package-lock.json` is the resolution `npm ci` reproduces those pins from; `tailwind.css` is what
+ * a video's `index.ts` imports and what the renderer builds its stylesheet from; `tsconfig.json` is
+ * for the editor. They are copied rather than generated so the shipped template stays the only
+ * copy of these bytes.
  */
 export const WORKSPACE_FILES = [
   "package.json",
   "package-lock.json",
-  "remotion.config.ts",
   "tailwind.css",
   "tsconfig.json",
 ] as const;
@@ -102,7 +104,7 @@ export type VideoPaths = {
   slug: string;
   /** `<root>/videos/<slug>` — the source directory, where the scaffold writes. */
   source: string;
-  /** `<root>/public/<slug>` — Remotion's `--public-dir` for this video. */
+  /** `<root>/public/<slug>` — the directory the renderer serves `staticFile()` from. */
   publicDir: string;
   /** `<root>/public/<slug>/media` — where `explainer_put_media` writes. */
   media: string;
@@ -176,54 +178,6 @@ export function materialiseWorkspace(root: string): WorkspaceResult {
     created.push(name);
   }
   return { created, skipped };
-}
-
-/**
- * The Remotion CLI this workspace resolves, or `null` when nothing has been installed.
- *
- * Walks the ancestors the way Node's own module resolution does, so a workspace installed in place
- * (`<root>/node_modules/.bin/remotion`) and one nested inside an already-installed tree both work.
- * `null` — rather than a guessed path — is what lets a caller say "run `xplainer setup --workspace`"
- * instead of failing later inside `spawn`.
- *
- * Deliberately not `npx`: `REMOTION_BIN` in `render/args.ts` records why, and resolving the local
- * binary is the half of that decision this function owns.
- */
-export function remotionBinary(root: string): string | null {
-  const name = process.platform === "win32" ? "remotion.cmd" : "remotion";
-  let directory = root;
-  for (;;) {
-    const candidate = join(directory, "node_modules", ".bin", name);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(directory);
-    if (parent === directory) {
-      return null;
-    }
-    directory = parent;
-  }
-}
-
-/** Whether {@link remotionBinary} can find a Remotion CLI for this workspace. */
-export function isWorkspaceInstalled(root: string): boolean {
-  return remotionBinary(root) !== null;
-}
-
-/**
- * The one sentence a caller shows for a workspace whose dependencies were never installed.
- *
- * It names `xplainer setup --workspace` and not `npm install`, because the machine this runs on is
- * not assumed to have a package manager at all: the CLI's own runtime payload carries the npm that
- * resolves this tree, and `setup` is the visible step that runs it. A message telling a user to run
- * `npm install` is a message they cannot follow on exactly the machine it is printed for.
- */
-export function workspaceNotInstalledMessage(root: string): string {
-  return (
-    `the Remotion workspace at ${root} has no dependencies installed, so there is nothing to ` +
-    "render with. Run `xplainer setup --workspace` once — it is a few hundred megabytes and " +
-    "every video shares it — and try again."
-  );
 }
 
 /** Every slug with a source directory under `<root>/videos`, in sorted order. */

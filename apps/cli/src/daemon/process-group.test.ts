@@ -2,7 +2,7 @@
  * Killing the group, not the pid.
  *
  * ADR 0024 §Scope: every asynchronous job type, and its children is about a real failure: a render
- * is a Remotion process that starts a browser that starts renderers, so signalling only the process
+ * is a worker process that starts a browser and an encoder, so signalling only the process
  * the daemon holds leaves the expensive half alive to "race a retry over the same output
  * directory". The worker here stands in for that shape — a leader that spawns an unref'd
  * grandchild — and the assertion is that the grandchild is gone too.
