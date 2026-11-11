@@ -1217,7 +1217,19 @@ async function main() {
       narrationEnv = { XPLAINER_TTS_URL: provider.url };
     }
 
-    const daemon = await startDaemon(paths.runtime, paths, narrationEnv);
+    // The render worker's encoder, handed over as a file, as `speech.mjs` does: the scrubbed `PATH`
+    // holds no ffmpeg on Windows, and the worker's Homebrew fallback is macOS's alone.
+    // `XPLAINER_FFMPEG` is the first place the worker looks, and the parent's own ffmpeg means the
+    // frames the daemon encodes and the frames this script decodes go through the same build.
+    const childFfmpeg = isAbsolute(ffmpeg) ? ffmpeg : onPath(process.env.PATH ?? "", ffmpeg);
+    check(
+      childFfmpeg !== null && existsSync(childFfmpeg),
+      `the ffmpeg this run uses is a file the daemon can be handed (${childFfmpeg ?? `no ${ffmpeg} on PATH`})`,
+    );
+    const daemon = await startDaemon(paths.runtime, paths, {
+      ...narrationEnv,
+      XPLAINER_FFMPEG: childFfmpeg,
+    });
     const transport = new StdioClientTransport({
       command: interpreter,
       args: [entry, "mcp", "--attach"],

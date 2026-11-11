@@ -246,6 +246,20 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
       });
     });
 
+    it("refuses an ffmpeg that never answers -encoders, by name and inside its budget", async () => {
+      const directory = temporaryDirectory();
+      const hangs = join(directory, "ffmpeg");
+      writeFileSync(hangs, "#!/bin/sh\nexec sleep 30\n");
+      chmodSync(hangs, 0o755);
+
+      const started = performance.now();
+      await expect(assertLibx264(hangs, 300)).rejects.toMatchObject({
+        code: "FFMPEG_NOT_FOUND",
+        message: expect.stringContaining("did not answer `-encoders` within 300 ms"),
+      });
+      expect(performance.now() - started).toBeLessThan(5_000);
+    });
+
     it("renames the finished MP4 into place and leaves no partial behind", async () => {
       const ffmpeg = findFfmpeg();
       const directory = temporaryDirectory();

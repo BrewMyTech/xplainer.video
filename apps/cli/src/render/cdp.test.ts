@@ -7,13 +7,18 @@
  * which is the whole transport; nothing about the client is replaced.
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { spawnEntry, untilGone } from "../daemon/testing/spawn-child.js";
 import { CdpConnection, launchChrome } from "./cdp.js";
+
+/** A worker that exits while its browser is still starting (`testing/child-launch.ts`). */
+const CHILD_LAUNCH = fileURLToPath(new URL("./testing/child-launch.ts", import.meta.url));
 
 /** A connection over two in-memory streams, and the text it has written so far. */
 function connected(): {
@@ -152,41 +157,66 @@ afterEach(() => {
   }
 });
 
+/** Chrome's own line on a Linux that restricts unprivileged user namespaces. */
+const SANDBOX_LINE =
+  "[1:1:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox! Update your kernel";
+
 /**
  * A stand-in browser: a Node script that speaks the pipe protocol on fds 3 and 4 and does nothing
  * else. It answers every command with an empty result, `Browser.close` by exiting, and
  * `Test.crash` by printing to stderr and dying — and, unless it was given `--no-sandbox`, it
  * refuses to start the way Chrome does on a Linux that restricts user namespaces.
+ *
+ * Two variations. `late-sandbox` refuses the same way, but exits first and has a process it left
+ * behind print the line 300 ms later, on the stderr it inherited — so the line arrives after
+ * `exit` and before `close`. `silent` starts on any flags, never answers, and says where it is —
+ * `{ pid, profile }` — by renaming a file into `XPLAINER_FAKE_CHROME_REPORT`.
  */
-function fakeBrowser(): string {
+function fakeBrowser(mode: "answers" | "late-sandbox" | "silent" = "answers"): string {
   const directory = mkdtempSync(join(tmpdir(), "xplainer-fake-chrome-"));
   directories.push(directory);
   const script = join(directory, "chrome-headless-shell");
+  const late = `setTimeout(() => process.stderr.write(${JSON.stringify(`${SANDBOX_LINE}\n`)}), 300);`;
   writeFileSync(
     script,
     `#!${process.execPath}
 const fs = require("node:fs");
-if (!process.argv.includes("--no-sandbox")) {
-  process.stderr.write("[1:1:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox! Update your kernel\\n");
-  process.exit(1);
-}
-const input = fs.createReadStream(null, { fd: 3 });
-const output = fs.createWriteStream(null, { fd: 4 });
-let pending = "";
-input.on("data", (chunk) => {
-  pending += chunk.toString("utf8");
-  for (let end = pending.indexOf("\\0"); end >= 0; end = pending.indexOf("\\0")) {
-    const message = JSON.parse(pending.slice(0, end));
-    pending = pending.slice(end + 1);
-    if (message.method === "Test.crash") {
-      process.stderr.write("renderer went away: boom\\n");
-      process.exit(3);
-    }
-    output.write(JSON.stringify({ id: message.id, result: {} }) + "\\0", () => {
-      if (message.method === "Browser.close") process.exit(0);
+const mode = ${JSON.stringify(mode)};
+if (mode === "silent") {
+  const report = process.env.XPLAINER_FAKE_CHROME_REPORT;
+  const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir=")).slice(16);
+  fs.writeFileSync(report + ".tmp", JSON.stringify({ pid: process.pid, profile }));
+  fs.renameSync(report + ".tmp", report);
+  fs.createReadStream(null, { fd: 3 }).resume();
+  setInterval(() => {}, 1000);
+} else if (!process.argv.includes("--no-sandbox")) {
+  if (mode === "late-sandbox") {
+    require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(late)}], {
+      stdio: ["ignore", "ignore", "inherit"],
     });
+  } else {
+    process.stderr.write(${JSON.stringify(`${SANDBOX_LINE}\n`)});
   }
-});
+  process.exit(1);
+} else {
+  const input = fs.createReadStream(null, { fd: 3 });
+  const output = fs.createWriteStream(null, { fd: 4 });
+  let pending = "";
+  input.on("data", (chunk) => {
+    pending += chunk.toString("utf8");
+    for (let end = pending.indexOf("\\0"); end >= 0; end = pending.indexOf("\\0")) {
+      const message = JSON.parse(pending.slice(0, end));
+      pending = pending.slice(end + 1);
+      if (message.method === "Test.crash") {
+        process.stderr.write("renderer went away: boom\\n");
+        process.exit(3);
+      }
+      output.write(JSON.stringify({ id: message.id, result: {} }) + "\\0", () => {
+        if (message.method === "Browser.close") process.exit(0);
+      });
+    }
+  });
+}
 `,
   );
   chmodSync(script, 0o755);
@@ -226,8 +256,59 @@ describe("launchChrome", () => {
     // Given `--no-sandbox` up front, so the stand-in starts on every platform.
     const chrome = await launchChrome({ executable, log: () => {}, extraFlags: ["--no-sandbox"] });
 
-    await expect(chrome.connection.send("Test.crash")).rejects.toThrow(/code 3[\s\S]*boom/);
+    await expect(chrome.connection.send("Test.crash")).rejects.toMatchObject({
+      code: "PAGE_ERROR",
+      message: expect.stringMatching(/^PAGE_ERROR: the browser exited \(code 3[\s\S]*boom/),
+    });
     await chrome.kill();
+  });
+
+  /**
+   * `exit` can be emitted before the last of the browser's stderr has been read, and the sandbox
+   * line is the last thing it prints. The stand-in makes that ordering certain: the line comes from
+   * a process it left behind, 300 ms after it exited. Decided on `exit`, the launch would see no
+   * line, never retry on Linux, and quote nothing anywhere.
+   */
+  it("reads the browser's last words before deciding on the sandbox, even when they arrive after its exit", async () => {
+    const executable = fakeBrowser("late-sandbox");
+    const lines: string[] = [];
+    const launched = launchChrome({ executable, log: (line) => lines.push(line) });
+
+    if (process.platform !== "linux") {
+      await expect(launched).rejects.toMatchObject({
+        code: "CHROME_LAUNCH_FAILED",
+        message: expect.stringContaining("No usable sandbox"),
+      });
+      return;
+    }
+    const chrome = await launched;
+    expect(chrome.args).toContain("--no-sandbox");
+    if (process.getuid?.() !== 0) {
+      expect(lines.join("\n")).toContain("relaunching once with --no-sandbox");
+    }
+    await chrome.close();
+  });
+
+  /**
+   * A `SIGTERM` while Chrome is still starting ends the worker through `process.exit()`, before
+   * `launchChrome` has returned anything for it to clean up. The browser and its profile go with
+   * the worker anyway.
+   */
+  it("takes the browser and its profile with it when the worker exits during the handshake", async () => {
+    const executable = fakeBrowser("silent");
+    const scratch = mkdtempSync(join(tmpdir(), "xplainer-launch-exit-"));
+    directories.push(scratch);
+    const report = join(scratch, "browser.json");
+
+    const child = spawnEntry(CHILD_LAUNCH, [executable, report], {
+      XPLAINER_FAKE_CHROME_REPORT: report,
+    });
+    const exit = await child.waitForExit();
+
+    expect(exit.code, child.stderr()).toBe(7);
+    const browser = JSON.parse(readFileSync(report, "utf8")) as { pid: number; profile: string };
+    expect(await untilGone(browser.pid)).toBe(true);
+    expect(existsSync(browser.profile)).toBe(false);
   });
 
   it("fails with CHROME_LAUNCH_FAILED naming an executable that is not there", async () => {

@@ -45,6 +45,9 @@ export const WELL_KNOWN_FFMPEG: readonly string[] = [
 /** How much of ffmpeg's stderr is kept for a failure message. */
 const STDERR_TAIL_CHARS = 4_000;
 
+/** How long `ffmpeg -encoders` may take before that ffmpeg is refused as unusable. */
+export const LIBX264_PROBE_TIMEOUT_MS = 15_000;
+
 /** Where {@link resolveFfmpeg} looks, so a test can say what the machine has. */
 export type FfmpegLookup = {
   /** The environment `XPLAINER_FFMPEG` and `PATH` are read from. */
@@ -129,16 +132,28 @@ export function findFfmpeg(): string {
  * reproduces its own bytes for the same frames, and the one every ffmpeg build configured with
  * `--enable-gpl` carries. A build without it would fail only after every frame had been captured.
  */
-export async function assertLibx264(ffmpeg: string): Promise<void> {
+export async function assertLibx264(
+  ffmpeg: string,
+  timeoutMs: number = LIBX264_PROBE_TIMEOUT_MS,
+): Promise<void> {
   let listing: string;
+  let timedOut = false;
   try {
     listing = await new Promise<string>((resolve, reject) => {
       execFile(
         ffmpeg,
         ["-hide_banner", "-encoders"],
-        { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
+        {
+          encoding: "utf8",
+          maxBuffer: 8 * 1024 * 1024,
+          // An ffmpeg that never answers — a wrapper waiting on a terminal, a hung network mount —
+          // would otherwise hold the job in `running` before a single frame, with nothing logged.
+          timeout: timeoutMs,
+          killSignal: "SIGKILL",
+        },
         (error, stdout) => {
           if (error !== null) {
+            timedOut = error.killed === true;
             reject(error);
           } else {
             resolve(stdout);
@@ -149,7 +164,10 @@ export async function assertLibx264(ffmpeg: string): Promise<void> {
   } catch (error) {
     throw new RenderError(
       "FFMPEG_NOT_FOUND",
-      `${ffmpeg} could not be run (${error instanceof Error ? error.message : String(error)}).`,
+      timedOut
+        ? `${ffmpeg} did not answer \`-encoders\` within ${timeoutMs} ms and was stopped. Point ` +
+            `${FFMPEG_ENV} at an ffmpeg that runs.`
+        : `${ffmpeg} could not be run (${error instanceof Error ? error.message : String(error)}).`,
     );
   }
   if (!/^\s*V\S*\s+libx264\s/m.test(listing)) {

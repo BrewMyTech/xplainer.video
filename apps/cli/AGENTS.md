@@ -116,8 +116,8 @@ runner because they take tens of seconds
 | `daemon/video-lock.ts` | `<workspace>/locks/<slug>.lock`: one writer per video, across processes — the shared workspace's own exclusion |
 | `daemon/workers.ts` | kind → `WorkerSpec`: the narration worker and the render worker, each spawned under this process's own interpreter |
 | `workers/narrate.ts` | The spawned narration worker: the request and the spec back off disk, then render-core's narration port |
-| `workers/render.ts` | The spawned still and render worker: bundle, launch the recorded headless shell, capture each frame, and for a render pipe every PNG into ffmpeg |
-| `render/bundle.ts` | esbuild-wasm over a generated entry — `@xplainer/motion/harness` first, the video second — with React and motion from this package's own install, Tailwind compiled, and the one alias table for the previous renderer's import names |
+| `workers/render.ts` | The spawned still and render worker: sweep what dead workers left in `out/<slug>/`, serve and bundle, launch the recorded headless shell, capture each frame, and for a render pipe every PNG into ffmpeg |
+| `render/bundle.ts` | esbuild-wasm over a generated entry — `@xplainer/motion/harness` first, the video second — with React and motion from this package's own install, every import confined to the workspace and that install, Tailwind compiled, and the one alias table for the previous renderer's import names; and `servePage()`, the loopback server the page is opened from |
 | `render/cdp.ts` | A zero-dependency Chrome DevTools Protocol client over `--remote-debugging-pipe` |
 | `render/capture.ts` | The readiness gate, page errors with the frame index, and one screenshot per frame |
 | `render/encode.ts` | ffmpeg from `XPLAINER_FFMPEG`, then `PATH`, then the Homebrew directories; libx264, AAC, BT.709 tags, `+faststart`, and a partial renamed only on success |
@@ -864,6 +864,16 @@ Then the root procedure: `pnpm verify`.
   `scaffoldVideo()` — restoring an engine-owned file an agent wrote through `write_source_to`, which
   is the hole ADR 0007 accepted and ADR 0018 layer 4 closes — and `assertRenderable()` before a
   single Chrome process starts.
+- **A scene reaches the workspace and nothing else on the machine.** Whoever writes scene source
+  need not own the machine — a remote daemon (R-SEC-9) takes `put_source` from a network client —
+  so `render/bundle.ts` refuses, `BUNDLE_FAILED` with the path, any import or Tailwind `@import`
+  that resolves outside the workspace root or this package's own install, and the worker opens the
+  page from `servePage()` on `127.0.0.1` rather than from `file://`: an `http:` page cannot load
+  `file:` at all, so `<img src="file:///…">` is `IMAGE_BROKEN`, and the server answers only for the
+  bundle directory and the video's public directory, with every path resolved and held to its root.
+  `src/workers/render.test.ts` proves the second against a real browser — the same PNG drawn through
+  `staticFile()` and refused by its `file:` URL. Never point the browser at `BundleResult.url`
+  outside a test.
 - **Two listeners, one application, and only one of them carries the guard.** `startServer({ ipc })`
   binds the TCP port with `serve()` and the socket with `createAdaptorServer({ fetch })` over the
   *same* `Hono` object — ADR 0020's "One `createServer()`, one tool registration, two listeners".

@@ -9,7 +9,14 @@
  *
  * **Everything pending fails when Chrome exits, with the tail of what Chrome printed.** A browser
  * that dies mid-render otherwise leaves a call waiting for its 60-second timeout and then reports
- * "timed out", which says nothing; the stderr tail usually says exactly why it died.
+ * "timed out", which says nothing; the stderr tail usually says exactly why it died. The failure is
+ * `PAGE_ERROR`, and it waits for the output to finish arriving — `close`, not `exit`, bounded —
+ * because the line that says why is the last one Chrome writes.
+ *
+ * **From spawn to profile removal, a worker that exits takes the browser and its profile with it.**
+ * The `exit` hook is registered before the handshake, not after it: a `SIGTERM` that lands while
+ * Chrome is still starting ends the worker through `process.exit()` before `launchChrome` has
+ * returned anything the worker could clean up.
  *
  * **Chrome is a plain child of the worker, in the worker's process group.** The runner starts each
  * worker `detached`, which makes it a group leader, and signals the whole group on a cancel or a
@@ -64,6 +71,13 @@ export const LAUNCH_TIMEOUT_MS = 30_000;
 
 /** How long `close()` waits for `Browser.close` before it kills the process. */
 export const CLOSE_GRACE_MS = 5_000;
+
+/**
+ * How long, after Chrome exits, its output may take to finish arriving. `close` normally comes
+ * within milliseconds; a helper that inherited the pipes and outlives the browser would hold it
+ * open indefinitely, so the wait is bounded.
+ */
+export const OUTPUT_SETTLE_MS = 2_000;
 
 /** How much of Chrome's output is kept for a failure message. */
 const OUTPUT_TAIL_CHARS = 8_000;
@@ -363,7 +377,10 @@ export type Chrome = {
   outputTail: () => string;
   /** `Browser.close`, then `SIGKILL` after {@link CLOSE_GRACE_MS}; then the profile is removed. */
   close: () => Promise<void>;
-  /** `SIGKILL` now, wait for the exit, remove the profile. For a signal, not for a normal end. */
+  /**
+   * `SIGKILL` now, wait for the exit, remove the profile. For a signal, not for a normal end — and
+   * it cuts short a `close()` already waiting on `Browser.close`.
+   */
   kill: () => Promise<void>;
 };
 
@@ -386,7 +403,9 @@ type Attempt = { ok: true; chrome: Chrome } | { ok: false; reason: string; tail:
  *
  * On Linux, `--no-sandbox` is added up front when running as root (Chrome refuses to sandbox uid 0
  * at all), and otherwise only after Chrome itself has said it has no usable sandbox — once, and
- * logged, so a render that ran unsandboxed says so in its own job log.
+ * logged, so a render that ran unsandboxed says so in its own job log. That is decided on the
+ * output read up to `close`, not `exit`: the sandbox line is Chrome's last, and `exit` can arrive
+ * before it has been read.
  */
 export async function launchChrome(options: LaunchChromeOptions): Promise<Chrome> {
   const linux = process.platform === "linux";
@@ -406,6 +425,11 @@ export async function launchChrome(options: LaunchChromeOptions): Promise<Chrome
     throw launchFailure(options.executable, second);
   }
   throw launchFailure(options.executable, first);
+}
+
+/** How a browser process ended, as the sentence a failure starts with. */
+function describeExit(code: number | null, signal: NodeJS.Signals | null): string {
+  return `the browser exited (code ${String(code)}, signal ${String(signal)})`;
 }
 
 function launchFailure(executable: string, failed: { reason: string; tail: string }): RenderError {
@@ -439,6 +463,23 @@ async function attempt(
     return { ok: false, reason: String(error), tail: "" };
   }
 
+  // A worker that exits without closing — `process.exit()` from a signal handler, during the
+  // handshake below or mid-render, or an uncaught throw — must not leave the browser running or its
+  // profile behind. Synchronous, because `exit` listeners are; removed once the profile is gone.
+  const onWorkerExit = (): void => {
+    child.kill("SIGKILL");
+    try {
+      removeProfile();
+    } catch {
+      // The process is ending and there is nowhere left to report it.
+    }
+  };
+  process.once("exit", onWorkerExit);
+  const discardProfile = (): void => {
+    removeProfile();
+    process.removeListener("exit", onWorkerExit);
+  };
+
   let tail = "";
   const keep = (data: Buffer): void => {
     tail = (tail + data.toString("utf8")).slice(-OUTPUT_TAIL_CHARS);
@@ -454,23 +495,44 @@ async function attempt(
       resolve({ code: null, signal: null });
     });
   });
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", () => {
+      resolve();
+    });
+    child.once("error", () => {
+      resolve();
+    });
+  });
+  /** The exit, once everything Chrome printed before it has been read — or {@link OUTPUT_SETTLE_MS} on. */
+  const settled = exited.then(async (exit) => {
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      closed,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, OUTPUT_SETTLE_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    return exit;
+  });
 
   const toBrowser = child.stdio[3];
   const fromBrowser = child.stdio[4];
   if (!(toBrowser instanceof Writable) || !(fromBrowser instanceof Readable)) {
     child.kill("SIGKILL");
-    await exited;
-    removeProfile();
+    await settled;
+    discardProfile();
     return { ok: false, reason: "the browser's debugging pipe was not opened", tail };
   }
   const connection = new CdpConnection(toBrowser, fromBrowser);
   child.once("error", (error) => {
     connection.fail(error);
   });
-  void exited.then(({ code, signal }) => {
+  void settled.then(({ code, signal }) => {
     connection.fail(
-      new Error(
-        `the browser exited (code ${String(code)}, signal ${String(signal)})` +
+      new RenderError(
+        "PAGE_ERROR",
+        describeExit(code, signal) +
           (tail.trim() === "" ? "" : `:\n${tail.trim().slice(-QUOTED_TAIL_CHARS)}`),
       ),
     );
@@ -480,17 +542,17 @@ async function attempt(
     await connection.send("Browser.getVersion", {}, undefined, { timeoutMs: LAUNCH_TIMEOUT_MS });
   } catch (error) {
     child.kill("SIGKILL");
-    await exited;
-    removeProfile();
-    return { ok: false, reason: error instanceof Error ? error.message : String(error), tail };
+    const { code, signal } = await settled;
+    discardProfile();
+    // The browser's own exit is described without its output, which the failure quotes once.
+    const reason =
+      error instanceof RenderError
+        ? describeExit(code, signal)
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    return { ok: false, reason, tail };
   }
-
-  // A worker that exits without closing — `process.exit()` from a signal handler, an uncaught
-  // throw — must not leave the browser running. Synchronous, because `exit` listeners are.
-  const killOnExit = (): void => {
-    child.kill("SIGKILL");
-  };
-  process.once("exit", killOnExit);
 
   let ending: Promise<void> | null = null;
   const end = (graceMs: number): Promise<void> => {
@@ -515,14 +577,13 @@ async function attempt(
       }
       await exited;
       clearTimeout(timer);
-      process.removeListener("exit", killOnExit);
       const deadline = Date.now() + CLOSE_GRACE_MS;
       while (helpers.some((pid) => signal(pid, 0)) && Date.now() < deadline) {
         await new Promise((resolve) => {
           setTimeout(resolve, 25);
         });
       }
-      removeProfile();
+      discardProfile();
     })();
     return ending;
   };
@@ -537,7 +598,13 @@ async function attempt(
       exited,
       outputTail: () => tail,
       close: () => end(CLOSE_GRACE_MS),
-      kill: () => end(0),
+      kill: () => {
+        // A close already under way would wait out its grace for `Browser.close`; a signal cannot.
+        if (ending !== null) {
+          child.kill("SIGKILL");
+        }
+        return end(0);
+      },
     },
   };
 }

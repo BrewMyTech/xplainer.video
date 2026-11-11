@@ -48,7 +48,10 @@ export type VideoPage = {
 /** What {@link openVideoPage} needs. */
 export type OpenVideoPageOptions = {
   chrome: Chrome;
-  /** The bundle's `index.html`, as a `file:` URL. */
+  /**
+   * The bundle's `index.html`. The worker passes its page server's `http://127.0.0.1` URL
+   * (`bundle.ts`'s `servePage`); a `file:` URL would let the page load any file the user can read.
+   */
   url: string;
   /**
    * The device scale factor. `1` for a render; a still's `scale` otherwise, so `0.5` captures a

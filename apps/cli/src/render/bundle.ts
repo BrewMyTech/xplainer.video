@@ -1,5 +1,5 @@
 /**
- * One video's sources, bundled into a page Chrome can open from `file://`.
+ * One video's sources, bundled into a page, and the loopback server Chrome opens it from.
  *
  * The bundler is **esbuild-wasm**: the same esbuild, compiled to WebAssembly, so it has no
  * platform binary and no install script that fetches one. It builds a generated entry that imports
@@ -18,9 +18,22 @@
  * the bundle and it is the one this build was tested with. Any other bare import from a video's
  * own files is refused by name rather than found somewhere and trusted.
  *
- * **The JSON travels as a script, not as a fetch.** Chrome refuses `fetch()` on a `file:` URL, so
- * `static-data.js` carries the two documents and the harness serves the composition's
- * `fetch(staticFile(…))` calls from it.
+ * **And nothing a video imports by path may leave the workspace.** Every resolution — relative,
+ * absolute, or a provided package's own dependency — must land inside the workspace root or inside
+ * the install directories this program's provided packages come from, or the bundle fails
+ * `BUNDLE_FAILED` naming the file. Otherwise `import secret from "/home/me/.aws/credentials.txt"`
+ * would be embedded in the bundle, and for a daemon serving a remote client (R-SEC-9) whoever writes
+ * scene source need not be whoever owns the machine. Tailwind's `@import` is held to the same rule.
+ *
+ * **The page is served, never opened from `file://`** ({@link servePage}). A `file:` page can show
+ * any image, font or media file the daemon's user can read through `<img src="file:///…">`; an
+ * `http://127.0.0.1` page cannot load `file:` at all, so the only files a scene can reach are the
+ * two directories the server answers for — the bundle at `/` and the video's public directory at
+ * `/public/`.
+ *
+ * **The JSON travels as a script, not as a fetch.** `static-data.js` carries the two documents and
+ * the harness answers the composition's `fetch(staticFile(…))` calls from it, so the scaffold's
+ * metadata step never waits on the network.
  *
  * **Tailwind is compiled, not scanned.** `tailwindcss`'s own `compile()` builds the stylesheet from
  * a candidate list this module extracts — an over-inclusive split of every bundled source file that
@@ -28,17 +41,27 @@
  * involved. A token that is not a class costs nothing: Tailwind ignores what it cannot parse.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CAPTIONS_FILE, isEngineOwned, TIMINGS_FILE, videoPaths } from "@xplainer/render-core";
 import {
   build,
   formatMessages,
-  type ImportKind,
   type Message,
+  type OnResolveArgs,
+  type OnResolveResult,
   type Plugin,
   stop,
 } from "esbuild-wasm";
@@ -85,7 +108,10 @@ const cliRequire = createRequire(import.meta.url);
 const EMPTY_NAMESPACE = "xplainer-empty";
 
 /** Marks a resolve this plugin asked for itself, so it does not intercept its own question. */
-const FROM_CLI = Symbol("xplainer-resolve-from-cli");
+const OWN_RESOLVE = Symbol("xplainer-own-resolve");
+
+/** Where {@link servePage} serves the video's public directory, and so where `staticFile()` points. */
+export const PUBLIC_ROUTE = "/public/";
 
 /** Timeouts the page harness reads, for a test that needs a failure to arrive quickly. */
 export type PageRenderSettings = {
@@ -104,13 +130,23 @@ export type BundleOptions = {
   log: (line: string) => void;
   /** Written into `static-data.js` as `window.__XPLAINER_RENDER__` when given. */
   renderSettings?: PageRenderSettings;
+  /**
+   * The URL `staticFile()` prefixes, ending in `/`: the worker passes its {@link PageServer}'s
+   * `publicBase`. Left out, it is {@link PUBLIC_ROUTE}, which resolves to the same place against
+   * whatever origin serves the page — and to nothing on disk when nothing does.
+   */
+  publicBase?: string;
 };
 
 /** What one bundle produced. */
 export type BundleResult = {
   /** `<outDir>/index.html`. */
   indexHtml: string;
-  /** Its `file:` URL, which is what the browser is pointed at. */
+  /**
+   * Its `file:` URL. The worker never opens it — it serves the directory with {@link servePage},
+   * because a `file:` page can reach every file the daemon's user can read — and it is here for a
+   * test that only needs the page.
+   */
   url: string;
   /** Agent-owned files that imported a legacy name, relative to the video's directory. */
   deprecated: string[];
@@ -152,14 +188,90 @@ function packageName(specifier: string): string {
   return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? specifier);
 }
 
+/** Whether a path — relative to the workspace root, never absolute — has a `node_modules` in it. */
 function insideNodeModules(path: string): boolean {
   return path.split(/[\\/]/).includes("node_modules");
 }
 
-/** Read a stylesheet Tailwind's `@import` asks for: Tailwind's own, or one relative to the importer. */
+/** Whether `path` is `root` or something inside it. Both are expected to be real paths. */
+function isWithin(root: string, path: string): boolean {
+  const inside = relative(root, path);
+  return (
+    inside === "" || (inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside))
+  );
+}
+
+/** `path` with every symlink resolved, or `path` itself when it cannot be (it does not exist). */
+function realOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** The directory holding `name`'s `package.json`, found from the file `name` resolves to. */
+function packageDirectory(name: string): string {
+  let directory = dirname(cliRequire.resolve(name));
+  for (;;) {
+    const manifest = join(directory, "package.json");
+    if (existsSync(manifest)) {
+      const declared: unknown = JSON.parse(readFileSync(manifest, "utf8"));
+      if (
+        typeof declared === "object" &&
+        declared !== null &&
+        (declared as { name?: unknown }).name === name
+      ) {
+        return directory;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      throw new Error(`${name} resolved to ${cliRequire.resolve(name)}, which has no package.json`);
+    }
+    directory = parent;
+  }
+}
+
+let installRoots: readonly string[] | null = null;
+
+/**
+ * The directories this program's own packages are installed in: for each provided package and for
+ * Tailwind, the **outermost** `node_modules` that holds it, or its own directory when none does (a
+ * workspace link, in this repository). Outermost, because a package's dependencies can sit anywhere
+ * in the tree that installed it — pnpm keeps them in `.pnpm/`, npm hoists `scheduler` above a
+ * nested `react-dom` — but never outside it.
+ */
+function programInstallRoots(): readonly string[] {
+  if (installRoots === null) {
+    const roots = new Set<string>();
+    for (const name of [...PROVIDED_PACKAGES, "tailwindcss"]) {
+      const directory = realpathSync(packageDirectory(name));
+      const parts = directory.split(sep);
+      const outermost = parts.indexOf("node_modules");
+      roots.add(outermost === -1 ? directory : parts.slice(0, outermost + 1).join(sep));
+    }
+    installRoots = [...roots];
+  }
+  return installRoots;
+}
+
+/** The sentence a resolution outside the allowed directories is refused with. */
+function outsideTheWorkspace(specifier: string, path: string, root: string): string {
+  return (
+    `"${specifier}" resolves to ${path}, which is outside the workspace (${root}) and outside ` +
+    "xplainer's own install. A video may only import files inside the workspace."
+  );
+}
+
+/**
+ * Read a stylesheet Tailwind's `@import` asks for: Tailwind's own, or one relative to the importer
+ * that stays inside the workspace root `root` (a real path).
+ */
 async function loadStylesheet(
   id: string,
   base: string,
+  root: string,
 ): Promise<{ path: string; base: string; content: string }> {
   const tailwindDir = dirname(cliRequire.resolve("tailwindcss/package.json"));
   let path: string;
@@ -170,6 +282,9 @@ async function loadStylesheet(
     path = join(tailwindDir, sub.endsWith(".css") ? sub : `${sub}.css`);
   } else if (id.startsWith(".") || isAbsolute(id)) {
     path = resolve(base, id);
+    if (!isWithin(root, realOrSelf(path))) {
+      throw new Error(outsideTheWorkspace(id, path, root));
+    }
   } else {
     throw new Error(
       `@import "${id}" is not available to a render: only tailwindcss and stylesheets relative ` +
@@ -183,11 +298,12 @@ async function loadStylesheet(
 async function buildTailwind(root: string, candidates: readonly string[]): Promise<string> {
   const entry = join(root, "tailwind.css");
   const css = existsSync(entry) ? readFileSync(entry, "utf8") : '@import "tailwindcss";\n';
+  const realRoot = realpathSync(root);
   try {
     const compiler = await compile(css, {
       base: root,
       from: entry,
-      loadStylesheet,
+      loadStylesheet: (id, base) => loadStylesheet(id, base, realRoot),
       loadModule: async (id) => {
         throw new Error(`Tailwind plugins and configs are not supported in a render (${id}).`);
       },
@@ -220,7 +336,11 @@ function isBuildFailure(
 }
 
 /** `static-data.js`: the two documents, the public directory's URL, and any test timeouts. */
-function staticDataScript(publicDir: string, settings: PageRenderSettings | undefined): string {
+function staticDataScript(
+  publicDir: string,
+  base: string,
+  settings: PageRenderSettings | undefined,
+): string {
   const documents: Record<string, string> = {};
   for (const name of STATIC_DOCUMENTS) {
     const path = join(publicDir, name);
@@ -228,7 +348,6 @@ function staticDataScript(publicDir: string, settings: PageRenderSettings | unde
       documents[name] = readFileSync(path, "utf8");
     }
   }
-  const base = pathToFileURL(publicDir).href.replace(/\/?$/, "/");
   const lines = [
     `window.__XPLAINER_STATIC__ = ${JSON.stringify(documents)};`,
     `window.__XPLAINER_PUBLIC_BASE__ = ${JSON.stringify(base)};`,
@@ -304,6 +423,9 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
   // The importer paths esbuild reports are real paths; a workspace under a symlink (macOS's /var)
   // would otherwise never match the video's own directory.
   const videoDir = realpathSync(video.source);
+  const workspace = realpathSync(options.root);
+  const installed = programInstallRoots();
+  const everywhere = [workspace, ...installed];
   const legacy = new Map<string, Set<string>>();
 
   const renderer: Plugin = {
@@ -319,21 +441,50 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
         loader: "js",
       }));
 
-      const fromCli = async (specifier: string, kind: ImportKind) => {
+      /**
+       * Resolve `specifier` from `resolveDir` with esbuild's own resolver, then refuse the result
+       * unless it is inside one of `allowed` — every import this plugin passes on goes through here,
+       * so no file outside the workspace and this program's install reaches the bundle.
+       */
+      const confined = async (
+        specifier: string,
+        args: OnResolveArgs,
+        resolveDir: string,
+        allowed: readonly string[],
+      ): Promise<OnResolveResult> => {
         const resolved = await context.resolve(specifier, {
-          kind,
-          resolveDir: CLI_DIR,
-          pluginData: FROM_CLI,
+          kind: args.kind,
+          importer: args.importer,
+          resolveDir,
+          pluginData: OWN_RESOLVE,
         });
         if (resolved.errors.length > 0) {
           return { errors: resolved.errors };
         }
-        return { path: resolved.path, sideEffects: resolved.sideEffects };
+        if (
+          resolved.namespace === "file" &&
+          !resolved.external &&
+          !allowed.some((root) => isWithin(root, realOrSelf(resolved.path)))
+        ) {
+          return { errors: [{ text: outsideTheWorkspace(specifier, resolved.path, workspace) }] };
+        }
+        return {
+          path: resolved.path,
+          namespace: resolved.namespace,
+          external: resolved.external,
+          sideEffects: resolved.sideEffects,
+          suffix: resolved.suffix,
+        };
       };
 
-      context.onResolve({ filter: /^[^./]/ }, async (args) => {
-        if (args.pluginData === FROM_CLI || isAbsolute(args.path)) {
+      context.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData === OWN_RESOLVE) {
           return undefined;
+        }
+        const bare =
+          !args.path.startsWith(".") && !args.path.startsWith("/") && !isAbsolute(args.path);
+        if (!bare) {
+          return confined(args.path, args, args.resolveDir, everywhere);
         }
         const aliased = LEGACY_IMPORT_ALIASES[args.path];
         if (aliased !== undefined) {
@@ -346,14 +497,17 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
               legacy.set(name, names);
             }
           }
-          return fromCli(aliased, args.kind);
+          return confined(aliased, args, CLI_DIR, installed);
         }
         if (PROVIDED_PACKAGES.has(packageName(args.path))) {
-          return fromCli(args.path, args.kind);
+          return confined(args.path, args, CLI_DIR, installed);
         }
-        if (insideNodeModules(args.importer)) {
-          // A provided package's own dependency (react-dom's `scheduler`), found where it lives.
-          return undefined;
+        // Relative to the workspace, so a workspace that itself sits under a `node_modules` does
+        // not make every one of the video's own files look like a package's.
+        if (insideNodeModules(relative(workspace, args.importer))) {
+          // A provided package's own dependency (react-dom's `scheduler`), found where it lives —
+          // which must be this program's install, never the workspace's.
+          return confined(args.path, args, args.resolveDir, installed);
         }
         return {
           errors: [
@@ -458,7 +612,7 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
   );
   writeFileSync(
     join(options.outDir, BUNDLE_FILES.staticData),
-    staticDataScript(video.publicDir, options.renderSettings),
+    staticDataScript(video.publicDir, options.publicBase ?? PUBLIC_ROUTE, options.renderSettings),
   );
   const indexHtml = join(options.outDir, BUNDLE_FILES.html);
   writeFileSync(indexHtml, INDEX_HTML);
@@ -469,5 +623,161 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
     deprecated: [...legacy.keys()],
     candidates: candidates.size,
     durationMs: performance.now() - started,
+  };
+}
+
+/** `Content-Type` by extension, for the files a bundle or a video's public directory holds. */
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".bmp": "image/bmp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".flac": "audio/flac",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+};
+
+/** The two directories {@link servePage} answers for. */
+export type ServePageOptions = {
+  /** The bundle's directory, served at `/`. */
+  pageDir: string;
+  /** The video's `public/<slug>/`, served at {@link PUBLIC_ROUTE}. */
+  publicDir: string;
+};
+
+/** A running page server. */
+export type PageServer = {
+  /** `http://127.0.0.1:<port>`. */
+  origin: string;
+  /** `<origin>/index.html`: what the browser is pointed at. */
+  url: string;
+  /** `<origin>/public/`: what `staticFile()` prefixes. */
+  publicBase: string;
+  /** Stop listening and drop every open connection. Safe to call more than once. */
+  close: () => Promise<void>;
+};
+
+/**
+ * The file a request path names, or `null` for anything that is not a regular file inside the
+ * directory its route serves — after decoding, after `..`, and after every symlink.
+ */
+function servedFile(
+  requestUrl: string,
+  options: ServePageOptions,
+): { path: string; size: number } | null {
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(new URL(requestUrl, "http://127.0.0.1").pathname);
+  } catch {
+    return null;
+  }
+  if (pathname.includes("\0")) {
+    return null;
+  }
+  const [root, rest] = pathname.startsWith(PUBLIC_ROUTE)
+    ? [options.publicDir, pathname.slice(PUBLIC_ROUTE.length)]
+    : [options.pageDir, pathname.slice(1)];
+  try {
+    const path = realpathSync(resolve(root, rest));
+    if (!isWithin(realpathSync(root), path)) {
+      return null;
+    }
+    const stats = statSync(path);
+    return stats.isFile() ? { path, size: stats.size } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serve one bundle and its video's public directory on `127.0.0.1`, on a port the OS picks.
+ *
+ * The bundle is at `/` and the public directory at {@link PUBLIC_ROUTE}; every other path — a
+ * directory, a file outside either root, a `..` or a symlink that leads out — is `404`, and only
+ * `GET` and `HEAD` are answered. A request whose `Host` is not this server's own address is `404`
+ * too, so a page elsewhere that rebinds a name to `127.0.0.1` cannot read through it while a render
+ * runs. Nothing is cached and nothing is listed.
+ */
+export async function servePage(options: ServePageOptions): Promise<PageServer> {
+  let host = "";
+  const server = createServer((request, response) => {
+    const method = request.method ?? "";
+    const file =
+      request.headers.host === host && (method === "GET" || method === "HEAD")
+        ? servedFile(request.url ?? "", options)
+        : null;
+    if (file === null) {
+      response.writeHead(404, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      response.end("not found\n");
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": CONTENT_TYPES[extname(file.path).toLowerCase()] ?? "application/octet-stream",
+      "content-length": file.size,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    if (method === "HEAD") {
+      response.end();
+      return;
+    }
+    createReadStream(file.path)
+      .on("error", () => {
+        response.destroy();
+      })
+      .pipe(response);
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new RenderError("PAGE_ERROR", "the page server did not get a TCP port on 127.0.0.1.");
+  }
+  host = `127.0.0.1:${address.port}`;
+  const origin = `http://${host}`;
+  let closing: Promise<void> | null = null;
+  return {
+    origin,
+    url: `${origin}/${BUNDLE_FILES.html}`,
+    publicBase: `${origin}${PUBLIC_ROUTE}`,
+    close: () => {
+      closing ??= new Promise<void>((resolveClose) => {
+        server.close(() => {
+          resolveClose();
+        });
+        server.closeAllConnections();
+      });
+      return closing;
+    },
   };
 }

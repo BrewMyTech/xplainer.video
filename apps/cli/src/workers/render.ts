@@ -10,7 +10,7 @@
  *
  *   1. bundle the video into a per-job directory under `out/<slug>/`  (`BUNDLE_FAILED`)
  *   2. start the recorded headless shell over a CDP pipe               (`CHROME_LAUNCH_FAILED`)
- *   3. open the bundle and step it one frame at a time                 (`PAGE_ERROR`, `READINESS_TIMEOUT`, …)
+ *   3. open the bundle from a loopback server, step it frame by frame (`PAGE_ERROR`, `READINESS_TIMEOUT`, …)
  *   4. a still is one PNG; a render pipes every PNG into a spawned
  *      ffmpeg, which muxes the narration and writes the MP4           (`FFMPEG_NOT_FOUND`, `ENCODE_FAILED`)
  *
@@ -19,21 +19,45 @@
  * `{"event":"done",…}`; a failure is one `<CODE>: <sentence>` on stderr and a non-zero exit, which
  * the runner records as `render_failed`.
  *
+ * **The page is served, never opened from `file://`.** The worker starts `render/bundle.ts`'s
+ * `servePage()` on `127.0.0.1` before it bundles — the bundle's `staticFile()` base is that
+ * server's `/public/` — and closes it with everything else. A `file:` page could show any image the
+ * daemon's user can read; an `http:` one cannot load `file:` at all.
+ *
  * **A signal is a cancellation, and it leaves nothing behind.** `SIGTERM` and `SIGINT` — the
  * daemon's drain and an agent's cancel both arrive as a `SIGTERM` to the whole process group —
  * kill ffmpeg and Chrome, wait for both, remove the partial MP4, the browser profile and the
- * bundle directory, and exit non-zero, well inside the two seconds the runner gives the group
- * before it sends `SIGKILL`.
+ * bundle directory, and exit 143 or 130, well inside the two seconds the runner gives the group
+ * before it sends `SIGKILL`. There is one cleanup and everyone awaits it: a signal that lands while
+ * a failure is already being cleaned up waits for that cleanup rather than exiting under it.
+ *
+ * **Once the output is in place, the job has succeeded.** Cleanup after the rename is best-effort —
+ * a bundle directory Windows will not let go of yet is a log line, not a failed render — and a
+ * signal that arrives then says the output was written rather than that nothing was.
+ *
+ * **A worker that died without cleaning up is cleaned up after by the next one.** At start, holding
+ * the video's write lock (the daemon took it for this job), the worker removes `.render-<job>`
+ * directories and `*.partial-<pid>` files that earlier workers for this video left in
+ * `out/<slug>/`. Browser profiles a `SIGKILL` left in the temporary directory are not aged out:
+ * they are not this video's, and nothing yet says when one is abandoned.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import type { Timings } from "@xplainer/protocol";
 import { stillOutput, videoPaths } from "@xplainer/render-core";
 import { STATE_DIR_ENV } from "../daemon/state-dir.js";
 import { type JobRequest, jobRequestPath, readJobRequest } from "../job-request.js";
-import { bundleVideo } from "../render/bundle.js";
+import { bundleVideo, type PageServer, servePage } from "../render/bundle.js";
 import { openVideoPage } from "../render/capture.js";
 import { type Chrome, launchChrome } from "../render/cdp.js";
 import { assertLibx264, type Encoder, findFfmpeg, startEncoder } from "../render/encode.js";
@@ -43,16 +67,29 @@ import { readToolchainMarker } from "../setup/toolchain.js";
 /** A progress line is printed at least this often, in frames. */
 export const PROGRESS_EVERY_FRAMES = 15;
 
-/** The exit code of a worker stopped by a signal: the shell's 128 + SIGTERM. */
-const SIGNALLED_EXIT_CODE = 143;
+/** The exit code of a worker stopped by a signal: the shell's 128 + the signal's number. */
+const SIGNALLED_EXIT_CODES: Readonly<Record<"SIGINT" | "SIGTERM", number>> = {
+  SIGINT: 130,
+  SIGTERM: 143,
+};
 
-/** What has to be undone if the worker is stopped part-way. */
-const live: { chrome: Chrome | null; encoder: Encoder | null; paths: Set<string> } = {
+/** What has to be undone if the worker is stopped part-way, and what it has already finished. */
+const live: {
+  chrome: Chrome | null;
+  encoder: Encoder | null;
+  server: PageServer | null;
+  paths: Set<string>;
+  /** The output, once it is complete and in place. */
+  written: string | null;
+} = {
   chrome: null,
   encoder: null,
+  server: null,
   paths: new Set(),
+  written: null,
 };
 let stopping = false;
+let cleaning: Promise<void> | null = null;
 
 function say(line: string): void {
   process.stdout.write(`${line}\n`);
@@ -113,30 +150,80 @@ function readTimings(path: string): Timings {
   }
 }
 
-/** Remove everything a stopped or failed run made, ignoring what is already gone. */
-async function cleanUp(): Promise<void> {
-  const { chrome, encoder } = live;
-  live.chrome = null;
-  live.encoder = null;
-  await Promise.all([encoder?.abort(), stopping ? chrome?.kill() : chrome?.close()]);
-  for (const path of live.paths) {
-    rmSync(path, { recursive: true, force: true });
-  }
-  live.paths.clear();
+/**
+ * Remove everything this run made — the encoder and its partial, the browser and its profile, the
+ * page server, the bundle directory — once. Every caller awaits the same promise, so the second
+ * one waits for the first to finish rather than finding nothing left to do and exiting under it.
+ * Every step is attempted; the first failure is rethrown at the end.
+ */
+function cleanUp(): Promise<void> {
+  cleaning ??= (async () => {
+    const { chrome, encoder, server } = live;
+    const results = await Promise.allSettled([
+      encoder?.abort(),
+      stopping ? chrome?.kill() : chrome?.close(),
+      server?.close(),
+    ]);
+    const failures: unknown[] = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    for (const path of live.paths) {
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    live.paths.clear();
+    if (failures.length > 0) {
+      throw failures[0];
+    }
+  })();
+  return cleaning;
 }
 
-async function onSignal(signal: NodeJS.Signals): Promise<void> {
+/**
+ * Remove what earlier workers for this video left when they died without cleaning up: `.render-<job>`
+ * bundle directories and `*.partial-<pid>` files in `out/<slug>/`. Only safe because the daemon
+ * holds this video's write lock for this job, so no other worker is writing there.
+ */
+function sweepLeftovers(outDir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(outDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!/^\.render-\d+$/.test(name) && !/\.partial-\d+$/.test(name)) {
+      continue;
+    }
+    try {
+      rmSync(join(outDir, name), { recursive: true, force: true });
+      say(`[xplainer] removed ${name} from ${outDir}, left by an earlier run that did not finish`);
+    } catch (error) {
+      say(`[xplainer] could not remove ${name} from ${outDir}: ${String(error)}`);
+    }
+  }
+}
+
+async function onSignal(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   if (stopping) {
     return;
   }
   stopping = true;
   // Nothing the main path does after this point is reported: Chrome and ffmpeg are about to be
-  // killed under it, and the failures that causes are this signal, not a defect.
+  // killed under it, and the failures that causes are this signal, not a defect. A cleanup already
+  // under way may be waiting on `Browser.close`; killing now cuts that wait short.
+  live.chrome?.kill().catch(() => undefined);
   await cleanUp().catch(() => undefined);
   process.stderr.write(
-    `RENDER_CANCELLED: the worker received ${signal} and stopped; nothing was written.\n`,
+    live.written === null
+      ? `RENDER_CANCELLED: the worker received ${signal} and stopped; nothing was written.\n`
+      : `RENDER_CANCELLED: the worker received ${signal} while cleaning up, after ${live.written} ` +
+          "was written; that file is complete.\n",
   );
-  process.exit(SIGNALLED_EXIT_CODE);
+  process.exit(SIGNALLED_EXIT_CODES[signal]);
 }
 
 async function main(): Promise<void> {
@@ -155,6 +242,7 @@ async function main(): Promise<void> {
   const jobType = requestedJobType(root, jobId);
   const request = readJobRequest(root, jobId, jobType);
   const video = videoPaths(root, request.slug);
+  sweepLeftovers(video.out);
   const executable = chromePath();
   const still = request.job_type === "explainer_still" ? request : null;
 
@@ -172,9 +260,19 @@ async function main(): Promise<void> {
   mkdirSync(video.out, { recursive: true });
   const bundleDir = join(video.out, `.render-${jobId}`);
   live.paths.add(bundleDir);
-  const bundle = await bundleVideo({ root, slug: request.slug, outDir: bundleDir, log: say });
+  // Started first, so the bundle's `staticFile()` base can be this server's own address.
+  const server = await servePage({ pageDir: bundleDir, publicDir: video.publicDir });
+  live.server = server;
+  const bundle = await bundleVideo({
+    root,
+    slug: request.slug,
+    outDir: bundleDir,
+    log: say,
+    publicBase: server.publicBase,
+  });
   say(
-    `[xplainer] bundled in ${Math.round(bundle.durationMs)} ms (${bundle.candidates} Tailwind candidates)`,
+    `[xplainer] bundled in ${Math.round(bundle.durationMs)} ms (${bundle.candidates} Tailwind ` +
+      `candidates), served at ${server.origin}`,
   );
 
   const chrome = await launchChrome({ executable, log: say });
@@ -182,7 +280,7 @@ async function main(): Promise<void> {
   say(`[xplainer] chrome ${chrome.pid} started with profile ${chrome.userDataDir}`);
   const page = await openVideoPage({
     chrome,
-    url: bundle.url,
+    url: server.url,
     deviceScaleFactor: still?.scale ?? 1,
     log: say,
   });
@@ -208,6 +306,7 @@ async function main(): Promise<void> {
     writeFileSync(partial, png);
     renameSync(partial, output);
     live.paths.delete(partial);
+    live.written = output;
   } else {
     const timings = readTimings(video.timings);
     const encoder = startEncoder({
@@ -223,21 +322,35 @@ async function main(): Promise<void> {
       await encoder.write(await page.capture(frame));
       const done = frame + 1;
       if (done % PROGRESS_EVERY_FRAMES === 0 || done === total) {
-        const seconds = (performance.now() - loopStarted) / 1000;
+        // A clock that has not moved yet would make this Infinity, which JSON prints as `null`.
+        const fps = done / ((performance.now() - loopStarted) / 1000);
         event({
           event: "progress",
           frame: done,
           of: total,
-          captureFps: Math.round((done / seconds) * 100) / 100,
+          captureFps: Number.isFinite(fps) ? Math.round(fps * 100) / 100 : 0,
         });
       }
     }
     await encoder.finish();
     live.encoder = null;
+    // A signal during `finish()` aborts it before the rename, and is reported by its own handler.
+    if (stopping) {
+      return;
+    }
     output = video.mp4;
+    live.written = output;
   }
 
-  await cleanUp();
+  // The output is complete and in place: from here, a cleanup that fails is a line in the log.
+  try {
+    await cleanUp();
+  } catch (error) {
+    say(
+      `[xplainer] ${output} is written, but cleaning up after it failed: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   if (stopping) {
     return;
   }
@@ -251,11 +364,11 @@ async function main(): Promise<void> {
 
 // `on`, not `once`: a second signal during the cleanup must meet this handler, which ignores it,
 // rather than Node's default, which would end the process before the partial is removed.
-process.on("SIGTERM", (signal) => {
-  void onSignal(signal);
+process.on("SIGTERM", () => {
+  void onSignal("SIGTERM");
 });
-process.on("SIGINT", (signal) => {
-  void onSignal(signal);
+process.on("SIGINT", () => {
+  void onSignal("SIGINT");
 });
 
 main().catch(async (error: unknown) => {
@@ -263,6 +376,10 @@ main().catch(async (error: unknown) => {
     return;
   }
   await cleanUp().catch(() => undefined);
+  // A signal that arrived during that cleanup waited for it, and reports the job itself.
+  if (stopping) {
+    return;
+  }
   const message =
     error instanceof RenderError
       ? error.message

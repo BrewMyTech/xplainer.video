@@ -7,11 +7,19 @@
  * workspace's own install" is a property of the bundle on disk rather than of a code path.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 import {
   CAPTIONS_FILE,
   materialiseWorkspace,
@@ -24,6 +32,9 @@ import {
   BUNDLE_FILES,
   bundleVideo,
   LEGACY_IMPORT_ALIASES,
+  type PageServer,
+  PUBLIC_ROUTE,
+  servePage,
   tailwindCandidates,
   withInterpreterOnPath,
 } from "./bundle.js";
@@ -102,7 +113,11 @@ describe("bundleVideo", { timeout: 60_000 }, () => {
     );
   });
 
-  it("carries timings.json and captions.json verbatim, and the public directory's URL", async () => {
+  /**
+   * The base is a URL the page server answers for, never the directory's `file:` URL: a page that
+   * resolves `staticFile()` against the filesystem is a page that can be pointed anywhere on it.
+   */
+  it("carries timings.json and captions.json verbatim, and the server's public route as the base", async () => {
     const { read } = await bundle();
     const video = videoPaths(root, "demo");
     const page: Record<string, unknown> = {};
@@ -112,8 +127,20 @@ describe("bundleVideo", { timeout: 60_000 }, () => {
       [TIMINGS_FILE]: readFileSync(video.timings, "utf8"),
       [CAPTIONS_FILE]: readFileSync(video.captions, "utf8"),
     });
-    expect(page.__XPLAINER_PUBLIC_BASE__).toBe(`${pathToFileURL(video.publicDir).href}/`);
+    expect(page.__XPLAINER_PUBLIC_BASE__).toBe(PUBLIC_ROUTE);
     expect(page.__XPLAINER_RENDER__).toBeUndefined();
+
+    const dir = join(videoPaths(root, "demo").out, ".render-3");
+    await bundleVideo({
+      root,
+      slug: "demo",
+      outDir: dir,
+      log: () => {},
+      publicBase: "http://127.0.0.1:4321/public/",
+    });
+    const served: Record<string, unknown> = {};
+    new Function("window", readFileSync(join(dir, BUNDLE_FILES.staticData), "utf8"))(served);
+    expect(served.__XPLAINER_PUBLIC_BASE__).toBe("http://127.0.0.1:4321/public/");
   });
 
   it("writes the page's render budgets only when it is given them", async () => {
@@ -238,6 +265,210 @@ describe("bundleVideo", { timeout: 60_000 }, () => {
     await expect(bundle()).rejects.toThrow(
       /BUNDLE_FAILED[\s\S]*"canvas-confetti" is not available to a video/,
     );
+  });
+
+  /**
+   * Whoever writes scene source may not own the machine (a remote daemon, R-SEC-9), and esbuild
+   * embeds a `.txt`, `.json`, `.js` or `.css` it can resolve. A file outside the workspace — by
+   * absolute path, the `/etc/hosts` shape, and by a relative path that climbs out — is refused by
+   * name, and its contents are nowhere in what was written.
+   */
+  it("refuses a file outside the workspace, by an absolute path and by one that climbs out", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "xplainer-outside-"));
+    directories.push(outside);
+    const secret = join(outside, "secret.txt");
+    writeFileSync(secret, "the daemon user's secret\n");
+    const dir = join(videoPaths(root, "demo").out, ".render-1");
+
+    scenes(
+      `import secret from ${JSON.stringify(secret)};\nexport const scenes = { hook: () => secret };\n`,
+    );
+    await expect(bundle()).rejects.toMatchObject({
+      code: "BUNDLE_FAILED",
+      message: expect.stringMatching(/secret\.txt, which is outside the workspace/),
+    });
+    expect(existsSync(join(dir, BUNDLE_FILES.script))).toBe(false);
+
+    const climb = relative(videoPaths(root, "demo").source, secret).split("\\").join("/");
+    expect(climb.startsWith("../")).toBe(true);
+    scenes(
+      `import secret from ${JSON.stringify(climb)};\nexport const scenes = { hook: () => secret };\n`,
+    );
+    await expect(bundle()).rejects.toMatchObject({
+      code: "BUNDLE_FAILED",
+      message: expect.stringContaining("which is outside the workspace"),
+    });
+    expect(existsSync(join(dir, BUNDLE_FILES.script))).toBe(false);
+  });
+
+  it("bundles a file elsewhere in the workspace", async () => {
+    writeFileSync(join(root, "shared.json"), JSON.stringify({ marker: "shared-across-videos" }));
+    scenes(
+      'import shared from "../../shared.json";\n' +
+        "export const scenes = { hook: () => shared.marker };\n",
+    );
+    const { read } = await bundle();
+
+    expect(read(BUNDLE_FILES.script)).toContain("shared-across-videos");
+  });
+
+  it("refuses a Tailwind @import of a stylesheet outside the workspace", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "xplainer-outside-"));
+    directories.push(outside);
+    const sheet = join(outside, "theirs.css");
+    writeFileSync(sheet, ".theirs { color: red; }\n");
+    writeFileSync(
+      join(root, "tailwind.css"),
+      `@import "tailwindcss";\n@import ${JSON.stringify(sheet)};\n`,
+    );
+
+    await expect(bundle()).rejects.toMatchObject({
+      code: "BUNDLE_FAILED",
+      message: expect.stringContaining("theirs.css, which is outside the workspace"),
+    });
+  });
+});
+
+/** One raw request to a page server: a path exactly as given, and any `Host`. */
+function get(
+  server: PageServer,
+  path: string,
+  options: { method?: string; host?: string } = {},
+): Promise<{ status: number; type: string; body: string }> {
+  const { port, host } = new URL(server.origin);
+  return new Promise((resolve, reject) => {
+    const sent = request(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        method: options.method ?? "GET",
+        headers: { host: options.host ?? host },
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            type: String(response.headers["content-type"]),
+            body,
+          });
+        });
+      },
+    );
+    sent.on("error", reject);
+    sent.end();
+  });
+}
+
+describe("servePage", () => {
+  let server: PageServer;
+  let base = "";
+  let outside = "";
+
+  beforeEach(async () => {
+    base = mkdtempSync(join(tmpdir(), "xplainer-serve-"));
+    outside = mkdtempSync(join(tmpdir(), "xplainer-outside-"));
+    directories.push(base, outside);
+    const pageDir = join(base, "out", ".render-1");
+    const publicDir = join(base, "public", "demo");
+    mkdirSync(pageDir, { recursive: true });
+    mkdirSync(join(publicDir, "media"), { recursive: true });
+    writeFileSync(join(pageDir, "index.html"), "<!doctype html>page");
+    writeFileSync(join(pageDir, "app.js"), "window.app = 1;");
+    writeFileSync(join(publicDir, "media", "logo.png"), "png bytes");
+    writeFileSync(join(publicDir, "timings.json"), "{}");
+    writeFileSync(join(base, "public", "secret.txt"), "beside the public directory");
+    writeFileSync(join(outside, "secret.txt"), "elsewhere on the machine");
+    if (process.platform !== "win32") {
+      symlinkSync(join(outside, "secret.txt"), join(publicDir, "link.txt"));
+    }
+    server = await servePage({ pageDir, publicDir });
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it("listens on 127.0.0.1 and names the page and the public base on that origin", () => {
+    expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(server.url).toBe(`${server.origin}/index.html`);
+    expect(server.publicBase).toBe(`${server.origin}${PUBLIC_ROUTE}`);
+  });
+
+  it("serves the bundle at / and the video's public directory at /public/, typed", async () => {
+    await expect(get(server, "/index.html")).resolves.toEqual({
+      status: 200,
+      type: "text/html; charset=utf-8",
+      body: "<!doctype html>page",
+    });
+    await expect(get(server, "/app.js")).resolves.toMatchObject({
+      status: 200,
+      type: "text/javascript; charset=utf-8",
+    });
+    await expect(get(server, "/public/media/logo.png")).resolves.toEqual({
+      status: 200,
+      type: "image/png",
+      body: "png bytes",
+    });
+    await expect(get(server, "/public/timings.json")).resolves.toMatchObject({
+      status: 200,
+      type: "application/json",
+    });
+    await expect(get(server, "/public/media/logo.png", { method: "HEAD" })).resolves.toEqual({
+      status: 200,
+      type: "image/png",
+      body: "",
+    });
+  });
+
+  it("answers 404 for anything that leaves its root, however it is spelled", async () => {
+    for (const path of [
+      "/../public/secret.txt",
+      "/public/../../public/secret.txt",
+      "/public/%2e%2e/secret.txt",
+      "/public/..%2fsecret.txt",
+      "/public/..%5csecret.txt",
+      `/public/${encodeURIComponent(join(outside, "secret.txt"))}`,
+      `/${join(outside, "secret.txt")}`,
+      "/public/%00",
+      "/public/%E0%A4%A",
+    ]) {
+      const answer = await get(server, path);
+      expect(answer.status, path).toBe(404);
+      expect(answer.body, path).not.toContain("secret");
+      expect(answer.body, path).not.toContain("beside");
+      expect(answer.body, path).not.toContain("elsewhere");
+    }
+    if (process.platform !== "win32") {
+      await expect(get(server, "/public/link.txt")).resolves.toMatchObject({ status: 404 });
+    }
+  });
+
+  it("lists no directory, answers only GET and HEAD, and only to its own Host", async () => {
+    for (const path of ["/", "/public/", "/public/media", "/public/media/", "/missing.js"]) {
+      await expect(get(server, path), path).resolves.toMatchObject({ status: 404 });
+    }
+    await expect(get(server, "/index.html", { method: "POST" })).resolves.toMatchObject({
+      status: 404,
+    });
+    // A name rebound to 127.0.0.1 by a page elsewhere arrives with that name as its Host.
+    await expect(
+      get(server, "/index.html", { host: `attacker.example:${new URL(server.origin).port}` }),
+    ).resolves.toMatchObject({ status: 404 });
+    await expect(get(server, "/index.html", { host: "localhost" })).resolves.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it("stops answering once closed, and closes twice without complaint", async () => {
+    await server.close();
+    await server.close();
+    await expect(get(server, "/index.html")).rejects.toThrow();
   });
 });
 
