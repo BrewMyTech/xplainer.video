@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnEntry, untilGone } from "../daemon/testing/spawn-child.js";
-import { CdpConnection, launchChrome } from "./cdp.js";
+import { CdpConnection, CLOSE_GRACE_MS, launchChrome } from "./cdp.js";
 
 /** A worker that exits while its browser is still starting (`testing/child-launch.ts`). */
 const CHILD_LAUNCH = fileURLToPath(new URL("./testing/child-launch.ts", import.meta.url));
@@ -171,6 +171,11 @@ const SANDBOX_LINE =
  * behind print the line 300 ms later, on the stderr it inherited — so the line arrives after
  * `exit` and before `close`. `silent` starts on any flags, never answers, and says where it is —
  * `{ pid, profile }` — by renaming a file into `XPLAINER_FAKE_CHROME_REPORT`.
+ *
+ * The pipe ends are read and written as sockets, never as `fs` streams. An `fs.createReadStream`
+ * on fd 3 keeps a blocking `read()` parked in libuv's thread pool, and `process.exit()` then waits
+ * for that thread for ever: the stand-in never exits on `Browser.close`, and `close()` ends it with
+ * its `SIGKILL` five seconds later, which looks like a test timeout and nothing else.
  */
 function fakeBrowser(mode: "answers" | "late-sandbox" | "silent" = "answers"): string {
   const directory = mkdtempSync(join(tmpdir(), "xplainer-fake-chrome-"));
@@ -181,13 +186,14 @@ function fakeBrowser(mode: "answers" | "late-sandbox" | "silent" = "answers"): s
     script,
     `#!${process.execPath}
 const fs = require("node:fs");
+const net = require("node:net");
 const mode = ${JSON.stringify(mode)};
 if (mode === "silent") {
   const report = process.env.XPLAINER_FAKE_CHROME_REPORT;
   const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir=")).slice(16);
   fs.writeFileSync(report + ".tmp", JSON.stringify({ pid: process.pid, profile }));
   fs.renameSync(report + ".tmp", report);
-  fs.createReadStream(null, { fd: 3 }).resume();
+  new net.Socket({ fd: 3, readable: true, writable: false }).resume();
   setInterval(() => {}, 1000);
 } else if (!process.argv.includes("--no-sandbox")) {
   if (mode === "late-sandbox") {
@@ -199,8 +205,8 @@ if (mode === "silent") {
   }
   process.exit(1);
 } else {
-  const input = fs.createReadStream(null, { fd: 3 });
-  const output = fs.createWriteStream(null, { fd: 4 });
+  const input = new net.Socket({ fd: 3, readable: true, writable: false });
+  const output = new net.Socket({ fd: 4, readable: false, writable: true });
   let pending = "";
   input.on("data", (chunk) => {
     pending += chunk.toString("utf8");
@@ -262,6 +268,33 @@ describe("launchChrome", () => {
     });
     await chrome.kill();
   });
+
+  /**
+   * `close()` is `Browser.close` first and a `SIGKILL` only after {@link CLOSE_GRACE_MS}, so a
+   * browser that answers it ends by that answer. Asserted on every platform: until 2026-11-11 only
+   * the two Linux relaunch tests above closed a stand-in, and so a stand-in that could not exit was
+   * a Linux CI timeout and invisible on macOS. The test's own limit is above the grace so that a
+   * regression fails here by name, `SIGKILL`, rather than as a timeout.
+   */
+  it(
+    "ends a browser that answers Browser.close by that answer, not by the kill after the grace",
+    async () => {
+      const executable = fakeBrowser();
+      const chrome = await launchChrome({
+        executable,
+        log: () => {},
+        extraFlags: ["--no-sandbox"],
+      });
+      const started = Date.now();
+
+      await chrome.close();
+
+      expect(await chrome.exited).toEqual({ code: 0, signal: null });
+      expect(Date.now() - started).toBeLessThan(CLOSE_GRACE_MS);
+      expect(existsSync(chrome.userDataDir)).toBe(false);
+    },
+    CLOSE_GRACE_MS * 2,
+  );
 
   /**
    * `exit` can be emitted before the last of the browser's stderr has been read, and the sandbox
