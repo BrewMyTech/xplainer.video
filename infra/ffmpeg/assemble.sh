@@ -6,8 +6,8 @@
 #
 # <artefacts-dir> holds one directory per build job, named
 # ffmpeg-<arch>-run<n>, each with that job's zip, its manifest row (.json) and
-# its source.env; and one ffmpeg-source directory holding the source bundle's
-# files (upload-artifact stores a directory's contents, not the directory).
+# its source.env; and one ffmpeg-source directory holding source.env and the
+# source/ bundle, as the workflow's `source` job uploads them.
 #
 # <release-dir> becomes exactly what is published under
 # <XP_CDN_BASE>/<XP_BUILD_VERSION>/:
@@ -85,12 +85,12 @@ if [ "$(printf '%s\n' "${manifests[@]}" | sort -u | wc -l | tr -d ' ')" != 1 ]; 
   echo "assemble.sh: the build jobs disagree about the source bundle: ${manifests[*]}" >&2
   exit 1
 fi
-if [ ! -f "$artefacts/ffmpeg-source/MANIFEST" ] ||
-  [ "$(sha256_of "$artefacts/ffmpeg-source/MANIFEST")" != "${manifests[0]}" ]; then
+if [ ! -f "$artefacts/ffmpeg-source/source/MANIFEST" ] ||
+  [ "$(sha256_of "$artefacts/ffmpeg-source/source/MANIFEST")" != "${manifests[0]}" ]; then
   echo "assemble.sh: the source bundle artefact is missing or is not the one the builds recorded" >&2
   exit 1
 fi
-cp -R "$artefacts/ffmpeg-source" "$release/source"
+cp -R "$artefacts/ffmpeg-source/source" "$release/source"
 
 echo "**Bit-stability** (same platform, separate runners, same commit):"
 echo

@@ -51,11 +51,11 @@ runs as a separate program and does not link, modify or bundle. On macOS,
 `xplainer setup` downloads an FFmpeg program built by xplainer.video from
 unmodified FFmpeg 9.0.2, x264 b35605ace3ddf7c1a5d67a2eb553f034aef41d55 and zlib
 1.3.2, licensed under the GNU General Public License version 2 or later. Its
-complete corresponding source is at
-https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/. On Linux and
-Windows it downloads the GPL build published by BtbN/FFmpeg-Builds, licensed
-under the GNU General Public License version 3 or later, from BtbN's own
-release. The GPL texts travel with each download, not in these packages.
+complete corresponding source is listed at
+https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/README.txt. On
+Linux and Windows it downloads the GPL build published by BtbN/FFmpeg-Builds,
+licensed under the GNU General Public License version 3 or later, from BtbN's
+own release. The GPL texts travel with each download, not in these packages.
 docs/third-party-components.md in the source repository lists every
 component `setup` acquires. FFmpeg is a trademark of Fabrice Bellard,
 originator of the FFmpeg project.

@@ -9,7 +9,8 @@
 //
 // THE PROBE is the one `xplainer setup` runs on an acquired ffmpeg
 // (spike/setup-design/DESIGN.md §5.4): version, licence class, and that every
-// component the renderer names is compiled in.
+// component the renderer names is compiled in. Plus one check of our own: that
+// nothing but the system's libraries is linked dynamically.
 //
 // ENCODE A is the probe's own smoke encode (§5.5): two 64x64 RGBA frames of
 // zeros and a file of 48 kHz silence, through libx264 and aac into mp4.
@@ -165,6 +166,22 @@ for (const name of ["scale", "format", "setparams", "aresample"]) {
     filters.some((row) => row.flags !== "" && row.names[0] === name),
   );
 }
+
+// x264 and zlib are linked in statically; the only dynamic dependencies allowed
+// are the system's own, which every Mac has.
+const linked = spawnSync("otool", ["-L", ffmpeg], { encoding: "utf8" });
+const libraries = (linked.stdout ?? "")
+  .split("\n")
+  .slice(1)
+  .map((line) => line.trim().split(" ")[0])
+  .filter((path) => path !== "");
+check(
+  "links only /usr/lib and /System/Library",
+  linked.status === 0 &&
+    libraries.length > 0 &&
+    libraries.every((path) => path.startsWith("/usr/lib/") || path.startsWith("/System/Library/")),
+  libraries.join(" "),
+);
 
 // --- inputs --------------------------------------------------------------------
 
@@ -429,7 +446,7 @@ for (const attempt of [1, 2]) {
     const audio = shape.tracks.find((track) => track.handler === "soun");
     check(
       "encode B moov before mdat",
-      shape.top.indexOf("moov") < shape.top.indexOf("mdat"),
+      shape.top.includes("moov") && shape.top.indexOf("moov") < shape.top.indexOf("mdat"),
       shape.top.join(" "),
     );
     check(

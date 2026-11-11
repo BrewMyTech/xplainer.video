@@ -21,7 +21,9 @@ its complete corresponding source at `https://cdn.xplainer.video/toolchain/v1/ff
 - **It is a separate program.** The CLI spawns it with arguments, writes PNG frames to its stdin and
   reads the file it writes; nothing links `libav*`. That is what keeps the CLI's own licence its own.
 - **We distribute it, so we publish its source beside it**: the three tarballs, the scripts and
-  workflow at the commit, and a `MANIFEST` of digests, at `<version>/source/`. Every zip carries
+  workflow at the commit, and a `MANIFEST` of digests, in `<version>/source/`, whose `README.txt`
+  lists every file and is the address the zip, the manifest row and `NOTICE` give (R2 serves no
+  directory index, so the directory's own URL answers 404). Every zip carries
   `LICENSE` (the four licence texts, verbatim) and `SOURCE.txt` (where that source is, and the exact
   configure lines).
 
@@ -51,7 +53,8 @@ infra/ffmpeg/package.sh arm64 /tmp/ffmpeg-dist
 Inputs are cached in `XP_CACHE` (default `~/.cache/xplainer-ffmpeg`); a build with a warm cache takes
 under a minute on an M-series Mac. A local build names your Xcode in `BUILDINFO.txt`, and its digest
 is not the one CI publishes unless your Xcode is the one `pins.env` names. A bundle made from a
-working tree with uncommitted changes is named `-dirty-` and `publish.sh` refuses it.
+working tree with uncommitted changes is named `-dirty-` and `publish.sh` refuses it. The build needs
+Xcode (or its Command Line Tools), `gpg` and `pkg-config`; `build.sh` says which is missing.
 
 ## What it contains, and why
 
@@ -67,9 +70,10 @@ default is the patent position counsel may recommend (analysis §5 Q3 to Q5), an
 binary makes that a one-line change in the CLI rather than a rebuild.
 
 The result links statically against x264 and zlib, and dynamically only against `libSystem` and the
-VideoToolbox, CoreFoundation, CoreMedia, CoreVideo and CoreServices frameworks; it runs on macOS
-12.0 and later. Measured on the first local build: 4.5 MB for arm64 and 5.4 MB for x64, about 2 MB
-zipped.
+VideoToolbox, CoreFoundation, CoreMedia, CoreVideo and CoreServices frameworks (`smoke.mjs` checks
+it). It is built for macOS 12.0 and later (`minos 12.0`); it has been run on macOS 15 and 27, and
+no hosted runner offers an older macOS to run it on. Measured on the first local build: 4.5 MB for
+arm64 and 5.4 MB for x64, about 2 MB zipped.
 
 ## Reproducibility
 
@@ -87,6 +91,11 @@ The workflow's `publish` input uploads from the `toolchain-cdn` environment, who
 with Object Read & Write on the `xplainer-artifacts` bucket only (`R2_BUCKET` overrides the bucket).
 Without them the job uploads nothing and says so; the release is then the run's `ffmpeg-release`
 artefact.
+
+**A publish carries both architectures and runs from `main`.** The workflow refuses `publish` with
+`x64` off or from another branch, and `publish.sh` refuses a release whose fragment does not name
+exactly `darwin-arm64` and `darwin-x64`: the fragment can never be rewritten, so a partial publish
+would fix that version as partial.
 
 **Published keys are immutable.** The CDN caches them for 30 days and `setup` pins them by digest,
 so `publish.sh` skips an object that already holds the same bytes and stops on one that holds

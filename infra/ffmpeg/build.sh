@@ -54,6 +54,15 @@ case "$(uname -m)" in
     ;;
 esac
 
+# A missing tool otherwise surfaces deep inside a configure log: FFmpeg finds
+# x264 only through pkg-config, and fetch.sh checks signatures with gpg.
+for tool in clang make pkg-config gpg curl shasum tar; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "build.sh: $tool is not on PATH; it needs Xcode (or its Command Line Tools), gpg and pkg-config" >&2
+    exit 1
+  fi
+done
+
 cache="${XP_CACHE:-$HOME/.cache/xplainer-ffmpeg}"
 root="${XP_ROOT:-/tmp/xplainer-ffmpeg-build}/$target"
 jobs="$(sysctl -n hw.ncpu)"

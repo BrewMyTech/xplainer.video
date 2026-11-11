@@ -50,6 +50,12 @@ done
 # local run with uncommitted changes archives what actually ran; such a bundle
 # is named -dirty and is never published (publish.sh refuses it).
 paths=(infra/ffmpeg .github/workflows/ffmpeg-macos.yml LICENSE LICENSE-APACHE-2.0 NOTICE)
+for path in "${paths[@]}"; do
+  if [ ! -e "$repo/$path" ]; then
+    echo "source-bundle.sh: $path is missing, so the scripts archive would not be complete" >&2
+    exit 1
+  fi
+done
 commit="$(git -C "$repo" rev-parse HEAD)"
 commit_time="$(git -C "$repo" log -1 --format=%cI HEAD)"
 if [ -n "$(git -C "$repo" status --porcelain -- "${paths[@]}")" ]; then
@@ -57,15 +63,14 @@ if [ -n "$(git -C "$repo" status --porcelain -- "${paths[@]}")" ]; then
 else
   dirty=no
 fi
-index="$(mktemp)"
-rm -f "$index"
-tree="$(
-  cd "$repo"
-  GIT_INDEX_FILE="$index" git read-tree --empty
-  GIT_INDEX_FILE="$index" git add -- "${paths[@]}"
-  GIT_INDEX_FILE="$index" git write-tree
-)"
-rm -f "$index"
+# Not inside $(...): errexit does not reach into a command substitution, and a
+# failed `git add` would then archive the empty tree without a word.
+index="$(mktemp -d)/index"
+GIT_INDEX_FILE="$index" git -C "$repo" read-tree --empty
+GIT_INDEX_FILE="$index" git -C "$repo" add -- "${paths[@]}"
+GIT_INDEX_FILE="$index" git -C "$repo" write-tree >"$index.tree"
+tree="$(cat "$index.tree")"
+rm -rf "$(dirname "$index")"
 if [ "$dirty" = yes ]; then
   scripts="xplainer-ffmpeg-build-${commit:0:12}-dirty-${tree:0:12}.tar.gz"
 else
@@ -73,13 +78,36 @@ else
 fi
 git -C "$repo" archive --format=tar --prefix=xplainer-ffmpeg-build/ --mtime="$commit_time" "$tree" |
   gzip -n -9 >"$source_dir/$scripts"
+for member in infra/ffmpeg/build.sh infra/ffmpeg/pins.env .github/workflows/ffmpeg-macos.yml; do
+  if ! tar -tzf "$source_dir/$scripts" | grep -qx "xplainer-ffmpeg-build/$member"; then
+    echo "source-bundle.sh: $scripts does not contain $member" >&2
+    exit 1
+  fi
+done
 
-cat >"$source_dir/README.txt" <<EOF
+{
+  cat <<EOF
 Complete corresponding source for the ffmpeg programs published in the
 directory above this one: FFmpeg $FFMPEG_VERSION, x264 $X264_COMMIT and
 zlib $ZLIB_VERSION, all unmodified, built by the scripts in $scripts.
 
-To rebuild on a Mac with Xcode $XCODE_VERSION:
+This directory holds, beside this file and MANIFEST:
+
+EOF
+  (
+    cd "$source_dir"
+    find . -maxdepth 1 -type f ! -name README.txt | sed 's#^\./##' | LC_ALL=C sort |
+      while IFS= read -r name; do
+        printf '  %s  %s\n' "$(shasum -a 256 "$name" | cut -d' ' -f1)" "$name"
+      done
+  )
+  cat <<EOF
+
+Each file is at the address of this one with its own name in place of
+README.txt. MANIFEST lists the sha256 of every file here, this one included.
+
+To rebuild, on a Mac with Xcode $XCODE_VERSION (or its Command Line Tools),
+gpg and pkg-config:
 
   tar -xzf $scripts
   cd xplainer-ffmpeg-build
@@ -88,10 +116,11 @@ To rebuild on a Mac with Xcode $XCODE_VERSION:
 build.sh verifies every tarball in this directory against the sha256 pinned
 in infra/ffmpeg/pins.env, and FFmpeg's and zlib's signatures against the keys
 in infra/ffmpeg/keys/, before it builds; it needs no network when the files
-are here. MANIFEST lists the sha256 of every file in this directory.
+are here. The result is in /tmp/xplainer-ffmpeg-build/<arch>/out/.
 
 Scripts commit: $commit (working tree: $([ "$dirty" = yes ] && echo modified || echo clean))
 EOF
+} >"$source_dir/README.txt"
 
 (
   cd "$source_dir"

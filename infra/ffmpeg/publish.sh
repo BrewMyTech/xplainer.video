@@ -20,6 +20,7 @@
 # that names an object not yet there.
 #
 # The upload is plain S3 over curl's SigV4 support; no AWS CLI, no AWS service.
+# Runs on Linux or macOS; needs curl and jq.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +39,14 @@ if [ ! -f "$release/SHA256SUMS" ] || [ ! -f "$release/source/MANIFEST" ]; then
 fi
 if find "$release/source" -name 'xplainer-ffmpeg-build-*-dirty-*' | grep -q .; then
   echo "publish.sh: the source bundle was made from modified scripts; publish from a commit" >&2
+  exit 1
+fi
+# A published version is complete or it is not published: the fragment and
+# SHA256SUMS can never be rewritten, so an arm64-only release would fix this
+# version as arm64-only for good.
+platforms="$(jq -r '.ffmpeg.expected | keys | sort | join(" ")' "$release/ffmpeg-$XP_BUILD_VERSION.json")"
+if [ "$platforms" != "darwin-arm64 darwin-x64" ]; then
+  echo "publish.sh: the release names '$platforms'; a publish carries darwin-arm64 and darwin-x64" >&2
   exit 1
 fi
 if [ "$XP_SCRIPTS_LICENCE" = UNDECIDED ]; then
@@ -84,9 +93,11 @@ empty_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 s3() { # key [curl arguments...]
   local key="$1"
   shift
-  curl --silent --show-error --retry 3 --retry-all-errors \
-    --aws-sigv4 "aws:amz:auto:s3" --user "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY" \
-    "$@" "$endpoint/$key"
+  # The credentials go to curl on its standard input, not its argument list,
+  # where any process on the runner could read them.
+  printf 'user = "%s:%s"\n' "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY" |
+    curl --config - --silent --show-error --retry 3 --retry-all-errors \
+      --aws-sigv4 "aws:amz:auto:s3" "$@" "$endpoint/$key"
 }
 
 # The ETag R2 returns for an object uploaded in one PUT is the MD5 of its bytes.
@@ -94,9 +105,15 @@ remote_etag() { # key -> etag without quotes, or empty when absent
   local headers status
   headers="$(s3 "$1" --head --header "x-amz-content-sha256: $empty_sha256" \
     --dump-header - --output /dev/null)"
-  status="$(printf '%s\n' "$headers" | awk 'NR == 1 { print $2 }')"
+  # With --retry, every attempt's headers are in $headers; the last block is
+  # the answer.
+  headers="$(printf '%s\n' "$headers" | tr -d '\r')"
+  status="$(printf '%s\n' "$headers" | awk '/^HTTP\// { status = $2 } END { print status }')"
   case "$status" in
-    200) printf '%s\n' "$headers" | tr -d '\r' | awk 'tolower($1) == "etag:" { gsub(/"/, "", $2); print $2 }' ;;
+    200)
+      printf '%s\n' "$headers" |
+        awk '/^HTTP\// { etag = "" } tolower($1) == "etag:" { gsub(/"/, "", $2); etag = $2 } END { print etag }'
+      ;;
     404) ;;
     *)
       echo "publish.sh: HEAD $1 answered ${status:-nothing}" >&2
@@ -141,8 +158,11 @@ upload() { # relative path inside the release directory
   echo "put       $key"
 }
 
+# The tarballs, then source/README.txt and source/MANIFEST that name them, then
+# the zips, then the fragment and SHA256SUMS that name those.
 paths=()
-while IFS= read -r path; do paths+=("$path"); done < <(cd "$release" && LC_ALL=C find source -type f | LC_ALL=C sort)
+while IFS= read -r path; do paths+=("$path"); done < <(cd "$release" && find source -type f ! -name README.txt ! -name MANIFEST | LC_ALL=C sort)
+paths+=(source/README.txt source/MANIFEST)
 while IFS= read -r path; do paths+=("$path"); done < <(cd "$release" && find . -maxdepth 1 -name '*.zip' | sed 's#^\./##' | LC_ALL=C sort)
 paths+=("ffmpeg-$XP_BUILD_VERSION.json" SHA256SUMS)
 

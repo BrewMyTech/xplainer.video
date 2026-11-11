@@ -50,7 +50,9 @@ platform="darwin-$target"
 name="ffmpeg-$XP_BUILD_VERSION-$platform"
 binary="$out/ffmpeg"
 repository="${GITHUB_REPOSITORY:-BrewMyTech/xplainer.video}"
-source_url="$XP_CDN_BASE/$XP_BUILD_VERSION/source/"
+# An R2 custom domain serves no directory index, so the address that leads to
+# the source is the bundle's README, which lists every file in it.
+source_url="$XP_CDN_BASE/$XP_BUILD_VERSION/source/README.txt"
 
 if ! "$binary" -hide_banner -version >/dev/null 2>&1; then
   echo "package.sh: $binary does not run on this host ($(uname -m)); BUILDINFO.txt is" \
@@ -124,8 +126,11 @@ section() { # title, then a command whose stdout and stderr are the body
   local title="$1"
   shift
   printf '== %s ==\n' "$title"
+  # A command that exits non-zero still has its say: `codesign -dv` exits 1 on
+  # the unsigned x64 binary, and that answer is what belongs in the record.
   # codesign names the file by its real path, which under /tmp is /private/tmp.
-  "$@" 2>&1 | sed -e "s#/private$stage/##g" -e "s#$stage/##g" -e 's/[[:space:]]*$//'
+  { "$@" 2>&1 || printf '(exit %d)\n' "$?"; } |
+    sed -e "s#/private$stage/##g" -e "s#$stage/##g" -e 's/[[:space:]]*$//'
   printf '\n'
 }
 {

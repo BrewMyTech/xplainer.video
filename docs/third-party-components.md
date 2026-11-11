@@ -24,7 +24,8 @@ not link FFmpeg, does not modify it, and does not ship it inside any package.
 
 **The macOS build is ours, so its source is ours to publish, and it is published beside it**: the
 FFmpeg, x264 and zlib release tarballs, the scripts and workflow that built it at the exact commit,
-and a `MANIFEST` of their digests, at `https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/`.
+and a `MANIFEST` of their digests, listed at
+<https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/README.txt>.
 Every macOS download carries `LICENSE` (the licence texts of all three, verbatim), `SOURCE.txt` (that
 address, the digests and the exact configure lines) and `BUILDINFO.txt` (what the binary reports
 about itself). How the build is made, and the rules it keeps, are in
