@@ -1,0 +1,30 @@
+{
+  "provenance": "recorded",
+  "recorded_at": "2026-11-11",
+  "bodies": {
+    "401": {
+      "detail": {
+        "type": "authentication_error",
+        "code": "unauthorized",
+        "message": "Invalid API key",
+        "status": "invalid_api_key",
+        "request_id": "a4d6f8d1cd4f3e215695297b64e29abe"
+      }
+    },
+    "404": {
+      "detail": {
+        "type": "not_found",
+        "code": "voice_not_found",
+        "message": "A voice with voice_id 'AAAAAAAAAAAAAAAAAAAA' was not found.",
+        "status": "voice_not_found",
+        "request_id": "911b41648f3f7ef515f35acca876c5ea"
+      }
+    },
+    "400": {
+      "detail": {
+        "status": "model_not_found",
+        "message": "A model with model ID eleven_nope does not exist ..."
+      }
+    }
+  }
+}
