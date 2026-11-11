@@ -208,10 +208,16 @@ support, `POST /api/videos/:slug/{narrate,still,render}` answering `202` with a 
 streaming that same document as `text/event-stream`. Every one of them is behind the same guard on
 TCP and unguarded over the IPC socket, and **no CORS middleware is mounted, for any value**
 (R-SEC-7). `POST /api/daemon/drain` remains the socket-only control route.
-The eight tools do real work against the shared Remotion workspace: `apps/cli/src/backend.ts`
+The eight tools do real work against the shared video workspace: `apps/cli/src/backend.ts`
 scaffolds, writes source and media, lists, and enqueues narrate, still and render against the job
 runner, which `explainer_job` then reports on
 ([ADR 0008](adr/0008-async-job-model-poll-and-progress-no-agent-webhooks.md)).
+Narration runs in `workers/narrate.ts`; a still or a render runs in `workers/render.ts`, which is
+**xplainer's own renderer** ([ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)):
+an esbuild-wasm bundle of the video against `@xplainer/motion` and the CLI's own React, the headless
+shell `toolchain.json` records driven one frame at a time over a `--remote-debugging-pipe` CDP
+client, and every PNG piped into a spawned ffmpeg found through `XPLAINER_FFMPEG`, `PATH` and the
+two Homebrew directories. Nothing in the render path reads the workspace's `node_modules/`.
 `xplainer connect claude` and `xplainer connect codex` put the `xplainer mcp --attach` command line
 into an agent's own configuration — through that agent's own writer, `claude mcp add` or
 `codex mcp add`, wherever it is on `PATH`, and otherwise into `~/.claude.json` or into
@@ -225,7 +231,8 @@ the one path no agent configuration may hold. `--spawn` writes the other entry �
 without `--attach`, the tools inside the agent's own session — and it is the only form that
 **bypasses** the daemon check, because it is the remediation ADR 0020 prints when there is no daemon
 to check for. `xplainer setup` acquires the toolchain — a browser, a speech route and, with
-`--workspace`, the Remotion workspace resolved from the template's pins by `npm ci` — and records
+`--workspace`, the workspace payload resolved from the template's pins by `npm ci`, which no render
+reads any more and which ADR 0030's Phase 2 removes — and records
 what arrived in `toolchain.json` (a checked schema in `packages/protocol`); `xplainer runtime
 build` assembles the relocatable payloads that `install` and `update` then move around; and the
 `daemon` group is nine implemented verbs — `install`, `uninstall`, `update`, `recover`, `start`,
@@ -249,8 +256,9 @@ code from a closed set (`ready`, `stalled`, `unauthorized`, `token_absent`, `unh
 `unreachable`, `absent`). The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
 `<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
 files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
-tool call, so a workspace nobody has run `npm install` in refuses a render with that instruction
-rather than failing inside `spawn`.
+tool call and is never read by a render. A machine whose toolchain is incomplete — no recorded
+browser, no speech route, or, until that payload is retired, no installed workspace — refuses a
+still or a render at the call, naming `xplainer setup`, rather than failing inside the worker.
 **There is now a supervisor**, on all three platforms, and the paragraph below is what it is;
 `docs/daemon.md` is the file for a host that has none.
 

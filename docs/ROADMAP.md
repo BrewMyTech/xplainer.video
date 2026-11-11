@@ -376,6 +376,17 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     `$COLLIE_ARTIFACTS_DIR` now exist as a run artifact as well. The Linux half of P1-1 was already
     closed on 2026-09-07 by the local Docker run; this is the same proof on a hosted runner and is
     cited so the workflow's own status is not left reading as a failure.
+  - *Amended 2026-11-11: the renderer under this proof is xplainer's own, and nothing is borrowed
+    any more.* The amendments above measure Remotion rendering the video, and the one of 2026-09-09
+    says "the one thing still borrowed is Remotion's **browser cache**" and that `chrome.path` is
+    never handed to Remotion. Both stopped being true with
+    [ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md): the render worker
+    launches `toolchain.json`'s `chrome.path` and nothing else, so there is no second copy and no
+    cache to link in, and `scripts/e2e/render.mjs` renders its captions-disabled control through the
+    product's own worker rather than through a pinned CLI. The criterion is unchanged; the run
+    that judges it against the new renderer is one of the renderer's Phase 1 gates, listed under
+    [The owned renderer](#the-owned-renderer--replacing-remotion), and the measurements above are
+    the old renderer's.
 - **P1-2** `timings.json` is computed from word-level TTS timestamps, and every scene
   duration in the rendered video derives from it. No hand-written durations anywhere.
 - **P1-3** Kokoro runs as a Docker container and `packages/tts-client` talks to it unchanged
@@ -386,6 +397,13 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
   `output_lines` bounds the returned log tail.
 - **P1-6** The narrate port has unit tests over the pacing and span logic, and phase 0's
   five byte-identity scaffold assertions still pass.
+  - *Amended 2026-11-11: one of the five is still a provenance assertion.* The scaffold's
+    `index.ts`, `Root.tsx` and `Captions.tsx` now import `@xplainer/motion`, so they cannot be the
+    reference implementation's bytes and are change detectors from this date; `types.ts` is the one
+    byte-identity assertion against upstream that remains, and the retained upstream `Video.tsx` and
+    its divergence test are retired. ADR 0018's note of this date and
+    `packages/render-core/test/fixtures/README.md` carry the reasoning; `acceptance-criteria.md`
+    carries the amended AC-7 rows.
 - **P1-7** `SIGTERM` to a running `xplainer serve` mid-render exits within 25 seconds, leaves
   no Chrome or ffmpeg process behind, removes its runtime state file and socket, and the
   interrupted job reports `error` with a bounded log tail — not `running`.
@@ -1503,6 +1521,90 @@ owner's, and it is what turns those lines from pending into met or into defects.
 
 ---
 
+## The owned renderer — replacing Remotion
+
+> `explainer_still` and `explainer_render` run on a renderer this repository owns: scenes written
+> against `@xplainer/motion`, drawn one frame at a time in the headless shell `setup` acquired, and
+> encoded by a spawned FFmpeg. Remotion leaves the product entirely.
+
+Decided in [ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) on
+2026-11-11. This work has phases of its own, and they are **not** the roadmap's phases: "renderer
+Phase 1" below is not Phase 1 above. The eight tools, their schemas, the job envelope and the
+`timings.json` and `captions.json` contracts do not change in any of them.
+
+**The hard condition comes first.** A tree that contains renderer Phase 1 and not renderer Phase 2
+is **not shippable**, and nothing is released between the two (the owner's hard cut): until Phase 2
+deletes it, `xplainer setup --workspace` still npm-installs the Remotion workspace onto the user's
+machine, and nothing acquires the ffmpeg every render now needs.
+
+**Renderer Phase 0 — the spike. Done; verdict go.** Measured on macOS arm64 and in the `infra/e2e`
+image on linux/arm64: libx264 at CRF 18 encodes 491 captured 1080p frames far faster than they can be
+captured (197–655 fps on macOS, 172–278 on Linux), every repeated capture is byte-identical on its
+own host, and live capture into ffmpeg clears the throughput bar — 20 fps on macOS, 12 in the
+container — only with `optimizeForSpeed: true`, by a thin margin on busy content on macOS. The owner
+then chose FFmpeg as a spawned process with no fallback encoder, and how it will be distributed.
+ADR 0030 carries the numbers, the options measured and not chosen, and the licence position.
+
+**Renderer Phase 1 — built.** What it is, and where:
+
+- **`packages/motion`** — `@xplainer/motion`, the eleventh workspace member: the clean-room authoring
+  API scenes import, and `@xplainer/motion/harness`, the page side of the renderer, which runs the
+  video on film time and settles render holds, images and fonts before each frame. Its motion math is
+  held to independent derivations at 1e-9 (585 comparisons).
+- **`apps/cli/src/render/`** and **`apps/cli/src/workers/render.ts`** — an esbuild-wasm bundle of the
+  video against the CLI's own React and `@xplainer/motion`, a zero-dependency DevTools client over
+  `--remote-debugging-pipe`, one PNG per frame, and every PNG piped into a spawned ffmpeg (libx264,
+  AAC, BT.709, `+faststart`). Failures are named and land in `render_failed`; progress is a line every
+  15 frames.
+- **Remotion is out of the dev tree and the render path.** No `remotion` or `@remotion/*` package is
+  in `apps/cli`'s manifest or in `pnpm-lock.yaml`; the scaffold's engine-owned files take their
+  authoring API from `@xplainer/motion` alone; `remotion.config.ts` is gone. For one release the bundler still maps
+  `remotion`, `@remotion/media` and `@remotion/captions` onto `@xplainer/motion` and logs a
+  deprecation line per file, so last release's videos keep rendering.
+- **ffmpeg is found, not acquired**: `XPLAINER_FFMPEG`, then `PATH`, then `/opt/homebrew/bin` and
+  `/usr/local/bin`, otherwise `FFMPEG_NOT_FOUND`. The toolchain schema is unchanged.
+- **Evidence in the tree:** `render.test.ts`, `capture.test.ts` and `shutdown.test.ts` drive a real
+  Chrome and a real ffmpeg — two Chrome processes give byte-identical PNGs, a `SIGTERM` mid-render
+  leaves no browser, no MP4 and no partial — and `render.test.ts` checks the audio stream's own
+  duration as well as the container's. The remaining Phase 1 gates are the end-to-end proofs
+  (`pnpm e2e:render` on macOS, `pnpm e2e:render:linux` where Docker is permitted) and the
+  idle-machine throughput re-measure that ADR 0030 §The idle-machine throughput gate describes.
+- **Not proven in Phase 1:** Windows' `--remote-debugging-pipe`; playback in QuickTime Player, the
+  Safari app and VLC; any frame identity across operating systems, which is not promised (frames are
+  reproducible per host and toolchain).
+
+**Renderer Phase 2 — what it owes before anything is released:**
+
+1. **FFmpeg acquisition**, per the owner's decision of 2026-11-11: our own CI-built static FFmpeg
+   9.0.2 for macOS on `cdn.xplainer.video` with its source bundle beside it, and the pinned BtbN build
+   fetched from upstream on Linux and Windows. That means an optional `ffmpeg` component in
+   `toolchain.json` at `format_version` 1, in front of today's lookup order; manifest rows selected by
+   platform key behind a URL-prefix allowlist; an xz decoder, because both Linux pins ship only as
+   `.tar.xz`; the notice, provenance and re-pin rules for the fetch and the source, build-info and
+   signing rules for our own build; a patent decision on the default macOS encoder before the first
+   macOS release; and a pinned build, which is what makes MP4 bytes reproducible. Counsel's open
+   questions are listed in ADR 0030.
+2. **Payload 2 leaves.** The template's Remotion pins and lockfile, `setup --workspace`, the
+   workspace payload in `runtime build` and `runtime verify`, the manifest's `remotion_entry`, the
+   toolchain gate's workspace check, the update transaction's template-pin refusals, and the proofs
+   that assert them — then the Remotion sentences in `README.md`, `LICENSE`, `NOTICE` and the two
+   package READMEs that still carry them because `setup` still installs that tree.
+3. **The Chrome manifest becomes ours in name** — the `remotion` provider token and the
+   `remotion.media` URLs — and linux-arm64 gets a source, because Chrome for Testing publishes no
+   build for it.
+4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner.
+5. **The release**, only after 1–4 have landed on `main`, with a changeset that names the alias's
+   removal in the release after it.
+
+**Booked, not scheduled:** a ticket for `daemon status` judging the toolchain by file existence while
+`/healthz` may say `toolchain_stale` (read in the code, never observed); WebGL, whose working flag
+set ADR 0030 records; video assets, which need a frame-accurate decoder in the page; sound effects
+beyond the narration; and the design's later capture work — page-side dedup, a second capture tab,
+and `HeadlessExperimental.beginFrame` on Linux only, behind a probe. musl/Alpine has no FFmpeg
+download candidate and win32-arm64 has no Chrome, so neither will render after Phase 2 either.
+
+---
+
 ## Phase 3 — RELOCATED
 
 > FastAPI MCP with OAuth, media-service + TTS containers on one VM via Docker Compose, one
@@ -1849,7 +1951,7 @@ records cite them.
 
 | # | Criterion | Status |
 |---|---|---|
-| **P5-1** | The repository builds, lints, typechecks and tests from a clean clone with the same two bootstrap commands | **Holds.** Ten members; the bootstrap is unchanged |
+| **P5-1** | The repository builds, lints, typechecks and tests from a clean clone with the same two bootstrap commands | **Holds.** Eleven members since `packages/motion` joined on 2026-11-11; the bootstrap is unchanged |
 | **P5-2** | No file contains an absolute local path, the private sibling repository's name, or a reference to a `hosted` package | ~~**Not yet.** Absolute paths are gone — two occurrences in accepted records are redacted in place with a dated note, and one file was removed rather than scrubbed. The repository's name still ships in twelve schema `description` strings and their generated output, and hosted-package references remain in comments including one published `description`. Phase-0 gates 1 and 2~~ — *amended 2026-09-11:* **Holds.** The two gates this row deferred to, **phase-0 gates 1 and 2, both closed on 2026-09-09**; that is recorded at each of them above and was never carried down here, which left the phase-5 table reading as the only outstanding blocker on a repository that is already public. The twelve schema `description` strings no longer name the private repository, and `check-publish-contract` carries `no-private-reference-path` beside `no-private-repository-name`, each with its own negative test, so the class now fails a gate rather than waiting for a reader; the comment-level `hosted` references — `apps/cli/package.json`'s published `description` included — name the relocated service in prose instead of citing a path that is not in this checkout. The struck wording is kept because it is what those gates were opened for |
 | **P5-3** | The private repository consumes the extracted packages from the registry at pinned versions | **Relocated.** It is that repository's criterion to meet, and it cannot be met before phase 1 publishes |
 | **P5-4** | The tier checks still pass in both repositories, adapted to the new boundary | **Holds, with a stated caveat.** `pnpm lint:tiers` passes and still enforces that every member declares a tier. Its real-graph half is vacuous here — no `hosted` member remains for it to catch — and the synthetic fixture in `packages/config/src/tiers.test.ts` is what still proves the rule can fail. The Python import-linter contract retired outright. Recorded in ADR 0003's and ADR 0001's notes of 2026-09-06 |

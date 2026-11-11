@@ -41,7 +41,18 @@ xplainer connect claude                 # write `xplainer mcp --attach` into the
 ```
 
 `setup` is the only step that downloads, and `daemon install` refuses without the `toolchain.json`
-it writes (exit `3`). What `install` registers, per platform:
+it writes (exit `3`).
+
+**A render also needs ffmpeg with libx264, and `setup` does not acquire it in this release**
+([ADR 0030](adr/0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The render worker
+looks in `XPLAINER_FFMPEG`, then on the `PATH` the daemon was started with, then in
+`/opt/homebrew/bin` and `/usr/local/bin` — the last two because a LaunchAgent's `PATH` contains
+neither — and otherwise fails the render with `FFMPEG_NOT_FOUND`. A supervisor's `PATH` is not your
+shell's, so install ffmpeg where the daemon will look: Homebrew's own directories on macOS, the
+distribution's package (`/usr/bin`) on Linux, whose `systemd --user` default `PATH` includes it.
+Stills do not need it.
+
+What `install` registers, per platform:
 
 | Platform | Supervisor | Artefact it writes | Default state directory | `daemon logs` reads |
 |---|---|---|---|---|
@@ -317,7 +328,8 @@ Three things this recipe does not hide:
   `xplainer mcp --attach` over the socket inside needs none of that.
 - **`toolchain_missing` is not an error.** A fresh container has no Chrome and no speech route:
   `/healthz` answers `200` and says `degraded` until `xplainer setup` has run against the same state
-  directory.
+  directory. A container that renders also needs ffmpeg with libx264 in its image, which `setup`
+  does not provide in this release (§1).
 
 ### 6.3 OpenRC — `supervise-daemon`
 
