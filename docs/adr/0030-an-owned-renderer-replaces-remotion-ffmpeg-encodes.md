@@ -30,8 +30,9 @@
 - **Every number below is a measurement.** Numbers marked *spike* come from the Phase 0 spike, run on
   a macOS 27.0 Apple M5 Pro (6 performance and 12 efficiency cores) whose one-minute load average
   other sessions kept between 4.7 and 14.4, and in the `infra/e2e` Debian 12 image, linux/arm64,
-  under OrbStack on the same machine. Every other number comes from the two commits that carry
-  Phase 1 — `90b24b9` (`@xplainer/motion`) and `61aa387` (the renderer) — and their tests.
+  under OrbStack on the same machine. Every other number comes from this branch — `90b24b9`
+  (`@xplainer/motion`), `61aa387` (the renderer) and the commits the throughput table and the
+  review notes name — and their tests.
 
 ## Context and Problem Statement
 
@@ -280,7 +281,7 @@ outstanding. Five decisions inside it are worth recording because each was argue
 - **The motion math follows documented formulas, not another library's numerics.** `spring` is the
   closed-form damped harmonic oscillator; `Easing` is React Native's set of names with Penner's
   closed forms and CSS `cubic-bezier`; `random(seed)` is FNV-1a into mulberry32. The suite holds
-  **585 comparisons** at **1e-9** against independent derivations — RK4 at ≤ 5e-5 s, closed forms,
+  **at least 585 comparisons** at **1e-9** against independent derivations — RK4 at ≤ 5e-5 s, closed forms,
   bisection — with a worst error of **7.3e-12**, and `bezier(1,0,0,1)`-like curves at 1e-5 because
   their inverse is ill-conditioned in double precision. **Values are not guaranteed identical to
   Remotion's**, and `random(seed)` returns different, equally deterministic numbers.

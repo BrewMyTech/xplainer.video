@@ -1550,7 +1550,7 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
 - **`packages/motion`** — `@xplainer/motion`, the eleventh workspace member: the clean-room authoring
   API scenes import, and `@xplainer/motion/harness`, the page side of the renderer, which runs the
   video on film time and settles render holds, images and fonts before each frame. Its motion math is
-  held to independent derivations at 1e-9 (585 comparisons).
+  held to independent derivations at 1e-9 (at least 585 comparisons).
 - **`apps/cli/src/render/`** and **`apps/cli/src/workers/render.ts`** — an esbuild-wasm bundle of the
   video against the CLI's own React and `@xplainer/motion`, a zero-dependency DevTools client over
   `--remote-debugging-pipe`, one PNG per frame, and every PNG piped into a spawned ffmpeg (libx264,

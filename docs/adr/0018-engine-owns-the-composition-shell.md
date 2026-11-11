@@ -290,9 +290,10 @@ scene remains arbitrary React. Three things happened underneath it.
 pages with `paginateCaptions`, written against the leading-space rule `buildCaptions()` already
 follows, where it called `createTikTokStyleCaptions`; `index.ts` still calls `registerRoot`, and
 `Root.tsx` keeps `Composition`, `calculateMetadata` and its two fetches, which the page harness now
-answers from the bundle because Chrome refuses `fetch` on `file://`. `<Audio>` is now a **marker**:
-the encoder muxes the narration named by `timings.audio` from the video's public directory on every
-render, and a second mounted `<Audio>` warns once and is silent in the output. So the soundtrack no
+answers from the bundle, so the two documents that decide the video's length never depend on a
+request. `<Audio>` is now a **marker**: the encoder muxes the narration named by `timings.audio`
+from the video's public directory on every render, and a second mounted `<Audio>` fails the frame
+with `NOT_SUPPORTED_IN_V1` rather than vanishing from the MP4. So the soundtrack no
 longer passes through the composition at all — removing the element from the shell would no longer
 silence a video, which makes the first Decision Driver's unreachable state unreachable by a second
 route. **The captions still pass through it**: they are drawn into every frame by `Captions.tsx`, as
