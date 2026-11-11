@@ -118,8 +118,7 @@ jobs:
     # The proof itself is minutes of work. The budget is for everything around it
     # on a cold runner, each paid in full on every run: the install, a full
     # `turbo build` with no cache, ~304 MB from three upstream hosts, the
-    # workspace's `npm ci`, Remotion's own Chrome download — a runner has no
-    # `node_modules/.remotion` for the proof to borrow — and then two renders.
+    # workspace's `npm ci`, and then two renders in the browser `setup` recorded.
     timeout-minutes: 75
 
     steps:
@@ -141,11 +140,12 @@ jobs:
       # three images ships them, and each package manager is the one that image
       # already has — no third-party action is introduced for two binaries.
       #
-      # This installs them for the PARENT process only, which is the one that
-      # runs them. The proof's own child gets a `PATH` composed of the handful of
-      # executables `allowList()` names, and ffmpeg is deliberately not one of
-      # them: Remotion bundles its own, and the macOS run that dropped every
-      # `ffmpeg` on the machine still rendered twice.
+      # The renderer needs ffmpeg as well, with libx264, and each of these
+      # builds carries it. The proof's own child gets a `PATH` composed of the
+      # handful of executables `allowList()` names, and ffmpeg is deliberately
+      # not one of them: the proof hands the child the parent's ffmpeg as
+      # `XPLAINER_FFMPEG` instead — one file, the product's first lookup —
+      # so the composed `PATH` still reaches nothing it does not name.
       - name: Install ffmpeg and ffprobe
         run: |
           set -euo pipefail

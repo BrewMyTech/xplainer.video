@@ -222,9 +222,9 @@ Each one, and the thing that catches you:
   reached for to satisfy a gate. If a gate is wrong, change the gate deliberately.
   *Enforcement: `pnpm check:no-suppressions` (`AC-15e`), early in CI.*
 - **`apps/desktop` contains no render or TTS code, ever.** *Enforcement: `AC-14f`, a grep for
-  `@remotion/`, `remotion`, `kokoro`, `captioned_speech` and `tts` across `apps/desktop` —
-  `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own CI step beside
-  AC-2c's.*
+  `@remotion/`, `remotion`, `@xplainer/motion`, `kokoro`, `captioned_speech` and `tts` across
+  `apps/desktop` — `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own
+  CI step beside AC-2c's.*
 - **After changing any `export` in a built package, run `pnpm api:report` and commit the result.**
   The `.api.md` diff is the review. *Enforcement: `pnpm check:api-report`.*
 - **`isolatedDeclarations` errors only appear under `build`.** It is set on the

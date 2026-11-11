@@ -759,16 +759,11 @@ async function main() {
       `${name} is byte-identical to the artefact's dist/scaffold/templates/${name}.txt`,
     );
   }
-  // All five of render-core's WORKSPACE_FILES, `package-lock.json` included: the lockfile joined
+  // All four of render-core's WORKSPACE_FILES, `package-lock.json` included: the lockfile joined
   // that list after this loop was first written, and a payload that shipped the manifest without
-  // it would still pass a four-name comparison while `npm ci` in the workspace failed later.
-  for (const name of [
-    "package.json",
-    "package-lock.json",
-    "remotion.config.ts",
-    "tailwind.css",
-    "tsconfig.json",
-  ]) {
+  // it would still pass a shorter comparison while `npm ci` in the workspace failed later. The
+  // fifth, the previous renderer's config file, left the template on 2026-11-11.
+  for (const name of ["package.json", "package-lock.json", "tailwind.css", "tsconfig.json"]) {
     const wrote = readFileSync(join(paths.videos, name));
     const template = readFileSync(join(workspaceTemplates, name));
     check(

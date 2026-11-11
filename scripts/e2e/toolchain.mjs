@@ -754,8 +754,9 @@ async function startProvider(plan, marker) {
  *
  * It keeps this process's `PATH` — it runs the checkout's own sources through the source hook and
  * assembles two payloads with them, which is not the scrubbed machine phase 2 is about — and it
- * takes this run's `HOME` so the headless shell Remotion downloaded during the render is the one
- * six more renders find already there. **`XPLAINER_STATE_DIR` is removed rather than overridden**:
+ * takes this run's `HOME`, the one `setup` ran under. The headless shell every rerun renders with
+ * is the one `setup` recorded, reached through the marker each case is handed, so nothing is
+ * downloaded during a render. **`XPLAINER_STATE_DIR` is removed rather than overridden**:
  * every case makes a state directory of its own, and a variable naming this run's would be
  * inherited by every daemon those cases start.
  */

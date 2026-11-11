@@ -289,6 +289,7 @@ and asserted**.
   - *Note 2026-09-06 (ADR 0023):* this was written as the TypeScript mirror of AC-8c's pytest, with an explicit rule that the two must not drift. AC-8 relocated; 14d did not change, and it is now the only place the tool contract is asserted against the manifest in this repository.
 - **14e** `apps/desktop/package.json` lists `@xplainer/cli` in `dependencies`.
 - **14f** **`apps/desktop` contains no render or TTS code**, asserted by grep rather than by reading: `grep -rnE '@remotion/|\bremotion\b|kokoro|captioned_speech|tts' apps/desktop/src apps/desktop/*.ts apps/desktop/package.json` returns no hits. **It runs as its own CI step, beside AC-2c's and on the same pristine tree**, for AC-15e's reason: a criterion that only a human executes is advisory in everything but name.
+  - *Amended 2026-11-11 (the owned renderer):* the pattern gains `@xplainer/motion` — `'@remotion/|\bremotion\b|@xplainer/motion|kokoro|captioned_speech|tts'` — because the renderer's own authoring API is render code exactly as the previous renderer's packages were. The old names stay in the pattern: the renderer still accepts them through its alias table for one release.
 - **14g** `apps/cli/packaging/README.md` exists and states per-OS standalone-binary steps for the Node single-executable route, marked explicitly as not run in CI.
   - *Note 2026-09-08 (phase 2, P2-6):* the recipe is still there and still runs nowhere, and phase 2
     did **not** turn it into a built artefact — standalone binaries are deferred to phase 4 on

@@ -3,10 +3,9 @@
 #
 # WHY AN IMAGE AND NOT A VM. P1-1 asks for the walking skeleton on "a headless
 # Linux VM"; what it is really asking is whether the render survives away from
-# macOS — a different Chrome build, a different Remotion compositor binary
-# (`@remotion/compositor-linux-*-gnu` rather than `-darwin-arm64`), a different
-# ffmpeg and no window server at all. A container settles every one of those and
-# can be re-run by anyone with Docker, which a VM cannot.
+# macOS — a different Chrome build, a different ffmpeg and no window server at
+# all. A container settles every one of those and can be re-run by anyone with
+# Docker, which a VM cannot.
 #
 # It is NOT built by `pnpm verify` and NOT built in the push-triggered CI jobs.
 # `scripts/e2e/linux.mjs` (`pnpm e2e:render:linux`) builds and runs it, and
@@ -23,13 +22,19 @@
 ARG NODE_VERSION=24.20.0
 FROM node:${NODE_VERSION}-bookworm-slim
 
-# ffmpeg is what the CLI muxes and what the proof probes with. Everything after
-# it is the Chrome headless shell's shared-library set on Debian: Remotion
-# downloads the shell itself (see `remotion browser ensure` below), but not the
-# system libraries it dynamically links, and a missing one surfaces as a Chrome
-# that exits before it prints anything. fonts-liberation is not optional either
-# — with no font on the box the captions render as empty boxes and the burned
-# caption comparison would pass on the wrong pixels.
+# ffmpeg is what the render worker pipes every frame into — Debian's build is
+# linked against libx264, which the worker requires — and what the proof probes
+# with. Everything after it is the Chrome headless shell's shared-library set on
+# Debian. The shell itself is not in the image: `render.mjs` runs a real
+# `xplainer setup`, which acquires it at run time from the manifest this
+# checkout commits — on arm64 (OrbStack on Apple silicon, say) bookworm's glibc
+# 2.36 selects the `linux-arm64-glibc235` entry, on x64 `linux-x64-glibc235` —
+# and the render launches that recorded copy and no other. What the download
+# does not bring is the system libraries the shell dynamically links, and a
+# missing one surfaces as a Chrome that exits before it prints anything.
+# fonts-liberation is not optional either — with no font on the box the captions
+# render as empty boxes and the burned caption comparison would pass on the
+# wrong pixels.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -64,28 +69,16 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .node-version ./
 COPY apps/cli/package.json apps/cli/
 COPY apps/desktop/package.json apps/desktop/
+COPY packages/alias/package.json packages/alias/
 COPY packages/config/package.json packages/config/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/motion/package.json packages/motion/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/render-core/package.json packages/render-core/
 COPY packages/skill/package.json packages/skill/
 COPY packages/tts-client/package.json packages/tts-client/
 COPY services/tts-sidecar/package.json services/tts-sidecar/
 RUN corepack install && pnpm install --frozen-lockfile
-
-# Chrome, downloaded at build time. Remotion fetches its headless shell on first
-# use; leaving that to run time would put a multi-hundred-megabyte download
-# inside the measured render and make a network failure look like a render
-# failure. It goes here, above the sources, because it lands in
-# `node_modules/.remotion` and depends on nothing but the install above — below
-# them, every edit to a single source file paid for the download again.
-#
-# `render.mjs` links this cache into the workspace `xplainer setup` materialises,
-# and that link is the only thing it still borrows from the checkout. The browser
-# `setup` itself acquires is a second copy of the same artefact, fetched at run
-# time into the scratch state directory, because the toolchain gate checks that
-# recorded path exists and Remotion is never told about it.
-RUN pnpm exec remotion browser ensure
 
 COPY . .
 
