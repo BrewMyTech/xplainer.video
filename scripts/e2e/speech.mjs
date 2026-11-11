@@ -1596,7 +1596,9 @@ async function main() {
 
   section("every word in the script is audible (AC 2, plan D5)");
   const expected = tally(NARRATION.segments.flatMap((segment) => scriptWords(segment.text)));
-  const spoken = tally(captions.map((caption) => caption.text.trim()));
+  // A caption carries the punctuation folded onto its word (" port.", captions.json's schema), so
+  // it is stripped the same way the script's words are before the two multisets are compared.
+  const spoken = tally(captions.flatMap((caption) => scriptWords(caption.text)));
   const expectedTotal = [...expected.values()].reduce((sum, count) => sum + count, 0);
   const spokenTotal = [...spoken.values()].reduce((sum, count) => sum + count, 0);
   say(`  the script has ${expectedTotal} words; captions.json carries ${spokenTotal} spans`);
