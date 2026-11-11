@@ -68,7 +68,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0003](0003-tier-boundary-and-open-later-plan.md) | Tier boundary: `hosted` may import `open-later`, never the reverse — machine-checked from the first commit, with the open-source extraction checklist | accepted — note 2026-09-06 |
 | [0004](0004-electron-over-tauri.md) | Electron over Tauri for the desktop client, and the two `.npmrc` settings electron-builder requires | accepted |
 | [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10 |
-| [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — note 2026-09-10 |
+| [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — notes 2026-09-10, 2026-11-11 |
 | [0007](0007-mcp-tool-contract-and-put-source.md) | Eight MCP tools with `put_source`, and JSON Schema in `packages/protocol` as the single source of truth for both languages | accepted |
 | [0008](0008-async-job-model-poll-and-progress-no-agent-webhooks.md) | Async job model: return `job_id`, agent polls `explainer_job`, servers emit MCP progress — no webhooks to agents | accepted |
 | [0009](0009-remote-mcp-and-oauth-2-1-with-external-authorization-server.md) | Remote MCP over Streamable HTTP as an OAuth 2.1 resource server, with an external IdP as the authorization server | accepted — **hosted endpoint relocated (0023)**; kept because it explains why the *local* daemon has no OAuth |
@@ -82,7 +82,7 @@ must resolve to "relocated" rather than looking like a typo.
 | 0017 | Cloudflare Queues as the hosted job queue, over HTTP pull consumers — supersedes 0012, and trades transactional enqueue for an outbox | **relocated to `BrewMyTech/xplainer-hosted` (0023)** |
 | [0018](0018-engine-owns-the-composition-shell.md) | The engine owns the composition shell; the agent writes scenes only, so it cannot delete the narration or captions | accepted |
 | [0019](0019-sequencing-local-cli-before-hosted.md) | Sequencing: the local CLI tier ships before the hosted tier — an external review's hosted-first recommendation is recorded and rejected, not dismissed | accepted — note 2026-09-06 |
-| [0020](0020-always-running-local-daemon.md) | The local runtime is an installed, supervised, per-user daemon — `systemd --user`, a LaunchAgent, a Scheduled Task; never root, and an always-on loopback listener means the token is a requirement, not a later nicety | accepted — dated notes, latest 2026-09-08 |
+| [0020](0020-always-running-local-daemon.md) | The local runtime is an installed, supervised, per-user daemon — `systemd --user`, a LaunchAgent, a Scheduled Task; never root, and an always-on loopback listener means the token is a requirement, not a later nicety | accepted — dated notes, latest 2026-11-11 |
 | [0021](0021-proprietary-licence-free-to-use.md) | The published packages are proprietary and free to use — `SEE LICENSE IN LICENSE-BINARY`, not open source | **superseded by 0022** |
 | [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — note 2026-09-06 |
 | [0023](0023-split-the-repository.md) | Split the repository: the local tier is public and open source here, the hosted tier is relocated to a private repository — deferred pending a vendor answer, not cancelled | accepted |
@@ -92,6 +92,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted |
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
+| [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
 
 ### The relocated five, and why each could not stay
 
@@ -205,6 +206,17 @@ driver — word-level timestamps are non-negotiable — is exactly what selected
 A note that retires a justification while leaving the decision in force is a third kind, beside
 ADR 0018's addition and ADR 0020's reversal of a stated consequence, and it is recorded here so the
 next one has a precedent to follow.
+
+ADR 0006 and ADR 0020 each gained a dated note of 2026-11-11 pointing at
+[ADR 0030](0030-speech-providers-are-admitted-by-their-timestamps.md), and **neither body was
+rewritten.** ADR 0006 because two of its sentences were true of every configuration and are now true
+of the default only: its fourth Decision Driver — the local tier "must work with no account and no
+per-character billing" — and its rejection of a commercial API "for the local tier", which is now
+available locally, opt-in, behind the interface that record said it would sit behind. Its first
+driver, word-level timestamps, is not amended; it is the admissibility rule ADR 0030 applies to every
+provider. ADR 0020 because R-SEC-5 and R-SEC-6, written for the daemon's bearer token, now govern a
+second credential in the same state directory — the owner's ElevenLabs key — and because
+`daemon uninstall`, which deletes the token, deliberately leaves that one alone.
 
 ## Licence
 

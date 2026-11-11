@@ -925,3 +925,42 @@ later change could get wrong in a way a unix socket could not. The MCP specifica
 sanctions both and lists `stdio` first, so **the socket entry remains the default** and ADR 0029's
 HTTP form is opt-in, with port staleness named there as the open question that gates any change to
 that default.
+
+## Note, 2026-11-11: R-SEC-5 and R-SEC-6 now govern a second credential
+
+[ADR 0030](0030-speech-providers-are-admitted-by-their-timestamps.md) adds two files to this
+record's state directory — `config.json`, the owner's non-secret speech settings, and
+`credentials.json`, the owner's ElevenLabs API key — and this note records how the second one sits
+under this record's security rules. Nothing above is changed and this record stays `accepted`.
+
+**Which sentences this note qualifies.** R-SEC-5's *"File `0600` inside a `0700` directory, created
+with `fs.open(path, "wx", 0o600)` under a tightened umask so it is never briefly world-readable,
+minted by `xplainer setup` and never by `serve`"*, and R-SEC-6's *"The unit/plist/task sets
+`XPLAINER_TOKEN_FILE`; the daemon reads the file; the token never appears in argv."* Both were
+written for one credential, the bearer token, and both now apply to a second, with three
+differences worth stating:
+
+- **Who writes it.** `credentials.json` is written by `xplainer config set tts.elevenlabs.api_key`,
+  never by `setup` and never by `serve`. Each write is a whole new file: a temporary file created
+  empty with `wx` at `0600`, narrowed on Windows by the same `daemon/windows-acl.ts`
+  `restrictToOwner` call the token gets, only then given the key, and renamed into place. That is
+  `xplainer token rotate`'s write made stricter in two places, both because the key is somebody
+  else's credential: the narrowing comes before the key is written rather than after, and an
+  `icacls` that fails refuses the write — nothing is stored — where for the token it is a warning.
+  `config.json` is written `0600` through the ordinary durable write and holds nothing secret.
+- **The unit names it not at all.** R-SEC-6 put the token's *path* in the unit and kept its value
+  out. The ElevenLabs key needs neither: the narration worker already receives
+  `XPLAINER_STATE_DIR`, and reads `<state>/credentials.json` per job. So no supervisor artefact,
+  argv or `Environment=` line carries the key or its path. The command that stores it refuses the
+  key on argv (exit `1`, nothing written) and reads it from a hidden prompt, stdin or
+  `--from-env`; nothing prints it.
+- **`daemon uninstall` leaves it.** This record's note of 2026-09-08 has `uninstall` delete the
+  token, because it is the daemon's own credential. `credentials.json` is the owner's credential for
+  somebody else's service, so uninstall does not touch it, and
+  `xplainer config unset tts.elevenlabs.api_key` is how it is removed.
+
+**Why a shell export is not the route.** `ELEVENLABS_API_KEY` overrides the file for any process it
+is set in, which is right for `xplainer mcp` started from a terminal and useless for a supervised
+daemon: launchd, systemd and Task Scheduler do not inherit a shell, which is the same fact that made
+this record carry the token as a path. `xplainer status` and `xplainer config list` say when a
+setting comes from the shell's environment for that reason.
