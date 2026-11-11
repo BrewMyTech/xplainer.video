@@ -28,7 +28,7 @@ exports types and nothing a scene calls). Peer-depends on `react` and `react-dom
 | `context.ts`, `provider.tsx`, `hooks.ts` | The timeline model: one context holding the frame a subtree sees |
 | `components.tsx` | `AbsoluteFill`, `Sequence`, `Series`, `Loop`, `Freeze`, `Img`, `Audio`, `Video`/`OffthreadVideo` |
 | `composition.tsx` | `Composition`, `registerRoot`, `registerVideo`, `calculateMetadata` resolution |
-| `runtime.ts` | The state scenes share with the harness: registration, render holds, failures, `<Audio>` count |
+| `runtime.ts` | The state scenes share with the harness: registration, render holds, failures, and the one `<Audio>` a video may mount |
 | `static-file.ts` | `staticFile` over the bundle's `__XPLAINER_PUBLIC_BASE__` |
 | `harness.ts` | The page driver; it composes the pure helpers below |
 | `clock.ts`, `animations.ts`, `failures.ts`, `static-fetch.ts` | The harness's pure helpers — film-time queues, frozen `Date`, Web Animation seeking, failure naming, the static `fetch` lookup — each tested in Node |
@@ -72,17 +72,30 @@ Then the root procedure: `pnpm verify`.
   `DELAY_RENDER_TIMEOUT`, `IMAGE_BROKEN`, `IMAGE_TIMEOUT`, `NOT_SUPPORTED_IN_V1`) are read by
   `apps/cli/src/render/`. Renaming one is a change on both sides in the same commit. Every
   rejection is an `Error` whose message starts with its code, because CDP reports only the message.
-- **While a render hold is outstanding, film timers run on the wall clock.** That is what releases
-  `const h = delayRender(); setTimeout(() => continueRender(h), 100)`, which deadlocks on a pure
-  film clock. Film time, `Date` and `performance.now` stay frozen during the wait. The rule is in
-  `harness.ts`'s docblock; do not "simplify" it away.
-- **There is no late-image check, and that is deliberate.** Every `<img>` must be complete and
-  decoded before a frame is released, so an image cannot be captured blank and arrive later. A
-  check for that case would have no reachable input.
+- **While a render hold is outstanding, film timers and animation-frame callbacks run on the wall
+  clock — and the wall clock is taken back out when it is released.** That is what releases
+  `const h = delayRender(); setTimeout(() => continueRender(h), 100)` and its
+  `requestAnimationFrame` twin, both of which deadlock on a pure film clock. Film time, `Date` and
+  `performance.now` stay frozen during the wait, and when the hold is released every timer the
+  wait created is rebased onto the frame's film instant (`TimerQueue.rebase`), so how long a
+  release took never reaches the video. The rule is in `harness.ts`'s docblock; do not "simplify"
+  it away.
+- **A frame is released only once the page has stopped changing.** The settle runs in passes, and
+  passes again while the last pass changed a node (a `MutationObserver` over the document), left a
+  font loading, or left a hold or an image outstanding, up to `MAX_SETTLE_PASSES`. Every pass ends
+  in two `MessageChannel` tasks, because that is one React effect → `setState` hop from effect to
+  commit — one task was measured to release the frame between the two. So an `<img>` the frame's
+  own work mounts — in the commit, behind a hold, or after effect hops that each change the DOM —
+  is complete and decoded in that frame's capture. **There is still no late-image check, and that is
+  deliberate:** what the settle cannot see — a `fetch` with no `delayRender`, renders that change
+  no node, a chain longer than the pass bound — is just as invisible to a check on a later frame,
+  and `delayRender` is how a scene says "wait for this".
 - **The motion math is held to an independent derivation at 1e-9.** `math.test.ts` compares at
   least 200 seeded samples against closed forms, a bisection solve and an RK4 integration written
   in the test. A change that moves a curve fails there first; if the change is intended, it is a
-  change to every existing video's motion and needs a changeset that says so.
+  change to every existing video's motion and needs a changeset that says so. `random` is held
+  **bit for bit** instead, to an FNV-1a and a mulberry32 written again in `BigInt` arithmetic in
+  `random.test.ts`, and its golden table is the "stable across releases" promise `random.ts` makes.
 - **The caption paging rule is shared with `@xplainer/render-core`.** `buildCaptions()` gives every
   word but the first a leading space precisely because the pager opens a page only on such a
   token. Changing either side alone welds or splits burned-in captions; `captions.test.ts` derives

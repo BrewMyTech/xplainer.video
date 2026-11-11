@@ -46,15 +46,19 @@ damped harmonic oscillator; `Easing` holds the textbook closed forms; `random(se
 deterministic per seed.
 
 `<Video>` and `<OffthreadVideo>` throw `NOT_SUPPORTED_IN_V1` when rendered: video assets are not
-supported by this renderer yet, so use `<Img>` stills.
+supported by this renderer yet, so use `<Img>` stills. A second `<Audio>` beside the narration fails
+the same way, because the narration is the only audio track the video gets. `staticFile()` takes a
+name inside the video's public directory and refuses one that starts with `/` or climbs out of it
+with `..`.
 
 ## The harness
 
 `@xplainer/motion/harness` is a separate entry point with side effects, imported only by the
 renderer's generated bundle, before the scene code. It runs the page on film time — `Date`,
 `performance.now`, `setTimeout`, `setInterval` and `requestAnimationFrame` all advance only when the
-renderer asks for the next frame — and waits for render holds, images and fonts before each frame
-is captured. A scene never imports it.
+renderer asks for the next frame — and before each frame is captured it waits for render holds,
+images and fonts, and for the page to stop changing, so an image a scene's effects mount a few
+React updates after the frame is still in that frame. A scene never imports it.
 
 The exported surface of the main entry point is recorded in `api/motion.api.md` in the repository.
 

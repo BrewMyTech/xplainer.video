@@ -10,6 +10,8 @@
  * - `spring` against a fourth-order Runge–Kutta integration of m·x″ + c·x′ + k·x = k from rest,
  *   with a step of at most 5e-5 s — small enough that the integrator's own error stays three
  *   orders under the tolerance for every configuration below, the stiffest included;
+ * - `overshootClamping` against that integration's first arrival at the target, found by stepping
+ *   until x ≥ 1 and bisecting inside the last step, and held at the target from there on;
  * - `measureSpring` against a frame-by-frame scan of that same integration out to 60 s.
  *
  * The inputs come from a seeded mulberry32 stream, so the table is the same on every run, and the
@@ -401,6 +403,22 @@ describe("interpolate against a re-derivation", () => {
     expect(() => interpolate(1, [0, Number.POSITIVE_INFINITY], [0, 1])).toThrow(/finite/);
   });
 
+  it("wraps as a sawtooth over the whole table, onto [first, last), as its docblock says", () => {
+    const inputRange = [0, 10, 30];
+    const outputRange = [0, 100, 50];
+    const wrap = (x: number): number =>
+      interpolate(x, inputRange, outputRange, {
+        extrapolateLeft: "wrap",
+        extrapolateRight: "wrap",
+      });
+    compare(wrap(30), 50, "wrap at last: inside, the last output");
+    compare(wrap(30 + 1e-6), 1e-5, "wrap a hair past last: a hair past the first output");
+    compare(wrap(60), 0, "wrap at last + span: the first output");
+    compare(wrap(-30), 0, "wrap at first − span: the first output");
+    compare(wrap(40), 100, "wrap past last reads the whole table again, not the outer segment");
+    compare(wrap(-10), 75, "wrap before first, from the far end of the table");
+  });
+
   it("defaults to extend on both sides", () => {
     expect(interpolate(-10, [0, 10], [0, 100])).toBe(-100);
     expect(interpolate(20, [0, 10], [0, 100])).toBe(200);
@@ -437,7 +455,10 @@ function rk4(config: Config, seconds: number, step = 5e-5): number {
   return x;
 }
 
-/** Frame-by-frame scan of one integration out to 60 s: last frame outside, plus one. */
+/**
+ * Frame-by-frame scan of one integration out to 60 s: last frame outside, plus one. With `clamp`,
+ * the motion is the target from the first integration step at which it reached it.
+ */
 function settleReference(config: Config, fps: number, threshold: number, clamp = false): number {
   const { mass: m, damping: c, stiffness: k } = config;
   const h = 1 / fps / Math.ceil(1 / fps / 5e-5);
@@ -445,9 +466,10 @@ function settleReference(config: Config, fps: number, threshold: number, clamp =
   let x = 0;
   let v = 0;
   let settled = 0;
+  let arrived = false;
   const acceleration = (px: number, pv: number): number => (k * (1 - px) - c * pv) / m;
   for (let frame = 0; frame <= fps * 60; frame += 1) {
-    const shown = clamp ? Math.min(x, 1) : x;
+    const shown = arrived ? 1 : x;
     if (Math.abs(shown - 1) >= threshold) {
       settled = frame + 1;
     }
@@ -462,9 +484,63 @@ function settleReference(config: Config, fps: number, threshold: number, clamp =
       const k4v = acceleration(x + h * k3x, v + h * k3v);
       x += (h / 6) * (k1x + 2 * k2x + 2 * k3x + k4x);
       v += (h / 6) * (k1v + 2 * k2v + 2 * k3v + k4v);
+      arrived ||= clamp && x >= 1;
     }
   }
   return settled;
+}
+
+/**
+ * Seconds from release to the motion's first arrival at the target: classic RK4 steps of 5e-5 s
+ * until x ≥ 1, then bisection inside that last step, each probe one RK4 step from the state at the
+ * step's start, until the bracket stops shrinking. `Infinity` for a spring that does not oscillate
+ * (ζ ≥ 1), which only reaches the target in the limit.
+ */
+function arrivalReference(config: Config): number {
+  const { mass: m, damping: c, stiffness: k } = config;
+  if (c >= 2 * Math.sqrt(k * m)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const acceleration = (px: number, pv: number): number => (k * (1 - px) - c * pv) / m;
+  const advance = (x: number, v: number, h: number): readonly [number, number] => {
+    const k1x = v;
+    const k1v = acceleration(x, v);
+    const k2x = v + (h / 2) * k1v;
+    const k2v = acceleration(x + (h / 2) * k1x, v + (h / 2) * k1v);
+    const k3x = v + (h / 2) * k2v;
+    const k3v = acceleration(x + (h / 2) * k2x, v + (h / 2) * k2v);
+    const k4x = v + h * k3v;
+    const k4v = acceleration(x + h * k3x, v + h * k3v);
+    return [
+      x + (h / 6) * (k1x + 2 * k2x + 2 * k3x + k4x),
+      v + (h / 6) * (k1v + 2 * k2v + 2 * k3v + k4v),
+    ];
+  };
+  const step = 5e-5;
+  let x = 0;
+  let v = 0;
+  for (let index = 0; index * step < 60; index += 1) {
+    const [nextX, nextV] = advance(x, v, step);
+    if (nextX >= 1) {
+      let low = 0;
+      let high = step;
+      for (;;) {
+        const middle = (low + high) / 2;
+        if (middle === low || middle === high) {
+          break;
+        }
+        if (advance(x, v, middle)[0] >= 1) {
+          high = middle;
+        } else {
+          low = middle;
+        }
+      }
+      return index * step + high;
+    }
+    x = nextX;
+    v = nextV;
+  }
+  throw new Error("an oscillating spring that did not reach its target in 60 s");
 }
 
 const SPRINGS: readonly { name: string; config: Config; fps: number }[] = [
@@ -491,6 +567,8 @@ describe("spring against an RK4 integration of the oscillator", () => {
     it(`${name}: plain, delayed, from/to, clamped, stretched and reversed`, () => {
       const natural = settleReference(config, fps, 0.005);
       const position = (frames: number): number => rk4(config, frames / fps);
+      const arrival = arrivalReference(config);
+      const clamped = (frames: number): number => (frames / fps >= arrival ? 1 : position(frames));
 
       for (let index = 0; index < 8; index += 1) {
         const frame = index < 2 ? index * 7 : next() * 3 * natural;
@@ -517,7 +595,7 @@ describe("spring against an RK4 integration of the oscillator", () => {
         );
         compare(
           spring({ frame, fps, config: { ...config, overshootClamping: true } }),
-          Math.min(1, position(frame)),
+          clamped(frame),
           `${name} clamped frame ${frame}`,
         );
       }
@@ -543,6 +621,46 @@ describe("spring against an RK4 integration of the oscillator", () => {
       );
     });
 
+    it(`${name}: clamped, it climbs to its first arrival and rests at \`to\` from there on`, () => {
+      const arrival = arrivalReference(config);
+      const position = (frames: number): number => rk4(config, frames / fps);
+      const clampedConfig = { ...config, overshootClamping: true };
+      const from = 40;
+      const to = -60;
+      if (!Number.isFinite(arrival)) {
+        // It never reaches the target, so there is nothing for the flag to clamp.
+        for (const frame of [1, 6.5, 19, 47]) {
+          compare(
+            spring({ frame, fps, config: clampedConfig, from, to }),
+            from + (to - from) * position(frame),
+            `${name} clamped, never arriving, frame ${frame}`,
+          );
+        }
+        return;
+      }
+      const first = Math.ceil(arrival * fps);
+      for (const frame of [first - 1, arrival * fps - 0.25]) {
+        compare(
+          spring({ frame, fps, config: clampedConfig, from, to }),
+          from + (to - from) * position(frame),
+          `${name} clamped, before arrival, frame ${frame}`,
+        );
+      }
+      // Every frame from the arrival on, across the stretch where the free motion swings back
+      // below the target and returns: the clamped value is `to`, exactly.
+      for (let frame = first; frame <= first + 3 * fps; frame += 1) {
+        const value = spring({ frame, fps, config: clampedConfig, from, to });
+        if (value !== to) {
+          expect.fail(`${name} clamped frame ${frame}: got ${value}, expected exactly ${to}`);
+        }
+      }
+      compare(
+        spring({ frame: first + 0.25, fps, config: clampedConfig, from, to }),
+        to,
+        `${name} clamped, after arrival`,
+      );
+    });
+
     it(`${name}: measureSpring matches a frame-by-frame scan at three thresholds`, () => {
       for (const threshold of [0.005, 0.02, 0.0001]) {
         compare(
@@ -550,12 +668,12 @@ describe("spring against an RK4 integration of the oscillator", () => {
           settleReference(config, fps, threshold),
           `${name} measureSpring threshold ${threshold}`,
         );
+        compare(
+          measureSpring({ fps, config: { ...config, overshootClamping: true }, threshold }),
+          settleReference(config, fps, threshold, true),
+          `${name} measureSpring clamped threshold ${threshold}`,
+        );
       }
-      compare(
-        measureSpring({ fps, config: { ...config, overshootClamping: true } }),
-        settleReference(config, fps, 0.005, true),
-        `${name} measureSpring clamped`,
-      );
     });
   }
 

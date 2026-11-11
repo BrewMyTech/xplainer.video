@@ -9,15 +9,18 @@
  * Media is deliberately narrow in this version. `<Img>` is a plain `<img>` and the harness waits
  * for every image in the document before a frame is captured. `<Audio>` is a marker: the renderer
  * muxes the narration track itself, so the element only exists to keep the engine-owned
- * `Video.tsx` declarative about it. `<Video>` and `<OffthreadVideo>` throw `NOT_SUPPORTED_IN_V1`
- * the moment they render, because a frame-accurate video decoder is not part of this renderer and
- * a silently blank rectangle would be worse than a named refusal.
+ * `Video.tsx` declarative about it, and a second one mounted beside it throws
+ * `NOT_SUPPORTED_IN_V1`, because the narration is the only audio track the video gets. `<Video>`
+ * and `<OffthreadVideo>` throw `NOT_SUPPORTED_IN_V1` the moment they render, because a
+ * frame-accurate video decoder is not part of this renderer and a silently blank rectangle would be
+ * worse than a named refusal. A silently missing sound would be worse in the same way.
  */
 
 import {
   Children,
   type ComponentProps,
   type CSSProperties,
+  Fragment,
   isValidElement,
   type ReactElement,
   type ReactNode,
@@ -102,6 +105,11 @@ function Layout({
 /**
  * Mount the children for frames `from ≤ f < from + durationInFrames` of the parent's timeline,
  * and show them their own frame, `f − from`.
+ *
+ * `useVideoConfig().durationInFrames` inside is how long the children can actually be on screen:
+ * this sequence's own duration, clipped to what is left of the parent's window from `from` on — so
+ * an open sequence at frame 100 of a 300-frame parent reports 200, and a 50-frame sequence placed
+ * 20 frames before its parent's end reports 20.
  */
 export function Sequence({
   from = 0,
@@ -118,11 +126,12 @@ export function Sequence({
   if (frame < 0 || frame >= durationInFrames) {
     return null;
   }
+  // A `<Freeze>` can show a sequence a frame past its parent's end, where nothing of the parent's
+  // window is left to clip to; the parent's own length caps it there instead.
+  const left = parent.durationInFrames - from;
   const timeline: Timeline = {
     frame,
-    durationInFrames: Number.isFinite(durationInFrames)
-      ? durationInFrames
-      : parent.durationInFrames,
+    durationInFrames: Math.min(durationInFrames, left > 0 ? left : parent.durationInFrames),
   };
   return (
     <TimelineContext.Provider value={timeline}>
@@ -150,10 +159,25 @@ function SeriesSequence(_props: SeriesSequenceProps): never {
   );
 }
 
+/**
+ * A series' children with every Fragment opened, at any depth, each with a key unique across the
+ * whole list: a Fragment's children are keyed under its own key, so two Fragments' first children
+ * do not collide.
+ */
+function seriesChildren(children: ReactNode, prefix = ""): { child: ReactNode; key: string }[] {
+  return Children.toArray(children).flatMap((child) => {
+    const key = `${prefix}${isValidElement(child) ? String(child.key) : ""}`;
+    if (isValidElement<{ children?: ReactNode }>(child) && child.type === Fragment) {
+      return seriesChildren(child.props.children, `${key}/`);
+    }
+    return [{ child, key }];
+  });
+}
+
 function SeriesRoot({ children }: SeriesProps): ReactElement {
-  const items = Children.toArray(children);
+  const items = seriesChildren(children);
   let cursor = 0;
-  const sequences = items.map((child, index) => {
+  const sequences = items.map(({ child, key }, index) => {
     if (!isValidElement<SeriesSequenceProps>(child) || child.type !== SeriesSequence) {
       throw new TypeError("<Series> accepts only <Series.Sequence> elements as its children.");
     }
@@ -167,19 +191,15 @@ function SeriesRoot({ children }: SeriesProps): ReactElement {
     }
     const from = cursor + offset;
     cursor = from + durationInFrames;
-    return (
-      <Sequence
-        key={child.key ?? index}
-        {...rest}
-        from={from}
-        durationInFrames={durationInFrames}
-      />
-    );
+    return <Sequence key={key} {...rest} from={from} durationInFrames={durationInFrames} />;
   });
   return <>{sequences}</>;
 }
 
-/** The sequences placed back to back. `Series.Sequence` is the only child it accepts. */
+/**
+ * The sequences placed back to back. `Series.Sequence` is the only child it accepts, directly or
+ * inside Fragments (`<>…</>`, or an array from `.map`), which are opened in place.
+ */
 export const Series: ((props: SeriesProps) => ReactElement) & {
   Sequence: (props: SeriesSequenceProps) => never;
 } = Object.assign(SeriesRoot, { Sequence: SeriesSequence });
@@ -273,7 +293,8 @@ export type AudioProps = {
 
 /**
  * A marker for the narration track. Renders nothing; the renderer muxes the narration itself.
- * A second concurrently mounted `<Audio>` warns once, because it will be silent in the output.
+ * A second concurrently mounted `<Audio>` throws `NOT_SUPPORTED_IN_V1` when it mounts, because the
+ * narration is the only audio track the video gets and the second would be silently missing.
  */
 export function Audio(_props: AudioProps): null {
   useEffect(() => mountAudio(), []);

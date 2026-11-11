@@ -20,36 +20,58 @@
  *    animation-frame callbacks with the film timestamp and commits the new frame — so everything a
  *    timer sets lands in the same commit as the frame it belongs to. Then every Web Animation is
  *    paused and seeked to film time (`animations.ts`), and the frame settles.
- * 5. **Settles before a capture**, in order: render holds, images, fonts, then a forced layout and
- *    one `MessageChannel` task — or, once the page has made a `ResizeObserver` or an
- *    `IntersectionObserver`, one native animation frame first, because that is where those report
- *    (`settleTick`).
+ * 5. **Settles before a capture**, in passes. A pass waits for render holds, then images, then
+ *    fonts, then forces a layout — or, once the page has made a `ResizeObserver` or an
+ *    `IntersectionObserver`, waits one native animation frame, which is where those report — and
+ *    yields two `MessageChannel` tasks, which is one React effect → setState hop (`settleTick`).
+ *    Another pass follows while the one before it changed the DOM (a `MutationObserver` over the
+ *    whole document), left a font loading, or left a hold or an image outstanding, up to
+ *    `MAX_SETTLE_PASSES`.
  *
- * **Render holds and timers — the one place film time yields to the wall clock.** A scene that
- * writes `const h = delayRender(); setTimeout(() => continueRender(h), 100)` deadlocks on a pure
- * film clock: the timer waits for the next frame and the frame waits for the timer. So while any
- * hold is outstanding, the timers created **since the previous frame was released** run on the
- * wall clock instead: such a timer due Δ ms after the current film time fires Δ wall-clock ms after
- * the wait began, and a timer created during the wait is scheduled from that same advancing point.
- * Film time itself, `Date` and `performance.now` stay frozen throughout.
+ * **Render holds, timers and animation frames — the one place film time yields to the wall
+ * clock.** A scene that writes `const h = delayRender(); setTimeout(() => continueRender(h), 100)`
+ * deadlocks on a pure film clock: the timer waits for the next frame and the frame waits for the
+ * timer. So while any hold is outstanding, the timers created **since the previous frame was
+ * released** run on the wall clock instead: such a timer due Δ ms after the current film time
+ * fires Δ wall-clock ms after the wait began, and a timer created during the wait is scheduled from
+ * that same advancing point. `requestAnimationFrame(() => continueRender(h))` deadlocks the same
+ * way, so the animation-frame callbacks requested since the previous release are drained too, on
+ * every poll of the wait, inside `flushSync` and with the frame's film timestamp. Film time itself,
+ * `Date` and `performance.now` stay frozen throughout.
  *
- * Timers from earlier frames — a scene's animation interval, a chain of timeouts it re-arms — stay
+ * **When the hold is released, the wall clock is taken back out.** Every timer the wait created
+ * that is still pending is rebased onto the frame's film instant (`TimerQueue.rebase`): a timeout
+ * becomes due its own delay after the frame, and an interval keeps its period and the ticks it has
+ * already made, so it stays in film phase. `img.onload = () => { setTimeout(show, 100);
+ * continueRender(h); }` therefore shows 100 ms of film after the frame whether the image took
+ * 20 ms or two seconds: how long a release took never reaches the video.
+ *
+ * Timers and animation-frame callbacks from earlier frames — a scene's animation interval — stay
  * on film time even during a hold. Letting them run on the wall clock too would fire them early by
  * however long the hold happened to last, which differs from run to run: measured in Chrome, a
  * 100 ms interval created at frame 0 ticked a frame early on the one frame that took a 100 ms hold.
  * A release timer is created in the same frame as its hold (or between frames, by whatever async
- * work took the hold), so the narrower set still releases every hold the deadlock caught.
+ * work took the hold), so the narrower set still releases every hold the deadlock caught. "Since
+ * the previous release" includes this frame's own drain, so a timeout chain the drain re-armed and
+ * a `requestAnimationFrame` loop do run during a hold — the loop once per poll, every time with the
+ * same film timestamp, which a loop that draws from its timestamp cannot tell apart from one call.
  *
- * **Images: why there is no late-image failure.** Every `<img>` in the document must be complete
- * and decoded before a frame is released, so an image can never be captured blank and loaded
- * afterwards — the frame simply waits, up to the image budget, and fails `IMAGE_TIMEOUT` past it.
- * A late-image check would have no reachable case, so there is none. CSS `background-image` is not
- * an `<img>` and is not waited for; a scene that needs a picture to be present uses `<Img>`.
+ * **Images: what is waited for, and why there is no late-image failure.** Every `<img>` in the
+ * document must be complete and decoded before a frame is released — the frame waits, up to the
+ * image budget, and fails `IMAGE_TIMEOUT` past it — and the settle passes again while the DOM is
+ * still changing. So an image the frame's own work mounts is in the frame: in the commit, after
+ * effect → setState hops that each change the DOM, or behind a render hold. What the settle cannot
+ * see is work that changes nothing it watches until later — a `fetch` with no `delayRender`, a run
+ * of React renders that touch no node, a chain longer than `MAX_SETTLE_PASSES`. An image that work
+ * mounts can arrive after its frame was captured, and no check on a later frame could tell that
+ * frame was meant to have it; holding the frame with `delayRender` is how a scene says so. CSS
+ * `background-image` is not an `<img>` and is not waited for; a scene that needs a picture to be
+ * present uses `<Img>`.
  *
  * Every failure is an `Error` whose message begins with its code (`failures.ts`):
  * `PAGE_ERROR`, `DELAY_RENDER_TIMEOUT`, `IMAGE_BROKEN`, `IMAGE_TIMEOUT`, and `NOT_SUPPORTED_IN_V1`
- * for `<Video>`/`<OffthreadVideo>`, which keeps its own code rather than nesting under
- * `PAGE_ERROR`. Once one is recorded, every later `setFrame` rejects with the first.
+ * for `<Video>`/`<OffthreadVideo>` and a second `<Audio>`, which keeps its own code rather than
+ * nesting under `PAGE_ERROR`. Once one is recorded, every later `setFrame` rejects with the first.
  */
 
 import {
@@ -133,7 +155,10 @@ const DEFAULT_IMAGE_TIMEOUT_MS = 30_000;
 const HOLD_POLL_MS = 2;
 const IMAGE_POLL_MS = 5;
 
-/** A settle that keeps finding new holds or images gives up after this many passes. */
+/**
+ * A settle that keeps finding work stops after this many passes: it fails if a hold or an image is
+ * still outstanding, and otherwise releases the frame as it stands.
+ */
 const MAX_SETTLE_PASSES = 10;
 
 // The window as the DOM declares it. Node's typings widen the timer globals on `typeof
@@ -154,6 +179,15 @@ let holdWaitStartedAt: number | undefined;
 
 /** Timers with an id at least this large were created after the previous frame was released. */
 let releasedAtTimerId = 1;
+
+/** The same mark for animation-frame callbacks. */
+let releasedAtFrameCallbackId = 1;
+
+/** A frame was released: what is created from here on is what the next frame's holds may run. */
+function markReleased(): void {
+  releasedAtTimerId = timers.nextId;
+  releasedAtFrameCallbackId = frameCallbacks.nextId;
+}
 
 /** Where a new timer is scheduled from: film time, advanced by the wall clock during a hold. */
 function scheduleBase(): number {
@@ -221,6 +255,32 @@ globalThis.IntersectionObserver = class extends NativeIntersectionObserver {
     observersInUse = true;
   }
 };
+
+// ----------------------------------------------------------------------------------- DOM changes
+
+/** Set by any change to the document; how a settle pass knows the page has not stopped moving. */
+let domChanged = false;
+const domWatcher = new MutationObserver(() => {
+  domChanged = true;
+});
+domWatcher.observe(document, {
+  subtree: true,
+  childList: true,
+  attributes: true,
+  characterData: true,
+});
+
+/** Forget every change so far, at the start of a settle pass. */
+function forgetDomChanges(): void {
+  domWatcher.takeRecords();
+  domChanged = false;
+}
+
+/** Whether the document changed since `forgetDomChanges()`, delivered to the observer or not. */
+function domChangedSinceForget(): boolean {
+  const queued = domWatcher.takeRecords().length > 0;
+  return queued || domChanged;
+}
 
 // -------------------------------------------------------------------------------- static fetch
 
@@ -315,7 +375,15 @@ function nativeSleep(ms: number): Promise<void> {
  * Let the committed frame's consequences run before it is captured, without waiting for a frame.
  *
  * Reading layout forces style and layout synchronously, which is what starts the font and image
- * loads the new DOM needs; one `MessageChannel` task after it lets every task already queued run.
+ * loads the new DOM needs; then two `MessageChannel` tasks, one after the other, let the tasks
+ * already queued run, and the tasks *those* queue. Two, because that is one React update: after a
+ * default-lane commit React yields before running its passive effects, so an effect that calls
+ * `setState` runs in a task of its own, and the render it asks for is queued from a microtask
+ * behind that — measured in the headless shell with React 19.2, where a pass that waited one task
+ * saw the effect run and released the frame before the render it asked for. Each settle pass
+ * therefore carries one effect → setState hop from its effect to its commit, and the pass loop in
+ * `settle` carries a chain of them.
+ *
  * Waiting for a native animation frame as well buys no pixel: `Page.captureScreenshot` draws a
  * fresh frame of its own. On the Phase 1 fps gate's animated scene the MP4 was byte-identical with
  * and without that wait, and the wait alone held the render at 18.2 fps against 22.4 without it —
@@ -323,24 +391,32 @@ function nativeSleep(ms: number): Promise<void> {
  *
  * The one thing a frame delivers that a layout read does not is observer notifications:
  * `ResizeObserver` and `IntersectionObserver` report in a frame's rendering steps. So once the page
- * has made either, every settle waits one native frame first, as it always did before this rule.
+ * has made either, every settle waits one native frame first, as it always did before this rule,
+ * and then the same two tasks. The observers report *after* the frame's own callbacks, so the first
+ * task was posted before any report ran; a `setState` inside a report queues React's render behind
+ * it, and the second task comes after that render.
  */
 function settleTick(): Promise<void> {
   return new Promise((resolve) => {
-    const task = (): void => {
+    const task = (then: () => void): void => {
       const channel = new MessageChannel();
       channel.port1.onmessage = () => {
         channel.port1.close();
-        resolve();
+        then();
       };
       channel.port2.postMessage(0);
     };
+    const twoTasks = (): void => {
+      task(() => {
+        task(resolve);
+      });
+    };
     if (observersInUse) {
-      native.requestAnimationFrame(task);
+      native.requestAnimationFrame(twoTasks);
       return;
     }
     void document.documentElement.getBoundingClientRect();
-    task();
+    twoTasks();
   });
 }
 
@@ -351,6 +427,7 @@ async function settleHolds(): Promise<void> {
     return;
   }
   const startedAt = native.now();
+  const createdDuringWait = timers.nextId;
   holdWaitStartedAt = startedAt;
   try {
     for (;;) {
@@ -374,9 +451,11 @@ async function settleHolds(): Promise<void> {
       }
       const waitedTo = filmMs + (now - startedAt);
       const due = timers.nextDue(releasedAtTimerId);
-      if (due !== undefined && due <= waitedTo) {
+      const timersDue = due !== undefined && due <= waitedTo;
+      if (timersDue || frameCallbacks.pending(releasedAtFrameCallbackId) > 0) {
         flushSync(() => {
           timers.runDue(waitedTo, run, releasedAtTimerId);
+          frameCallbacks.drain(filmMs, run, releasedAtFrameCallbackId);
         });
       }
       throwIfFailed();
@@ -384,6 +463,7 @@ async function settleHolds(): Promise<void> {
     }
   } finally {
     holdWaitStartedAt = undefined;
+    timers.rebase(createdDuringWait, filmMs);
   }
 }
 
@@ -427,8 +507,16 @@ async function settleImages(frame: number): Promise<void> {
   }
 }
 
+/**
+ * Settle the committed frame in passes (see the docblock, item 5). A pass is over when its tick
+ * is; the frame is released after the first pass that changed no node, left no font loading and
+ * left no hold or image outstanding. The DOM check is what reaches an `<img>` or a hold that
+ * appears two or more effect → setState hops after the commit: each hop is a React task of its own,
+ * and each pass lets one more of them run.
+ */
 async function settle(frame: number): Promise<void> {
   for (let pass = 1; ; pass += 1) {
+    forgetDomChanges();
     await settleHolds();
     await settleImages(frame);
     await document.fonts.ready;
@@ -437,18 +525,23 @@ async function settle(frame: number): Promise<void> {
     throwIfFailed();
     const holds = renderHolds();
     const images = pendingImages();
-    if (holds.size === 0 && images.length === 0) {
+    const changed = domChangedSinceForget();
+    if (holds.size === 0 && images.length === 0 && !changed && document.fonts.status === "loaded") {
       return;
     }
     if (pass === MAX_SETTLE_PASSES) {
-      throw holds.size > 0
-        ? failWith(
-            failure(
-              "DELAY_RENDER_TIMEOUT",
-              `still held: ${[...holds.values()].map((hold) => hold.label).join(", ")} (taken again on each of ${MAX_SETTLE_PASSES} settle passes)`,
-            ),
-          )
-        : failWith(failure("IMAGE_TIMEOUT", `${images[0] ?? ""} at frame ${frame}`));
+      if (holds.size > 0) {
+        throw failWith(
+          failure(
+            "DELAY_RENDER_TIMEOUT",
+            `still held: ${[...holds.values()].map((hold) => hold.label).join(", ")} (taken again on each of ${MAX_SETTLE_PASSES} settle passes)`,
+          ),
+        );
+      }
+      if (images.length > 0) {
+        throw failWith(failure("IMAGE_TIMEOUT", `${images[0] ?? ""} at frame ${frame}`));
+      }
+      return;
     }
   }
 }
@@ -557,7 +650,7 @@ async function boot(entry: RegisteredEntry): Promise<void> {
     mount(resolved);
     throwIfFailed();
     await settle(0);
-    releasedAtTimerId = timers.nextId;
+    markReleased();
     firstSettleDone = true;
     mounted.resolve();
   } catch (error) {
@@ -602,7 +695,7 @@ async function setFrame(frame: number): Promise<void> {
     throwIfFailed();
     await settle(frame);
     throwIfFailed();
-    releasedAtTimerId = timers.nextId;
+    markReleased();
   } catch (error) {
     throw failWith(describeFailure(error));
   } finally {

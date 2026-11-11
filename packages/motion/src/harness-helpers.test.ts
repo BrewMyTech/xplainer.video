@@ -81,8 +81,21 @@ describe("staticFile", () => {
   it("encodes each path segment and keeps the slashes", () => {
     expect(staticFile("timings.json")).toBe("timings.json");
     expect(staticFile("shots/step 1#a?.png")).toBe("shots/step%201%23a%3F.png");
-    expect(staticFile("/narration.wav")).toBe("narration.wav");
     expect(staticFile("naïve.png")).toBe("na%C3%AFve.png");
+    // A dot run that is not exactly ".." is a file name, not a step up.
+    expect(staticFile("media/..logo.png")).toBe("media/..logo.png");
+    expect(staticFile("media/.../x.png")).toBe("media/.../x.png");
+  });
+
+  it("refuses a name that would leave the video's public directory", () => {
+    Reflect.set(globalThis, "__XPLAINER_PUBLIC_BASE__", "file:///tmp/job/public/demo/");
+    for (const name of ["../other/timings.json", "media/../../secret.png", "..", "a/.."]) {
+      expect(() => staticFile(name), name).toThrow(TypeError);
+      expect(() => staticFile(name), name).toThrow(/a "\.\." segment would leave/);
+    }
+    for (const name of ["/narration.wav", "//host/a.png"]) {
+      expect(() => staticFile(name), name).toThrow(/without a leading "\/"/);
+    }
   });
 
   it("prefixes the public base the bundle sets", () => {

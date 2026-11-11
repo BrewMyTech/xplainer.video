@@ -9,9 +9,14 @@
  *   bytes. That is what makes a render reproducible on one machine and its toolchain, and what
  *   lets a re-render be compared with the last one.
  * - **Named failures.** A broken image, an image that never arrives, a `delayRender` nobody
- *   releases, a `cancelRender`, and a scene that throws each reach the worker as their own code
- *   with the frame they happened on — and the `delayRender`-released-by-`setTimeout` pattern,
- *   which deadlocked on a pure film clock in the Phase 0 spike, renders.
+ *   releases, a `cancelRender`, a scene that throws and a second `<Audio>` each reach the worker as
+ *   their own code with the frame they happened on — and the `delayRender`-released-by-`setTimeout`
+ *   pattern, which deadlocked on a pure film clock in the Phase 0 spike, renders, as does its
+ *   `requestAnimationFrame` twin.
+ * - **A settled frame.** Whatever the frame's own work puts in the page — an image three
+ *   effect→setState hops after the commit, a font whose load the frame's layout starts — is in the
+ *   picture of that frame, and a timer a render hold's release creates fires on the same frame
+ *   however long the hold took.
  *
  * The browser is `XPLAINER_TEST_CHROME`, or the committed manifest's headless shell acquired by the
  * product's own provider (`render/testing/chrome.ts`). `XPLAINER_SKIP_RENDER_TEST=1` skips the
@@ -24,6 +29,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { crc32, deflateSync } from "node:zlib";
 import { materialiseWorkspace, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bundleVideo, type PageRenderSettings } from "./bundle.js";
@@ -99,6 +105,30 @@ afterAll(() => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+/** A 1×1 opaque white PNG, written out here so the image server owes nothing to a fixture file. */
+function whitePixelPng(): Buffer {
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8; // bit depth
+  header[9] = 2; // truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    // One scanline: filter type 0, then R, G, B.
+    chunk("IDAT", deflateSync(Buffer.from([0, 255, 255, 255]))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 const MOVING = `import { AbsoluteFill, interpolate, useCurrentFrame } from "@xplainer/motion";
 
@@ -200,6 +230,8 @@ export const scenes = { hook: Animated };
 });
 
 describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a page that fails", () => {
+  /** Long enough for a timer 90 ms after frame 1 to land inside the video (frame 4 at 30 fps). */
+  const FRAMES = 8;
   let chrome: Chrome;
   let url = "";
   let server: Server;
@@ -211,8 +243,29 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a page that fail
    * ready first and the failure is the frame's, as it would be in a real video.
    */
   beforeAll(async () => {
-    // An image server that accepts and never answers, for IMAGE_TIMEOUT.
-    server = createServer(() => {});
+    // `/slow.png?ms=N` answers a white pixel after N ms, `/slow.woff2?ms=N` answers bytes that are
+    // not a font after N ms (the load fails and the fallback face draws), and anything else is
+    // accepted and never answered, for IMAGE_TIMEOUT.
+    const pixel = whitePixelPng();
+    server = createServer((request, response) => {
+      const asked = new URL(request.url ?? "/", "http://127.0.0.1");
+      const delay = Number(asked.searchParams.get("ms") ?? "0");
+      const answer = (type: string, body: Buffer): void => {
+        setTimeout(() => {
+          response.writeHead(200, {
+            "content-type": type,
+            "cache-control": "no-store",
+            "access-control-allow-origin": "*",
+          });
+          response.end(body);
+        }, delay);
+      };
+      if (asked.pathname === "/slow.png") {
+        answer("image/png", pixel);
+      } else if (asked.pathname === "/slow.woff2") {
+        answer("font/woff2", Buffer.from("not a font"));
+      }
+    });
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", resolve);
     });
@@ -260,12 +313,84 @@ const ObserverRelease = () => {
   return <div ref={box} className="h-10 w-10 bg-white" />;
 };
 
+const FrameRelease = () => {
+  useState(() => {
+    const handle = delayRender("released by requestAnimationFrame");
+    requestAnimationFrame(() => continueRender(handle));
+    return handle;
+  });
+  return <div className="text-white">released</div>;
+};
+
 const Cancel = () => {
   useEffect(() => {
     cancelRender(new Error("the data never came"));
   }, []);
   return null;
 };
+
+const BOX = { position: "absolute", left: 100, top: 100, width: 300, height: 300 } as const;
+
+/** Three effect → setState hops, each changing the DOM, and an image only on the third. */
+const Hops = () => {
+  const [hop, setHop] = useState(0);
+  useEffect(() => {
+    if (hop < 3) {
+      setHop(hop + 1);
+    }
+  }, [hop]);
+  return (
+    <div data-hop={hop}>
+      {hop === 3 ? <Img src="http://127.0.0.1:${port}/slow.png?ms=400" style={BOX} /> : null}
+    </div>
+  );
+};
+
+/** A hold an image's onload releases, after arming a 90 ms timer that shows a second box. */
+const LateTimer = ({ latency }: { latency: number }) => {
+  const [handle] = useState(() => delayRender("the slow image"));
+  const [shown, setShown] = useState(false);
+  return (
+    <>
+      <Img
+        src={"http://127.0.0.1:${port}/slow.png?ms=" + latency}
+        style={BOX}
+        onLoad={() => {
+          setTimeout(() => setShown(true), 90);
+          continueRender(handle);
+        }}
+      />
+      {shown ? <div style={{ ...BOX, left: 500, background: "#22d3ee" }} /> : null}
+    </>
+  );
+};
+
+/**
+ * Text whose web font arrives by a stylesheet adopted in a task of the scene's own — so after the
+ * settle's first await of document.fonts.ready, and without changing a node of the DOM.
+ */
+const LateFont = () => {
+  useEffect(() => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(".late-font { font-family: Slow, sans-serif; }");
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    };
+    channel.port2.postMessage(0);
+  }, []);
+  return (
+    <>
+      <style>{"@font-face { font-family: Slow; src: url(http://127.0.0.1:${port}/slow.woff2?ms=400); }"}</style>
+      <div className="late-font" style={{ position: "absolute", left: 100, top: 500, fontSize: 120, color: "#ffffff" }}>
+        Slow font
+      </div>
+    </>
+  );
+};
+
+const latency = scenario.startsWith("late-timer-") ? Number(scenario.slice("late-timer-".length)) : 0;
 
 const Scene = () => {
   const frame = useCurrentFrame();
@@ -278,18 +403,23 @@ const Scene = () => {
       {scenario === "slow-image" && frame >= 1 ? <Img src="http://127.0.0.1:${port}/never.png" /> : null}
       {scenario === "hold" && frame >= 1 ? <Hold /> : null}
       {scenario === "timer-release" && frame >= 1 ? <TimerRelease /> : null}
+      {scenario === "frame-release" && frame >= 1 ? <FrameRelease /> : null}
       {scenario === "observer-release" && frame >= 1 ? <ObserverRelease /> : null}
       {scenario === "cancel" && frame >= 1 ? <Cancel /> : null}
-      {scenario === "second-audio" ? <Audio src={staticFile("narration.wav")} /> : null}
+      {scenario === "second-audio" && frame >= 1 ? <Audio src={staticFile("narration.wav")} /> : null}
+      {scenario === "hops" && frame >= 1 ? <Hops /> : null}
+      {latency > 0 && frame >= 1 ? <LateTimer latency={latency} /> : null}
+      {scenario === "late-font" && frame >= 1 ? <LateFont /> : null}
     </AbsoluteFill>
   );
 };
 
 export const scenes = { hook: Scene };
 `,
-      3,
+      FRAMES,
     );
-    url = await bundled(root, { delayRenderTimeoutMs: 500, imageTimeoutMs: 500 });
+    // The image budget is above the slow server's 400 ms and well under the never-answering one's.
+    url = await bundled(root, { delayRenderTimeoutMs: 1_500, imageTimeoutMs: 1_500 });
     chrome = await launchChrome({ executable: (await testChrome()).path, log: () => {} });
   }, 120_000);
 
@@ -299,19 +429,28 @@ export const scenes = { hook: Scene };
     server?.close();
   });
 
-  /** Open the scenario and step it to the end, or to the frame that fails. */
-  async function run(scenario: string): Promise<number> {
+  /** Open the scenario and capture every frame, or throw at the frame that fails. */
+  async function frames(scenario: string): Promise<Buffer[]> {
     const page = await openVideoPage({
       chrome,
       url: `${url}#${scenario}`,
       log: (line) => warnings.push(line),
       readinessTimeoutMs: 15_000,
     });
+    const captured: Buffer[] = [];
     for (let frame = 0; frame < page.metadata.durationInFrames; frame += 1) {
-      await page.capture(frame);
+      captured.push(await page.capture(frame));
     }
-    return page.metadata.durationInFrames;
+    return captured;
   }
+
+  /** Open the scenario and step it to the end, or to the frame that fails. */
+  async function run(scenario: string): Promise<number> {
+    return (await frames(scenario)).length;
+  }
+
+  const same = (a: Buffer | undefined, b: Buffer | undefined): boolean =>
+    a !== undefined && b !== undefined && a.equals(b);
 
   it("names a broken image IMAGE_BROKEN, on the frame that drew it", async () => {
     await expect(run("broken-image")).rejects.toMatchObject({
@@ -352,7 +491,52 @@ export const scenes = { hook: Scene };
 
   /** The deadlock the Phase 0 spike found on a pure film clock, fixed rather than documented. */
   it("renders a delayRender released from setTimeout(…, 100)", async () => {
-    await expect(run("timer-release")).resolves.toBe(3);
+    await expect(run("timer-release")).resolves.toBe(FRAMES);
+  }, 60_000);
+
+  /** The same deadlock through the other queue the harness owns: the callback waited for a frame. */
+  it("renders a delayRender released from requestAnimationFrame", async () => {
+    await expect(run("frame-release")).resolves.toBe(FRAMES);
+  }, 60_000);
+
+  /**
+   * An image three effect → setState hops after frame 1's commit, from a server that answers after
+   * 400 ms. Each hop is a React task of its own, so a settle that checked once would release frame
+   * 1 before the image existed and frame 2 would be the first to wait for it.
+   */
+  it("waits on the frame itself for an image three effect hops after the commit", async () => {
+    const captured = await frames("hops");
+    expect(same(captured[0], captured[1]), "frame 1 shows no image").toBe(false);
+    expect(same(captured[1], captured[2]), "the image arrived only on frame 2").toBe(true);
+  }, 60_000);
+
+  /**
+   * A font whose load starts after the settle has already awaited `document.fonts.ready` — here
+   * through a stylesheet a task adopts, which no DOM observer sees — blocks the text it draws, so
+   * frame 1 must wait for it (to fail, and fall back) rather than capture the invisible block
+   * period and leave the text to frame 2.
+   */
+  it("waits on the frame itself for a font whose load starts after the first fonts.ready", async () => {
+    const captured = await frames("late-font");
+    expect(same(captured[0], captured[1]), "frame 1 shows no text").toBe(false);
+    expect(same(captured[1], captured[2]), "the text settled only on frame 2").toBe(true);
+  }, 60_000);
+
+  /**
+   * A timer armed by the image load that releases a hold fires 90 ms of **film** after the frame,
+   * whatever the load took: at 30 fps that is frame 4, for a server answering after 20 ms and after
+   * 600 ms alike. Scheduled from the wall clock it landed on frame 5 for the one and past the end
+   * of the video for the other.
+   */
+  it("fires a timer the hold's release created at the same frame whatever the release took", async () => {
+    const fast = await frames("late-timer-20");
+    const slow = await frames("late-timer-600");
+    expect(fast).toHaveLength(FRAMES);
+    for (const [frame, png] of fast.entries()) {
+      expect(same(png, slow[frame]), `frame ${frame} differs between latencies`).toBe(true);
+    }
+    expect(same(fast[3], fast[4]), "the timer fired on frame 4").toBe(false);
+    expect(same(fast[4], fast[FRAMES - 1]), "nothing changed after frame 4").toBe(true);
   }, 60_000);
 
   /**
@@ -363,12 +547,19 @@ export const scenes = { hook: Scene };
    * would pass without.
    */
   it("renders a delayRender released by a ResizeObserver's first report", async () => {
-    await expect(run("observer-release")).resolves.toBe(3);
+    await expect(run("observer-release")).resolves.toBe(FRAMES);
   }, 60_000);
 
-  /** Warnings are the job log's, never the render's: a second `<Audio>` is one, not a failure. */
-  it("logs a second <Audio> as a page warning and renders anyway", async () => {
-    await expect(run("second-audio")).resolves.toBe(3);
-    expect(warnings.join("\n")).toMatch(/page warning at .*Audio/);
+  /**
+   * The encoder muxes the narration and nothing else, so a scene's own `<Audio>` would be silently
+   * absent from the MP4. Refused by name instead, like `<Video>`, on the frame it mounted.
+   */
+  it("refuses a second <Audio> as NOT_SUPPORTED_IN_V1, on the frame that mounted it", async () => {
+    await expect(run("second-audio")).rejects.toMatchObject({
+      code: "NOT_SUPPORTED_IN_V1",
+      message: expect.stringMatching(
+        /^NOT_SUPPORTED_IN_V1: frame 1: .*narration is the only audio track/,
+      ),
+    });
   }, 60_000);
 });

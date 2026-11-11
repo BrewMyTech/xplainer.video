@@ -58,6 +58,10 @@ export function createFrozenDate(
 type Timer = {
   id: number;
   due: number;
+  /** The delay it was scheduled with, after clamping; `rebase` reschedules from it. */
+  delay: number;
+  /** How many times an interval has fired. */
+  ticks: number;
   callback: () => void;
   /** `null` for a one-shot timer; the period for an interval. */
   interval: number | null;
@@ -68,19 +72,58 @@ export class TimerQueue {
   readonly #timers = new Map<number, Timer>();
   #nextId = 1;
 
-  /** Schedule `callback` `delayMs` after `nowMs`. A non-finite or negative delay is 0. */
-  add(callback: () => void, delayMs: number, repeat: boolean, nowMs: number): number {
-    const delay = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : 0;
+  /**
+   * Schedule `callback` `delayMs` after `nowMs`. The delay is whatever the page passed, converted
+   * with `Number()` as a browser converts it — `setTimeout(fn, "100")` waits 100 ms — and one that
+   * converts to a non-finite or negative number is 0.
+   */
+  add(callback: () => void, delayMs: unknown, repeat: boolean, nowMs: number): number {
+    const requested = Number(delayMs);
+    const delay = Number.isFinite(requested) && requested > 0 ? requested : 0;
     const id = this.#nextId;
     this.#nextId += 1;
     this.#timers.set(id, {
       id,
       due: nowMs + delay,
+      delay,
+      ticks: 0,
       callback,
       // A zero-period interval would fire without end inside one drain.
       interval: repeat ? Math.max(1, delay) : null,
     });
     return id;
+  }
+
+  /**
+   * Reschedule every pending timer with an id of at least `fromId` as if it had been added at
+   * `nowMs`, keeping what has happened to it since: a one-shot timer becomes due its own delay
+   * after `nowMs`, and an interval that has fired `n` times becomes due where the same interval
+   * added at `nowMs` would be after `n` firings — the same phase, on the new origin. The due time is
+   * recomputed rather than shifted, so it is the same number to the last bit whatever it was
+   * scheduled from; a shift could land a timer due exactly on a frame one ulp past it. Returns how
+   * many it moved.
+   *
+   * This is how the harness takes the wall clock back out of a render-hold wait: a timer the wait
+   * created was scheduled from film time plus however long the wait had run, and once the hold is
+   * released it is rebased onto the frame's film instant, so when it fires no longer depends on how
+   * long the page took to release the hold.
+   */
+  rebase(fromId: number, nowMs: number): number {
+    let moved = 0;
+    for (const timer of this.#timers.values()) {
+      if (timer.id < fromId) {
+        continue;
+      }
+      let due = nowMs + timer.delay;
+      if (timer.interval !== null) {
+        for (let tick = 0; tick < timer.ticks; tick += 1) {
+          due += timer.interval;
+        }
+      }
+      timer.due = due;
+      moved += 1;
+    }
+    return moved;
   }
 
   /** Cancel a timer or an interval. Anything that is not a live id is ignored, as in a browser. */
@@ -149,6 +192,7 @@ export class TimerQueue {
         this.#timers.delete(next.id);
       } else {
         next.due += next.interval;
+        next.ticks += 1;
       }
       fired += 1;
       invoke(next.callback);
@@ -158,7 +202,7 @@ export class TimerQueue {
 
 /** `requestAnimationFrame` as a queue the harness drains once per captured frame. */
 export class FrameCallbackQueue {
-  #callbacks = new Map<number, (timestamp: number) => void>();
+  readonly #callbacks = new Map<number, (timestamp: number) => void>();
   #nextId = 1;
 
   request(callback: (timestamp: number) => void): number {
@@ -178,16 +222,40 @@ export class FrameCallbackQueue {
     return this.#callbacks.size;
   }
 
+  /** The id the next request will get; the same "requested after this point" mark as `TimerQueue`'s. */
+  get nextId(): number {
+    return this.#nextId;
+  }
+
+  /** How many queued callbacks have an id of at least `fromId`. */
+  pending(fromId = 1): number {
+    let count = 0;
+    for (const id of this.#callbacks.keys()) {
+      if (id >= fromId) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   /**
-   * Run every queued callback with `timestamp`, in request order. A callback requested while this
-   * runs belongs to the next frame, exactly as a browser schedules it.
+   * Run every queued callback with an id of at least `fromId` (all of them by default) with
+   * `timestamp`, in request order, and leave the rest queued. A callback requested while this runs
+   * belongs to the next drain, and one cancelled by an earlier callback in the same drain does not
+   * run — both exactly as a browser runs a frame's callbacks.
    */
-  drain(timestamp: number, invoke: (callback: () => void) => void): number {
-    const queued = this.#callbacks;
-    this.#callbacks = new Map();
-    for (const callback of queued.values()) {
+  drain(timestamp: number, invoke: (callback: () => void) => void, fromId = 1): number {
+    const handles = [...this.#callbacks.keys()].filter((id) => id >= fromId);
+    let ran = 0;
+    for (const id of handles) {
+      const callback = this.#callbacks.get(id);
+      if (callback === undefined) {
+        continue;
+      }
+      this.#callbacks.delete(id);
+      ran += 1;
       invoke(() => callback(timestamp));
     }
-    return queued.size;
+    return ran;
   }
 }

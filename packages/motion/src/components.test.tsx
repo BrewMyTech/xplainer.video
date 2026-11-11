@@ -6,6 +6,7 @@
  * internals. A probe that is absent from the markup was not mounted at that frame.
  */
 
+import { Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
@@ -57,18 +58,54 @@ describe("Sequence", () => {
       </Sequence>
     );
     expect(probes(renderAtFrame(nested, 14))).toEqual([]);
-    expect(probes(renderAtFrame(nested, 15))).toEqual(["inner:0/20@30"]);
-    expect(probes(renderAtFrame(nested, 29))).toEqual(["inner:14/20@30"]);
+    expect(probes(renderAtFrame(nested, 15))).toEqual(["inner:0/15@30"]);
+    expect(probes(renderAtFrame(nested, 29))).toEqual(["inner:14/15@30"]);
     expect(probes(renderAtFrame(nested, 30))).toEqual([]);
   });
 
-  it("leaves the video's duration in useVideoConfig when its own is infinite", () => {
+  it("reports an open sequence's duration as what is left of its parent's window", () => {
     const open = (
       <Sequence from={100}>
         <Probe name="open" />
       </Sequence>
     );
-    expect(probes(renderAtFrame(open, 250))).toEqual(["open:150/300@30"]);
+    expect(probes(renderAtFrame(open, 250))).toEqual(["open:150/200@30"]);
+  });
+
+  it("clips an overlong nested sequence's duration to its parent's window, and keeps a short one", () => {
+    const tree = (
+      <Sequence from={10} durationInFrames={20}>
+        <Sequence from={4} durationInFrames={50}>
+          <Probe name="overlong" />
+        </Sequence>
+        <Sequence from={-6} durationInFrames={30}>
+          <Probe name="early" />
+        </Sequence>
+        <Sequence from={2} durationInFrames={5}>
+          <Probe name="short" />
+        </Sequence>
+      </Sequence>
+    );
+    // overlong: 16 of its 50 frames fit; early starts 6 before the parent, so 26 of 30 do.
+    expect(probes(renderAtFrame(tree, 14))).toEqual([
+      "overlong:0/16@30",
+      "early:10/26@30",
+      "short:2/5@30",
+    ]);
+    expect(probes(renderAtFrame(tree, 29))).toEqual(["overlong:15/16@30", "early:25/26@30"]);
+  });
+
+  it("caps a sequence frozen past its parent's end at the parent's own length", () => {
+    const frozen = (
+      <Sequence from={0} durationInFrames={20} layout="none">
+        <Freeze frame={45}>
+          <Sequence from={30} layout="none">
+            <Probe name="beyond" />
+          </Sequence>
+        </Freeze>
+      </Sequence>
+    );
+    expect(renderAtFrame(frozen, 5)).toBe("<i>beyond:15/20@30</i>");
   });
 
   it("wraps in an AbsoluteFill by default and adds no element with layout='none'", () => {
@@ -122,6 +159,43 @@ describe("Series", () => {
     expect(probes(renderAtFrame(series, 33))).toEqual(["second:18/20@30", "third:1/10@30"]);
     expect(probes(renderAtFrame(series, 41))).toEqual(["third:9/10@30"]);
     expect(probes(renderAtFrame(series, 42))).toEqual([]);
+  });
+
+  it("opens Fragments and arrays among its children, at any depth", () => {
+    const parts = [5, 6].map((length) => (
+      <Series.Sequence key={length} durationInFrames={length}>
+        <Probe name={`mapped${length}`} />
+      </Series.Sequence>
+    ));
+    // The usual shape: a group of sequences shown or not as a unit.
+    const intro = (
+      <>
+        <Series.Sequence durationInFrames={10}>
+          <Probe name="a" />
+        </Series.Sequence>
+        <Fragment key="nested">
+          <Series.Sequence durationInFrames={4}>
+            <Probe name="b" />
+          </Series.Sequence>
+        </Fragment>
+      </>
+    );
+    const fragments = (
+      <Series>
+        {intro}
+        {parts}
+        <Series.Sequence durationInFrames={3}>
+          <Probe name="c" />
+        </Series.Sequence>
+      </Series>
+    );
+    // a [0, 10) · b [10, 14) · mapped5 [14, 19) · mapped6 [19, 25) · c [25, 28)
+    expect(probes(renderAtFrame(fragments, 9))).toEqual(["a:9/10@30"]);
+    expect(probes(renderAtFrame(fragments, 10))).toEqual(["b:0/4@30"]);
+    expect(probes(renderAtFrame(fragments, 14))).toEqual(["mapped5:0/5@30"]);
+    expect(probes(renderAtFrame(fragments, 24))).toEqual(["mapped6:5/6@30"]);
+    expect(probes(renderAtFrame(fragments, 27))).toEqual(["c:2/3@30"]);
+    expect(probes(renderAtFrame(fragments, 28))).toEqual([]);
   });
 
   it("accepts only Series.Sequence children, and an infinite one only last", () => {
@@ -193,7 +267,8 @@ describe("Freeze", () => {
         </Freeze>
       </Sequence>
     );
-    expect(renderAtFrame(frozen, 50)).toBe("<i>frozen:4/300@30</i>");
+    // The open sequence from frame 10 of a 300-frame video has 290 frames left to show.
+    expect(renderAtFrame(frozen, 50)).toBe("<i>frozen:4/290@30</i>");
   });
 
   it("passes the frame through when inactive, or when its test of the frame is false", () => {

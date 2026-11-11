@@ -19,7 +19,7 @@ export type VideoConfig = {
   width: number;
   height: number;
   fps: number;
-  /** The video's length, or the enclosing `Sequence`'s when that has a finite one. */
+  /** The video's length, or the enclosing `Sequence`'s, clipped to its parent's window. */
   durationInFrames: number;
   defaultProps: Record<string, unknown>;
   /** The props the component was rendered with: `calculateMetadata`'s, else `defaultProps`. */

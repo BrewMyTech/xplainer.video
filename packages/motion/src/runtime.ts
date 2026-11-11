@@ -42,7 +42,6 @@ let nextHandle = 1;
 const failures: string[] = [];
 
 let audioMounts = 0;
-let audioWarned = false;
 
 /**
  * Record the one video this bundle renders, and hand it to the harness if one is listening.
@@ -132,22 +131,23 @@ export function recordedFailures(): readonly string[] {
   return failures;
 }
 
+/** What a second concurrently mounted `<Audio>` throws. */
+const SECOND_AUDIO_NOT_SUPPORTED =
+  "NOT_SUPPORTED_IN_V1: a second <Audio> is mounted, and the narration is the only audio track the xplainer renderer puts in the video; any other <Audio> would be silently missing from the MP4, so remove it";
+
 /**
- * Count one mounted `<Audio>` and return its unmount. The second concurrent mount warns once.
+ * Count one mounted `<Audio>` and return its unmount. A second concurrent mount throws
+ * `NOT_SUPPORTED_IN_V1`, and is not counted.
  *
- * The renderer muxes exactly one track — the narration — so any further `<Audio>` is silent in the
- * output. That is worth saying, and saying once; it is not worth failing a render over, which is
- * why this is `console.warn` and never `console.error` (the renderer treats the latter as a page
- * error).
+ * The renderer muxes exactly one track — the narration the engine's own `Video.tsx` mounts — so any
+ * further `<Audio>` would be absent from the output with nothing to say so. That is refused by
+ * name, the way `<Video>` is, rather than warned about in a job log nobody reads.
  */
 export function mountAudio(): () => void {
-  audioMounts += 1;
-  if (audioMounts > 1 && !audioWarned) {
-    audioWarned = true;
-    console.warn(
-      "xplainer: more than one <Audio> is mounted. The renderer muxes only the narration track, so every other <Audio> is silent in the output.",
-    );
+  if (audioMounts > 0) {
+    throw new Error(SECOND_AUDIO_NOT_SUPPORTED);
   }
+  audioMounts += 1;
   return () => {
     audioMounts -= 1;
   };

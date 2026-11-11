@@ -15,6 +15,18 @@
  *   formula, easing included; `clamp` holds the endpoint value; `identity` returns the input
  *   unchanged; `wrap` folds the input back into the whole input range, so a three-segment table
  *   loops as a unit.
+ *
+ * **`wrap`, precisely.** With `first = inputRange[0]`, `last` the final entry and
+ * `span = last − first`, an input beyond the end whose side says `wrap` is replaced by
+ * `first + ((input − first) mod span)`, the modulus taken non-negative, and the table is then read
+ * at that point, easing and all. The period is the **whole** table, not the outer segment, and the
+ * fold is a sawtooth, not a mirror: the result lies in `[first, last)`, so the input runs forward
+ * through the table again on every period. An input exactly at `first` or `last` is inside the
+ * range and is not folded — `last` reads the last output — while one a hair past `last` folds to a
+ * hair past `first` and reads close to the **first** output. So unless the first and last outputs
+ * are equal, a wrapped table jumps at each period boundary rather than looping smoothly; a loop
+ * that must be continuous ends its table on the value it starts with. A whole number of periods
+ * past either end (`last + span`, `first − span`, …) folds onto `first` and reads the first output.
  */
 
 import type { EasingFunction } from "./easing.js";

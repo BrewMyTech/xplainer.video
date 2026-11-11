@@ -10,8 +10,12 @@
  *
  * Each path segment is `encodeURIComponent`-encoded and the slashes between them are kept, so
  * `staticFile("shots/step 1.png")` is `<base>shots/step%201.png`. A name that is already encoded is
- * encoded again; pass the name as it is on disk. A leading `/` is tolerated and dropped, because
- * the name is always relative to `public/<slug>/`. A URL is refused rather than mangled.
+ * encoded again; pass the name as it is on disk.
+ *
+ * **The name stays inside `public/<slug>/`, or it is refused.** A URL is refused rather than
+ * mangled, and so are the two spellings of a path that would resolve somewhere else: one starting
+ * with `/`, and one with a `..` segment, which the browser resolves against the base and walks out
+ * of the video's own directory. Each is a `TypeError` naming the name and the rule.
  */
 
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -32,10 +36,17 @@ export function staticFile(name: string): string {
       `staticFile(${JSON.stringify(name)}): pass a file name inside this video's public directory, not a URL.`,
     );
   }
-  const path = name
-    .replace(/^\/+/, "")
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
+  if (name.startsWith("/")) {
+    throw new TypeError(
+      `staticFile(${JSON.stringify(name)}): pass the name relative to this video's public directory, without a leading "/".`,
+    );
+  }
+  const segments = name.split("/");
+  if (segments.includes("..")) {
+    throw new TypeError(
+      `staticFile(${JSON.stringify(name)}): a ".." segment would leave this video's public directory; pass a file inside it.`,
+    );
+  }
+  const path = segments.map((segment) => encodeURIComponent(segment)).join("/");
   return `${publicBase()}${path}`;
 }

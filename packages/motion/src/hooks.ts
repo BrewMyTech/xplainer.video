@@ -33,8 +33,9 @@ export function useCurrentFrame(): number {
 }
 
 /**
- * The video's size, fps, duration and props. Inside a `Sequence` with a finite `durationInFrames`,
- * `durationInFrames` is that sequence's (and inside a `Loop`, one iteration's).
+ * The video's size, fps, duration and props. Inside a `Sequence`, `durationInFrames` is how long
+ * that sequence can be on screen — its own duration clipped to what is left of its parent's window,
+ * open or not — and inside a `Loop`, one iteration's.
  */
 export function useVideoConfig(): VideoConfig {
   const video = useContext(VideoConfigContext);

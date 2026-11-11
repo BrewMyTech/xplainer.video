@@ -6,6 +6,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describeFailure } from "./failures.js";
 
 type Modules = {
   runtime: typeof import("./runtime.js");
@@ -74,21 +75,30 @@ describe("render holds", () => {
 });
 
 describe("<Audio> mounts", () => {
-  it("warn once when a second is mounted at the same time, and never console.error", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("refuse a second at the same time as NOT_SUPPORTED_IN_V1, and count only the one mounted", () => {
     const { mountAudio } = modules.runtime;
     const unmountFirst = mountAudio();
-    expect(warn).not.toHaveBeenCalled();
-    const unmountSecond = mountAudio();
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toMatch(/more than one <Audio>/);
-    mountAudio();
-    unmountSecond();
+    expect(() => mountAudio()).toThrow(
+      /^NOT_SUPPORTED_IN_V1: a second <Audio> is mounted, and the narration is the only audio track/,
+    );
+    // The refused mount was not counted, so the first one's unmount frees the slot.
     unmountFirst();
+    const unmountAgain = mountAudio();
+    expect(() => mountAudio()).toThrow(/^NOT_SUPPORTED_IN_V1: /);
+    unmountAgain();
+    expect(() => mountAudio()).not.toThrow();
+  });
+
+  it("keep their own code when the harness names the failure", () => {
+    const { mountAudio } = modules.runtime;
     mountAudio();
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(error).not.toHaveBeenCalled();
+    let thrown: unknown;
+    try {
+      mountAudio();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(describeFailure(thrown)).toMatch(/^NOT_SUPPORTED_IN_V1: /);
   });
 });
 

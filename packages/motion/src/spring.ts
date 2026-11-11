@@ -18,6 +18,15 @@
  * The curve is normalised (0 → 1) and then scaled onto `from → to`, so `overshootClamping`, the
  * rest threshold and the duration stretch all mean the same thing whatever the two ends are.
  *
+ * **`overshootClamping` stops the motion at the target.** It is React Native Animated's flag of
+ * the same name: once the value first reaches `to`, it stays there. That is the first root of
+ * `x(t) = 1`, at `ω_d·t* = π − atan2(ω_d, ζ·ω₀)`, and only an under-damped spring has one —
+ * critically and over-damped motion never reaches the target, so the flag changes nothing for them.
+ * Clamping each sample to `min(x, 1)` instead would not be the same thing: after the first swing
+ * the oscillator falls back below the target, so a clamped sample sinks away from `to` and climbs
+ * back — the default spring at 30 fps would hold 1.000 from frame 8 to 18, dip to 0.973 at 22 and
+ * return at 29.
+ *
  * The values follow the equation, not any other library's numerical scheme, so a scene ported
  * from elsewhere can differ in the last few hundredths of its overshoot.
  */
@@ -29,7 +38,7 @@ export type SpringConfig = {
   damping: number;
   /** Default 100. */
   stiffness: number;
-  /** Default false. When true the value never passes `to`. */
+  /** Default false. When true the value stops at `to` the first time it reaches it. */
   overshootClamping: boolean;
 };
 
@@ -122,6 +131,32 @@ function position(seconds: number, config: SpringConfig): number {
   return 1 + (r2 * Math.exp(r1 * seconds) - r1 * Math.exp(r2 * seconds)) / (r1 - r2);
 }
 
+/**
+ * Seconds after release at which the spring first reaches its target, or `Infinity` when it never
+ * does. Under-damped, `x(t) = 1` where `cos(ω_d·t) + (ζω₀/ω_d)·sin(ω_d·t) = 0`, whose first
+ * positive root is `ω_d·t = π − atan2(ω_d, ζω₀)`; `atan2` keeps `ζ = 0` exact, at a quarter period.
+ */
+function firstArrival(config: SpringConfig): number {
+  const omega = Math.sqrt(config.stiffness / config.mass);
+  const zeta = config.damping / (2 * Math.sqrt(config.stiffness * config.mass));
+  if (zeta >= 1) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const omegaD = omega * Math.sqrt(1 - zeta * zeta);
+  return (Math.PI - Math.atan2(omegaD, zeta * omega)) / omegaD;
+}
+
+/** The normalised value `spring` shows at `seconds` after release, `overshootClamping` included. */
+function shown(seconds: number, config: SpringConfig): number {
+  if (seconds <= 0) {
+    return 0;
+  }
+  if (config.overshootClamping && seconds >= firstArrival(config)) {
+    return 1;
+  }
+  return position(seconds, config);
+}
+
 const settleCache = new Map<string, number>();
 
 function settleFrames(fps: number, config: SpringConfig, threshold: number): number {
@@ -130,15 +165,12 @@ function settleFrames(fps: number, config: SpringConfig, threshold: number): num
   if (cached !== undefined) {
     return cached;
   }
-  const distance = (frame: number): number => {
-    const value = position(frame / fps, config);
-    return Math.abs((config.overshootClamping ? Math.min(value, 1) : value) - 1);
-  };
+  const distance = (frame: number): number => Math.abs(shown(frame / fps, config) - 1);
 
   const omega = Math.sqrt(config.stiffness / config.mass);
   const zeta = config.damping / (2 * Math.sqrt(config.stiffness * config.mass));
   let frames = 0;
-  if (zeta < 1) {
+  if (zeta < 1 && !config.overshootClamping) {
     // |x − 1| ≤ e^(−ζω₀t) / √(1 − ζ²) for every t, so past the frame where that envelope drops
     // under the threshold nothing can leave it again. Every frame before it is checked.
     const amplitude = 1 / Math.sqrt(1 - zeta * zeta);
@@ -152,8 +184,9 @@ function settleFrames(fps: number, config: SpringConfig, threshold: number): num
       }
     }
   } else {
-    // Critically and over-damped motion approaches 1 monotonically: the first frame inside is
-    // the frame it stays inside from.
+    // Critically and over-damped motion approaches 1 monotonically, and a clamped under-damped
+    // spring climbs (x′ ∝ sin(ω_d·t) > 0 before its first arrival) and then holds the target:
+    // either way the first frame inside is the frame it stays inside from.
     while (distance(frames) >= threshold) {
       frames += 1;
     }
@@ -223,9 +256,5 @@ export function spring(options: SpringOptions): number {
     }
   }
 
-  let progress = local <= 0 ? 0 : position(local / fps, config);
-  if (config.overshootClamping && progress > 1) {
-    progress = 1;
-  }
-  return from + (to - from) * progress;
+  return from + (to - from) * shown(local / fps, config);
 }

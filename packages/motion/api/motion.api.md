@@ -123,6 +123,11 @@ export type SequenceProps = {
 /**
  * Mount the children for frames `from ≤ f < from + durationInFrames` of the parent's timeline,
  * and show them their own frame, `f − from`.
+ *
+ * `useVideoConfig().durationInFrames` inside is how long the children can actually be on screen:
+ * this sequence's own duration, clipped to what is left of the parent's window from `from` on — so
+ * an open sequence at frame 100 of a 300-frame parent reports 200, and a 50-frame sequence placed
+ * 20 frames before its parent's end reports 20.
  */
 export declare function Sequence({ from, durationInFrames, layout, style, className, children, }: SequenceProps): ReactElement | null;
 
@@ -137,7 +142,10 @@ export type SeriesProps = {
     children?: ReactNode;
 };
 
-/** The sequences placed back to back. `Series.Sequence` is the only child it accepts. */
+/**
+ * The sequences placed back to back. `Series.Sequence` is the only child it accepts, directly or
+ * inside Fragments (`<>…</>`, or an array from `.map`), which are opened in place.
+ */
 export declare const Series: ((props: SeriesProps) => ReactElement) & {
     Sequence: (props: SeriesSequenceProps) => never;
 };
@@ -183,7 +191,8 @@ export type AudioProps = {
 
 /**
  * A marker for the narration track. Renders nothing; the renderer muxes the narration itself.
- * A second concurrently mounted `<Audio>` warns once, because it will be silent in the output.
+ * A second concurrently mounted `<Audio>` throws `NOT_SUPPORTED_IN_V1` when it mounts, because the
+ * narration is the only audio track the video gets and the second would be silently missing.
  */
 export declare function Audio(_props: AudioProps): null;
 
@@ -255,7 +264,7 @@ export type VideoConfig = {
     width: number;
     height: number;
     fps: number;
-    /** The video's length, or the enclosing `Sequence`'s when that has a finite one. */
+    /** The video's length, or the enclosing `Sequence`'s, clipped to its parent's window. */
     durationInFrames: number;
     defaultProps: Record<string, unknown>;
     /** The props the component was rendered with: `calculateMetadata`'s, else `defaultProps`. */
@@ -336,8 +345,9 @@ export declare const Easing: EasingModule;
 export declare function useCurrentFrame(): number;
 
 /**
- * The video's size, fps, duration and props. Inside a `Sequence` with a finite `durationInFrames`,
- * `durationInFrames` is that sequence's (and inside a `Loop`, one iteration's).
+ * The video's size, fps, duration and props. Inside a `Sequence`, `durationInFrames` is how long
+ * that sequence can be on screen — its own duration clipped to what is left of its parent's window,
+ * open or not — and inside a `Loop`, one iteration's.
  */
 export declare function useVideoConfig(): VideoConfig;
 ```
@@ -432,6 +442,15 @@ export declare function cancelRender(error: unknown): void;
  * The curve is normalised (0 → 1) and then scaled onto `from → to`, so `overshootClamping`, the
  * rest threshold and the duration stretch all mean the same thing whatever the two ends are.
  *
+ * **`overshootClamping` stops the motion at the target.** It is React Native Animated's flag of
+ * the same name: once the value first reaches `to`, it stays there. That is the first root of
+ * `x(t) = 1`, at `ω_d·t* = π − atan2(ω_d, ζ·ω₀)`, and only an under-damped spring has one —
+ * critically and over-damped motion never reaches the target, so the flag changes nothing for them.
+ * Clamping each sample to `min(x, 1)` instead would not be the same thing: after the first swing
+ * the oscillator falls back below the target, so a clamped sample sinks away from `to` and climbs
+ * back — the default spring at 30 fps would hold 1.000 from frame 8 to 18, dip to 0.973 at 22 and
+ * return at 29.
+ *
  * The values follow the equation, not any other library's numerical scheme, so a scene ported
  * from elsewhere can differ in the last few hundredths of its overshoot.
  */
@@ -442,7 +461,7 @@ export type SpringConfig = {
     damping: number;
     /** Default 100. */
     stiffness: number;
-    /** Default false. When true the value never passes `to`. */
+    /** Default false. When true the value stops at `to` the first time it reaches it. */
     overshootClamping: boolean;
 };
 
@@ -498,8 +517,12 @@ export declare function spring(options: SpringOptions): number;
  *
  * Each path segment is `encodeURIComponent`-encoded and the slashes between them are kept, so
  * `staticFile("shots/step 1.png")` is `<base>shots/step%201.png`. A name that is already encoded is
- * encoded again; pass the name as it is on disk. A leading `/` is tolerated and dropped, because
- * the name is always relative to `public/<slug>/`. A URL is refused rather than mangled.
+ * encoded again; pass the name as it is on disk.
+ *
+ * **The name stays inside `public/<slug>/`, or it is refused.** A URL is refused rather than
+ * mangled, and so are the two spellings of a path that would resolve somewhere else: one starting
+ * with `/`, and one with a `..` segment, which the browser resolves against the base and walks out
+ * of the video's own directory. Each is a `TypeError` naming the name and the rule.
  */
 export declare function staticFile(name: string): string;
 ```
