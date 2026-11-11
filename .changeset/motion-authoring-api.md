@@ -27,7 +27,9 @@ are its own, not those of any other library.
 `@xplainer/motion/harness` runs the page on film time — `Date`, `performance.now`, timers and
 animation frames advance only when the renderer asks for the next frame, and CSS animations are
 paused and seeked to it — and releases a frame only once the page has stopped changing: no render
-hold out, every image complete and decoded, no font loading, and a pass that changed no node. While
+hold out, every image complete and decoded, no font loading, and a pass that changed no node (a
+frame that never settles is released with a warning). `Math.random` in the page is seeded and
+reset at mount, so it repeats from run to run. While
 a `delayRender` hold is outstanding, the timers and animation-frame callbacks created since the
 previous frame run on the wall clock, so `const h = delayRender(); setTimeout(() =>
 continueRender(h), 100)` releases instead of deadlocking; when it releases, the timers the wait

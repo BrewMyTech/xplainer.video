@@ -222,14 +222,14 @@ The engine's `index.ts` imports the stylesheet already, so the utilities are liv
 whether or not you reach for them — there is nothing to wire up, and nothing to
 remove if you style purely inline.
 
-**One hard rule:** motion is always `interpolate()` on `useCurrentFrame()`,
-never Tailwind's `animate-*`, `transition-*` and `duration-*` utilities or CSS
-keyframes. The renderer draws each frame independently and does seek CSS
-animations and transitions to the frame being drawn — but each one starts at the
-first frame the renderer sees it, so an `explainer_still` taken partway through
-shows it at its very start and stops matching the video. `interpolate()` is a
-pure function of the frame, so a still and the render always agree. Tailwind is
-for layout, colour, spacing and type.
+**One rule:** motion is `interpolate()` on `useCurrentFrame()`, not
+Tailwind's `animate-*`, `transition-*` and `duration-*` utilities or CSS
+keyframes. The renderer does seek CSS animations and transitions to the frame
+being drawn, and `explainer_still` steps through every earlier frame first, so a
+still shows what the render will — but CSS timing runs from the moment an
+element first appears, ignores `<Sequence>`, `<Loop>` and `<Freeze>`, and cannot
+be timed to the narration. `interpolate()` is a pure function of the frame, so
+it does all three. Tailwind is for layout, colour, spacing and type.
 
 Note also that arbitrary Tailwind text sizes are usually easier to read at video
 scale than the default scale — `text-[96px]` beats `text-6xl` when you want a
@@ -238,7 +238,8 @@ specific size.
 ## Motion craft
 
 - Animate with `useCurrentFrame()` and `interpolate()`. **CSS transitions and
-  CSS/Tailwind animations make a still disagree with the render** (above).
+  CSS/Tailwind animations ignore the timing components and the narration**
+  (above).
 - Reach for `interpolate()` with `Easing.bezier()` first; `spring()` when the
   motion should overshoot.
 - Prefer the `scale`, `translate` and `rotate` CSS properties over `transform`
@@ -258,7 +259,8 @@ specific size.
   refuses. A scene's imports stay inside the workspace too; one that reaches
   elsewhere on the machine fails the bundle with `BUNDLE_FAILED`.
 - Scatter things with `random(seed)`, never `Math.random()` — a seeded value is
-  the same on every frame. `Date.now()` and timers run on the video's clock, not
+  the same on every frame, while `Math.random()` (reproducible from run to run)
+  returns a new number on every render, so whatever it places jumps each frame. `Date.now()` and timers run on the video's clock, not
   the wall clock.
 - If a scene has to wait for something asynchronous before a frame is drawn, take
   `const handle = delayRender("label")` and release it with

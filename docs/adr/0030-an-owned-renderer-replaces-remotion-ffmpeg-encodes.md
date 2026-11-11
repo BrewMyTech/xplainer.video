@@ -70,7 +70,9 @@ already write; the eight tools, their schemas, the `explainer_job` envelope, and
 - **A scene stays arbitrary React, written against the same API.** A video an agent wrote last week
   must keep rendering for at least one release, unchanged.
 - **Frames are deterministic.** The same input on the same machine and toolchain gives the same
-  pixels, whatever order the frames are captured in.
+  pixels. As built that holds for frames captured front to back — which a render does, and a still
+  does by stepping through every earlier frame first — and only a scene that is a pure function of
+  the frame is order-independent (the final design review; §What this record does not decide).
 - **Throughput clears the Phase 0 bar.** Capture plus encode at **≥ 20 fps on macOS** and
   **≥ 12 fps in the Linux container** for 1080p (P0-6).
 - **No Remotion code, and no GPL code in this repository or linked into anything it ships.** The
@@ -204,7 +206,8 @@ open questions above, and not a conclusion this record draws.
 - **The page is served, not opened from a file (`a830be3`).** The worker serves the bundle at `/` and
   the video's `public/<slug>/` at `/public/` from `127.0.0.1` on a port the OS picks, and answers
   `404` to anything outside either root after decoding, `..` and symlinks, to any method but `GET`
-  and `HEAD`, and to any `Host` but its own. As first built the page was `file://`, from which a
+  and `HEAD`, to any `Host` but its own, and to any path that does not start with a per-server
+  128-bit token (`4922e6d`), so another local user cannot read the bundle while a render runs. As first built the page was `file://`, from which a
   scene's `<img src="file:///…">` could draw any image or font the daemon's user can read into a
   frame; an `http:` origin cannot load `file:` at all.
 - **Capture.** Readiness is polled every 100 ms for up to 30 s, with the pending list logged once a
@@ -268,16 +271,22 @@ outstanding. Five decisions inside it are worth recording because each was argue
   frame. The settle now passes again while the last pass changed a node (`320fa7b`), so an image the
   frame's own work mounts is awaited on that frame. What it still cannot see — a `fetch` with no
   `delayRender`, renders that change no node, a chain longer than the pass bound — a check on a later
-  frame could not see either, and `delayRender` is how a scene says "wait for this". Past the budget
+  frame could not see either, and `delayRender` is how a scene says "wait for this". When the pass
+  bound runs out with the DOM still changing, the frame is released with one page warning in the job
+  log naming it (`4922e6d`). Past the budget
   the frame fails `IMAGE_TIMEOUT`, and an image that will not decode fails `IMAGE_BROKEN`. **CSS
   `background-image` is not waited for** — it is not an `<img>` — and that is a known gap rather than
   a guarantee.
-- **CSS animations and transitions are deterministic now, and a still can disagree with the render.**
-  Each is seeked to film time minus the film time at which the harness *first saw* it. A video
-  rendered front to back therefore starts every animation at the frame its element mounted; a single
-  still at frame 70 of an element mounted at frame 40 has no earlier frame to have seen it on and
-  shows it at 0 ms. `interpolate()` on `useCurrentFrame()` stays the way to animate, because it is a
-  pure function of the frame, and `SKILL.md` says so.
+- **CSS animations and transitions are deterministic, and a still is pre-rolled to match the
+  render.** Each is seeked to film time minus the film time at which the harness *first saw* it, so
+  a video rendered front to back starts every animation at the frame its element mounted. As first
+  built, a still at frame 70 of an element mounted at frame 40 had no earlier frame to have seen it
+  on and showed it at 0 ms; the final design review's answer is that a still steps the page through
+  frames 0 to n − 1 without a screenshot and then captures n (`4922e6d`), so it is the render's
+  frame by construction, at about 0.17 ms a frame — 19 ms to reach frame 90, 155 ms to reach 900.
+  The page's `Math.random` is mulberry32 from a fixed seed, reset at mount and never per frame, for
+  the same reason. `interpolate()` on `useCurrentFrame()` stays the way to animate, because CSS time
+  ignores `<Sequence>`, `<Loop>` and `<Freeze>`, and `SKILL.md` says so.
 - **The motion math follows documented formulas, not another library's numerics.** `spring` is the
   closed-form damped harmonic oscillator; `Easing` is React Native's set of names with Penner's
   closed forms and CSS `cubic-bezier`; `random(seed)` is FNV-1a into mulberry32. The suite holds
@@ -353,7 +362,7 @@ used one, naming the file and the import to use instead. Beyond that:
 | WebGL | Not supported; a 2D `<canvas>` works |
 | Remotion Studio, `npm run studio` | Gone; `explainer_still` is the preview |
 | `remotion.config.ts` | Gone; Tailwind is compiled for every video |
-| CSS / Tailwind `animate-*` and `transition-*` | Seeked to film time, deterministic, but a still can show them at 0 ms (above) |
+| CSS / Tailwind `animate-*` and `transition-*` | Seeked to film time and deterministic; a still matches the render because it is pre-rolled, but CSS time ignores `<Sequence>`, `<Loop>` and `<Freeze>` (above) |
 | `spring`, `Easing`, `random` values | Follow the documented formulas; may differ slightly from Remotion's |
 
 ### The idle-machine throughput gate
@@ -383,9 +392,10 @@ the runs, and no quieter window came. Every number is the script's own output.
 | `5af310d` (a forced layout per settle) | animated | 3 | **21.59–22.34** | 20.74–21.40 | 3.38 → 7.90 | **pass** |
 | `5af310d` | the scaffold with an empty `Scenes.tsx` | 1 | 25.25 | 24.18 | 7.49 → 5.87 | pass |
 | `320fa7b` + `a830be3` (settle in passes, page over loopback HTTP) | animated | 3 | **22.17–22.34** | 21.14–21.20 | 1.64 → 2.68 | **pass** |
+| `4922e6d` (the branch as reviewed: pre-rolled stills, seeded page, token-prefixed server) | animated | 3 | **22.24–22.38** | 21.17–21.28 | 2.90 → 3.76 | **pass** |
 
-The animated MP4 was **1,991,045 bytes with sha256 `c9e7de71…f1f45d` under all three**, so neither
-the change that passed the gate nor the review's settle and serving changes moved a pixel; the first run failing is what found it (§The page
+The animated MP4 was **1,991,045 bytes with sha256 `c9e7de71…f1f45d` under all four**, so neither
+the change that passed the gate nor any of the review's changes moved a pixel; the first run failing is what found it (§The page
 runs on film time). Steady at 18.2 fps to the hundredth across three runs, at a load near 2, was
 the signature of a wait rather than of work.
 

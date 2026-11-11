@@ -9,7 +9,8 @@ A render bundles the video with esbuild-wasm against this package's own React an
 `@xplainer/motion` — the workspace's `node_modules` is never read — opens it in the headless shell
 `xplainer setup` recorded in `toolchain.json`, captures one PNG per frame over the DevTools
 protocol, and pipes every frame into ffmpeg: libx264 at CRF 18, AAC at 96 kb/s, BT.709, `+faststart`.
-A still is one captured frame. No browser is downloaded during a render any more; the one `setup`
+A still is one captured frame, taken after the page has stepped through every earlier frame, so it
+is the frame the render will produce. No browser is downloaded during a render any more; the one `setup`
 acquired is the one that draws. The page is served from `127.0.0.1` on a port the render picks,
 never opened from `file://`, and a scene's imports must stay inside the workspace, so a scene cannot
 draw or embed a file from elsewhere on the machine.
