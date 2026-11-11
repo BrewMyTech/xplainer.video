@@ -26,7 +26,7 @@ export interface RenderBackend {
     /** Create a video and scaffold its wiring. Never overwrites. */
     explainer_create(input: ExplainerCreateInput): Promise<ExplainerCreateOutput>;
     /**
-     * Write agent-authored Remotion source files into an existing video.
+     * Write agent-authored scene source files into an existing video.
      *
      * An implementation never sees a write to an engine-owned file through
      * `createMcpServer()`: `assertAgentOwnedPaths` refuses the whole call before

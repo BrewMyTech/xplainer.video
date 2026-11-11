@@ -35,7 +35,7 @@ class Caption(BaseModel):
     )
     timestampMs: int = Field(
         ...,
-        description='Midpoint of the word, which is what @remotion/captions pages on.',
+        description="Midpoint of the word. @xplainer/motion's caption pager does not read it — pages are cut on startMs — so it is the one instant per word for any other reader.",
         ge=0,
     )
     confidence: float | None = Field(
@@ -46,12 +46,12 @@ class Caption(BaseModel):
 
 class Captions(RootModel[list[Caption]]):
     """
-    Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
+    Word-level captions in the Caption[] form @xplainer/motion reads, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.
     """
 
     root: list[Caption] = Field(
         ...,
-        description="Word-level captions in @remotion/captions Caption[] form, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
+        description="Word-level captions in the Caption[] form @xplainer/motion reads, written to captions.json. Emitted from Kokoro's word timestamps, so caption timing is measured rather than inferred.",
         title='Captions',
     )
 
@@ -204,7 +204,7 @@ class TimingsSegment(BaseModel):
     from_: int = Field(
         ...,
         alias='from',
-        description="Segment start as a frame number, for Remotion's Sequence.",
+        description="Segment start as a frame number, for the composition's Sequence.",
         ge=0,
     )
     durationInFrames: int = Field(
@@ -452,7 +452,7 @@ class ExplainerPutMediaOutput(BaseModel):
 
 class ExplainerPutSourceInput(BaseModel):
     """
-    Arguments for explainer_put_source: upload agent-authored Remotion source into an existing video. Exists because an agent talking to a hosted backend has no disk to write to.
+    Arguments for explainer_put_source: upload agent-authored scene source into an existing video. Exists because an agent talking to a hosted backend has no disk to write to.
     """
 
     model_config = ConfigDict(
