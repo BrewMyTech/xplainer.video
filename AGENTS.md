@@ -210,9 +210,12 @@ Each one, and the thing that catches you:
   `process.env` or `process.platform` on the same line**. A `describe.skipIf(SKIPPED)` reads as an
   unconditional skip to everyone but the author of the constant, and the gate cannot tell the two
   apart; an inline `process.env.X === "1"` says what is being waited for and where to set it. There
-  is no `.skipIf` that is not gated on one of those two, and the five in the tree are
-  `preflight.test.ts`, `chrome.test.ts`, `workspace.test.ts`, `workers/render.test.ts` and
-  `tts-client/src/client.test.ts`. *Enforcement: `AC-2c`'s second grep, in the same CI step.*
+  is no `.skipIf` that is not gated on one of those two, and the nine in the tree are
+  `preflight.test.ts`, `chrome.test.ts`, `workspace.test.ts`, `speech/synthesiser.test.ts`,
+  `workers/render.test.ts`, `render/capture.test.ts`, `render/encode.test.ts`,
+  `daemon/shutdown.test.ts` and `tts-client/src/client.test.ts` — the four render ones all on
+  `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
+  *Enforcement: `AC-2c`'s second grep, in the same CI step.*
 - **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
   `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the
   file-level `# ruff: noqa` and `# flake8: noqa` — no `# type: ignore` and no `# pyright: ignore`,

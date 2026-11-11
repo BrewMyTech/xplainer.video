@@ -1,0 +1,227 @@
+/**
+ * What the bundler writes for one video, read back from disk.
+ *
+ * Every case bundles a real scaffolded workspace with the real esbuild-wasm and the real Tailwind
+ * compiler. The workspace also carries a **decoy** `node_modules` — a React that throws the moment
+ * it is evaluated, and a package under the legacy import name — so "nothing is read from the
+ * workspace's own install" is a property of the bundle on disk rather than of a code path.
+ */
+
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  CAPTIONS_FILE,
+  materialiseWorkspace,
+  scaffoldVideo,
+  TIMINGS_FILE,
+  videoPaths,
+} from "@xplainer/render-core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { BUNDLE_FILES, bundleVideo, LEGACY_IMPORT_ALIASES, tailwindCandidates } from "./bundle.js";
+
+const DECOY = "the workspace's own React was bundled";
+
+const directories: string[] = [];
+let root = "";
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "xplainer-bundle-"));
+  directories.push(root);
+  materialiseWorkspace(root);
+  const video = videoPaths(root, "demo");
+  scaffoldVideo(video.source);
+  mkdirSync(video.publicDir, { recursive: true });
+  writeFileSync(
+    video.timings,
+    `${JSON.stringify({
+      fps: 30,
+      durationInFrames: 3,
+      totalMs: 100,
+      audio: "narration.wav",
+      segments: [{ id: "hook", index: 0, startMs: 0, endMs: 100, from: 0, durationInFrames: 3 }],
+    })}\n`,
+  );
+  writeFileSync(
+    video.captions,
+    `${JSON.stringify([{ text: "Hello", startMs: 0, endMs: 90, timestampMs: 45, confidence: null }])}\n`,
+  );
+  for (const name of ["react", Object.keys(LEGACY_IMPORT_ALIASES)[0] ?? ""]) {
+    const decoy = join(root, "node_modules", name);
+    mkdirSync(decoy, { recursive: true });
+    writeFileSync(
+      join(decoy, "package.json"),
+      JSON.stringify({ name, version: "0.0.0", main: "index.js" }),
+    );
+    writeFileSync(join(decoy, "index.js"), `throw new Error(${JSON.stringify(DECOY)});\n`);
+  }
+});
+
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+/** Write the agent's file. */
+function scenes(source: string): void {
+  writeFileSync(join(videoPaths(root, "demo").source, "Scenes.tsx"), source);
+}
+
+async function bundle(
+  lines: string[] = [],
+): Promise<{ dir: string; read: (name: string) => string }> {
+  const dir = join(videoPaths(root, "demo").out, ".render-1");
+  await bundleVideo({ root, slug: "demo", outDir: dir, log: (line) => lines.push(line) });
+  return { dir, read: (name) => readFileSync(join(dir, name), "utf8") };
+}
+
+const [legacyCore, legacyMedia] = Object.keys(LEGACY_IMPORT_ALIASES);
+
+// esbuild-wasm compiles its WebAssembly on the first build of each test file, which under a full
+// parallel suite takes longer than Vitest's five-second default.
+describe("bundleVideo", { timeout: 60_000 }, () => {
+  it("writes a page that loads the static data before the bundle", async () => {
+    const { read } = await bundle();
+    const html = read(BUNDLE_FILES.html);
+
+    expect(html).toContain('<div id="root"></div>');
+    expect(html).toContain('<link rel="stylesheet" href="app.css">');
+    expect(html).toContain("html,body{margin:0;background:#000}");
+    expect(html.indexOf('<script src="static-data.js">')).toBeGreaterThan(0);
+    expect(html.indexOf('<script src="static-data.js">')).toBeLessThan(
+      html.indexOf('<script src="app.js">'),
+    );
+  });
+
+  it("carries timings.json and captions.json verbatim, and the public directory's URL", async () => {
+    const { read } = await bundle();
+    const video = videoPaths(root, "demo");
+    const page: Record<string, unknown> = {};
+    new Function("window", read(BUNDLE_FILES.staticData))(page);
+
+    expect(page.__XPLAINER_STATIC__).toEqual({
+      [TIMINGS_FILE]: readFileSync(video.timings, "utf8"),
+      [CAPTIONS_FILE]: readFileSync(video.captions, "utf8"),
+    });
+    expect(page.__XPLAINER_PUBLIC_BASE__).toBe(`${pathToFileURL(video.publicDir).href}/`);
+    expect(page.__XPLAINER_RENDER__).toBeUndefined();
+  });
+
+  it("writes the page's render budgets only when it is given them", async () => {
+    const dir = join(videoPaths(root, "demo").out, ".render-2");
+    await bundleVideo({
+      root,
+      slug: "demo",
+      outDir: dir,
+      log: () => {},
+      renderSettings: { delayRenderTimeoutMs: 500, imageTimeoutMs: 250 },
+    });
+    const page: Record<string, unknown> = {};
+    new Function("window", readFileSync(join(dir, BUNDLE_FILES.staticData), "utf8"))(page);
+
+    expect(page.__XPLAINER_RENDER__).toEqual({ delayRenderTimeoutMs: 500, imageTimeoutMs: 250 });
+  });
+
+  /**
+   * Exactly one React, and it is this program's: the decoy in the workspace throws on evaluation,
+   * so its text appearing anywhere in the bundle means it was resolved — and esbuild's
+   * `// <path>` module comments say how many copies of React's own entry made it in.
+   */
+  it("bundles one React, from this program's install, and nothing from the workspace's", async () => {
+    scenes(
+      `import { AbsoluteFill } from "${legacyCore}";\nexport const scenes = { hook: () => <AbsoluteFill /> };\n`,
+    );
+    const { read } = await bundle();
+    const script = read(BUNDLE_FILES.script);
+
+    expect(script).not.toContain(DECOY);
+    const reactEntries =
+      script.match(/^\s*\/\/ .*node_modules\/react\/cjs\/react\.production\.js$/gm) ?? [];
+    expect(reactEntries).toHaveLength(1);
+    // Paths in those comments are relative to the workspace root, so the workspace's own copy
+    // would read `// node_modules/react/…`.
+    expect(reactEntries[0]?.trim().startsWith("// node_modules/")).toBe(false);
+  });
+
+  /**
+   * The alias table's grace period, said once per agent file and never about the engine's own:
+   * the scaffold's shell files are restored from the template, so a line about them would be a
+   * line the agent can do nothing about.
+   */
+  it("logs one deprecation line per agent file that imports a legacy name, and none for the engine's", async () => {
+    scenes(
+      `import { AbsoluteFill } from "${legacyCore}";\n` +
+        `import { Audio } from "${legacyMedia}";\n` +
+        `import { Extra } from "./Extra";\n` +
+        "export const scenes = { hook: () => <AbsoluteFill><Audio /><Extra /></AbsoluteFill> };\n",
+    );
+    writeFileSync(
+      join(videoPaths(root, "demo").source, "Extra.tsx"),
+      `import { AbsoluteFill } from "${legacyCore}";\nexport const Extra = () => <AbsoluteFill />;\n`,
+    );
+    const lines: string[] = [];
+    await bundle(lines);
+    const deprecations = lines.filter((line) => line.includes("deprecated"));
+
+    expect(deprecations).toHaveLength(2);
+    expect(deprecations[0]).toBe(
+      `[xplainer] deprecated: videos/demo/Extra.tsx imports "${legacyCore}"; import ` +
+        '"@xplainer/motion" instead. The old names are accepted for one more release.',
+    );
+    expect(deprecations[1]).toContain(
+      `videos/demo/Scenes.tsx imports "${legacyCore}", "${legacyMedia}"`,
+    );
+    expect(deprecations.join("\n")).not.toMatch(/Video\.tsx|Root\.tsx|Captions\.tsx|index\.ts\b/);
+  });
+
+  it("builds Tailwind for the arbitrary-value and variant classes the video's files use", async () => {
+    scenes(
+      'import { AbsoluteFill } from "@xplainer/motion";\n' +
+        "export const scenes = {\n" +
+        '  hook: () => <AbsoluteFill className="bg-[#0a0c10] md:hover:text-sky-400">\n' +
+        '    <div className={["w-[calc(100%-2rem)]", "p-6"].join(" ")} />\n' +
+        "  </AbsoluteFill>,\n" +
+        "};\n",
+    );
+    const { read } = await bundle();
+    const css = read(BUNDLE_FILES.styles);
+
+    expect(css).toContain(".bg-\\[\\#0a0c10\\]");
+    expect(css).toContain("background-color: #0a0c10");
+    expect(css).toContain(".md\\:hover\\:text-sky-400");
+    expect(css).toContain("width: calc(100% - 2rem)");
+    expect(css).toContain(".p-6");
+    // A class nobody wrote is not in it: the candidates came from the sources, not from a scan of
+    // everything Tailwind knows.
+    expect(css).not.toContain(".bg-amber-900");
+  });
+
+  it("fails as BUNDLE_FAILED with esbuild's own diagnostic for a syntax error", async () => {
+    scenes("export const scenes = { hook: () => <div> };\n");
+    const failure = bundle();
+
+    await expect(failure).rejects.toMatchObject({ code: "BUNDLE_FAILED" });
+    await expect(failure).rejects.toThrow(/\[ERROR\][\s\S]*videos\/demo\/Scenes\.tsx:1:\d+:/);
+  });
+
+  it("refuses an import this program does not provide, by name", async () => {
+    scenes('import confetti from "canvas-confetti";\nexport const scenes = { hook: confetti };\n');
+
+    await expect(bundle()).rejects.toThrow(
+      /BUNDLE_FAILED[\s\S]*"canvas-confetti" is not available to a video/,
+    );
+  });
+});
+
+describe("tailwindCandidates", () => {
+  it("keeps arbitrary values whole and still finds the classes inside a call", () => {
+    const found = tailwindCandidates(
+      'className={cx("p-4", active && `grid-cols-[repeat(3,minmax(0,1fr))]`)} md:hover:text-white',
+    );
+    expect(found).toEqual(
+      expect.arrayContaining(["p-4", "grid-cols-[repeat(3,minmax(0,1fr))]", "md:hover:text-white"]),
+    );
+  });
+});

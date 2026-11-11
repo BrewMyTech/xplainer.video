@@ -55,7 +55,6 @@ import {
   DEFAULT_STILL_FRAME,
   DEFAULT_STILL_SCALE,
   ENGINE_OWNED_FILES,
-  isWorkspaceInstalled,
   listVideoSlugs,
   materialiseWorkspace,
   SCAFFOLD_FILES,
@@ -63,7 +62,6 @@ import {
   scaffoldVideo,
   type VideoPaths,
   videoPaths,
-  workspaceNotInstalledMessage,
 } from "@xplainer/render-core";
 import type { JobRunner } from "./daemon/runner.js";
 import { resolveStateDir } from "./daemon/state-dir.js";
@@ -334,19 +332,14 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
   /**
    * Refuse a render this machine's toolchain cannot carry out, with the worker factory's own answer.
    *
-   * The two gates asked different questions before this: the tool call asked `isWorkspaceInstalled`
-   * — is there a `.bin/remotion` shim anywhere up the tree — while the worker factory resolved
-   * `@remotion/cli`'s own package and read `toolchain.json`. Two predicates over one condition is
-   * how a tool call succeeds and the job it queued then fails, which is precisely the outcome an
-   * agent holding a `job_id` cannot act on. So the call now asks `checkToolchain`, the same
-   * judgement `daemon/workers.ts` applies a moment later, and the shim check stays as the first
-   * thing said about a workspace nobody has installed at all — its sentence names the one command
-   * that fixes it, and the toolchain's names whichever component is actually absent.
+   * The call asks `checkToolchain`, the same judgement `daemon/workers.ts` applies a moment later:
+   * two predicates over one condition is how a tool call succeeds and the job it queued then
+   * fails, which is precisely the outcome an agent holding a `job_id` cannot act on. Its sentence
+   * names whichever component is absent and the command that fixes it. The workspace's own
+   * `node_modules` is not asked about at all: the render worker bundles every video against this
+   * program's own install and reads nothing from it.
    */
   function requireInstalledWorkspace(): void {
-    if (!isWorkspaceInstalled(root)) {
-      throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", workspaceNotInstalledMessage(root));
-    }
     const toolchain = checkToolchain({ stateDir, workspaceRoot: root });
     if (!toolchain.ok) {
       throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", toolchain.detail);

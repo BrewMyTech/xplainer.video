@@ -29,6 +29,7 @@ import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import { readJobRequest } from "./job-request.js";
+import { WORKSPACE_MANIFEST_FILE } from "./runtime/manifest.js";
 import { recordTestToolchain } from "./setup/testing/toolchain.js";
 
 /** `packages/protocol/schemas/`, from this file rather than from a hard-coded depth. */
@@ -336,6 +337,8 @@ describe("explainer_still and explainer_render", () => {
   it("refuse a workspace whose dependencies were never installed", async () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");
+    recordTestToolchain({ stateDir, workspaceRoot: root });
+    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
 
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
       /xplainer setup --workspace/,
