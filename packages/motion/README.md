@@ -58,7 +58,9 @@ renderer's generated bundle, before the scene code. It runs the page on film tim
 `performance.now`, `setTimeout`, `setInterval` and `requestAnimationFrame` all advance only when the
 renderer asks for the next frame — and before each frame is captured it waits for render holds,
 images and fonts, and for the page to stop changing, so an image a scene's effects mount a few
-React updates after the frame is still in that frame. A scene never imports it.
+React updates after the frame is still in that frame; a frame that never stops changing is released
+with a warning in the job log. `Math.random` in the page is seeded, so it repeats from run to run.
+A scene never imports it.
 
 The exported surface of the main entry point is recorded in `api/motion.api.md` in the repository.
 

@@ -80,9 +80,11 @@ Then the root procedure: `pnpm verify`.
   wait created is rebased onto the frame's film instant (`TimerQueue.rebase`), so how long a
   release took never reaches the video. The rule is in `harness.ts`'s docblock; do not "simplify"
   it away.
-- **A frame is released only once the page has stopped changing.** The settle runs in passes, and
-  passes again while the last pass changed a node (a `MutationObserver` over the document), left a
-  font loading, or left a hold or an image outstanding, up to `MAX_SETTLE_PASSES`. Every pass ends
+- **A frame is released once the page has stopped changing, or with a warning when it will not.**
+  The settle runs in passes, and passes again while the last pass changed a node (a
+  `MutationObserver` over the document), left a font loading, or left a hold or an image
+  outstanding, up to `MAX_SETTLE_PASSES`; a frame whose DOM is still changing at the bound is
+  released with one `console.warn` naming it, which the renderer puts in the job log. Every pass ends
   in two `MessageChannel` tasks, because that is one React effect → `setState` hop from effect to
   commit — one task was measured to release the frame between the two. So an `<img>` the frame's
   own work mounts — in the commit, behind a hold, or after effect hops that each change the DOM —
@@ -90,6 +92,10 @@ Then the root procedure: `pnpm verify`.
   deliberate:** what the settle cannot see — a `fetch` with no `delayRender`, renders that change
   no node, a chain longer than the pass bound — is just as invisible to a check on a later frame,
   and `delayRender` is how a scene says "wait for this".
+- **The page's `Math.random` is seeded.** The harness replaces it with mulberry32 from a fixed seed
+  (`random.ts`, `mulberry32Sequence`), reset at mount and never per frame, so a scene that uses it
+  draws the same frames in every process. It is still order-dependent: front to back, which a
+  render is and a pre-rolled still is.
 - **The motion math is held to an independent derivation at 1e-9.** `math.test.ts` compares at
   least 200 seeded samples against closed forms, a bisection solve and an RK4 integration written
   in the test. A change that moves a curve fails there first; if the change is intended, it is a

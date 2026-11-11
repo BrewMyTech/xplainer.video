@@ -372,7 +372,9 @@ not the routine.
 
 Remember a still can catch a scene mid-reveal — if it looks sparse, check
 whether later elements simply haven't arrived yet. There is no Studio and no dev
-server: the still is the preview.
+server: the still is the preview. A still steps through every earlier frame
+before it draws its own, so it shows what the render will, and a failure on any
+earlier frame fails the still too, naming that frame.
 
 Then render, and report the output path or URL and the duration.
 
