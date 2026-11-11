@@ -30,7 +30,8 @@
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CAPTIONS_FILE, isEngineOwned, TIMINGS_FILE, videoPaths } from "@xplainer/render-core";
 import {
@@ -254,6 +255,37 @@ const INDEX_HTML = `<!doctype html>
 `;
 
 /**
+ * Run `start` with this process's own interpreter first on `PATH`, and only for as long as it runs.
+ *
+ * esbuild-wasm runs its WebAssembly in a child it spawns as a bare `node`, resolved through `PATH`
+ * (`esbuild-wasm/lib/main.js`, `esbuildCommandAndArgs`), and it spawns that child synchronously
+ * inside the first API call. A supervised daemon's worker has no `node` on its `PATH` by design —
+ * D1 in `daemon/workers.ts`, and launchd hands a LaunchAgent `/usr/bin:/bin:/usr/sbin:/sbin` — so
+ * without this every still and render ends `BUNDLE_FAILED: … spawn node ENOENT`, and where some
+ * `node` is on `PATH` the bundler runs under that one rather than the daemon's. `process.execPath`
+ * is `<runtime>/bin/node` (`node.exe` on Windows) out of a payload, so its directory is the one to
+ * put first. The previous value is back before `start` returns, so Chrome and ffmpeg, spawned
+ * later by the worker, never see it: that is the leak D1 refuses `WorkerSpec.env` for.
+ */
+export function withInterpreterOnPath<T>(start: () => T): T {
+  const previous = process.env.PATH;
+  const interpreterDir = dirname(process.execPath);
+  process.env.PATH =
+    previous === undefined || previous === ""
+      ? interpreterDir
+      : `${interpreterDir}${delimiter}${previous}`;
+  try {
+    return start();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previous;
+    }
+  }
+}
+
+/**
  * Bundle one video into `outDir`, or fail with `BUNDLE_FAILED` and esbuild's own diagnostics.
  *
  * Stops the esbuild service before it returns either way: the service is a child the worker would
@@ -342,27 +374,29 @@ export async function bundleVideo(options: BundleOptions): Promise<BundleResult>
   let bundledCss = "";
   const sources: string[] = [];
   try {
-    const result = await build({
-      stdin: {
-        contents: `import ${JSON.stringify(MOTION_HARNESS)};\nimport ${JSON.stringify(entry)};\n`,
-        resolveDir: video.source,
-        sourcefile: "xplainer-entry.js",
-        loader: "js",
-      },
-      absWorkingDir: options.root,
-      bundle: true,
-      format: "iife",
-      platform: "browser",
-      target: "chrome149",
-      jsx: "automatic",
-      define: { "process.env.NODE_ENV": '"production"' },
-      minify: false,
-      metafile: true,
-      write: false,
-      outfile: join(options.outDir, BUNDLE_FILES.script),
-      logLevel: "silent",
-      plugins: [renderer],
-    });
+    const result = await withInterpreterOnPath(() =>
+      build({
+        stdin: {
+          contents: `import ${JSON.stringify(MOTION_HARNESS)};\nimport ${JSON.stringify(entry)};\n`,
+          resolveDir: video.source,
+          sourcefile: "xplainer-entry.js",
+          loader: "js",
+        },
+        absWorkingDir: options.root,
+        bundle: true,
+        format: "iife",
+        platform: "browser",
+        target: "chrome149",
+        jsx: "automatic",
+        define: { "process.env.NODE_ENV": '"production"' },
+        minify: false,
+        metafile: true,
+        write: false,
+        outfile: join(options.outDir, BUNDLE_FILES.script),
+        logLevel: "silent",
+        plugins: [renderer],
+      }),
+    );
     const warnings = await formatted(result.warnings, "warning");
     if (warnings !== "") {
       options.log(`[xplainer] bundler warnings:\n${warnings}`);

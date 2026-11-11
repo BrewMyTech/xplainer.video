@@ -9,7 +9,8 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import process from "node:process";
 import { pathToFileURL } from "node:url";
 import {
   CAPTIONS_FILE,
@@ -19,7 +20,13 @@ import {
   videoPaths,
 } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BUNDLE_FILES, bundleVideo, LEGACY_IMPORT_ALIASES, tailwindCandidates } from "./bundle.js";
+import {
+  BUNDLE_FILES,
+  bundleVideo,
+  LEGACY_IMPORT_ALIASES,
+  tailwindCandidates,
+  withInterpreterOnPath,
+} from "./bundle.js";
 
 const DECOY = "the workspace's own React was bundled";
 
@@ -198,6 +205,25 @@ describe("bundleVideo", { timeout: 60_000 }, () => {
     expect(css).not.toContain(".bg-amber-900");
   });
 
+  /**
+   * The supervised daemon's case: launchd, and D1, leave the worker no `node` on `PATH`, and
+   * esbuild-wasm spawns its service as a bare `node`. An empty directory as the whole `PATH` is
+   * that machine, made certain — `/usr/bin` has a `node` on some Linux hosts.
+   */
+  it("bundles with no node on PATH, and leaves PATH as it found it", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "xplainer-no-node-"));
+    directories.push(empty);
+    const previous = process.env.PATH;
+    process.env.PATH = empty;
+    try {
+      const { read } = await bundle();
+      expect(read(BUNDLE_FILES.script)).toContain("__xplainer");
+      expect(process.env.PATH).toBe(empty);
+    } finally {
+      process.env.PATH = previous;
+    }
+  });
+
   it("fails as BUNDLE_FAILED with esbuild's own diagnostic for a syntax error", async () => {
     scenes("export const scenes = { hook: () => <div> };\n");
     const failure = bundle();
@@ -212,6 +238,25 @@ describe("bundleVideo", { timeout: 60_000 }, () => {
     await expect(bundle()).rejects.toThrow(
       /BUNDLE_FAILED[\s\S]*"canvas-confetti" is not available to a video/,
     );
+  });
+});
+
+describe("withInterpreterOnPath", () => {
+  it("puts this interpreter's directory first only while the callback runs", () => {
+    const previous = process.env.PATH;
+    const seen = withInterpreterOnPath(() => process.env.PATH);
+    expect(seen?.split(delimiter)[0]).toBe(dirname(process.execPath));
+    expect(process.env.PATH).toBe(previous);
+  });
+
+  it("restores PATH when the callback throws", () => {
+    const previous = process.env.PATH;
+    expect(() =>
+      withInterpreterOnPath(() => {
+        throw new Error("spawn failed");
+      }),
+    ).toThrow("spawn failed");
+    expect(process.env.PATH).toBe(previous);
   });
 });
 
