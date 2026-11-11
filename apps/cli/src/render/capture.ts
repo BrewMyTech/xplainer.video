@@ -10,7 +10,8 @@
  *   after the first ten, and `READINESS_TIMEOUT` naming what never arrived;
  * - **a frame** — `setFrame(n)` then `Page.captureScreenshot`, PNG, from the surface, clipped to
  *   the composition. `optimizeForSpeed` is on: on an opaque frame it changed no pixel in the Phase 0
- *   spike and roughly doubled capture speed on busy content;
+ *   spike and roughly doubled capture speed on busy content. `seek(n)` is the same `setFrame(n)`
+ *   without the screenshot;
  * - **the page itself** — an uncaught exception, a `console.error` and a renderer crash are each
  *   `PAGE_ERROR` with the frame they happened on. A `console.warn` is logged and never fatal.
  *
@@ -43,6 +44,11 @@ export type VideoPage = {
   metadata: PageMetadata;
   /** Move to frame `n` and return its PNG. */
   capture: (frame: number) => Promise<Buffer>;
+  /**
+   * Move to frame `n` without a screenshot, failing as {@link VideoPage.capture} does. The page
+   * keeps state across frames, so this is how a still steps through the frames before its own.
+   */
+  seek: (frame: number) => Promise<void>;
 };
 
 /** What {@link openVideoPage} needs. */
@@ -298,23 +304,27 @@ export async function openVideoPage(options: OpenVideoPageOptions): Promise<Vide
   }
 
   const clip = { x: 0, y: 0, width: metadata.width, height: metadata.height, scale: 1 };
+  const seek = async (frame: number): Promise<void> => {
+    currentFrame = frame;
+    // The rejection is caught in the page and returned as a value: its message is the harness's
+    // own `CODE: …`, and an exception would arrive as a description with a stack attached.
+    const failure = await guarded(
+      evaluate(
+        page,
+        `window.__xplainer.setFrame(${frame}).then(() => null, (error) => ` +
+          "String(error && error.message !== undefined ? error.message : error))",
+      ),
+    );
+    if (typeof failure === "string") {
+      throw pageFailure(failure, `frame ${frame}`);
+    }
+    throwIfProblem();
+  };
   return {
     metadata,
+    seek,
     async capture(frame: number): Promise<Buffer> {
-      currentFrame = frame;
-      // The rejection is caught in the page and returned as a value: its message is the harness's
-      // own `CODE: …`, and an exception would arrive as a description with a stack attached.
-      const failure = await guarded(
-        evaluate(
-          page,
-          `window.__xplainer.setFrame(${frame}).then(() => null, (error) => ` +
-            "String(error && error.message !== undefined ? error.message : error))",
-        ),
-      );
-      if (typeof failure === "string") {
-        throw pageFailure(failure, `frame ${frame}`);
-      }
-      throwIfProblem();
+      await seek(frame);
       const shot = await guarded(
         page.send("Page.captureScreenshot", {
           format: "png",

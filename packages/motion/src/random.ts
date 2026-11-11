@@ -1,9 +1,10 @@
 /**
  * `random(seed)` — a deterministic number in `[0, 1)` per seed.
  *
- * A scene that scatters particles with `Math.random()` draws a different picture on every frame
- * and on every render, so a still never matches the video it was meant to preview. Keyed by a
- * seed, the same particle lands in the same place on every frame, in every process.
+ * A scene that scatters particles with `Math.random()` draws a different picture on every frame:
+ * a render seeds `Math.random` once, so every run draws the same sequence, but each frame's render
+ * takes the next values from it and the particles jump. Keyed by a seed, the same particle lands
+ * in the same place on every frame, in every process.
  *
  * The seed is hashed with 32-bit FNV-1a over its UTF-16 code units (a number seed is hashed as
  * its decimal string, so `random(7)` equals `random("7")`) and the hash seeds one step of
@@ -11,8 +12,8 @@
  * across releases of this package but are **not** the values any other library returns for the
  * same seed: a scene ported from elsewhere gets a different, equally deterministic, scatter.
  *
- * `null` opts out and returns `Math.random()` — explicitly non-deterministic, for the rare case
- * that wants it.
+ * `null` opts out of the seed and returns `Math.random()`: in a render, the next value of the
+ * sequence the harness seeds, which differs from frame to frame but not from run to run.
  */
 
 const FNV_OFFSET = 0x811c9dc5;
@@ -48,6 +49,20 @@ export function random(seed: number | string | null): number {
     return mulberry32(fnv1a(seed));
   }
   throw new TypeError(
-    `random: the seed must be a number, a string or null, got ${typeof seed}. Pass null to opt out of determinism explicitly.`,
+    `random: the seed must be a number, a string or null, got ${typeof seed}. Pass null to draw from Math.random() instead.`,
   );
+}
+
+/**
+ * mulberry32 as a stream from `seed`: call `n` returns the step from `seed + n · 0x6d2b79f5`, which
+ * is mulberry32's own sequence. Not exported from the package entry — `harness.ts` installs it as
+ * the page's `Math.random`.
+ */
+export function mulberry32Sequence(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    const value = mulberry32(state);
+    state = (state + 0x6d2b79f5) | 0;
+    return value;
+  };
 }

@@ -11,11 +11,11 @@
  *
  * **The start is when the harness first saw the animation, so the order of `setFrame` calls
  * matters.** A video rendered front to back sees every animation start at the frame its element
- * mounted. A single still taken at frame 70 of an element that was already mounted at frame 40
- * has no earlier frame to have seen it on, and shows it at 0 ms. That is the price of seeking an
- * animation the scene never tied to a frame; a scene that needs a still to match the video
- * animates with `interpolate()` on `useCurrentFrame()` instead, which is a pure function of the
- * frame.
+ * mounted. A page asked for frame 70 alone, of an element that mounts at frame 40, has no earlier
+ * frame to have seen it on, and shows it at 0 ms — which is why the renderer steps a still's page
+ * through every frame before the one it captures, at the cost of setting each of them. A scene
+ * whose animation is `interpolate()` on `useCurrentFrame()` is a pure function of the frame and
+ * needs none of this.
  *
  * Scroll- and view-driven animations (`animation-timeline: scroll()` / `view()`) are not on the
  * document timeline and are not touched: their progress is the scroll position, not time.

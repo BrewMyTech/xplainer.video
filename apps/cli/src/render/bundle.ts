@@ -28,8 +28,9 @@
  * **The page is served, never opened from `file://`** ({@link servePage}). A `file:` page can show
  * any image, font or media file the daemon's user can read through `<img src="file:///…">`; an
  * `http://127.0.0.1` page cannot load `file:` at all, so the only files a scene can reach are the
- * two directories the server answers for — the bundle at `/` and the video's public directory at
- * `/public/`.
+ * two directories the server answers for — the bundle at `/<token>/` and the video's public
+ * directory at `/<token>/public/`, where `<token>` is 128 random bits, so another user on the
+ * machine cannot read either while a render runs.
  *
  * **The JSON travels as a script, not as a fetch.** `static-data.js` carries the two documents and
  * the harness answers the composition's `fetch(staticFile(…))` calls from it, so the scaffold's
@@ -41,6 +42,7 @@
  * involved. A token that is not a class costs nothing: Tailwind ignores what it cannot parse.
  */
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createReadStream,
   existsSync,
@@ -110,7 +112,10 @@ const EMPTY_NAMESPACE = "xplainer-empty";
 /** Marks a resolve this plugin asked for itself, so it does not intercept its own question. */
 const OWN_RESOLVE = Symbol("xplainer-own-resolve");
 
-/** Where {@link servePage} serves the video's public directory, and so where `staticFile()` points. */
+/**
+ * Where {@link servePage} serves the video's public directory, under its random prefix, and so
+ * where `staticFile()` points.
+ */
 export const PUBLIC_ROUTE = "/public/";
 
 /** Timeouts the page harness reads, for a test that needs a failure to arrive quickly. */
@@ -132,8 +137,8 @@ export type BundleOptions = {
   renderSettings?: PageRenderSettings;
   /**
    * The URL `staticFile()` prefixes, ending in `/`: the worker passes its {@link PageServer}'s
-   * `publicBase`. Left out, it is {@link PUBLIC_ROUTE}, which resolves to the same place against
-   * whatever origin serves the page — and to nothing on disk when nothing does.
+   * `publicBase`. Left out, it is {@link PUBLIC_ROUTE} — which {@link servePage} answers only under
+   * its random prefix, so it reaches nothing there, and nothing on disk from a `file:` page either.
    */
   publicBase?: string;
 };
@@ -660,30 +665,32 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 
 /** The two directories {@link servePage} answers for. */
 export type ServePageOptions = {
-  /** The bundle's directory, served at `/`. */
+  /** The bundle's directory, served at `/<token>/`. */
   pageDir: string;
-  /** The video's `public/<slug>/`, served at {@link PUBLIC_ROUTE}. */
+  /** The video's `public/<slug>/`, served at `/<token>` + {@link PUBLIC_ROUTE}. */
   publicDir: string;
 };
 
 /** A running page server. */
 export type PageServer = {
-  /** `http://127.0.0.1:<port>`. */
+  /** `http://127.0.0.1:<port>`, which answers nothing by itself. */
   origin: string;
-  /** `<origin>/index.html`: what the browser is pointed at. */
+  /** `<origin>/<token>/index.html`: what the browser is pointed at. */
   url: string;
-  /** `<origin>/public/`: what `staticFile()` prefixes. */
+  /** `<origin>/<token>/public/`: what `staticFile()` prefixes. */
   publicBase: string;
   /** Stop listening and drop every open connection. Safe to call more than once. */
   close: () => Promise<void>;
 };
 
 /**
- * The file a request path names, or `null` for anything that is not a regular file inside the
- * directory its route serves — after decoding, after `..`, and after every symlink.
+ * The file a request path names, or `null` for anything that does not begin with `/<token>/` or
+ * is not a regular file inside the directory its route serves — after decoding, after `..`, and
+ * after every symlink.
  */
 function servedFile(
   requestUrl: string,
+  token: Buffer,
   options: ServePageOptions,
 ): { path: string; size: number } | null {
   let pathname: string;
@@ -695,9 +702,15 @@ function servedFile(
   if (pathname.includes("\0")) {
     return null;
   }
-  const [root, rest] = pathname.startsWith(PUBLIC_ROUTE)
-    ? [options.publicDir, pathname.slice(PUBLIC_ROUTE.length)]
-    : [options.pageDir, pathname.slice(1)];
+  const slash = pathname.indexOf("/", 1);
+  const given = Buffer.from(pathname.slice(1, slash === -1 ? undefined : slash));
+  if (slash === -1 || given.length !== token.length || !timingSafeEqual(given, token)) {
+    return null;
+  }
+  const routed = pathname.slice(slash);
+  const [root, rest] = routed.startsWith(PUBLIC_ROUTE)
+    ? [options.publicDir, routed.slice(PUBLIC_ROUTE.length)]
+    : [options.pageDir, routed.slice(1)];
   try {
     const path = realpathSync(resolve(root, rest));
     if (!isWithin(realpathSync(root), path)) {
@@ -713,19 +726,24 @@ function servedFile(
 /**
  * Serve one bundle and its video's public directory on `127.0.0.1`, on a port the OS picks.
  *
- * The bundle is at `/` and the public directory at {@link PUBLIC_ROUTE}; every other path — a
- * directory, a file outside either root, a `..` or a symlink that leads out — is `404`, and only
- * `GET` and `HEAD` are answered. A request whose `Host` is not this server's own address is `404`
- * too, so a page elsewhere that rebinds a name to `127.0.0.1` cannot read through it while a render
- * runs. Nothing is cached and nothing is listed.
+ * Every route is under one path segment of 128 random bits, fresh for each server: the bundle is
+ * at `/<token>/` and the public directory at `/<token>/public/`. Any user on the machine can
+ * connect to a loopback port, so without it another local user could read the bundle — the
+ * video's source — and its public files while a render runs; the token is in nothing but the URLs
+ * this returns. Every other path — one without the token, a directory, a file outside either root,
+ * a `..` or a symlink that leads out — is `404`, and only `GET` and `HEAD` are answered. A request
+ * whose `Host` is not this server's own address is `404` too, so a page elsewhere that rebinds a
+ * name to `127.0.0.1` cannot read through it. Nothing is cached and nothing is listed.
  */
 export async function servePage(options: ServePageOptions): Promise<PageServer> {
   let host = "";
+  const token = randomBytes(16).toString("hex");
+  const tokenBytes = Buffer.from(token);
   const server = createServer((request, response) => {
     const method = request.method ?? "";
     const file =
       request.headers.host === host && (method === "GET" || method === "HEAD")
-        ? servedFile(request.url ?? "", options)
+        ? servedFile(request.url ?? "", tokenBytes, options)
         : null;
     if (file === null) {
       response.writeHead(404, {
@@ -768,8 +786,8 @@ export async function servePage(options: ServePageOptions): Promise<PageServer> 
   let closing: Promise<void> | null = null;
   return {
     origin,
-    url: `${origin}/${BUNDLE_FILES.html}`,
-    publicBase: `${origin}${PUBLIC_ROUTE}`,
+    url: `${origin}/${token}/${BUNDLE_FILES.html}`,
+    publicBase: `${origin}/${token}${PUBLIC_ROUTE}`,
     close: () => {
       closing ??= new Promise<void>((resolveClose) => {
         server.close(() => {

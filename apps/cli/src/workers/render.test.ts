@@ -145,6 +145,21 @@ function imageScenes(src: string): string {
   );
 }
 
+/**
+ * A `Scenes.tsx` whose `hook` scene is one box a CSS animation turns from black to red over one
+ * second, linearly, starting when the scene mounts.
+ */
+const WARMING_SCENES = `import { AbsoluteFill } from "@xplainer/motion";
+const css = "@keyframes warm { from { background-color: rgb(0, 0, 0); } to { background-color: rgb(255, 0, 0); } }";
+const Warming = () => (
+  <AbsoluteFill>
+    <style>{css}</style>
+    <div style={{ position: "absolute", left: 100, top: 100, width: 200, height: 200, animation: "warm 1s linear both" }} />
+  </AbsoluteFill>
+);
+export const scenes = { hook: Warming };
+`;
+
 const directories: string[] = [];
 let root = "";
 let stateDir = "";
@@ -237,6 +252,23 @@ function markerBand(mp4: string, frame: number): Buffer {
   );
   expect(raw.length, `frame ${frame} produced no image`).toBe(MARKER_SIZE);
   return raw;
+}
+
+/** One pixel of a PNG as `[red, green, blue]`, decoded by ffmpeg rather than by code written here. */
+function pixel(png: string, x: number, y: number): [number, number, number] {
+  const raw = execFileSync(ffmpeg, [
+    "-v",
+    "error",
+    "-i",
+    png,
+    "-vf",
+    `crop=1:1:${x}:${y},format=rgb24`,
+    "-f",
+    "rawvideo",
+    "-",
+  ]);
+  expect(raw.length, `${png} produced no pixel`).toBe(3);
+  return [raw[0] ?? -1, raw[1] ?? -1, raw[2] ?? -1];
 }
 
 /** The share of the marker band whose grey level moved by more than {@link CHANGED_LEVEL}. */
@@ -425,8 +457,9 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
    * inside the video's own public directory, is drawn when the scene asks for it through
    * `staticFile()` and refused when it asks for its `file:` URL — so what stops the second is the
    * scheme, not the file. The still is taken inside the `hook` segment — frame 0 is the narration's
-   * lead-in, where no scene is drawn at all. (These two run last: they replace the scenes the
-   * render above drew.)
+   * lead-in, where no scene is drawn at all — and the refusal names the segment's first frame: the
+   * still is stepped through every frame before its own, and that is where the image first appears,
+   * as it is in a render. (These run last: they replace the scenes the render above drew.)
    */
   it("draws an image through staticFile(), and refuses the same file by its file:// URL", async () => {
     const video = videoPaths(root, "demo");
@@ -455,7 +488,40 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     );
     const log = refused.output.lines.join("\n");
     expect(refused.status, log).toBe("error");
-    expect(log).toMatch(new RegExp(`IMAGE_BROKEN: frame ${frame}: file:.*probe\\.png`));
+    expect(log).toMatch(new RegExp(`IMAGE_BROKEN: frame ${hook?.from}: file:.*probe\\.png`));
+  }, 900_000);
+
+  /**
+   * The page keeps state from frame to frame: a CSS animation runs from the frame the harness first
+   * saw it on. This one starts when the `hook` scene mounts, so half a second into the scene the
+   * render draws its box half red. A still taken on a fresh page would see the animation for the
+   * first time on its own frame and draw the box black; stepped through every earlier frame first,
+   * it draws what the render draws. (It replaces the scenes too.)
+   */
+  it("pre-rolls a still, so a CSS animation shows the state the render shows on that frame", async () => {
+    const video = videoPaths(root, "demo");
+    const [hook] = timings.segments;
+    expect(hook?.id).toBe("hook");
+    const from = hook?.from ?? 0;
+    // Mounted on frame 0, the animation would start on time on a fresh page as well.
+    expect(from, "the hook scene must mount after frame 0").toBeGreaterThan(0);
+    const frame = from + 15; // 500 ms of film at 30 fps.
+    expect(frame).toBeLessThan(from + (hook?.durationInFrames ?? 0));
+
+    writeFileSync(join(video.source, "Scenes.tsx"), WARMING_SCENES);
+    const finished = await waitForJob(
+      (await backend.explainer_still({ slug: "demo", frame, scale: 0.5 })).job_id,
+      600_000,
+    );
+    const log = finished.output.lines.join("\n");
+    expect(finished.status, log).toBe("done");
+    expect(log).toMatch(new RegExp(`pre-rolled frames 0 to ${frame - 1} in \\d+ ms`));
+
+    // The box's middle, at scale 0.5: 500 ms into a linear 0 → 255 is 127.5, and a fresh page's 0
+    // is nowhere near it.
+    const [red, green, blue] = pixel(stillOutput(video, frame), 100, 100);
+    expect(Math.abs(red - 127.5), `red is ${red}`).toBeLessThan(4);
+    expect([green, blue]).toEqual([0, 0]);
   }, 900_000);
 });
 

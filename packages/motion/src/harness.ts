@@ -14,7 +14,11 @@
  *    scheduler calls `performance.now()` each time it asks, so it reads film time — its work loop
  *    never sees its time slice run out while a frame is held (it still yields to paint after a
  *    commit), and every throttle React measures with it, a Suspense fallback's included, is
- *    measured in film time.
+ *    measured in film time. `Math.random` is mulberry32 from a fixed seed (`random.ts`), reset once
+ *    when the video mounts and never per frame, so a scene that draws from it draws the same
+ *    sequence on every run. The sequence is still consumed in the order frames are set: a render
+ *    goes front to back, and the renderer steps a still's page through every earlier frame first,
+ *    so a still draws what the render drew on that frame.
  * 2. **Answers `fetch` for the static files** the bundle carries in `window.__XPLAINER_STATIC__`
  *    (`static-fetch.ts`), so the composition's metadata never waits on the network.
  * 3. **Mounts the registered video** once `calculateMetadata` has run, into `#root` sized to the
@@ -30,7 +34,9 @@
  *    yields two `MessageChannel` tasks, which is one React effect → setState hop (`settleTick`).
  *    Another pass follows while the one before it changed the DOM (a `MutationObserver` over the
  *    whole document), left a font loading, or left a hold or an image outstanding, up to
- *    `MAX_SETTLE_PASSES`.
+ *    `MAX_SETTLE_PASSES`. A page still changing after the last pass is released as it stands, with
+ *    one `console.warn` naming the frame — the one frame the harness knowingly releases unsettled,
+ *    and a "page warning" line in the job log.
  *
  * **Render holds, timers and animation frames — the one place film time yields to the wall
  * clock.** A scene that writes `const h = delayRender(); setTimeout(() => continueRender(h), 100)`
@@ -103,6 +109,7 @@ import {
 } from "./context.js";
 import { describeFailure, failure } from "./failures.js";
 import { VideoProvider } from "./provider.js";
+import { mulberry32Sequence } from "./random.js";
 import {
   onRegistration,
   type RegisteredEntry,
@@ -166,8 +173,14 @@ const HOLD_POLL_MS = 2;
 const IMAGE_POLL_MS = 5;
 
 /**
+ * Where the page's `Math.random` starts, at import and again at mount. Arbitrary, and part of the
+ * picture: changing it changes every video that draws from `Math.random`.
+ */
+const MATH_RANDOM_SEED = 0x58504c4e;
+
+/**
  * A settle that keeps finding work stops after this many passes: it fails if a hold or an image is
- * still outstanding, and otherwise releases the frame as it stands.
+ * still outstanding, and otherwise releases the frame as it stands, with a `console.warn`.
  */
 const MAX_SETTLE_PASSES = 10;
 
@@ -253,6 +266,9 @@ host.clearInterval = (id?: number): void => timers.clear(id);
 host.requestAnimationFrame = (callback: FrameRequestCallback): number =>
   frameCallbacks.request(callback);
 host.cancelAnimationFrame = (id: number): void => frameCallbacks.cancel(id);
+
+let nextRandom = mulberry32Sequence(MATH_RANDOM_SEED);
+Math.random = (): number => nextRandom();
 
 // --------------------------------------------------------------------------- frame observers
 
@@ -570,6 +586,14 @@ async function settle(frame: number): Promise<void> {
       if (images.length > 0) {
         throw failWith(failure("IMAGE_TIMEOUT", `${images[0] ?? ""} at frame ${frame}`));
       }
+      const reasons = [
+        changed ? "the DOM changed on the last pass" : "",
+        document.fonts.status === "loaded" ? "" : "a font is still loading",
+      ].filter((reason) => reason !== "");
+      console.warn(
+        `frame ${frame} was still changing after ${MAX_SETTLE_PASSES} settle passes ` +
+          `(${reasons.join(", ")}), so it is released as it stands.`,
+      );
       return;
     }
   }
@@ -648,6 +672,9 @@ function collectComposition(Root: ComponentType): VideoRegistration {
 }
 
 function mount(resolved: ResolvedVideo): void {
+  // Whatever the scene's modules, the composition probe and calculateMetadata drew, the video's
+  // first frame starts the sequence from the seed.
+  nextRandom = mulberry32Sequence(MATH_RANDOM_SEED);
   const { width, height } = resolved.config;
   const container = rootContainer();
   container.style.cssText = `position:relative;width:${width}px;height:${height}px;overflow:hidden;`;

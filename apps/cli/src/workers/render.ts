@@ -14,6 +14,10 @@
  *   4. a still is one PNG; a render pipes every PNG into a spawned
  *      ffmpeg, which muxes the narration and writes the MP4           (`FFMPEG_NOT_FOUND`, `ENCODE_FAILED`)
  *
+ * **A still is the render's frame, not a fresh page's.** The page keeps state across frames, so
+ * before capturing frame `n` the worker sets frames `0` to `n - 1` without a screenshot, in the
+ * order a render sets them, and logs how long that took.
+ *
  * **What it prints is the job's log.** stdout carries a start line, a progress line at least every
  * fifteen frames — `{"event":"progress","frame":n,"of":N,"captureFps":x}` — and a final
  * `{"event":"done",…}`; a failure is one `<CODE>: <sentence>` on stderr and a non-zero exit, which
@@ -21,8 +25,8 @@
  *
  * **The page is served, never opened from `file://`.** The worker starts `render/bundle.ts`'s
  * `servePage()` on `127.0.0.1` before it bundles — the bundle's `staticFile()` base is that
- * server's `/public/` — and closes it with everything else. A `file:` page could show any image the
- * daemon's user can read; an `http:` one cannot load `file:` at all.
+ * server's `/<token>/public/` — and closes it with everything else. A `file:` page could show any
+ * image the daemon's user can read; an `http:` one cannot load `file:` at all.
  *
  * **A signal is a cancellation, and it leaves nothing behind.** `SIGTERM` and `SIGINT` — the
  * daemon's drain and an agent's cancel both arrive as a `SIGTERM` to the whole process group —
@@ -297,6 +301,19 @@ async function main(): Promise<void> {
         "FRAME_OUT_OF_RANGE",
         `frame ${still.frame} is past the end of ${request.slug}, whose last frame is ` +
           `${metadata.durationInFrames - 1}.`,
+      );
+    }
+    // The page keeps state from frame to frame — a CSS animation runs from the frame it was first
+    // seen on, timers accumulate, Math.random advances — so a still is stepped through every frame
+    // the render would have set before it, and shows what the render shows there.
+    const preRollStarted = performance.now();
+    for (let frame = 0; frame < still.frame; frame += 1) {
+      await page.seek(frame);
+    }
+    if (still.frame > 0) {
+      say(
+        `[xplainer] pre-rolled frames 0 to ${still.frame - 1} in ` +
+          `${Math.round(performance.now() - preRollStarted)} ms`,
       );
     }
     const png = await page.capture(still.frame);

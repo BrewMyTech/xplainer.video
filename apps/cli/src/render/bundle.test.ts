@@ -369,6 +369,8 @@ describe("servePage", () => {
   let server: PageServer;
   let base = "";
   let outside = "";
+  /** `/<token>`: the path segment every route the server answers is under. */
+  let prefix = "";
 
   beforeEach(async () => {
     base = mkdtempSync(join(tmpdir(), "xplainer-serve-"));
@@ -388,87 +390,126 @@ describe("servePage", () => {
       symlinkSync(join(outside, "secret.txt"), join(publicDir, "link.txt"));
     }
     server = await servePage({ pageDir, publicDir });
+    prefix = new URL(server.url).pathname.slice(0, -"/index.html".length);
   });
 
   afterEach(async () => {
     await server.close();
   });
 
-  it("listens on 127.0.0.1 and names the page and the public base on that origin", () => {
+  it("listens on 127.0.0.1 and names the page and the public base under a random prefix", async () => {
     expect(server.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(server.url).toBe(`${server.origin}/index.html`);
-    expect(server.publicBase).toBe(`${server.origin}${PUBLIC_ROUTE}`);
+    expect(prefix).toMatch(/^\/[0-9a-f]{32}$/);
+    expect(server.url).toBe(`${server.origin}${prefix}/index.html`);
+    expect(server.publicBase).toBe(`${server.origin}${prefix}${PUBLIC_ROUTE}`);
+    const other = await servePage({ pageDir: base, publicDir: base });
+    try {
+      expect(new URL(other.url).pathname).not.toBe(new URL(server.url).pathname);
+    } finally {
+      await other.close();
+    }
   });
 
-  it("serves the bundle at / and the video's public directory at /public/, typed", async () => {
-    await expect(get(server, "/index.html")).resolves.toEqual({
+  it("serves the bundle at /<token>/ and the video's public directory at /<token>/public/, typed", async () => {
+    await expect(get(server, `${prefix}/index.html`)).resolves.toEqual({
       status: 200,
       type: "text/html; charset=utf-8",
       body: "<!doctype html>page",
     });
-    await expect(get(server, "/app.js")).resolves.toMatchObject({
+    await expect(get(server, `${prefix}/app.js`)).resolves.toMatchObject({
       status: 200,
       type: "text/javascript; charset=utf-8",
     });
-    await expect(get(server, "/public/media/logo.png")).resolves.toEqual({
+    await expect(get(server, `${prefix}/public/media/logo.png`)).resolves.toEqual({
       status: 200,
       type: "image/png",
       body: "png bytes",
     });
-    await expect(get(server, "/public/timings.json")).resolves.toMatchObject({
+    await expect(get(server, `${prefix}/public/timings.json`)).resolves.toMatchObject({
       status: 200,
       type: "application/json",
     });
-    await expect(get(server, "/public/media/logo.png", { method: "HEAD" })).resolves.toEqual({
+    await expect(
+      get(server, `${prefix}/public/media/logo.png`, { method: "HEAD" }),
+    ).resolves.toEqual({
       status: 200,
       type: "image/png",
       body: "",
     });
   });
 
+  /** Any user on the machine can connect to a loopback port; only the browser has the token. */
+  it("answers 404 for every path without its token, and for a wrong token of the same length", async () => {
+    const wrong = `/${"0".repeat(32)}`;
+    for (const path of [
+      "/index.html",
+      "/app.js",
+      "/public/media/logo.png",
+      prefix,
+      `${prefix}index.html`,
+      `${wrong}/index.html`,
+      `${wrong}/public/media/logo.png`,
+      `${prefix.slice(0, -1)}/index.html`,
+      `/x${prefix}/index.html`,
+    ]) {
+      const answer = await get(server, path);
+      expect(answer.status, path).toBe(404);
+      expect(answer.body, path).not.toContain("page");
+      expect(answer.body, path).not.toContain("png bytes");
+    }
+  });
+
   it("answers 404 for anything that leaves its root, however it is spelled", async () => {
     for (const path of [
-      "/../public/secret.txt",
-      "/public/../../public/secret.txt",
-      "/public/%2e%2e/secret.txt",
-      "/public/..%2fsecret.txt",
-      "/public/..%5csecret.txt",
-      `/public/${encodeURIComponent(join(outside, "secret.txt"))}`,
-      `/${join(outside, "secret.txt")}`,
-      "/public/%00",
-      "/public/%E0%A4%A",
+      `${prefix}/../public/secret.txt`,
+      `${prefix}/../index.html`,
+      `${prefix}/public/../../public/secret.txt`,
+      `${prefix}/public/%2e%2e/secret.txt`,
+      `${prefix}/public/..%2fsecret.txt`,
+      `${prefix}/public/..%5csecret.txt`,
+      `${prefix}/public/${encodeURIComponent(join(outside, "secret.txt"))}`,
+      `${prefix}/${join(outside, "secret.txt")}`,
+      `${prefix}/public/%00`,
+      `${prefix}/public/%E0%A4%A`,
     ]) {
       const answer = await get(server, path);
       expect(answer.status, path).toBe(404);
       expect(answer.body, path).not.toContain("secret");
       expect(answer.body, path).not.toContain("beside");
       expect(answer.body, path).not.toContain("elsewhere");
+      expect(answer.body, path).not.toContain("page");
     }
     if (process.platform !== "win32") {
-      await expect(get(server, "/public/link.txt")).resolves.toMatchObject({ status: 404 });
+      await expect(get(server, `${prefix}/public/link.txt`)).resolves.toMatchObject({
+        status: 404,
+      });
     }
   });
 
   it("lists no directory, answers only GET and HEAD, and only to its own Host", async () => {
     for (const path of ["/", "/public/", "/public/media", "/public/media/", "/missing.js"]) {
-      await expect(get(server, path), path).resolves.toMatchObject({ status: 404 });
+      await expect(get(server, `${prefix}${path}`), path).resolves.toMatchObject({ status: 404 });
     }
-    await expect(get(server, "/index.html", { method: "POST" })).resolves.toMatchObject({
+    await expect(get(server, `${prefix}/index.html`, { method: "POST" })).resolves.toMatchObject({
       status: 404,
     });
     // A name rebound to 127.0.0.1 by a page elsewhere arrives with that name as its Host.
     await expect(
-      get(server, "/index.html", { host: `attacker.example:${new URL(server.origin).port}` }),
+      get(server, `${prefix}/index.html`, {
+        host: `attacker.example:${new URL(server.origin).port}`,
+      }),
     ).resolves.toMatchObject({ status: 404 });
-    await expect(get(server, "/index.html", { host: "localhost" })).resolves.toMatchObject({
-      status: 404,
-    });
+    await expect(get(server, `${prefix}/index.html`, { host: "localhost" })).resolves.toMatchObject(
+      {
+        status: 404,
+      },
+    );
   });
 
   it("stops answering once closed, and closes twice without complaint", async () => {
     await server.close();
     await server.close();
-    await expect(get(server, "/index.html")).rejects.toThrow();
+    await expect(get(server, `${prefix}/index.html`)).rejects.toThrow();
   });
 });
 

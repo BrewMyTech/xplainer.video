@@ -376,9 +376,10 @@ export declare function interpolate(input: number, inputRange: readonly number[]
 /**
  * `random(seed)` — a deterministic number in `[0, 1)` per seed.
  *
- * A scene that scatters particles with `Math.random()` draws a different picture on every frame
- * and on every render, so a still never matches the video it was meant to preview. Keyed by a
- * seed, the same particle lands in the same place on every frame, in every process.
+ * A scene that scatters particles with `Math.random()` draws a different picture on every frame:
+ * a render seeds `Math.random` once, so every run draws the same sequence, but each frame's render
+ * takes the next values from it and the particles jump. Keyed by a seed, the same particle lands
+ * in the same place on every frame, in every process.
  *
  * The seed is hashed with 32-bit FNV-1a over its UTF-16 code units (a number seed is hashed as
  * its decimal string, so `random(7)` equals `random("7")`) and the hash seeds one step of
@@ -386,8 +387,8 @@ export declare function interpolate(input: number, inputRange: readonly number[]
  * across releases of this package but are **not** the values any other library returns for the
  * same seed: a scene ported from elsewhere gets a different, equally deterministic, scatter.
  *
- * `null` opts out and returns `Math.random()` — explicitly non-deterministic, for the rare case
- * that wants it.
+ * `null` opts out of the seed and returns `Math.random()`: in a render, the next value of the
+ * sequence the harness seeds, which differs from frame to frame but not from run to run.
  */
 export declare function random(seed: number | string | null): number;
 ```

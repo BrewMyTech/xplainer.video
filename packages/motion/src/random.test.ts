@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { random } from "./random.js";
+import { mulberry32Sequence, random } from "./random.js";
 
 const MOD = 2n ** 32n;
 const u32 = (value: bigint): bigint => ((value % MOD) + MOD) % MOD;
@@ -114,5 +114,30 @@ describe("random", () => {
     expect(() => random(Number.NaN)).toThrow(/must be finite/);
     expect(() => random(Number.POSITIVE_INFINITY)).toThrow(/must be finite/);
     expect(() => Reflect.apply(random, undefined, [{}])).toThrow(/a number, a string or null/);
+  });
+});
+
+/**
+ * The page's `Math.random` (`harness.ts`): mulberry32 as a stream, held to the same `BigInt`
+ * reference stepped by its increment, so call `n` from seed `s` is the step from `s + n · C`.
+ */
+describe("mulberry32Sequence", () => {
+  it("is mulberry32's own stream, bit for bit, for 1000 calls from each seed", () => {
+    for (const seed of [0, 1, 0x58504c4e, -7, 0xffffffff]) {
+      const next = mulberry32Sequence(seed);
+      for (let call = 0; call < 1000; call += 1) {
+        const expected = mulberry32Reference(u32(BigInt(seed) + BigInt(call) * 0x6d2b79f5n));
+        expect(next(), `seed ${seed}, call ${call}`).toBe(expected);
+      }
+    }
+  });
+
+  it("starts again from the seed in a new sequence, whatever the old one drew", () => {
+    const first = mulberry32Sequence(42);
+    const drawn = Array.from({ length: 5 }, () => first());
+    first();
+    const again = mulberry32Sequence(42);
+    expect(Array.from({ length: 5 }, () => again())).toEqual(drawn);
+    expect(new Set(drawn).size).toBe(5);
   });
 });

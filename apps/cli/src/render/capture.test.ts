@@ -158,6 +158,33 @@ const Moving = () => {
 export const scenes = { hook: Moving };
 `;
 
+/** Two dozen boxes scattered with `Math.random()` on every render, so every frame draws new values. */
+const SCATTERED = `import { AbsoluteFill, useCurrentFrame } from "@xplainer/motion";
+
+const Scattered = () => {
+  useCurrentFrame();
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#0a0c10" }}>
+      {Array.from({ length: 24 }, (_, index) => (
+        <div
+          key={index}
+          style={{
+            position: "absolute",
+            left: Math.random() * 1800,
+            top: Math.random() * 960,
+            width: 80,
+            height: 80,
+            background: "#f43f5e",
+          }}
+        />
+      ))}
+    </AbsoluteFill>
+  );
+};
+
+export const scenes = { hook: Scattered };
+`;
+
 // The same switch as the render test: a real browser, so a developer without one can opt out.
 describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("capturing a real page", () => {
   it("captures the same three frames as the same bytes in two separate Chrome processes", async () => {
@@ -177,6 +204,28 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("capturing a real
     // And the frames are frames: a capture that ignored setFrame would also be "deterministic".
     expect(first[0]?.equals(first[1] ?? Buffer.alloc(0))).toBe(false);
     expect(first[1]?.equals(first[2] ?? Buffer.alloc(0))).toBe(false);
+  }, 120_000);
+
+  /**
+   * `Math.random` in the page is mulberry32 from a fixed seed, reset when the video mounts: two
+   * page loads in two processes draw the same sequence, so a scene that scatters boxes with it on
+   * every render captures as the same bytes — and differently on each frame, because each render
+   * takes the next values rather than starting the sequence again.
+   */
+  it("draws the same Math.random() sequence in two separate Chrome processes", async () => {
+    const url = await bundled(fixture(SCATTERED, 3));
+
+    const first = await captureAll(url);
+    const second = await captureAll(url);
+
+    expect(first).toHaveLength(3);
+    for (const [frame, png] of first.entries()) {
+      expect(
+        png.equals(second[frame] ?? Buffer.alloc(0)),
+        `frame ${frame} differs between processes`,
+      ).toBe(true);
+    }
+    expect(first[0]?.equals(first[1] ?? Buffer.alloc(0))).toBe(false);
   }, 120_000);
 
   /**
@@ -409,6 +458,33 @@ const ScrollDriven = () => (
   </>
 );
 
+/**
+ * Changes the DOM in every task of its own until it unmounts, so no settle pass ever finds the page
+ * still: one message in flight at a time, always queued ahead of the settle's own.
+ */
+const Restless = () => {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let stopped = false;
+    let ticks = 0;
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      if (stopped) {
+        channel.port1.close();
+        return;
+      }
+      ticks += 1;
+      box.current?.setAttribute("data-tick", String(ticks));
+      channel.port2.postMessage(0);
+    };
+    channel.port2.postMessage(0);
+    return () => {
+      stopped = true;
+    };
+  }, []);
+  return <div ref={box} />;
+};
+
 /** Throws, so the frame fails, unless a date's constructor is the Date the scene sees. */
 const DateConstructor = () => {
   const date = new Date();
@@ -441,6 +517,7 @@ const Scene = () => {
       {scenario === "late-broken-image" && frame >= 1 ? <LateBrokenImage /> : null}
       {scenario === "scroll-timeline" && frame >= 1 ? <ScrollDriven /> : null}
       {scenario === "date-constructor" && frame >= 1 ? <DateConstructor /> : null}
+      {scenario === "restless" && frame === 1 ? <Restless /> : null}
     </AbsoluteFill>
   );
 };
@@ -596,6 +673,22 @@ export const scenes = { hook: Scene };
    */
   it("renders a scroll-driven CSS animation, leaving it to its scroll timeline", async () => {
     await expect(run("scroll-timeline")).resolves.toBe(FRAMES);
+  }, 60_000);
+
+  /**
+   * The settle gives up after its last pass rather than hold the render forever, and releases the
+   * frame as it stands — the one frame the harness knowingly lets go unsettled — so it says so, once,
+   * as a page warning that names the frame. Frame 2 unmounts the restless node and settles quietly.
+   */
+  it("releases a frame whose DOM never stops changing with one page warning naming it", async () => {
+    const before = warnings.length;
+    await expect(run("restless")).resolves.toBe(FRAMES);
+    const unsettled = warnings.slice(before).filter((line) => line.includes("settle passes"));
+    expect(unsettled).toEqual([
+      expect.stringMatching(
+        /^\[xplainer\] page warning at frame 1: frame 1 was still changing after 10 settle passes \(the DOM changed on the last pass\), so it is released as it stands\.$/,
+      ),
+    ]);
   }, 60_000);
 
   /** Under the film-time Date, a date's constructor is still the page's Date. */
