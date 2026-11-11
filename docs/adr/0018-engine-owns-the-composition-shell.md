@@ -275,3 +275,44 @@ working. A blank scene is visible in the first still; silent audio is not.
 - **SKILL.md's ownership paragraph becomes a statement of fact rather than a request**, and it
   ships byte-for-byte into both plugin bundles (ADR 0013). Its rewrite must keep every tool
   name it mentions inside the protocol set, or AC-10's check fails.
+
+## Note, 2026-11-11: the shell imports `@xplainer/motion`, and the soundtrack no longer passes through it
+
+Added as a dated note rather than a rewrite.
+[ADR 0030](0030-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) replaces Remotion with a
+renderer of our own. **The ownership model this record decides is unchanged**: five engine-owned
+files, `Scenes.tsx` and everything it imports belong to the agent, the reserved list lives once in
+`engine_owned_files`, the four enforcement layers and the preflight codes are exactly as above, and a
+scene remains arbitrary React. Three things happened underneath it.
+
+**The engine shell takes its whole authoring API from `@xplainer/motion`.** `Video.tsx` takes
+`AbsoluteFill`, `Audio`, `Sequence`, `staticFile` and the `Caption` type from it; `Captions.tsx`
+pages with `paginateCaptions`, written against the leading-space rule `buildCaptions()` already
+follows, where it called `createTikTokStyleCaptions`; `index.ts` still calls `registerRoot`, and
+`Root.tsx` keeps `Composition`, `calculateMetadata` and its two fetches, which the page harness now
+answers from the bundle because Chrome refuses `fetch` on `file://`. `<Audio>` is now a **marker**:
+the encoder muxes the narration named by `timings.audio` from the video's public directory on every
+render, and a second mounted `<Audio>` warns once and is silent in the output. So the soundtrack no
+longer passes through the composition at all — removing the element from the shell would no longer
+silence a video, which makes the first Decision Driver's unreachable state unreachable by a second
+route. **The captions still pass through it**: they are drawn into every frame by `Captions.tsx`, as
+are the per-segment `<Sequence>`s, so the boundary keeps its job and the decision stands on the
+reasons given.
+
+**The provenance half of the AC-7 split is down to one file, and the `Video.tsx.max` test is
+retired.** The third Decision Driver required `Root.tsx`, `types.ts`, `Captions.tsx` and `index.ts`
+to stay byte-identical to `max`. Three of them now import `@xplainer/motion`, so they cannot be
+upstream's bytes; from this date they are change detectors, and `types.ts`, which imports nothing, is
+the one provenance fixture left. The Consequence that recorded the divergence from `max` as a test —
+the retained `test/fixtures/scaffold/upstream/Video.tsx.max` and the assertion that the template
+differs from it in the intended way — is retired with the file, because once the import lines
+changed the difference held by construction and the assertion could not fail. The *reason* is still
+asserted, as content: audio, captions and per-segment sequencing present in the engine-owned
+`Video.tsx` and absent from the agent-owned `Scenes.tsx`. `packages/render-core/test/fixtures/README.md`
+carries the dated note in full.
+
+**There is no Studio path any more.** The section on loud failure says the composition's throws cover
+"the still path, the Studio path and a present-but-corrupt file". Remotion Studio went with Remotion;
+`explainer_still` is the preview, and it renders through the same worker as the video.
+
+Nothing above is rewritten, and this record keeps its status.
