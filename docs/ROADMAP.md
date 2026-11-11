@@ -1592,8 +1592,14 @@ ADR 0030 carries the numbers, the options measured and not chosen, and the licen
 3. **The Chrome manifest becomes ours in name** — the `remotion` provider token and the
    `remotion.media` URLs — and linux-arm64 gets a source, because Chrome for Testing publishes no
    build for it.
-4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner.
-5. **The release**, only after 1–4 have landed on `main`, with a changeset that names the alias's
+4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner, and the Linux
+   container's 12 fps gate re-run on the shipped worker.
+5. **From the final design review (ADR 0030, Follow-up 8):** a decision on the page's network —
+   deny by default, which would refuse CDN web fonts, or a recorded reason not to; the toolchain
+   marker's shape across the cut, decided in a dated note before the code (`workspace` is required
+   and describes the payload being deleted); ffmpeg judged in `assertToolchainReady` rather than in
+   the worker; and a check that fails a publish while `template/package.json` still pins `remotion`.
+6. **The release**, only after 1–5 have landed on `main`, with a changeset that names the alias's
    removal in the release after it.
 
 **Booked, not scheduled:** a ticket for `daemon status` judging the toolchain by file existence while

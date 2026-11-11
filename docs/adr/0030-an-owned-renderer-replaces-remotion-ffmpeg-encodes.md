@@ -324,9 +324,11 @@ Remotion's licence terms onto machines that no longer use it.
   `remotion.config.ts` is deleted, because only Remotion read it. The Chrome manifest — the
   `remotion` provider token, the `remotion.media` URLs, `toolchain.manifest.json`, and the selector
   in `setup/manifest.ts` that mirrors the pinned Remotion line's — is also Phase 2.
-- **B2 — ffmpeg is found, not acquired, and the toolchain schema does not change.** `toolchain.json`
-  has `additionalProperties: false` and no `ffmpeg`, so a marker that recorded one would fail
-  validation in every build that exists. Phase 1 resolves `XPLAINER_FFMPEG`, then `PATH`, then
+- **B2 — ffmpeg is found, not acquired, and the toolchain schema does not change.** `toolchain.json`'s
+  schema has `additionalProperties: false` and no `ffmpeg`, so recording one is a schema change, and
+  Phase 1 makes none; a schema validator would refuse such a marker, while the deployed reader
+  (`setup/toolchain.ts`, `readToolchainMarker`) ignores a key it does not know, which is what lets
+  Phase 2 add one as optional (Follow-up 1). Phase 1 resolves `XPLAINER_FFMPEG`, then `PATH`, then
   `/opt/homebrew/bin` and `/usr/local/bin` — a launchd daemon's `PATH` has neither — and otherwise
   refuses with `FFMPEG_NOT_FOUND`, naming every place looked and the install command for macOS and
   Debian. `XPLAINER_FFMPEG` naming a file that is not there is a refusal, never a fall-through.
@@ -346,6 +348,7 @@ used one, naming the file and the import to use instead. Beyond that:
 | `<Video>` / `<OffthreadVideo>` | Throws `NOT_SUPPORTED_IN_V1: video assets …` when rendered; use `<Img>` stills |
 | A second `<Audio>` in a scene | Fails `NOT_SUPPORTED_IN_V1`: the encoder muxes only the narration, and it would otherwise vanish from the MP4 |
 | Any other `@remotion/*` package (`three`, `lottie`, `transitions`, …) | `BUNDLE_FAILED` naming the specifier |
+| A package the old workspace tree happened to provide (`zod`, `@remotion/media-utils`, …) | `BUNDLE_FAILED` naming it: only React, React DOM and `@xplainer/motion` are provided |
 | WebGL | Not supported; a 2D `<canvas>` works |
 | Remotion Studio, `npm run studio` | Gone; `explainer_still` is the preview |
 | `remotion.config.ts` | Gone; Tailwind is compiled for every video |
@@ -437,6 +440,15 @@ capture format are the two levers left, and neither is pulled by this record.
   and `NOTICE` files keep theirs, because `setup --workspace` still installs Remotion on the user's
   machine; Phase 2 removes them with the payload. Under the hard condition no release carries the
   narrower set while the workspace install exists.
+- **The page still reaches the network** (the final design review). Files are closed — the page is
+  served from loopback and a scene's imports stay in the workspace — but nothing intercepts a
+  request, so a scene can draw `<img src="http://10.…">` into a frame, or `fetch` a CORS-permissive
+  service, from wherever the daemon runs; on Linux as root its renderer runs `--no-sandbox`. That
+  matters on a remote daemon, whose scene author may not own the machine, and it is a determinism
+  hole as well: a remote font or image makes the pixels depend on someone else's server. Closing it
+  — deny by default, allow the page's own origin, `data:` and `blob:`, and refuse with a code naming
+  the URL — would also refuse a web font loaded from a CDN, which scenes do today, so it is the
+  owner's decision and Follow-up 8.
 - **Windows `--remote-debugging-pipe` is unproven.** The CDP client has run against a real Chrome on
   macOS and Linux only; whether Chrome on Windows reads the pipe on the descriptors Node hands it has
   not been tried on any host.
@@ -452,7 +464,8 @@ capture format are the two levers left, and neither is pulled by this record.
   decision for the repository it lives in.
 - **Counsel's answers**, listed under §Decision Outcome.
 - **Dedup, a second capture tab and `HeadlessExperimental.beginFrame`.** All three are booked by the
-  design as later phases; BeginFrame's first frame never returned on macOS 148 or 149 under any flag
+  design as later phases; a second tab would capture a range that does not start at frame 0, so it
+  would need the same pre-roll a still has (§The page runs on film time); BeginFrame's first frame never returned on macOS 148 or 149 under any flag
   set tried, so it would be Linux-only and probe-gated if it is ever built.
 
 ## Follow-ups
@@ -485,3 +498,19 @@ capture format are the two levers left, and neither is pulled by this record.
 6. **Windows `--remote-debugging-pipe`** gets a Phase 2 end-to-end proof on a hosted runner.
 7. **The alias for `remotion` and `@remotion/*` is removed in the release after cut-over**, and the
    changeset that removes it says so.
+8. **Before Phase 2 releases, from the final design review.**
+   - **The page's network**, above: deny by default, or a recorded decision not to, with the remote
+     web font cost in front of the owner.
+   - **The marker across the cut.** `workspace` is required by the schema and by the reader, and
+     `checkWorkspace` wants an installed Remotion tree that Phase 2 deletes; after the cut `setup`
+     either writes a `workspace` that describes nothing or a rolled-back daemon reads the marker as
+     missing, and `e2e/update.mjs`'s "the rolled-back daemon renders" cannot hold across it. Decide
+     the shape in a dated note before Phase 2's code: the review's pick is `format_version` 2 without
+     `workspace`, and an update transaction that refuses to roll back across the cut with a named,
+     one-way message.
+   - **ffmpeg is judged at the gate**, in `assertToolchainReady`, once the marker records it — today
+     `findFfmpeg()` runs inside the worker, after the job has started, and `XPLAINER_FFMPEG` is an
+     environment variable that a Task Scheduler daemon has no way to receive.
+   - **The release gate includes the Linux fps run and the Windows pipe proof**, not only the macOS
+     gate above, and a check that fails a publish while `template/package.json` still pins
+     `remotion`, so the hard condition is a gate and not a sentence.
