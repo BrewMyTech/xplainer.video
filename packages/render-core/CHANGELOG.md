@@ -1,5 +1,14 @@
 # @xplainer/render-core
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [3d7e3fa]
+- Updated dependencies [a8c54a7]
+  - @xplainer/protocol@0.0.3
+  - @xplainer/tts-client@0.0.2
+
 ## 0.0.4
 
 ### Patch Changes

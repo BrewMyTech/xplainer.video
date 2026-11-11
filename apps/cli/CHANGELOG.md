@@ -1,5 +1,25 @@
 # @xplainer/cli
 
+## 0.0.11
+
+### Patch Changes
+
+- f5b4f26: Narration can now be spoken by ElevenLabs instead of the built-in Kokoro voice, chosen by the
+  machine's owner with the new `xplainer config` command (`set`, `get`, `unset`, `list`); the API key
+  is stored `0600` in `credentials.json`, is never accepted on the command line or printed, and
+  `xplainer status` gains a `speech` line naming the provider and whether a key is stored. Every
+  ElevenLabs narration is billed per character to that account and sends its text to ElevenLabs; a
+  failure is a failed job that says why, never a silent switch back to Kokoro, and Kokoro remains the
+  default with its behaviour unchanged.
+- Updated dependencies [3d7e3fa]
+- Updated dependencies [3d7e3fa]
+- Updated dependencies [a8c54a7]
+  - @xplainer/protocol@0.0.3
+  - @xplainer/skill@0.0.4
+  - @xplainer/tts-client@0.0.2
+  - @xplainer/mcp-server@0.0.3
+  - @xplainer/render-core@0.0.5
+
 ## 0.0.10
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @xplainer/tts-client
 
+## 0.0.2
+
+### Patch Changes
+
+- a8c54a7: Adds an ElevenLabs client for `POST /v1/text-to-speech/{voice_id}/with-timestamps`:
+  `ElevenLabsClient`, `ElevenLabsError` (with `status`, `code` and `retryable`),
+  `buildElevenLabsSpeechPayload`, and `alignmentToWordTimestamps`, which turns the response's
+  character alignment into the same word spans Kokoro returns — never reading `normalized_alignment`,
+  and refusing an alignment it cannot time rather than repairing it. `HttpRequestInit` gains an
+  optional `signal`.
+
 ## 0.0.1
 
 ### Patch Changes
