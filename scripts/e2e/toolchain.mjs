@@ -612,10 +612,21 @@ function narrationRequest() {
   };
 }
 
-/** Whether a Docker **engine** answers to a process whose `PATH` is `pathValue`. */
+/** How long the engine probe may take before an engine counts as not answering. */
+const DOCKER_PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * Whether a Docker **engine** answers to a process whose `PATH` is `pathValue`.
+ *
+ * Bounded, because a client whose engine is hung does not fail: on 2026-11-12 OrbStack's
+ * `docker version` blocked until it was killed, and an unbounded probe held the whole gate with it.
+ * A probe that times out is an engine that does not answer, and the gate takes route `none`.
+ */
 function dockerAnswers(pathValue) {
   const probe = spawnLogged("docker", "docker", ["version", "--format", "{{.Server.Version}}"], {
     env: { PATH: pathValue },
+    timeout: DOCKER_PROBE_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
   return probe.error === undefined && probe.status === 0 ? probe.stdout.trim() : null;
 }
