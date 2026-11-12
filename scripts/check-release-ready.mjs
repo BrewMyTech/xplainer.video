@@ -9,8 +9,13 @@
  * answer the same thing for each of them.
  *
  *   (a) `template-has-no-package-json`        `packages/render-core/template/` holds no
- *       `template-names-no-previous-renderer`  `package.json`, and no file under it names the
- *                                              previous renderer or one of its packages.
+ *       `template-names-no-previous-renderer`  `package.json` entry at any depth — file,
+ *       `template-has-no-symlinks`             directory or link — no file under it names the
+ *                                              previous renderer or one of its packages, and no
+ *                                              entry under it is a symbolic link. Entries are
+ *                                              read with `lstat`, so a link is never followed:
+ *                                              it is refused, because the other two rules cannot
+ *                                              read what it points at.
  *   (b) `render-rows-recorded`                 every render platform's `browser` and `ffmpeg` row
  *                                              in `apps/cli/src/setup/toolchain.manifest.json` is
  *                                              `recorded` — a digest somebody reviewed, never an
@@ -52,8 +57,19 @@
  *  70  internal error
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
@@ -63,12 +79,12 @@ const TOOLCHAIN_MANIFEST = "apps/cli/src/setup/toolchain.manifest.json";
 const BLOCKERS_FILE = "docs/release-blockers.json";
 const ADR_DIR = "docs/adr";
 
-/** The previous renderer's name, from two halves, and the pattern `check-no-remotion.mjs` uses. */
+/**
+ * The previous renderer's name, from two halves, and the test `check-no-remotion.mjs` applies:
+ * anywhere, in any case, inside any word — `@<name>/` included.
+ */
 const PREVIOUS_RENDERER = ["re", "motion"].join("");
-const NAMES_PREVIOUS_RENDERER = new RegExp(
-  `@${PREVIOUS_RENDERER}/|\\b${PREVIOUS_RENDERER}\\b`,
-  "i",
-);
+const NAMES_PREVIOUS_RENDERER = new RegExp(PREVIOUS_RENDERER, "i");
 
 /** The five platforms a render can run on: each needs a browser row and an ffmpeg row. */
 const RENDER_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"];
@@ -108,24 +124,38 @@ class UsageError extends Error {}
 // ---------------------------------------------------------------------------
 // The rules. Each is pure over the input its loader builds, so the self-tests can drive it.
 
-function checkTemplateManifest(files) {
-  return files.some((file) => file.path === "package.json")
-    ? [
-        `${TEMPLATE_DIR}/package.json exists. The template is two source files since payload 2 ` +
-          "left (ADR 0031 D7); a manifest there is a workspace somebody means to install, and " +
-          "nothing installs the workspace any more.",
-      ]
-    : [];
+function checkTemplateManifest(entries) {
+  return entries
+    .filter((entry) => basename(entry.path) === "package.json")
+    .map(
+      (entry) =>
+        `${TEMPLATE_DIR}/${entry.path} exists${entry.kind === undefined ? "" : ` (a ${entry.kind})`}. ` +
+        "The template is two source files since payload 2 left (ADR 0031 D7); a manifest " +
+        "there is a workspace somebody means to install, and nothing installs the workspace " +
+        "any more.",
+    );
 }
 
-function checkTemplateNames(files) {
-  return files
-    .filter((file) => NAMES_PREVIOUS_RENDERER.test(file.text))
+function checkTemplateNames(entries) {
+  return entries
+    .filter((file) => typeof file.text === "string" && NAMES_PREVIOUS_RENDERER.test(file.text))
     .map(
       (file) =>
         `${TEMPLATE_DIR}/${file.path} names the previous renderer or one of its packages. The ` +
         "template is copied onto every user's machine, and the renderer bundles against " +
         "@xplainer/motion alone.",
+    );
+}
+
+function checkTemplateLinks(entries) {
+  return entries
+    .filter((entry) => entry.kind === "symlink")
+    .map(
+      (entry) =>
+        `${TEMPLATE_DIR}/${entry.path} is a symbolic link. The template is copied onto every ` +
+        "user's machine, and neither of the other two rules reads through a link, so whatever " +
+        "it points at — a package.json, or a file naming the previous renderer — would pass " +
+        "them unread.",
     );
 }
 
@@ -283,6 +313,7 @@ const RULES = [
     input: "template",
     check: checkTemplateNames,
   },
+  { id: "template-has-no-symlinks", clause: "a", input: "template", check: checkTemplateLinks },
   { id: "render-rows-recorded", clause: "b", input: "manifest", check: checkRenderRows },
   { id: "release-blockers-closed", clause: "d", input: "blockers", check: checkBlockers },
 ];
@@ -362,9 +393,29 @@ const SELF_TESTS = [
     ],
   },
   {
+    rule: "template-has-no-package-json",
+    // Any kind of entry, at any depth: a directory by that name, or one a level down.
+    violating: [
+      { path: "package.json", kind: "directory" },
+      { path: "nested/package.json", kind: "file", text: "{}" },
+    ],
+    clean: [{ path: "nested/tsconfig.json", kind: "file", text: "{}" }],
+  },
+  {
+    rule: "template-has-no-symlinks",
+    violating: [{ path: "tsconfig.json", kind: "symlink" }],
+    clean: [{ path: "tsconfig.json", kind: "file", text: "{}" }],
+  },
+  {
     rule: "template-names-no-previous-renderer",
     violating: [{ path: "tsconfig.json", text: `{ "types": ["@${PREVIOUS_RENDERER}/media"] }` }],
     clean: [{ path: "tsconfig.json", text: '{ "compilerOptions": { "jsx": "react-jsx" } }' }],
+  },
+  {
+    rule: "template-names-no-previous-renderer",
+    // Inside a word as well: a component or a constant spelled with it is still the name.
+    violating: [{ path: "Root.tsx", text: `export const R${PREVIOUS_RENDERER.slice(1)}Root = 1;` }],
+    clean: [{ path: "Root.tsx", text: "export const MotionRoot = 1;" }],
   },
   {
     rule: "template-names-no-previous-renderer",
@@ -527,7 +578,50 @@ function runSelfTests() {
       problems.push(`rule "${id}" has no self-test. Add a violating and a clean sample.`);
     }
   }
+  problems.push(...loaderSelfTest());
   return { problems, verified: [...covered].sort(), samples: SELF_TESTS.length };
+}
+
+/**
+ * The template loader, on a real directory: what the rules are handed is what `lstat` says is
+ * there. A walk by `Dirent` type skipped a link as neither a file nor a directory and walked into a
+ * directory named `package.json`, so both rules (a) passed a tree they should have refused.
+ */
+function loaderSelfTest() {
+  const base = mkdtempSync(join(tmpdir(), "check-release-ready-template-"));
+  const outside = mkdtempSync(join(tmpdir(), "check-release-ready-outside-"));
+  try {
+    writeFileSync(join(base, "tailwind.css"), '@import "tailwindcss";\n');
+    mkdirSync(join(base, "package.json"));
+    mkdirSync(join(base, "nested"));
+    writeFileSync(join(base, "nested", "package.json"), "{}\n");
+    writeFileSync(join(outside, "package.json"), "{}\n");
+    // A directory link: `junction` on Windows, which needs no privilege; ignored elsewhere.
+    symlinkSync(outside, join(base, "linked"), "junction");
+    const entries = loadTemplateAt(base);
+    const problems = [];
+    const manifests = checkTemplateManifest(entries);
+    if (manifests.length !== 2) {
+      problems.push(
+        `the template loader handed rule "template-has-no-package-json" ${String(manifests.length)} ` +
+          "package.json entries from a directory holding two — a directory by that name and one " +
+          "a level down.",
+      );
+    }
+    if (checkTemplateLinks(entries).length !== 1) {
+      problems.push(
+        'the template loader did not hand rule "template-has-no-symlinks" the one symbolic link ' +
+          "in its sample directory.",
+      );
+    }
+    if (entries.some((entry) => entry.path.startsWith("linked/"))) {
+      problems.push("the template loader followed a symbolic link out of the template.");
+    }
+    return problems;
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -564,30 +658,42 @@ function readJson(root, path) {
   }
 }
 
-/** Every file under the template, as `{ path, text }`. `node_modules` is never shipped. */
+/** Every entry under the template. `node_modules` is never shipped, so its contents are not read. */
 function loadTemplate(root) {
   const base = join(root, TEMPLATE_DIR);
   if (!existsSync(base)) {
     throw new UsageError(`${TEMPLATE_DIR}/ is missing, so this is not the tree to judge.`);
   }
-  const files = [];
+  return loadTemplateAt(base);
+}
+
+/**
+ * Every entry under `base`, by `lstat`, as `{ path, kind }` — `kind` one of `file`, `directory`,
+ * `symlink` or `other` — with a regular file's `text`. A link is recorded and never followed.
+ */
+function loadTemplateAt(base) {
+  const entries = [];
   const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name !== "node_modules") {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      const path = relative(base, full).split(sep).join("/");
+      const stats = lstatSync(full);
+      if (stats.isSymbolicLink()) {
+        entries.push({ path, kind: "symlink" });
+      } else if (stats.isDirectory()) {
+        entries.push({ path, kind: "directory" });
+        if (name !== "node_modules") {
           walk(full);
         }
-      } else if (entry.isFile()) {
-        files.push({
-          path: relative(base, full).split(sep).join("/"),
-          text: readFileSync(full, "utf8"),
-        });
+      } else if (stats.isFile()) {
+        entries.push({ path, kind: "file", text: readFileSync(full, "utf8") });
+      } else {
+        entries.push({ path, kind: "other" });
       }
     }
   };
   walk(base);
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+  return entries.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function loadBlockers(root) {

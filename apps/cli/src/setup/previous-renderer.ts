@@ -14,8 +14,8 @@
  * so, and both are read here rather than through any reader of the old payload, which is gone:
  *
  * 1. `workspace.manifest.json` is a workspace manifest — `kind: "workspace"` — that records the
- *    previous renderer's CLI entry (`remotion_entry`). Only the two `setup --workspace` routes and
- *    `runtime build --workspace` ever wrote one.
+ *    previous renderer's CLI entry ({@link PREVIOUS_ENTRY_FIELD}). Only the two `setup --workspace`
+ *    routes and `runtime build --workspace` ever wrote one.
  * 2. `package.json`'s `name`, `dependencies` and `devDependencies` are **exactly** the last
  *    template's ({@link LAST_TEMPLATE}) — the file both routes copied in verbatim. A tree resolved
  *    from an older template, or a project that only resembles one, keeps everything.
@@ -39,6 +39,14 @@ import { join } from "node:path";
 
 /** The document an earlier `setup --workspace` wrote beside the tree it installed. */
 export const PREVIOUS_WORKSPACE_MANIFEST = "workspace.manifest.json";
+
+/**
+ * The field of that document that records the previous renderer's CLI entry, spelled once.
+ *
+ * It carries the previous renderer's name, so `scripts/check-no-remotion.mjs` admits this one line
+ * of this file and nothing else; the tests build their manifests from it rather than spelling it.
+ */
+export const PREVIOUS_ENTRY_FIELD = "remotion_entry";
 
 /** What is removed, in the order it is removed: the cost first, the evidence for it last. */
 export const PREVIOUS_RENDERER_ENTRIES = [
@@ -99,8 +107,8 @@ export function removePreviousRendererTree(workspaceRoot: string): PreviousRende
   if (
     manifest === null ||
     manifest.kind !== "workspace" ||
-    typeof manifest.remotion_entry !== "string" ||
-    manifest.remotion_entry === ""
+    typeof manifest[PREVIOUS_ENTRY_FIELD] !== "string" ||
+    manifest[PREVIOUS_ENTRY_FIELD] === ""
   ) {
     return { kind: "absent" };
   }

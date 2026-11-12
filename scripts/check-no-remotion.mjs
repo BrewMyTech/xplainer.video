@@ -2,13 +2,17 @@
 /**
  * The previous renderer's name stays out of the tree (ADR 0031's note of 2026-11-12, D9).
  *
- * One grep, over every file git tracks:
+ * One grep, over every file git tracks, and the same test of every tracked file's name:
  *
- *     git grep -niP '@remotion/|\bremotion\b'
+ *     git grep --no-color --no-column -n -i -F -e remotion
+ *     git ls-files -z
  *
- * case-insensitive, so prose ("Rendering depends on Remotion …") is caught as well as an import.
- * Every hit must be admitted by an entry of ALLOWLIST, or vanish once the strings in
- * EXEMPT_STRINGS are taken out of its line. Anything else is printed as `path:line`, and the exit
+ * Case-insensitive and **with no word boundary**, so prose ("Rendering depends on Remotion …") is
+ * caught as well as an import, and so are the spellings a `\b` lets through: a component named
+ * `RemotionRoot`, a `REMOTION_TIMEOUT`, a `remotion_entry` field — `_` and a following letter are
+ * word characters, so the word-bounded pattern D9 wrote saw none of them. Every hit must be admitted
+ * by an entry of ALLOWLIST, or vanish once the strings in EXEMPT_STRINGS are taken out of its line
+ * (or its path). Anything else is printed as `path:line`, or `path (file name)`, and the exit
  * status is 1.
  *
  * WHY. ADR 0031 replaced Remotion with a renderer this repository owns, and Phase 2 deleted the
@@ -20,6 +24,8 @@
  * THE ALLOWLIST IS DATA, WRITTEN OUT IN FULL, AND EACH ENTRY IS AS TIGHT AS ITS FILE ALLOWS.
  * Records whose subject is history — the ADRs, the roadmap, the changelogs and changesets, and
  * this file, which has to name what it bans — are admitted whole, by directory or by file name.
+ * **Only an entry that admits a whole file admits a file's name**: an entry scoped to lines says
+ * which lines, and a name is not one of them.
  * Every other entry names one file and, where that file is otherwise live, the lines inside it: a
  * regular expression the line has to match (`text`), the Markdown heading it has to sit under
  * (`section`), or the first words of the paragraph it has to belong to (`paragraph`). A new
@@ -43,16 +49,23 @@
  * the binary ones are the files `git grep -l` names that `-I` did not; nothing reads git's own
  * "Binary file … matches" sentence, which is translated under a non-English locale.
  *
+ * FILE NAMES. `git ls-files -z` lists every tracked path, and each is judged as a line would be —
+ * the exempt strings out first, then the matcher — so ADR 0031's own file and this checker pass by
+ * name and a `remotion-compat.ts` does not. A tracked directory is part of every path under it.
+ *
  * TRACKED FILES ONLY, AS ADR 0031'S D9 SAYS. That is what a CI checkout holds, and it keeps
  * `node_modules/`, `dist/` and anything else ignored out of the answer without a second list of
  * exclusions. The cost is that a file not yet added to git is not checked until it is; CI, which
  * checks out the commit, always sees it.
  *
- * WHY `git grep -P` AND A JAVASCRIPT REGEX BESIDE IT. The grep is the command D9 names, and it
- * finds the lines. The JavaScript `MATCHER` is the same pattern — `\b` means the same thing in
- * both for the ASCII this matches — and it is what re-judges a line once the exempt strings are
- * out of it. A git built without PCRE refuses `-P`, and that is reported as "could not run", exit
- * 2, never as a pass.
+ * WHY `git grep -F` AND A JAVASCRIPT REGEX BESIDE IT. The grep finds the lines; `-F -i` is a
+ * fixed string matched without regard to case, which every git supports — D9's `-P` needed a git
+ * built with PCRE, and a word boundary that missed the spellings above. The JavaScript `MATCHER`
+ * is the same test, and it is what re-judges a line once the exempt strings are out of it.
+ * `--no-color` and `--no-column` are spelled out because `color.grep` and `grep.column` in a
+ * user's own git config would otherwise change the output this parses: a column is one more
+ * NUL-separated field, which would land at the front of every line's text. A self-test runs the
+ * grep a second time under exactly that config and requires the same hits.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every invocation, against the
  * real ALLOWLIST: a seeded hit fails, an allowlisted hit passes, the exempt file name passes and a
@@ -65,8 +78,7 @@
  *   0  every hit is admitted
  *   1  a hit outside the allowlist, an allowlist entry that admits nothing, or a self-test that
  *      failed
- *   2  the checker could not run (an argument it does not take, no workspace root, no git, a git
- *      without PCRE)
+ *   2  the checker could not run (an argument it does not take, no workspace root, no git)
  *  70  internal error
  */
 import { spawnSync } from "node:child_process";
@@ -76,11 +88,25 @@ import { fileURLToPath } from "node:url";
 
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
 
-/** The pattern ADR 0031's D9 names, for `git grep -P`. */
-const GIT_PATTERN = "@remotion/|\\bremotion\\b";
+/** The fixed string `git grep -F -i` looks for: every occurrence, in any case, inside any word. */
+const GIT_PATTERN = "remotion";
 
-/** The same pattern in JavaScript. It judges a line after the exempt strings have left it. */
-const MATCHER = /@remotion\/|\bremotion\b/i;
+/** The same test in JavaScript. It judges a line, or a path, after the exempt strings have left it. */
+const MATCHER = /remotion/i;
+
+/**
+ * A git config that would change `git grep`'s output if the flags did not pin it: a column field,
+ * and colour. The self-test runs the grep under it and requires the same hits as without it.
+ */
+const HOSTILE_GIT_CONFIG = {
+  GIT_CONFIG_COUNT: "3",
+  GIT_CONFIG_KEY_0: "grep.column",
+  GIT_CONFIG_VALUE_0: "true",
+  GIT_CONFIG_KEY_1: "color.grep",
+  GIT_CONFIG_VALUE_1: "always",
+  GIT_CONFIG_KEY_2: "color.ui",
+  GIT_CONFIG_VALUE_2: "always",
+};
 
 /** The start of AC-14f's own pattern, which every description of that gate quotes. */
 const AC_14F_PATTERN = /'@remotion\/\|\\bremotion\\b\|/;
@@ -152,6 +178,11 @@ const ALLOWLIST = [
     path: "apps/cli/src/setup/previous-renderer.ts",
     text: /^ {4}(?:remotion|"@remotion\/[a-z0-9-]+"): "4\.0\.495",$/,
     reason: "LAST_TEMPLATE's pins: how `setup` recognises the tree it deletes, and nothing else.",
+  },
+  {
+    path: "apps/cli/src/setup/previous-renderer.ts",
+    text: /^export const PREVIOUS_ENTRY_FIELD = "remotion_entry";$/,
+    reason: "The old workspace manifest's field, spelled once; its tests read it from here.",
   },
 
   // --- AC-14f, which keeps the name out of apps/desktop, and what describes it ---
@@ -265,6 +296,14 @@ function entryAdmits(entry, hit, readLines) {
   if (entry.name !== undefined && basename(hit.path) !== entry.name) {
     return false;
   }
+  if (hit.fileName === true) {
+    return (
+      entry.text === undefined &&
+      entry.section === undefined &&
+      entry.paragraph === undefined &&
+      entry.binary !== true
+    );
+  }
   if (hit.binary || entry.binary === true) {
     return hit.binary === true && entry.binary === true;
   }
@@ -284,7 +323,8 @@ function entryAdmits(entry, hit, readLines) {
 }
 
 /**
- * The verdict on one hit: `exempt` when nothing matches once the exempt strings are out,
+ * The verdict on one hit — a line, a binary file, or a file name, whose `text` is its path:
+ * `exempt` when nothing matches once the exempt strings are out,
  * `admitted` when an entry admits it (and which ones did), `violation` otherwise. A line that
  * never matched at all is `no-match`, which the grep never produces and the self-tests do.
  */
@@ -422,6 +462,79 @@ const SELF_TESTS = [
     name: "the word inside another word is not a hit",
     hit: { path: "README.md", line: 1, text: "@xplainer/motion, a promotional emotion" },
     expect: "no-match",
+  },
+  {
+    name: "a component name that starts with it is a hit",
+    hit: {
+      path: "apps/cli/src/render/example.tsx",
+      line: 1,
+      text: `export const ${CAPITALISED}Root = () => null;`,
+    },
+    expect: "violation",
+  },
+  {
+    name: "an upper-case constant is a hit",
+    hit: {
+      path: "apps/cli/src/render/example.ts",
+      line: 1,
+      text: `const ${WORD.toUpperCase()}_TIMEOUT_MS = 30_000;`,
+    },
+    expect: "violation",
+  },
+  {
+    name: "a snake-case field is a hit",
+    hit: { path: "apps/cli/src/setup/example.ts", line: 1, text: `{ ${WORD}_entry: "cli.js" }` },
+    expect: "violation",
+  },
+  {
+    name: "previous-renderer.ts's one spelling of the old manifest's field is admitted",
+    hit: {
+      path: "apps/cli/src/setup/previous-renderer.ts",
+      line: 49,
+      text: `export const PREVIOUS_ENTRY_FIELD = "${WORD}_entry";`,
+    },
+    expect: "admitted",
+  },
+  {
+    name: "and any other line of that file naming the field is not",
+    hit: {
+      path: "apps/cli/src/setup/previous-renderer.ts",
+      line: 102,
+      text: `    typeof manifest.${WORD}_entry !== "string" ||`,
+    },
+    expect: "violation",
+  },
+  {
+    name: "a tracked file whose name carries it is a hit",
+    hit: {
+      path: `apps/cli/src/render/${WORD}-compat.ts`,
+      fileName: true,
+      text: `apps/cli/src/render/${WORD}-compat.ts`,
+    },
+    expect: "violation",
+  },
+  {
+    name: "ADR 0031's own file, by name, is exempt",
+    hit: { path: `docs/adr/${ADR_0031_FILE}`, fileName: true, text: `docs/adr/${ADR_0031_FILE}` },
+    expect: "exempt",
+  },
+  {
+    name: "a file named for it inside a record of history is admitted",
+    hit: {
+      path: `docs/adr/0040-after-${WORD}.md`,
+      fileName: true,
+      text: `docs/adr/0040-after-${WORD}.md`,
+    },
+    expect: "admitted",
+  },
+  {
+    name: "and an entry scoped to lines admits no file name",
+    hit: {
+      path: `docs/acceptance-criteria-${WORD}.md`,
+      fileName: true,
+      text: `docs/acceptance-criteria-${WORD}.md`,
+    },
+    expect: "violation",
   },
   {
     name: "the alias table in bundle.ts is admitted",
@@ -563,12 +676,17 @@ function findWorkspaceRoot() {
 }
 
 /** One `git grep` over the tracked files, `C` locale. Exit 1 is "no match", not a failure. */
-function gitGrep(root, flags) {
-  const result = spawnSync("git", ["grep", "--no-color", ...flags, "-e", GIT_PATTERN], {
+function gitGrep(root, flags, env = {}) {
+  return runGit(root, ["grep", "--no-color", "--no-column", ...flags, "-e", GIT_PATTERN], env);
+}
+
+/** `git <args>` in `root`, `C` locale, `env` over this process's. Exit 1 answers `""`. */
+function runGit(root, args, env = {}) {
+  const result = spawnSync("git", args, {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
-    env: { ...process.env, LC_ALL: "C" },
+    env: { ...process.env, ...env, LC_ALL: "C" },
   });
   if (result.error !== undefined) {
     throw new UsageError(`git could not be run: ${result.error.message}`);
@@ -578,17 +696,20 @@ function gitGrep(root, flags) {
   }
   if (result.status !== 0) {
     throw new UsageError(
-      `git grep ${flags.join(" ")} exited ${String(result.status)}: ${result.stderr.trim()}`,
+      `git ${args.join(" ")} exited ${String(result.status)}: ${result.stderr.trim()}`,
     );
   }
   return result.stdout;
 }
 
-/** Every hit in the tracked tree: `{ path, line, text }`, or `{ path, binary: true }`. */
-function collectHits(root) {
+/**
+ * Every hit in the tracked tree: `{ path, line, text }`, `{ path, binary: true }`, or
+ * `{ path, fileName: true, text: path }` for a tracked path that carries the word.
+ */
+function collectHits(root, env = {}) {
   const hits = [];
   const textFiles = new Set();
-  for (const record of gitGrep(root, ["-z", "-n", "-i", "-I", "-P"]).split("\n")) {
+  for (const record of gitGrep(root, ["-z", "-n", "-i", "-I", "-F"], env).split("\n")) {
     if (record === "") {
       continue;
     }
@@ -596,9 +717,14 @@ function collectHits(root) {
     textFiles.add(path);
     hits.push({ path, line: Number(line), text: rest.join("\0").replace(/\r$/, "") });
   }
-  for (const path of gitGrep(root, ["-z", "-l", "-i", "-P"]).split("\0")) {
+  for (const path of gitGrep(root, ["-z", "-l", "-i", "-F"], env).split("\0")) {
     if (path !== "" && !textFiles.has(path)) {
       hits.push({ path, binary: true });
+    }
+  }
+  for (const path of runGit(root, ["ls-files", "-z"], env).split("\0")) {
+    if (path !== "" && MATCHER.test(path)) {
+      hits.push({ path, fileName: true, text: path });
     }
   }
   return hits;
@@ -646,13 +772,24 @@ function main(argv) {
   };
 
   const hits = collectHits(root);
+  // The same grep under a git config that would add a column and colour if the flags did not pin
+  // them: a parse that depended on the user's config would judge a different set of lines.
+  if (JSON.stringify(collectHits(root, HOSTILE_GIT_CONFIG)) !== JSON.stringify(hits)) {
+    process.stderr.write(
+      "check-no-remotion: the grep answered differently under grep.column=true and " +
+        "color.grep=always, so its output depends on the git config and was not judged.\n",
+    );
+    return 1;
+  }
   const { violations, unused, admitted, exempt } = judge(hits, ALLOWLIST, readLines);
 
   for (const hit of violations) {
     process.stdout.write(
       hit.binary
         ? `check-no-remotion: ${hit.path} (binary)\n`
-        : `check-no-remotion: ${hit.path}:${String(hit.line)}: ${excerpt(hit.text)}\n`,
+        : hit.fileName
+          ? `check-no-remotion: ${hit.path} (file name)\n`
+          : `check-no-remotion: ${hit.path}:${String(hit.line)}: ${excerpt(hit.text)}\n`,
     );
   }
   for (const entry of unused) {

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   LAST_TEMPLATE,
+  PREVIOUS_ENTRY_FIELD,
   PREVIOUS_RENDERER_ENTRIES,
   PREVIOUS_WORKSPACE_MANIFEST,
   removePreviousRendererTree,
@@ -75,7 +76,7 @@ function workspace(options: TreeOptions = {}): string {
   }
   const manifest =
     options.manifest === undefined
-      ? { kind: "workspace", remotion_entry: ENTRY }
+      ? { kind: "workspace", [PREVIOUS_ENTRY_FIELD]: ENTRY }
       : options.manifest;
   if (manifest !== null) {
     writeFileSync(join(root, PREVIOUS_WORKSPACE_MANIFEST), `${JSON.stringify(manifest)}\n`);
@@ -162,7 +163,7 @@ describe("removePreviousRendererTree", () => {
     ["no workspace manifest", { manifest: null }],
     [
       "a manifest that is not a workspace's",
-      { manifest: { kind: "runtime", remotion_entry: ENTRY } },
+      { manifest: { kind: "runtime", [PREVIOUS_ENTRY_FIELD]: ENTRY } },
     ],
     ["a manifest recording no previous-renderer entry", { manifest: { kind: "workspace" } }],
     ["a manifest that is not JSON", { manifest: null, garbage: true }],

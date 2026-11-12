@@ -250,10 +250,12 @@ Each one, and the thing that catches you:
   `@remotion/`, `remotion`, `@xplainer/motion`, `kokoro`, `captioned_speech` and `tts` across
   `apps/desktop` — `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own
   CI step beside AC-2c's.*
-- **The previous renderer is named only where `scripts/check-no-remotion.mjs` allows it.** Its
-  allowlist is data in that file — history (ADRs, the roadmap, changelogs, changesets), the one
-  release of grace for older videos, the gates that keep it out, a pronunciation — each entry with
-  its reason and scoped to the lines it was written for. Reword a new mention rather than widening
+- **The previous renderer is named only where `scripts/check-no-remotion.mjs` allows it** — in any
+  case and inside any word, so a component, a constant or a field that carries it is a hit, and in
+  a tracked file's name as well as its lines. Its allowlist is data in that file — history (ADRs,
+  the roadmap, changelogs, changesets), the one release of grace for older videos, the gates that
+  keep it out, a pronunciation — each entry with its reason and scoped to the lines it was written
+  for. Reword a new mention rather than widening
   an entry, and delete an entry that admits nothing: the gate fails on it. Test fixtures build the
   word from two halves. *Enforcement: `pnpm check:no-remotion` (ADR 0031 D9), in `pnpm verify`
   and as its own CI step.*

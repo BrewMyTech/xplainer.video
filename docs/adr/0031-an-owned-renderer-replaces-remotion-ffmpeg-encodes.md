@@ -909,6 +909,19 @@ container's 12 fps bar still unrun — that one stays open as its own release bl
 
 ### The grep gate's allowlist is wider than D9's list
 
+**The pattern is wider than D9's grep, too.** D9 names `git grep -niP '@remotion/|\bremotion\b'`,
+and its word boundary lets through every spelling that joins the name to a word character —
+`RemotionRoot`, `REMOTION_TIMEOUT`, `remotion_entry` — which is exactly what a renamed component, a
+constant or a field would be. **This note amends that sentence as well.** As built, the gate runs
+`git grep --no-color --no-column -n -i -F -e remotion`: every occurrence, in any case, inside any
+word; a fixed string, so no git built with PCRE is needed; and colour and the column field pinned
+off, so a user's `color.grep` or `grep.column` cannot change the output it parses — a self-test
+runs it a second time under both and requires the same hits. It also tests every tracked path,
+from `git ls-files`, the same way, so a file named for the previous renderer is a hit as well, and
+a file name is admitted only by an entry that admits that whole file. `check-release-ready.mjs`'s
+rule (a) applies the same test to the template, reads it with `lstat`, and refuses a symbolic link
+in it and a `package.json` of any kind at any depth.
+
 D9 says the gate "allows exactly" a list: `LEGACY_IMPORT_ALIASES` in `render/bundle.ts` and its
 test, `SKILL.md`'s migration paragraph, `AC-14f` and the places that describe it, a pronunciation
 entry in `lexicon.txt`, `docs/adr/`, `docs/ROADMAP.md`, the changelogs, `.changeset/` and the
@@ -916,10 +929,12 @@ checker. **This note amends that sentence**: the list `scripts/check-no-remotion
 with is wider, and the script — where every entry carries its reason and is held to the lines it was
 written for — is the authority. What it admits beyond D9's list, and why:
 
-- **`apps/cli/src/setup/previous-renderer.ts`, `LAST_TEMPLATE`'s pins only** — the lines naming the
-  old template's packages at `4.0.495`. D7 deletes an older `setup --workspace`'s tree only when its
-  `package.json` names and pins equal the last template's, so the recogniser has to carry them
-  verbatim; nothing else in that file is admitted.
+- **`apps/cli/src/setup/previous-renderer.ts`, `LAST_TEMPLATE`'s pins and one more line** — the
+  lines naming the old template's packages at `4.0.495`, and `PREVIOUS_ENTRY_FIELD`, the
+  `remotion_entry` key an older workspace manifest records, spelled once so that the module and its
+  tests read it from there. D7 deletes an older `setup --workspace`'s tree only when its manifest
+  records that field and its `package.json` names and pins equal the last template's, so the
+  recogniser has to carry both verbatim; nothing else in that file is admitted.
 - **`lexicon.txt`'s header line** that lists the words CMUdict lacks, beside the pronunciation entry
   D9 named: it is why that entry exists.
 - **Three criteria in `docs/acceptance-criteria.md`, quoted as written** — AC-7's quoted text and
@@ -937,7 +952,8 @@ written for — is the authority. What it admits beyond D9's list, and why:
   line that still matches afterwards is a hit like any other: this record's own file name, linked
   wherever the decision is cited, and the checker's, as a file (`check-no-remotion`) and as the
   root script (`check:no-remotion`), wherever either is wired in or described. D9 admitted the
-  checker as a file; these admit its name and this record's elsewhere.
+  checker as a file; these admit its name and this record's elsewhere. The same two are the only
+  tracked paths that carry the word, and pass the file-name test the same way.
 
 One item of D9's list is **narrower** as committed: `render/bundle.ts`'s test has no entry, because
 it reads the legacy names out of `LEGACY_IMPORT_ALIASES` rather than spelling them, and the entry

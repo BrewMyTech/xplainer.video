@@ -33,7 +33,11 @@ import { toolchainMarkerPath } from "../install/preflight.js";
 import { buildFixturePayload } from "../install/testing/payload.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
-import { LAST_TEMPLATE, PREVIOUS_WORKSPACE_MANIFEST } from "../setup/previous-renderer.js";
+import {
+  LAST_TEMPLATE,
+  PREVIOUS_ENTRY_FIELD,
+  PREVIOUS_WORKSPACE_MANIFEST,
+} from "../setup/previous-renderer.js";
 import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
 import { committedManifestPath } from "../setup/source.js";
 import { writeFakeFfmpeg } from "../setup/testing/fake-ffmpeg.js";
@@ -669,7 +673,7 @@ describe("xplainer setup — the previous renderer's install (D7)", () => {
     writeFileSync(join(root, "package-lock.json"), "{}\n");
     writeFileSync(
       join(root, PREVIOUS_WORKSPACE_MANIFEST),
-      `${JSON.stringify({ kind: "workspace", remotion_entry: "node_modules/cli/cli.js" })}\n`,
+      `${JSON.stringify({ kind: "workspace", [PREVIOUS_ENTRY_FIELD]: "node_modules/cli/cli.js" })}\n`,
     );
     mkdirSync(join(root, "videos", "demo"), { recursive: true });
     writeFileSync(join(root, "videos", "demo", "Scenes.tsx"), "export const scenes = [];\n");
