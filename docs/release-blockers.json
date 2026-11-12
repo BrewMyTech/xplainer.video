@@ -60,14 +60,14 @@
       "id": "cdn-cache-rule-applied",
       "title": "The CDN cache rule applied to the live zone",
       "status": "open",
-      "closes_when": "The owner applies infra/terraform's cloudflare_ruleset.cdn_cache as committed in 6802d60 — no response in the 400–499 range is ever cached, and a manifest.json is cached for five minutes — with terraform plan showing one in-place update of that ruleset and nothing else (infra/README.md). Until then an error answer can be kept at the edge for 30 days. The owner ask or run of the apply is the evidence.",
+      "closes_when": "The owner applies infra/terraform's cloudflare_ruleset.cdn_cache as committed in 6802d60 — no response in the 400–599 range is ever cached, and a manifest.json is cached for five minutes — with terraform plan showing one change to that ruleset (a create if it was never applied, otherwise an in-place update) and nothing else (infra/README.md). Until then the CDN caches nothing at all: cf-cache-status read DYNAMIC on 2026-11-12, so the apply also turns caching on for the first time. The owner ask or run of the apply is the evidence.",
       "evidence": []
     },
     {
       "id": "linux-windows-setup-proof",
       "title": "A real xplainer setup download and render on a Linux and a Windows runner",
       "status": "open",
-      "closes_when": "A dispatch of e2e-toolchain.yml with linux and windows selected passes — setup downloads the BtbN FFmpeg and Chrome for Testing from their publishers and a render comes out — and its run id is recorded here. It reads the published manifest, so it waits on v2-manifest-upload.",
+      "closes_when": "A dispatch of e2e-toolchain.yml with linux=true and windows=true passes — the gate's setup, reading the committed manifest, downloads the BtbN FFmpeg and Chrome for Testing from their publishers and a render comes out — and its run id is recorded here. Those legs read no published manifest and can run once the branch is on GitHub; only the separate windows_setup leg (a bare setup) waits on v2-manifest-upload.",
       "evidence": []
     },
     {
