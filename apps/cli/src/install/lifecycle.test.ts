@@ -389,19 +389,40 @@ async function waitUntilStopped(stateDir: string, pid: number | null): Promise<v
   expect(await untilGone(pid, 30_000)).toBe(true);
 }
 
-/** Hold a port with a listener that is emphatically not an xplainer daemon. */
+/** How long {@link holdPort} keeps asking for a port a daemon has just been told to give up. */
+const HOLD_PORT_PATIENCE_MS = 10_000;
+
+/**
+ * Hold a port with a listener that is emphatically not an xplainer daemon.
+ *
+ * Patient on `EADDRINUSE` alone, because the port is usually one a daemon was stopped on a moment
+ * ago, and {@link waitUntilStopped} reads `runtime.json`'s removal — a step of the same shutdown
+ * that releases the listener, not a promise that the kernel already has. On a loaded `ubuntu`
+ * runner the bind landed in that gap once (PR #9's CI, 2026-11-12: `listen EADDRINUSE`).
+ */
 async function holdPort(port: number): Promise<void> {
-  const server = createServer((_request, response) => {
-    response.writeHead(404, { "content-type": "text/plain" });
-    response.end("not a daemon\n");
-  });
-  await new Promise<void>((ready, failed) => {
-    server.once("error", failed);
-    server.listen(port, "127.0.0.1", ready);
-  });
-  listeners.push(() => {
-    server.close();
-  });
+  const deadline = Date.now() + HOLD_PORT_PATIENCE_MS;
+  for (;;) {
+    const server = createServer((_request, response) => {
+      response.writeHead(404, { "content-type": "text/plain" });
+      response.end("not a daemon\n");
+    });
+    try {
+      await new Promise<void>((ready, failed) => {
+        server.once("error", failed);
+        server.listen(port, "127.0.0.1", ready);
+      });
+      listeners.push(() => {
+        server.close();
+      });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || Date.now() > deadline) {
+        throw error;
+      }
+      await new Promise((resume) => setTimeout(resume, 50));
+    }
+  }
 }
 
 /** Five starts in a row that never reached ready, and the latch the breaker writes. */
