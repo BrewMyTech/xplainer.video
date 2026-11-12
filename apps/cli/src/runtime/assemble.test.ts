@@ -3,9 +3,9 @@
  *
  * Nothing here is substituted. The checkout is a directory tree with `package.json` files and a
  * `node_modules` npm itself would recognise; the payload is assembled by the shipped code; the
- * interpreter inside it is a copy of this process's own; and the three things the payload has to be
- * able to do — run its entry, resolve its data files, run its npm — are asserted by **spawning
- * them**, under a `PATH` on which `node` does not resolve. That last part is the whole point: every
+ * interpreter inside it is a copy of this process's own; and the two things the payload has to be
+ * able to do — run its entry and resolve its data files — are asserted by **spawning it**, under a
+ * `PATH` on which `node` does not resolve. That last part is the whole point: every
  * defect this story exists to remove looked fine from inside the Vitest worker and failed in a
  * child process with no interpreter on its `PATH`.
  *
@@ -38,7 +38,6 @@ import {
   allowlistMatcher,
   assembleRuntime,
   findCheckout,
-  npmInstallation,
 } from "./assemble.js";
 import { isPayloadPath, RUNTIME_MANIFEST_FILE } from "./manifest.js";
 import { verifyRuntimePayload } from "./verify.js";
@@ -50,7 +49,7 @@ const ROOT = "@fixture/root";
 let scratch = "";
 /** The fixture checkout, built once. */
 let checkout = "";
-/** One assembled payload, built once: it is 130 MB of copying and every read-only test shares it. */
+/** One assembled payload, built once: it is 110 MB of copying and every read-only test shares it. */
 let payload: AssembledRuntime;
 
 beforeAll(() => {
@@ -91,7 +90,6 @@ describe("assembleRuntime — what travels", () => {
     expect(names).toContain("external-a");
     expect(names).toContain("external-b");
     expect(names).toContain("@fixture/lib");
-    expect(names).toContain("npm");
   });
 
   it("nests a second version of a package under the one that asked for it", () => {
@@ -115,21 +113,19 @@ describe("assembleRuntime — what travels", () => {
     }
   });
 
-  it("carries npm with its own vendored node_modules, which is what makes it runnable", () => {
-    const npm = join(payload.outDir, "lib", "node_modules", "npm");
-    const vendored = join(npm, "node_modules");
+  // npm travelled with payload 1 for `setup --workspace` alone, and left with it (ADR 0031 §Note,
+  // 2026-11-12, D11): not copied, not shimmed, and not named anywhere in the manifest on disk.
+  it("carries no npm, and its manifest names none", () => {
+    const written = JSON.parse(readFileSync(payload.manifestPath, "utf8"));
 
-    expect(existsSync(join(npm, "bin", "npm-cli.js"))).toBe(true);
-    expect(existsSync(vendored)).toBe(true);
-    expect(
-      payload.manifest.files.some((file) =>
-        file.path.startsWith("lib/node_modules/npm/node_modules/"),
-      ),
-    ).toBe(true);
+    expect(existsSync(join(payload.outDir, "lib", "node_modules", "npm"))).toBe(false);
+    expect(existsSync(join(payload.outDir, "bin", "npm"))).toBe(false);
+    expect(payload.manifest.packages.map((entry) => entry.name)).not.toContain("npm");
+    expect(written).not.toHaveProperty("npm_version");
+    expect(written.launch).not.toHaveProperty("npm_cli");
   });
 
-  it("records npm's version, the platform and the interpreter's architecture", () => {
-    expect(payload.manifest.npm_version).toBe(npmInstallation(process.execPath).version);
+  it("records the platform and the interpreter's architecture", () => {
     expect(payload.manifest.platform).toBe(process.platform);
     expect(payload.manifest.arch).toBe(process.arch);
     expect(payload.manifest.node_version).toBe(process.version);
@@ -145,7 +141,6 @@ describe("assembleRuntime — the manifest", () => {
       ...payload.manifest.packages.map((entry) => entry.path),
       payload.manifest.launch.interpreter,
       payload.manifest.launch.entry,
-      payload.manifest.launch.npm_cli,
       ...payload.manifest.launch.argv,
     ];
 
@@ -222,18 +217,7 @@ describe("assembleRuntime — the payload runs with no node on PATH", () => {
     // not slow; it is contended, so the budget says so rather than the machine deciding.
   }, 30_000);
 
-  it("runs the npm it carries — the D3 assertion, in miniature", () => {
-    const result = spawnSync(
-      join(payload.outDir, ...payload.manifest.launch.interpreter.split("/")),
-      [join(payload.outDir, ...payload.manifest.launch.npm_cli.split("/")), "--version"],
-      { encoding: "utf8", env: scrubbedEnvironment(), cwd: scratch },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(payload.manifest.npm_version);
-  });
-
-  it("cannot find a node on that PATH, which is what makes the two runs above mean something", () => {
+  it("cannot find a node on that PATH, which is what makes the run above mean something", () => {
     const environment = scrubbedEnvironment();
     const lookup = spawnSync(
       process.platform === "win32" ? "where" : join(environment.PATH ?? "", "sh"),
@@ -338,19 +322,19 @@ describe("assembleRuntime — what it refuses", () => {
  *
  * The directory is real and empty rather than absent, so a failure is "nothing on this `PATH`"
  * rather than "this `PATH` is malformed". On Windows a child needs `SystemRoot` to start at all,
- * and npm needs somewhere to call home on every platform, so those are supplied and nothing else
- * is: the point of the scrub is the interpreter, not the whole environment.
+ * and a home is supplied on every platform, and nothing else is: the point of the scrub is the
+ * interpreter, not the whole environment.
  */
 function scrubbedEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const path = join(scratch, "no-node-path");
   if (!existsSync(path)) {
     mkdirSync(path, { recursive: true });
     if (process.platform !== "win32") {
-      // npm runs every lifecycle script through `sh -c`, so a `PATH` with no shell at all fails
-      // with `spawn sh ENOENT` before any script could look for an interpreter — which would prove
-      // nothing about interpreters. The directory therefore holds a shell and provably nothing
-      // else, which is a stricter scrub than `/usr/bin:/bin` and does not depend on what the host
-      // happens to have installed there.
+      // The lookup that proves no `node` resolves runs `command -v node` through a shell, and a
+      // `PATH` with no shell at all would fail before it looked — which would prove nothing about
+      // interpreters. The directory therefore holds a shell and provably nothing else, which is a
+      // stricter scrub than `/usr/bin:/bin` and does not depend on what the host happens to have
+      // installed there.
       symlinkSync("/bin/sh", join(path, "sh"));
     }
   }

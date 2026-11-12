@@ -2,8 +2,8 @@
  * What a payload is, written down: the shape `runtime build` produces and `runtime verify` reads.
  *
  * **Payload 1 — the runtime.** A relocatable directory carrying its own interpreter, the workspace
- * packages as their `files` allowlists publish them, the transitive closure of the runtime
- * dependencies, and npm. Its manifest is {@link RuntimeManifest}, written as
+ * packages as their `files` allowlists publish them, and the transitive closure of the runtime
+ * dependencies. Its manifest is {@link RuntimeManifest}, written as
  * {@link RUNTIME_MANIFEST_FILE}. It is the only payload: the render workspace the previous renderer
  * needed — payload 2 — left with ADR 0031's Phase 2 (§Note, 2026-11-12, D7), and what is left of an
  * old one on a machine is `setup/previous-renderer.ts`'s to remove.
@@ -20,10 +20,11 @@
  *    `process.execPath`, so the payload carries the build host's own native interpreter and its
  *    architecture. Recording both is what lets `verify` refuse a wrong-host payload by name instead
  *    of leaving a user with a spawn error.
- * 3. **Symlinks are a separate list from files.** npm's own `bin/npm` shim is a symlink to
- *    `npm-cli.js`; it has no contents to hash and its *target* is the thing that can go wrong.
- *    Hashing the file it points at would silently pass a link that had been repointed, so links
- *    carry their target and are compared as targets.
+ * 3. **Symlinks are a separate list from files.** A copied package may carry a relative link — npm's
+ *    own `bin/npm` shim, a link to `npm-cli.js`, was the one this list was written for, before npm
+ *    left the payload (D11). A link has no contents to hash and its *target* is the thing that can
+ *    go wrong: hashing the file it points at would silently pass a link that had been repointed, so
+ *    links carry their target and are compared as targets.
  *
  * The manifest is read back by {@link readRuntimeManifest}, which validates rather than casts: a
  * manifest is data that arrives from disk, and the file being a `.json` says nothing about its
@@ -53,14 +54,11 @@ import process from "node:process";
 /** Payload 1's manifest, written at the root of the payload. */
 export const RUNTIME_MANIFEST_FILE = "runtime.manifest.json";
 
-/** Where payload 1 puts the interpreter and npm's shim, payload-relative. */
+/** Where payload 1 puts the interpreter, payload-relative. */
 export const PAYLOAD_BIN_DIR = "bin";
 
-/** Where payload 1 puts every package, payload-relative — npm's own layout, so npm can read it. */
+/** Where payload 1 puts every package, payload-relative — the layout of a global npm install. */
 export const PAYLOAD_LIB_DIR = "lib/node_modules";
-
-/** The npm entry inside payload 1, payload-relative. Spawned, never imported. */
-export const PAYLOAD_NPM_CLI = "lib/node_modules/npm/bin/npm-cli.js";
 
 /**
  * The version stamped into every manifest this module writes.
@@ -198,8 +196,6 @@ export type LaunchContract = {
   interpreter: string;
   /** The CLI entry, e.g. `lib/node_modules/@xplainer/cli/dist/bin.js`. */
   entry: string;
-  /** npm's own entry, spawned by `setup --workspace` and never imported by the daemon. */
-  npm_cli: string;
   /** `[interpreter, entry]` — the argv prefix, spelled out so no caller has to reassemble it. */
   argv: string[];
 };
@@ -230,8 +226,6 @@ export type RuntimeManifest = {
   arch: string;
   /** The interpreter's own version, e.g. `v24.20.0`. */
   node_version: string;
-  /** The npm that travelled inside the payload. */
-  npm_version: string;
   /** Which host assembled it. Always `node`: the other two are refused. */
   host: RuntimeHost;
   /** Absent from a payload built before ADR 0031's cut: {@link runtimeToolchainFormat}. */
@@ -401,7 +395,15 @@ export function runtimeToolchainFormat(manifest: RuntimeManifest): number {
   return manifest.toolchain?.format ?? PRE_CUT_TOOLCHAIN_FORMAT;
 }
 
-/** Read and validate payload 1's manifest. */
+/**
+ * Read and validate payload 1's manifest.
+ *
+ * **npm's two fields are optional and never returned** (ADR 0031 §Note, 2026-11-12, D11). A payload
+ * from before npm left — every one stamped `1`, and the first `2`s built on the way to the cut —
+ * records `npm_version` and `launch.npm_cli`; one from after records neither, and both read. Nothing
+ * is told apart by them, and nothing spawns npm out of a payload any more, so the reader neither
+ * requires them nor hands them on.
+ */
 export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
   const document = readManifestDocument(join(payloadDir, RUNTIME_MANIFEST_FILE));
   if (document.kind !== "runtime") {
@@ -418,13 +420,11 @@ export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
     platform: asString(document.platform, "platform"),
     arch: asString(document.arch, "arch"),
     node_version: asString(document.node_version, "node_version"),
-    npm_version: asString(document.npm_version, "npm_version"),
     host: asHost(document.host),
     ...asToolchain(document.toolchain),
     launch: {
       interpreter: asString(launch.interpreter, "launch.interpreter"),
       entry: asString(launch.entry, "launch.entry"),
-      npm_cli: asString(launch.npm_cli, "launch.npm_cli"),
       argv: asStringArray(launch.argv, "launch.argv"),
     },
     packages: asPackages(document.packages),

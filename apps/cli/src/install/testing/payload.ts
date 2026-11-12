@@ -10,10 +10,10 @@
  * produced by the **shipped** scanner, so `verifyRuntimePayload()` really re-hashes it.
  *
  * **Why not `assembleRuntime()` against a fixture checkout.** That is `runtime/assemble.test.ts`'s
- * subject and it copies npm as well, which is 17 MB the stager has no opinion about. What is under
- * test here is what happens to a payload *after* it exists, so the cheapest artefact that is
- * genuinely one — a real interpreter, a real entry, a real manifest — is the right fixture. It is
- * built once per suite and cloned for the second runtime.
+ * subject, and it needs a whole checkout to copy out of, which the stager has no opinion about.
+ * What is under test here is what happens to a payload *after* it exists, so the cheapest artefact
+ * that is genuinely one — a real interpreter, a real entry, a real manifest — is the right fixture.
+ * It is built once per suite and cloned for the second runtime.
  *
  * **The entry is a miniature daemon on purpose.** It serves its own identity over a loopback
  * listener and records where it is listening, so a second process started through the launcher can
@@ -42,7 +42,6 @@ import {
   MANIFEST_VERSION,
   PAYLOAD_BIN_DIR,
   PAYLOAD_LIB_DIR,
-  PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   type RuntimeManifest,
   type RuntimeToolchain,
@@ -146,12 +145,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
   );
   writeFileSync(entry, entrySource(options.marker));
 
-  // The manifest names npm's entry, so the payload carries one: a manifest that describes a file
-  // the artefact does not have is a manifest `verify` would call a payload with a hole in it.
-  const npmCli = join(options.outDir, ...PAYLOAD_NPM_CLI.split("/"));
-  mkdirSync(dirname(npmCli), { recursive: true });
-  writeFileSync(npmCli, "process.exitCode = 0;\n");
-
   const relativeEntry = `${PAYLOAD_LIB_DIR}/${FIXTURE_PACKAGE}/dist/bin.js`;
   const relativeInterpreter = `${PAYLOAD_BIN_DIR}/${interpreterName}`;
   const scan = scanTree(options.outDir, { exclude: [RUNTIME_MANIFEST_FILE] });
@@ -163,7 +156,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: "0.0.0-fixture",
     host: "node",
     ...(options.toolchain === null
       ? {}
@@ -176,7 +168,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
     launch: {
       interpreter: relativeInterpreter,
       entry: relativeEntry,
-      npm_cli: PAYLOAD_NPM_CLI,
       argv: [relativeInterpreter, relativeEntry],
     },
     packages: [

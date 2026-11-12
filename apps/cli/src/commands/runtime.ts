@@ -93,7 +93,6 @@ function createBuildCommand(io: CliIo): Command {
             `${built.manifest.packages.length} packages on ` +
             `${built.manifest.platform}/${built.manifest.arch}\n` +
             `  launch:   ${built.manifest.launch.argv.join(" ")}\n` +
-            `  npm:      ${built.manifest.launch.npm_cli} (${built.manifest.npm_version})\n` +
             `  manifest: ${RUNTIME_MANIFEST_FILE}\n`,
         );
       } catch (error) {

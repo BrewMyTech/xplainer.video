@@ -198,12 +198,10 @@ describe("reading a manifest back", () => {
         platform: "linux",
         arch: "x64",
         node_version: "v24.20.0",
-        npm_version: "11.19.0",
         host: "node",
         launch: {
           interpreter: "bin/node",
           entry: "lib/node_modules/@xplainer/cli/dist/bin.js",
-          npm_cli: "lib/node_modules/npm/bin/npm-cli.js",
           argv: ["bin/node", "lib/node_modules/@xplainer/cli/dist/bin.js"],
         },
         packages: [
@@ -215,7 +213,7 @@ describe("reading a manifest back", () => {
           },
         ],
         files: [{ path: "bin/node", sha256: SHA256_ABC, bytes: 3, executable: true }],
-        links: [{ path: "bin/npm", target: "../lib/node_modules/npm/bin/npm-cli.js" }],
+        links: [{ path: "lib/node_modules/.bin/tsc", target: "../typescript/bin/tsc" }],
       }),
     );
 
@@ -228,7 +226,47 @@ describe("reading a manifest back", () => {
       "lib/node_modules/@xplainer/cli/dist/bin.js",
     ]);
     expect(manifest.packages[0]?.name).toBe("@xplainer/cli");
-    expect(manifest.links[0]?.target).toBe("../lib/node_modules/npm/bin/npm-cli.js");
+    expect(manifest.links[0]?.target).toBe("../typescript/bin/tsc");
+  });
+
+  /**
+   * npm left payload 1 under the same `manifest_version` 2 (ADR 0031 §Note, 2026-11-12, D11), so a
+   * manifest from before that — with `npm_version` and `launch.npm_cli` — still reads, and the
+   * reader hands neither field on to anything.
+   */
+  it("reads a manifest that still records npm, and returns neither npm field", () => {
+    writeFileSync(
+      join(root, RUNTIME_MANIFEST_FILE),
+      JSON.stringify({
+        kind: "runtime",
+        manifest_version: 2,
+        created_at: "2026-11-12T00:00:00.000Z",
+        platform: "linux",
+        arch: "x64",
+        node_version: "v24.20.0",
+        npm_version: "11.19.0",
+        host: "node",
+        toolchain: { format: 2, ffmpeg_min_libavcodec: 60 },
+        launch: {
+          interpreter: "bin/node",
+          entry: "e",
+          npm_cli: "lib/node_modules/npm/bin/npm-cli.js",
+          argv: ["bin/node", "e"],
+        },
+        packages: [],
+        files: [],
+        links: [],
+      }),
+    );
+
+    const manifest = readRuntimeManifest(root);
+
+    expect(manifest).not.toHaveProperty("npm_version");
+    expect(manifest.launch).toEqual({
+      interpreter: "bin/node",
+      entry: "e",
+      argv: ["bin/node", "e"],
+    });
   });
 
   it("names the field that is wrong rather than throwing a cast error later", () => {
@@ -241,9 +279,8 @@ describe("reading a manifest back", () => {
         platform: "linux",
         arch: "x64",
         node_version: "v24.20.0",
-        npm_version: "11.19.0",
         host: "node",
-        launch: { interpreter: "bin/node", entry: "e", npm_cli: "n", argv: [] },
+        launch: { interpreter: "bin/node", entry: "e", argv: [] },
         packages: [],
         files: [{ path: "bin/node", sha256: SHA256_ABC, bytes: "three", executable: true }],
         links: [],
@@ -267,10 +304,9 @@ describe("reading a manifest back", () => {
       platform: "linux",
       arch: "x64",
       node_version: "v24.20.0",
-      npm_version: "11.19.0",
       host: "node",
       toolchain: { format: 2, ffmpeg_min_libavcodec: 60 },
-      launch: { interpreter: "bin/node", entry: "e", npm_cli: "n", argv: [] },
+      launch: { interpreter: "bin/node", entry: "e", argv: [] },
       packages: [],
       files: [],
       links: [],

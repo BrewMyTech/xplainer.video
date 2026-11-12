@@ -1,15 +1,12 @@
 /**
  * The assembler: how the runtime payload is built.
  *
- * **`assembleRuntime()`.** A relocatable directory, laid out the way npm lays one out so that the
- * npm inside it can read it:
+ * **`assembleRuntime()`.** A relocatable directory, laid out the way npm lays out a global install:
  *
  * ```
  * <out>/bin/node                                  a copy of process.execPath
- * <out>/bin/npm                                   npm's own shim, copied beside it
  * <out>/lib/node_modules/@xplainer/…              each workspace package's `files` allowlist
  * <out>/lib/node_modules/…                        the transitive closure of the runtime deps
- * <out>/lib/node_modules/npm/                     npm itself, 17 MB measured
  * <out>/runtime.manifest.json                     every path, hash, version and the launch contract
  * ```
  *
@@ -30,10 +27,10 @@
  *    is the sealed executable. Both are refused by name — `manifest.ts`'s {@link classifyHost} —
  *    rather than copied into a `bin/node` that would open a window or unpack itself.
  *
- * **npm travels with payload 1 and is never imported.** It is not in the daemon's dependency
- * closure and nothing in `src/` requires it. It was there so that `setup --workspace` had a real
- * package manager on a machine with no Node, and that command is gone; ADR 0031's D11 takes npm
- * out of the payload as a change of its own.
+ * **npm does not travel.** It did until ADR 0031's Phase 2 — 17 MB, its shim in `bin/` and its
+ * entry in the launch contract — so that `setup --workspace` had a package manager on a machine
+ * with no Node. It was never in the daemon's dependency closure and nothing in `src/` imported it,
+ * so when that command left it had no purpose left, and D11 (§Note, 2026-11-12) took it out.
  *
  * **There is no second payload.** The render workspace the previous renderer needed — payload 2, an
  * `npm ci` of a pinned template — left with ADR 0031's Phase 2 (§Note, 2026-11-12, D7): the
@@ -47,17 +44,14 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { FFMPEG_MIN_LIBAVCODEC, TOOLCHAIN_FORMAT_VERSION } from "../setup/toolchain.js";
@@ -71,7 +65,6 @@ import {
   type ManifestPackage,
   PAYLOAD_BIN_DIR,
   PAYLOAD_LIB_DIR,
-  PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   RUNTIME_ROOT_PACKAGE,
   type RuntimeManifest,
@@ -114,7 +107,6 @@ export type AssemblyRefusalReason =
   | "host"
   | "output-dir"
   | "no-checkout"
-  | "no-npm"
   | "no-allowlist"
   | "unresolved-dependency"
   | "unbuilt-entry"
@@ -174,8 +166,7 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
   copyFileSync(host.execPath, interpreter, constants.COPYFILE_FICLONE);
   chmodSync(interpreter, 0o755);
 
-  const npm = copyNpm(host.execPath, options.outDir);
-  const packages = [...copyClosure({ repoRoot, rootPackage, libDir }), npm.entry];
+  const packages = copyClosure({ repoRoot, rootPackage, libDir });
   packages.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
   const entryPath = entryFor(repoRoot, rootPackage, packages);
@@ -191,7 +182,6 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
   const launch: LaunchContract = {
     interpreter: `${PAYLOAD_BIN_DIR}/${interpreterName}`,
     entry: entryPath,
-    npm_cli: PAYLOAD_NPM_CLI,
     argv: [`${PAYLOAD_BIN_DIR}/${interpreterName}`, entryPath],
   };
   const scan = scanTree(options.outDir, { exclude: [RUNTIME_MANIFEST_FILE] });
@@ -202,7 +192,6 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
   for (const path of [
     launch.interpreter,
     launch.entry,
-    launch.npm_cli,
     ...packages.map((entry) => entry.path),
     ...scan.files.map((file) => file.path),
     ...scan.links.map((link) => link.path),
@@ -224,7 +213,6 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: npm.version,
     host: kind,
     // What this runtime requires of `toolchain.json`, from the constants it judges the marker
     // with — so a later `daemon update`, `update` or `setup` can ask a runtime it is not running.
@@ -311,107 +299,6 @@ function requireEmptyDirectory(directory: string, command: string): void {
   }
 }
 
-/** Where npm lives beside an interpreter, and what it is. */
-export type NpmInstallation = {
-  /** The Node distribution's root. */
-  root: string;
-  /** npm's own package directory. */
-  directory: string;
-  /** `bin/npm-cli.js` inside it — the file that is spawned, never imported. */
-  cli: string;
-  /** The version it declares. */
-  version: string;
-};
-
-/**
- * Find the npm that ships beside `execPath`, or refuse by name.
- *
- * Two layouts, both real: `<root>/lib/node_modules/npm` with a `<root>/bin/npm` shim on POSIX, and
- * `<root>/node_modules/npm` with `npm.cmd` beside the executable on Windows. A host with neither is
- * refused rather than yielding a payload that silently cannot install anything, which is the whole
- * failure D3 exists to remove.
- */
-export function npmInstallation(execPath: string): NpmInstallation {
-  const root = process.platform === "win32" ? dirname(execPath) : dirname(dirname(execPath));
-  const candidates = [join(root, "lib", "node_modules", "npm"), join(root, "node_modules", "npm")];
-  const directory = candidates.find((candidate) => existsSync(join(candidate, "package.json")));
-  if (directory === undefined) {
-    throw new AssemblyRefusal(
-      "no-npm",
-      `npm is not installed beside ${execPath} — looked in ${candidates.join(" and ")}. Payload 1 ` +
-        `carries npm so that \`setup --workspace\` has a package manager on a machine with no ` +
-        `Node, so a runtime built without it would be one that can never install a workspace.`,
-    );
-  }
-  const version = readJson(join(directory, "package.json")).version;
-  return {
-    root,
-    directory,
-    cli: join(directory, "bin", "npm-cli.js"),
-    version: typeof version === "string" ? version : "unknown",
-  };
-}
-
-/**
- * Copy npm — the whole tree and its shim — into payload 1, and describe what travelled.
- *
- * Where npm is found — the two platform layouts, and the refusal for a host with neither — is
- * {@link npmInstallation}'s.
- *
- * **npm's own `node_modules` travels with it**, unlike every other tree this assembler copies. The
- * closure walk resolves an external package's dependencies itself and hoists them, which is right
- * for a tree whose layout this assembler owns; npm's is a **vendored** tree that npm ships as part
- * of itself — 13 MB of the 17 MB measured — and a copy without it is an npm that cannot run. So
- * the filter that keeps a pnpm store symlink out of the payload is deliberately not applied here.
- *
- * The `bin/npm` shim is recreated as a **relative symlink** where that is what the distribution
- * has, rather than dereferenced into a file. Relative is what makes it relocatable, and keeping it
- * a link is what makes `PATH=<runtime>/bin` resolve `npm` to the same entry the launch contract
- * names instead of to a second copy that could drift.
- */
-function copyNpm(execPath: string, outDir: string): { version: string; entry: ManifestPackage } {
-  const installation = npmInstallation(execPath);
-  const { root: nodeRoot, directory: source } = installation;
-
-  const target = join(outDir, ...PAYLOAD_LIB_DIR.split("/"), "npm");
-  mkdirSync(dirname(target), { recursive: true });
-  // `verbatimSymlinks` for the reason `installExternal`'s own copy gives: without it Node resolves
-  // a relative link target against the source, and a payload carrying an absolute link into the
-  // interpreter it was built from is not relocatable, which is the one thing payload 1 is for.
-  cpSync(source, target, {
-    recursive: true,
-    mode: constants.COPYFILE_FICLONE,
-    verbatimSymlinks: true,
-  });
-
-  const shimDir = process.platform === "win32" ? nodeRoot : join(nodeRoot, "bin");
-  const shims = process.platform === "win32" ? ["npm.cmd", "npm.ps1", "npm"] : ["npm"];
-  for (const shim of shims) {
-    const from = join(shimDir, shim);
-    if (!existsSync(from)) {
-      continue;
-    }
-    const to = join(outDir, PAYLOAD_BIN_DIR, shim);
-    const link = lstatSync(from).isSymbolicLink() ? readlinkSync(from) : null;
-    if (link !== null && !isAbsolute(link)) {
-      symlinkSync(link, to);
-      continue;
-    }
-    copyFileSync(from, to, constants.COPYFILE_FICLONE);
-    chmodSync(to, 0o755);
-  }
-
-  return {
-    version: installation.version,
-    entry: {
-      path: `${PAYLOAD_LIB_DIR}/npm`,
-      name: "npm",
-      version: installation.version,
-      workspace: false,
-    },
-  };
-}
-
 /** Where a package was copied from and what it was allowed to contribute. */
 type CopyPlan = {
   repoRoot: string;
@@ -425,7 +312,7 @@ type CopyPlan = {
  * Hoisting is not decoration: two packages in this closure can need different majors of the same
  * dependency, so a flat `lib/node_modules` would silently give one of them the wrong one. The
  * second version is nested under the package that asked for it, which is what npm's own layout
- * does and what the npm inside the payload expects to find.
+ * does and what Node's resolution walks.
  */
 function copyClosure(plan: CopyPlan): ManifestPackage[] {
   const workspace = workspacePackages(plan.repoRoot);
@@ -481,9 +368,7 @@ function copyClosure(plan: CopyPlan): ManifestPackage[] {
       // Measured on Node 24: `../lib/node_modules/real/cli.js` became
       // `/private/tmp/.../sym-src/lib/node_modules/real/cli.js`. The failure is silent twice over:
       // `scanTree` records the rewritten target, so `runtime verify` compares the link against the
-      // value the copy produced and answers `ok: true`; and `bin/npm` is correct whatever this
-      // option says, because the assembler creates that one with `symlinkSync`, so the one link a
-      // reader would spot-check is the one that cannot be wrong.
+      // value the copy produced and answers `ok: true`.
       verbatimSymlinks: true,
       filter: (path) => !relative(source, path).split(sep).includes("node_modules"),
     });

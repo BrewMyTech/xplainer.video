@@ -185,12 +185,10 @@ function writePayload(): void {
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: "11.19.0",
     host: "node",
     launch: {
       interpreter: "bin/node",
       entry: "lib/a.js",
-      npm_cli: "lib/b.js",
       argv: ["bin/node", "lib/a.js"],
     },
     packages: [],

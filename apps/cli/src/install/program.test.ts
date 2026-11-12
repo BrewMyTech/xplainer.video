@@ -221,12 +221,13 @@ describe("the program resolver", () => {
      * 2026-09-11.
      *
      * **The route is exercised once, deliberately, and the reason is a measured one.** Resolving it
-     * assembles a real payload — which copies npm, about 17 MB, and then stages a second copy — so
-     * a case per assertion cost four of those in a suite of 83 files and the first one timed out at
-     * vitest's 5 s default under that much concurrent disk work. Heavy real work belongs in
-     * `scripts/e2e/`, outside `pnpm verify`; what a unit suite can honestly do is assemble once and
-     * assert everything about the result, which is what this does. The cheap assertions — the
-     * refusal and the `runtime-dir` half of the precedence — reach no assembler and stay separate.
+     * assembles a real payload — which copied npm, about 17 MB, until D11 took it out, and then
+     * stages a second copy — so a case per assertion cost four of those in a suite of 83 files and
+     * the first one timed out at vitest's 5 s default under that much concurrent disk work. Heavy
+     * real work belongs in `scripts/e2e/`, outside `pnpm verify`; what a unit suite can honestly do
+     * is assemble once and assert everything about the result, which is what this does. The cheap
+     * assertions — the refusal and the `runtime-dir` half of the precedence — reach no assembler
+     * and stay separate.
      *
      * **The fixture is the layout npm actually produces, and the shape is the point.** `npm i -g
      * xplainer` does NOT hoist the CLI: it leaves `@xplainer/cli` nested inside the alias's own
