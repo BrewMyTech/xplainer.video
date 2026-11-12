@@ -958,3 +958,61 @@ written for — is the authority. What it admits beyond D9's list, and why:
 One item of D9's list is **narrower** as committed: `render/bundle.ts`'s test has no entry, because
 it reads the legacy names out of `LEGACY_IMPORT_ALIASES` rather than spelling them, and the entry
 for `bundle.ts` admits only the alias table's lines.
+
+## Note, 2026-11-12, after the merge: the macOS default encoder, and where Linux's 12 fps is measured
+
+Added as a dated note: nothing above is edited, including the two notes before this one. It records
+two owner decisions that D8 lists among what keeps the release gate red. The first is the one
+§The owner's decisions, 2026-11-11 requires "before the first macOS release": whether our own macOS
+build encodes with x264 or `h264_videotoolbox` by default (`macos-default-encoder-patent` in
+`docs/release-blockers.json`). The second is where the Linux throughput bar is measured
+(`linux-12fps-run`).
+
+### libx264 stays the default encoder on macOS
+
+**Decided by the owner on 2026-11-12** (ask `c8b2569e`, relayed by the coordinator): the first macOS
+release encodes with **libx264**, as Linux and Windows do, and `h264_videotoolbox` is not the
+default. The reasons, as the owner gave them:
+
+- **One encoder on every platform.** Linux has no OS encoder, so it encodes with libx264 whatever
+  macOS does, and BtbN's Windows build is libx264 too. A VideoToolbox default would give macOS a
+  second rate-control model and a second byte-stream for the same frames.
+- **Byte-identical output.** libx264 wrote the same bytes on every run on one build, and VideoToolbox
+  changes one SEI byte on every run (§Consequences, "MP4 bytes are reproducible only per FFmpeg
+  build"), which would weaken what a re-render promises from file-identical to frame-identical. The
+  same paragraph records VideoToolbox at 39.51 dB average PSNR against libx264 `medium`'s 43.12 dB at
+  matched bitrate, with no CRF.
+- **VideoToolbox is absent on Intel virtual machines**, so a default resting on it would not encode
+  on every macOS host libx264 encodes on.
+
+**It changes no code.** `render/encode.ts` encodes with `-c:v libx264` on every platform already,
+and our macOS build keeps `h264_videotoolbox` compiled in — `infra/ffmpeg/smoke.mjs` checks
+`--enable-videotoolbox` and the encoder's presence on every build — so the encoder a later switch
+would need is in the binary users already have.
+
+**It does not answer the patent question, and that does not block the release.** Whether
+distributing our libx264 build from `cdn.xplainer.video` is a "Sale" of an AVC product, and the AAC
+and GPL-and-patent-licence questions beside it, stay with counsel — the distribution analysis §5,
+questions 3 to 5 — exactly as §The owner's decisions, 2026-11-11 left them ("Counsel's questions are
+open, and this record does not close them"). The release gate waited on the owner's decision, not on
+counsel's answer; `macos-default-encoder-patent` is closed with this note and the ask as its
+evidence. If counsel's answer requires the switch, it is a new dated note and a change to
+`render/encode.ts`'s arguments — VideoToolbox has no CRF, so the switch is a rate-control decision
+as well as an encoder name.
+
+### The Linux 12 fps bar is measured on a hosted ubuntu runner
+
+**Decided by the owner on 2026-11-12** (ask `62a5ff4a`): a GitHub-hosted `ubuntu-latest` runner is
+the Linux venue for P0-6, rather than `infra/e2e`'s Debian image. **This amends** §Decision Drivers'
+"≥ 12 fps in the Linux container" in where it is measured; the bar itself is unchanged: 12 fps
+capture plus encode, at 1080p, on the shipped render worker.
+
+**Method: unchanged** from §The idle-machine throughput gate. `apps/cli/spikes/p1-render-fps.mjs`
+runs three times with `--bar 12`, against the browser and FFmpeg `setup` acquired from the committed
+manifest: Chrome for Testing 157.0.8103.50 and BtbN's 9.0.2. It runs behind `e2e-toolchain.yml`'s
+opt-in `fps` input, on the Linux leg only. It writes its numbers to the job summary and **does not
+fail the job** on a miss. `linux-12fps-run` closes by review of that run, with its id recorded in
+`docs/release-blockers.json`, rather than by a green check. A hosted runner is a shared 4-vCPU
+virtual machine whose load the spike records and cannot control, so a run under 12 is a
+measurement to read, not yet a verdict. What follows a miss, optimisation or an amended bar, is a
+later decision and a later note.

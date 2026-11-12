@@ -606,9 +606,11 @@ old Chrome block and refuses a newer format — and this build reads format 2 at
 `toolchain/v2/manifest.json`, which is where a release uploads the committed copy and which the
 release check
 [ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
-2026-11-12 specifies (D3 and D8) is to compare with it byte for byte. **The version-2 document is
-committed and not yet uploaded**, and until that upload nothing run from a checkout should request
-its URL: every local `setup` passes `--manifest` naming the committed copy.
+2026-11-12 specifies (D3 and D8) is to compare with it byte for byte. **The version-2 document was
+uploaded on 2026-11-12**, by the owner through the R2 dashboard. It read back byte-identical to
+the committed copy at `main` `ed88c42`; `infra/README.md` §*The delivery position* has the
+measurement. Every local `setup` still passes `--manifest` naming the committed copy, so a checkout
+tests the document it has rather than the one that is published.
 All three pieces of infrastructure behind it are now declared (`cloudflare_r2_bucket.artifacts`,
 `cloudflare_r2_custom_domain.cdn`, `cloudflare_ruleset.cdn_cache`), so **connecting the domain and
 adding its Cache Rule have stopped being manual steps**; `infra/README.md` §*The delivery position*

@@ -1,0 +1,339 @@
+# Snapshot the pinned upstream FFmpeg artefacts into a private bucket: the
+# distribution analysis's Checklist A item 7, which is the release blocker
+# `checklist-a7-pin-snapshot` in docs/release-blockers.json.
+#
+# WHAT IT KEEPS. Every `ffmpeg` row of the committed toolchain manifest whose
+# URL is a BtbN FFmpeg-Builds release download. Today that is linux-x64,
+# linux-arm64, win32-x64 and win32-arm64 at autobuild-2026-10-31-12-59. It also
+# keeps that release's checksums.sha256, a tarball of the FFmpeg-Builds scripts
+# at the commit the release tag points at, and SNAPSHOT.json, which names all of
+# it with digests and sizes. Each archive is checked against the manifest's
+# sha256 and size AND against the release's own checksums.sha256 before
+# anything is uploaded. One mismatch stops the run.
+#
+# WHY A PRIVATE BUCKET. BtbN keeps an autobuild for about two years, so a pin
+# can disappear. The snapshot is for re-creating a vanished pin, never for
+# serving one: serving it would make this project the conveyor of a GPL binary
+# and bring in Checklist B. So the upload refuses the public CDN bucket by name,
+# and nothing in this repository points `setup` at the snapshot.
+#
+# WHERE IT GOES. The `pin-snapshot` environment holds the secrets
+# PIN_R2_ACCESS_KEY_ID and PIN_R2_SECRET_ACCESS_KEY, scoped to that bucket
+# alone, and the variables R2_ACCOUNT_ID and PIN_R2_BUCKET. Keys are
+# `btbn/<release>/<file>` and are immutable: an object already there with the
+# same bytes is skipped, and one there with different bytes stops the run.
+# Without the credentials, or from any ref but main, the run verifies
+# everything, uploads nothing, and says so in a notice and in the job summary.
+# Only a summary that says UPLOADED is evidence for the blocker.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` registers from the default branch, so
+# this file is dispatchable only once it is on `main`:
+#
+#   gh workflow run pin-snapshot.yml --ref main
+#
+# Record the run id on `checklist-a7-pin-snapshot`. Run it again after every
+# BtbN re-pin (apps/cli/AGENTS.md, the re-pin cadence): a new release is a new
+# key prefix, and the old one stays.
+name: pin-snapshot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a snapshot mid-upload: a half-written prefix has to be
+  # finished by the same bytes, which the immutability check allows.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  snapshot:
+    name: snapshot the BtbN pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: pin-snapshot
+    env:
+      MANIFEST: apps/cli/src/setup/toolchain.manifest.json
+      # The prefix apps/cli/src/setup/manifest.ts's ARTEFACT_ALLOWLIST maps to
+      # BtbN; a row under any other prefix is not BtbN's to snapshot.
+      BTBN_PREFIX: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/
+      BTBN_REPO: FFmpeg-Builds/FFmpeg-Builds
+      # The bucket behind cdn.xplainer.video (infra/terraform). Never the target.
+      PUBLIC_BUCKET: xplainer-artifacts
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the BtbN rows out of the committed manifest
+        id: rows
+        run: |
+          set -euo pipefail
+          jq -c --arg prefix "$BTBN_PREFIX" '
+            [.ffmpeg.expected | to_entries[]
+              | select(.value.url | startswith($prefix))
+              | {platform: .key, url: .value.url, sha256: .value.sha256, size: .value.size}]
+          ' "$MANIFEST" > "$RUNNER_TEMP/rows.json"
+          if [ "$(jq length "$RUNNER_TEMP/rows.json")" -eq 0 ]; then
+            echo "::error::$MANIFEST names no BtbN row"
+            exit 1
+          fi
+          # One release, or one key prefix would hold two pins.
+          release="$(jq -r --arg prefix "$BTBN_PREFIX" \
+            '[.[].url | ltrimstr($prefix) | split("/")[0]] | unique | join(" ")' "$RUNNER_TEMP/rows.json")"
+          if ! [[ "$release" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::the BtbN rows name '$release', not one release"
+            exit 1
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          jq -r '.[] | "\(.platform)\t\(.url)"' "$RUNNER_TEMP/rows.json"
+
+      - name: Download every archive and check it against both digests
+        env:
+          RELEASE: ${{ steps.rows.outputs.release }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/snapshot"
+          mkdir -p "$dir"
+          fetch() { # url file
+            curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+              --output "$2" "$1"
+          }
+          fetch "$BTBN_PREFIX$RELEASE/checksums.sha256" "$dir/checksums.sha256"
+          : > "$RUNNER_TEMP/kept.tsv"
+          while IFS=$'\t' read -r platform url sha256 size; do
+            file="${url##*/}"
+            fetch "$url" "$dir/$file"
+            got_sha256="$(sha256sum "$dir/$file" | cut -d' ' -f1)"
+            got_size="$(stat -c %s "$dir/$file")"
+            if [ "$got_sha256" != "$sha256" ] || [ "$got_size" != "$size" ]; then
+              echo "::error::$platform: $file is $got_size bytes with sha256 $got_sha256; the manifest expects $size bytes with sha256 $sha256"
+              exit 1
+            fi
+            # sha256sum's own format: the digest, two spaces, the file name.
+            published="$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1 }' "$dir/checksums.sha256")"
+            if [ "$published" != "$sha256" ]; then
+              echo "::error::$platform: the release's checksums.sha256 says '${published:-nothing}' for $file; the manifest pins $sha256"
+              exit 1
+            fi
+            printf '%s\t%s\n' "$platform" "$file" >> "$RUNNER_TEMP/kept.tsv"
+            echo "ok  $platform  $file  $sha256"
+          done < <(jq -r '.[] | [.platform, .url, .sha256, (.size | tostring)] | @tsv' "$RUNNER_TEMP/rows.json")
+          # A failure inside the process substitution above is not seen by
+          # errexit, so the rows kept are counted against the rows read.
+          if [ "$(wc -l < "$RUNNER_TEMP/kept.tsv")" -ne "$(jq length "$RUNNER_TEMP/rows.json")" ]; then
+            echo "::error::kept $(wc -l < "$RUNNER_TEMP/kept.tsv") archives of $(jq length "$RUNNER_TEMP/rows.json") rows"
+            exit 1
+          fi
+
+      - name: Keep the FFmpeg-Builds scripts at the commit the release tag points at
+        id: scripts
+        env:
+          RELEASE: ${{ steps.rows.outputs.release }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          object="$(gh api "repos/$BTBN_REPO/git/ref/tags/$RELEASE" --jq '.object.type + " " + .object.sha')"
+          read -r type commit <<< "$object"
+          # An annotated tag points at a tag object, which may point at another.
+          for _ in 1 2 3; do
+            [ "$type" = tag ] || break
+            object="$(gh api "repos/$BTBN_REPO/git/tags/$commit" --jq '.object.type + " " + .object.sha')"
+            read -r type commit <<< "$object"
+          done
+          if [ "$type" != commit ] || ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the tag $RELEASE resolved to a $type '$commit', not a commit"
+            exit 1
+          fi
+          # Built here rather than downloaded from GitHub's archive endpoint,
+          # whose bytes are not promised to stay the same: a re-run after a
+          # partial upload must produce the object it finds already there.
+          # `git archive` of one commit and `gzip -n` are both deterministic.
+          scripts="$RUNNER_TEMP/scripts"
+          git init --quiet "$scripts"
+          git -C "$scripts" fetch --quiet --depth 1 "https://github.com/$BTBN_REPO" "$commit"
+          git -C "$scripts" archive --format=tar --prefix="FFmpeg-Builds-$commit/" "$commit" |
+            gzip -n -9 > "$RUNNER_TEMP/snapshot/FFmpeg-Builds-$commit.tar.gz"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "FFmpeg-Builds at $commit"
+
+      - name: Write SNAPSHOT.json, and the job summary
+        env:
+          RELEASE: ${{ steps.rows.outputs.release }}
+          SCRIPTS_COMMIT: ${{ steps.scripts.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/snapshot"
+          : > "$RUNNER_TEMP/files.tsv"
+          for path in "$dir"/*; do
+            # Assigned first: errexit does not see a failure inside an argument.
+            sha256="$(sha256sum "$path" | cut -d' ' -f1)"
+            size="$(stat -c %s "$path")"
+            printf '%s\t%s\t%s\n' "${path##*/}" "$sha256" "$size" >> "$RUNNER_TEMP/files.tsv"
+          done
+          captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          manifest_sha256="$(sha256sum "$MANIFEST" | cut -d' ' -f1)"
+          jq -n \
+            --arg release "$RELEASE" \
+            --arg scripts_commit "$SCRIPTS_COMMIT" \
+            --arg captured_at "$captured_at" \
+            --arg run "$RUN_URL" \
+            --arg manifest_sha256 "$manifest_sha256" \
+            --arg manifest_commit "$GITHUB_SHA" \
+            --rawfile files "$RUNNER_TEMP/files.tsv" \
+            --rawfile kept "$RUNNER_TEMP/kept.tsv" '
+            def tsv: split("\n") | map(select(. != "") | split("\t"));
+            {
+              format_version: 1,
+              publisher: "BtbN FFmpeg-Builds",
+              purpose: "re-creating a vanished pin; never served (Checklist A item 7)",
+              release: $release,
+              scripts_commit: $scripts_commit,
+              captured_at: $captured_at,
+              run: $run,
+              manifest: {path: env.MANIFEST, sha256: $manifest_sha256, commit: $manifest_commit},
+              platforms: ($kept | tsv | map({key: .[0], value: .[1]}) | from_entries),
+              files: ($files | tsv | map({name: .[0], sha256: .[1], size: (.[2] | tonumber)}))
+            }' > "$dir/SNAPSHOT.json"
+          cat "$dir/SNAPSHOT.json"
+          {
+            echo "## BtbN pin snapshot: \`$RELEASE\`"
+            echo
+            echo "FFmpeg-Builds scripts at \`$SCRIPTS_COMMIT\`. Manifest \`$MANIFEST\` at \`$GITHUB_SHA\`."
+            echo
+            echo "| file | sha256 | bytes |"
+            echo "|---|---|---|"
+            while IFS=$'\t' read -r name sha256 size; do
+              echo "| \`$name\` | \`$sha256\` | $size |"
+            done < "$RUNNER_TEMP/files.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to the private bucket, then check every object's ETag
+        env:
+          PIN_R2_ACCESS_KEY_ID: ${{ secrets.PIN_R2_ACCESS_KEY_ID }}
+          PIN_R2_SECRET_ACCESS_KEY: ${{ secrets.PIN_R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          PIN_R2_BUCKET: ${{ vars.PIN_R2_BUCKET }}
+          RELEASE: ${{ steps.rows.outputs.release }}
+          SCRIPTS_COMMIT: ${{ steps.scripts.outputs.commit }}
+        run: |
+          set -euo pipefail
+          not_uploaded() {
+            echo "::notice title=Not uploaded::$1"
+            printf '\n**NOT UPLOADED**: %s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            not_uploaded "dispatched from $GITHUB_REF. A snapshot is uploaded from main only, so it is the pin main ships; everything above was still verified."
+          fi
+          if [ -z "$PIN_R2_ACCESS_KEY_ID" ] || [ -z "$PIN_R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ACCOUNT_ID" ] || [ -z "$PIN_R2_BUCKET" ]; then
+            not_uploaded "the pin-snapshot environment has no R2 credentials or no bucket; everything above was verified and nothing was uploaded."
+          fi
+          if [ "$PIN_R2_BUCKET" = "$PUBLIC_BUCKET" ]; then
+            echo "::error::PIN_R2_BUCKET is $PUBLIC_BUCKET, the bucket behind cdn.xplainer.video. A snapshot served from there would make this project the conveyor (Checklist B)."
+            exit 1
+          fi
+          if ! [[ "$PIN_R2_BUCKET" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then
+            echo "::error::PIN_R2_BUCKET '$PIN_R2_BUCKET' is not an R2 bucket name"
+            exit 1
+          fi
+          if ! [[ "$R2_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "::error::R2_ACCOUNT_ID is not a Cloudflare account id (32 hex digits)"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/snapshot"
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com/$PIN_R2_BUCKET"
+          prefix="btbn/$RELEASE"
+          empty_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+          s3() { # key [curl arguments...]
+            local key="$1"
+            shift
+            # The credentials reach curl on its standard input, never its argv.
+            printf 'user = "%s:%s"\n' "$PIN_R2_ACCESS_KEY_ID" "$PIN_R2_SECRET_ACCESS_KEY" |
+              curl --config - --silent --show-error --retry 3 --retry-all-errors \
+                --aws-sigv4 "aws:amz:auto:s3" "$@" "$endpoint/$key"
+          }
+          # The ETag of an object uploaded in one PUT is the MD5 of its bytes.
+          remote_etag() { # key -> etag without quotes, or nothing when absent
+            local headers status
+            headers="$(s3 "$1" --head --header "x-amz-content-sha256: $empty_sha256" \
+              --dump-header - --output /dev/null | tr -d '\r')"
+            status="$(awk '/^HTTP\// { status = $2 } END { print status }' <<< "$headers")"
+            case "$status" in
+              200) awk '/^HTTP\// { etag = "" } tolower($1) == "etag:" { gsub(/"/, "", $2); etag = $2 } END { print etag }' <<< "$headers" ;;
+              404) ;;
+              *)
+                # Inside a command substitution: stderr, or the message becomes the etag.
+                echo "HEAD $1 answered ${status:-nothing}" >&2
+                exit 1
+                ;;
+            esac
+          }
+          content_type() {
+            case "$1" in
+              *.tar.xz) echo application/x-xz ;;
+              *.tar.gz) echo application/gzip ;;
+              *.zip) echo application/zip ;;
+              *.json) echo application/json ;;
+              *) echo "text/plain; charset=utf-8" ;;
+            esac
+          }
+          uploaded=0
+          upload() { # file name inside the snapshot directory
+            local file="$dir/$1" key="$prefix/$1" md5 sha256 type etag code
+            md5="$(md5sum "$file" | cut -d' ' -f1)"
+            sha256="$(sha256sum "$file" | cut -d' ' -f1)"
+            type="$(content_type "$1")"
+            etag="$(remote_etag "$key")"
+            if [ "$etag" = "$md5" ]; then
+              echo "present   $key (same bytes)"
+              return
+            fi
+            if [ -n "$etag" ] && [ "$1" = SNAPSHOT.json ] && [ "$uploaded" -eq 0 ]; then
+              # A re-run's record differs only in when and by which run, as
+              # long as every object it names was found present with the same
+              # bytes. Once this run has added an object, the earlier record
+              # no longer describes the prefix, and the check below refuses.
+              echo "present   $key (an earlier run's record, kept)"
+              return
+            fi
+            if [ -n "$etag" ]; then
+              echo "::error::$key already exists with different bytes (etag $etag, local md5 $md5). Snapshot keys are immutable."
+              exit 1
+            fi
+            code="$(s3 "$key" --upload-file "$file" \
+              --header "Content-Type: $type" \
+              --header "x-amz-content-sha256: $sha256" \
+              --header "If-None-Match: *" \
+              --output /dev/null --write-out '%{http_code}')"
+            if [ "$code" != 200 ]; then
+              echo "::error::PUT $key answered $code"
+              exit 1
+            fi
+            etag="$(remote_etag "$key")"
+            if [ "$etag" != "$md5" ]; then
+              echo "::error::$key reads back with etag '$etag', expected $md5"
+              exit 1
+            fi
+            uploaded=$((uploaded + 1))
+            echo "put       $key"
+          }
+
+          # The archives and the scripts first, then checksums.sha256, and
+          # SNAPSHOT.json last, so the record never names an object not there.
+          while IFS=$'\t' read -r _platform file; do
+            upload "$file"
+          done < "$RUNNER_TEMP/kept.tsv"
+          upload "FFmpeg-Builds-$SCRIPTS_COMMIT.tar.gz"
+          upload checksums.sha256
+          upload SNAPSHOT.json
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**UPLOADED** to \`$prefix/\` in the private bucket \`$PIN_R2_BUCKET\`." >> "$GITHUB_STEP_SUMMARY"

@@ -81,7 +81,9 @@
 # `-f windows=true` (2x) for the leg a given question needs, and all three for
 # the run that is offered as full platform coverage. `-f windows_setup=true`
 # adds the bare Windows `setup` job — once the v2 manifest is up, per the
-# precondition above.
+# precondition above. `-f fps=true` adds the Linux 12 fps measurement after
+# the gate on the Linux leg (`linux-12fps-run`), reported in the job summary
+# and never failing the job on a miss.
 
 name: e2e-toolchain
 
@@ -113,6 +115,13 @@ on:
         description: Also run windows-setup-from-a-checkout, a bare setup against the published v2 manifest (only once it is uploaded).
         type: boolean
         default: false
+      # Not an operating system either, and Linux-only: the 12 fps throughput
+      # measurement P0-6 asks for, reported rather than gating (the step's own
+      # comment). It needs `linux=true` to run anywhere.
+      fps:
+        description: Also measure the Linux 12 fps throughput bar after the gate (three runs of apps/cli/spikes/p1-render-fps.mjs; reported, not gating).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -121,7 +130,7 @@ concurrency:
   # A dispatch supersedes an in-flight dispatch of the same ref and the same
   # selection — a re-run of the same request — and leaves one that asked for
   # different operating systems running.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}-${{ inputs.windows_setup }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}-${{ inputs.windows_setup }}-${{ inputs.fps }}
   cancel-in-progress: true
 
 defaults:
@@ -129,6 +138,17 @@ defaults:
     shell: bash
 
 jobs:
+  # `fps` measures on the Linux leg only. Without `linux`, the run would be
+  # green having measured nothing, so it is refused instead.
+  fps-needs-linux:
+    name: fps needs the Linux leg
+    if: ${{ inputs.fps && !inputs.linux }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::-f fps=true measures on the Linux leg; dispatch it with -f linux=true"
+          exit 1
+
   gate:
     name: toolchain gate (${{ matrix.os }})
     # A dispatch that ticked nothing has asked for nothing.
@@ -261,6 +281,69 @@ jobs:
       # upload below names that path.
       - name: Toolchain gate — setup, then still and render out of it (T33)
         run: pnpm e2e:toolchain
+
+      # THE LINUX 12 FPS BAR (P0-6), ONLY WHEN `fps` IS TICKED. ADR 0031's note
+      # of 2026-11-12, "after the merge", makes this hosted runner the Linux
+      # venue for it (owner ask 62a5ff4a). The method is §The idle-machine
+      # throughput gate's, unchanged: `apps/cli/spikes/p1-render-fps.mjs`, three
+      # runs on the shipped render worker. The browser and FFmpeg come from a
+      # fresh `setup` against the committed manifest, in a state directory of
+      # its own, so nothing the gate above left behind is measured.
+      # `--tts-url` is there only because a marker must record speech; nothing
+      # here narrates.
+      #
+      # It REPORTS AND DOES NOT GATE. The spike exits 1 when its slowest run is
+      # under `--bar`. That is written to the job summary as FAIL, and the step
+      # stays green: `linux-12fps-run` closes by review of this run, not by its
+      # colour. Anything else fails the step: exit 2 is the spike's own refusal,
+      # and an exit 1 without the spike's verdict line is Node's code for an
+      # uncaught error, not a measurement. `defaults.run.shell: bash` runs this
+      # as `bash -eo pipefail`, so the pipeline runs under `set +e`; otherwise
+      # a miss would end the step before its status is read.
+      - name: Linux 12 fps throughput, reported not gating (P0-6)
+        if: runner.os == 'Linux' && inputs.fps
+        run: |
+          set -uo pipefail
+          summary() {
+            {
+              echo "## Linux 12 fps throughput (P0-6)"
+              echo
+              echo "**$1.** Loop fps is capture plus encode, from the first progress line to \`done\`."
+              if [ -f "$RUNNER_TEMP/fps.log" ]; then
+                echo
+                echo '```'
+                cat "$RUNNER_TEMP/fps.log"
+                echo '```'
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          state="$RUNNER_TEMP/fps-state"
+          set +e
+          node apps/cli/dist/bin.js setup --state-dir "$state" \
+            --manifest apps/cli/src/setup/toolchain.manifest.json \
+            --tts-url http://127.0.0.1:8880
+          setup_status=$?
+          set -e
+          if [ "$setup_status" -ne 0 ]; then
+            summary "Not measured: setup exited $setup_status"
+            exit 1
+          fi
+          set +e
+          node apps/cli/spikes/p1-render-fps.mjs --marker "$state/toolchain.json" \
+            --runs 3 --bar 12 2>&1 | tee "$RUNNER_TEMP/fps.log"
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$status" -eq 1 ] && ! grep -q 'FAIL against 12$' "$RUNNER_TEMP/fps.log"; then
+            status=2
+          fi
+          case "$status" in
+            0) summary "PASS: every run's loop fps is at least 12" ;;
+            1) summary "FAIL: the slowest run's loop fps is under 12 (reported, not gating)" ;;
+            *) summary "Not measured: the spike stopped without a verdict" ;;
+          esac
+          if [ "$status" -gt 1 ]; then
+            exit 1
+          fi
 
       # `always()`, because the transcript of a failed run is the thing worth
       # downloading — the gate names its failed assertion on the last line of

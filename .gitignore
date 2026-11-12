@@ -49,3 +49,10 @@ __pycache__/
 # artefacts here routinely carry absolute local paths and commercial detail, and a
 # public repository is the wrong place for them to land by default.
 .omc/
+
+# A file name with a backslash in it is a Windows path joined on a POSIX machine — a
+# test's output that landed relative to the working directory instead of where it was
+# meant to. Windows cannot check such a name out at all: `apps/cli/\private\tmp\…\
+# xplainer-daemon.xml`, committed in 0.0.8, failed every windows-latest checkout of
+# main with `error: invalid path` until it was removed.
+*\\*

@@ -116,5 +116,8 @@ manifest takes for its `darwin-arm64` and `darwin-x64` rows.
   whether to get one is a future owner decision, shared with the desktop app.
 - **Security updates.** An FFmpeg or x264 advisory means a bump: change the pins, bump
   `XP_BUILD_VERSION`, dispatch the workflow, and move the manifest rows to the new digests.
-- **Open questions** that are not this directory's to answer: the patent decision before the first
-  macOS release (Checklist B item 9), and counsel's questions in the analysis §5.
+- **The default encoder is libx264**, decided by the owner on 2026-11-12 (Checklist B item 9; ADR
+  0031's note of that date, "after the merge"). `--enable-videotoolbox` stays in the build and in
+  `smoke.mjs`'s checks, so `h264_videotoolbox` remains in the binary if that ever changes.
+- **Open questions** that are not this directory's to answer: counsel's questions in the analysis §5,
+  including whether distributing this x264 build is an AVC "Sale" (questions 3 to 5).

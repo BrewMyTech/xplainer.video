@@ -38,9 +38,22 @@
     {
       "id": "macos-default-encoder-patent",
       "title": "The patent decision on the default macOS encoder (the distribution analysis's Checklist B9)",
-      "status": "open",
+      "status": "closed",
       "closes_when": "The owner decides whether the first macOS release encodes with x264 or h264_videotoolbox by default — ADR 0031's owner decisions of 2026-11-11 require it 'before the first macOS release', and its note of 2026-11-12 leaves it open — and the decision is recorded in a dated note on ADR 0031.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "owner-ask",
+          "id": "c8b2569e",
+          "what": "The owner's decision of 2026-11-12, relayed by the coordinator: libx264 stays the macOS default encoder — the same encoder on every platform, byte-identical output, and no VideoToolbox on Intel virtual machines. The distributor's H.264 patent question stays with counsel and does not block."
+        },
+        {
+          "kind": "adr-note",
+          "adr": "0031",
+          "date": "2026-11-12",
+          "section": "libx264 stays the default encoder on macOS",
+          "what": "The dated note recording the decision, its reasons, that it changes no code, and what it leaves to counsel (the distribution analysis §5, questions 3 to 5)."
+        }
+      ]
     },
     {
       "id": "checklist-a7-pin-snapshot",
@@ -52,9 +65,15 @@
     {
       "id": "v2-manifest-upload",
       "title": "The committed format-2 toolchain manifest, uploaded to toolchain/v2/manifest.json",
-      "status": "open",
+      "status": "closed",
       "closes_when": "The owner uploads apps/cli/src/setup/toolchain.manifest.json to https://cdn.xplainer.video/toolchain/v2/manifest.json and purges that URL (infra/README.md, the cache rule and publishing a manifest). pnpm release:publish then compares the served document with the committed one byte for byte before it publishes anything, and refuses on any difference; the upload's run id or owner ask is the evidence here. Nothing run from a checkout requests that URL before the upload, because an error answer can be cached.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "owner-ask",
+          "id": "6c7459ce",
+          "what": "The owner uploaded the committed manifest through the R2 dashboard on 2026-11-12, relayed by the coordinator. The URL then answered 200 as application/json with cache-control max-age=300, and its sha256, a8c93fd50e2ed5b1da58512a20ad3b373ea2a67c930fb12f17398350b7f380bd, equals that of apps/cli/src/setup/toolchain.manifest.json at main ed88c42; read back the same day from this branch with the same digest."
+        }
+      ]
     },
     {
       "id": "cdn-cache-rule-applied",
