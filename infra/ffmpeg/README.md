@@ -11,10 +11,12 @@ its complete corresponding source at `https://cdn.xplainer.video/toolchain/v1/ff
 - **No GPL code is in this repository.** FFmpeg, x264 and zlib enter only as their unmodified
   upstream tarballs, downloaded at build time and checked against the sha256 in `pins.env`. Nothing
   is patched.
-- **These scripts are published as part of that source, so they need a licence that lets a
-  recipient rebuild.** The root `LICENSE` currently makes `infra/` proprietary. Which open licence
-  this directory and the workflow carry is the owner's decision, recorded as `XP_SCRIPTS_LICENCE`
-  in `pins.env`; until it is made, that value is `UNDECIDED` and `publish.sh` refuses to publish.
+- **These scripts and the workflow are MIT**, unlike the rest of `infra/`, because they are
+  published as part of that source and whoever receives the binary must be free to rebuild with
+  them. The grant is Part Three of the root `LICENSE`, the text is `LICENSE` here, every file
+  carries its SPDX identifier, and `pins.env` records it as `XP_SCRIPTS_LICENCE`, which every
+  `SOURCE.txt` and the source `README.txt` print. `keys/` holds the upstream signers' public
+  keys, which are theirs.
 - **The binary is GPL version 2 or later.** `--enable-gpl --enable-libx264`, and neither
   `--enable-version3` nor `--enable-nonfree`, which is the class Debian's build has. `smoke.mjs`
   refuses a binary whose `-buildconf` or `-L` says otherwise.
@@ -31,6 +33,7 @@ its complete corresponding source at `https://cdn.xplainer.video/toolchain/v1/ff
 
 | File | What it does |
 |---|---|
+| `LICENSE` | The licence of this directory (except `keys/`) and of the workflow: MIT |
 | `pins.env` | Every input: version, URL and sha256 of FFmpeg, x264, zlib and nasm; the signing-key fingerprints; the Xcode, deployment target and zip timestamp. The review of a bump is the diff of this file |
 | `keys/` | The FFmpeg release key and zlib's maintainer key, committed so that a tarball's signature is never checked against a key fetched from the same server |
 | `fetch.sh <cache>` | Downloads into a cache, checks every sha256 and both signatures; tries the published source bundle when an upstream URL has gone |

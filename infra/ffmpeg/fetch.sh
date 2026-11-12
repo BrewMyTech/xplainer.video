@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Download every input of the macOS FFmpeg build into a cache directory and
 # verify it: the sha256 pinned in pins.env for all of them, and the detached
 # OpenPGP signature for FFmpeg and zlib against the public keys committed in

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Assemble the complete corresponding source of a build: the directory that is
 # published at <XP_CDN_BASE>/<XP_BUILD_VERSION>/source/, beside the binaries.
 #
@@ -12,8 +13,9 @@
 #   nasm-<v>.tar.xz              the x86-64 assembler; a build tool, carried so
 #                                that the bundle rebuilds offline
 #   xplainer-ffmpeg-build-*.tar.gz
-#                                these scripts, the workflow that ran them, and
-#                                the repository's licence files, at the commit
+#                                these scripts and their LICENSE, the workflow
+#                                that ran them, and the root LICENSE that grants
+#                                it (Part Three), at the commit
 #   README.txt                   how to rebuild from this directory alone
 #   MANIFEST                     sha256 of every file above
 #
@@ -49,7 +51,7 @@ done
 # both. Archived from a scratch index built from the working tree, so that a
 # local run with uncommitted changes archives what actually ran; such a bundle
 # is named -dirty and is never published (publish.sh refuses it).
-paths=(infra/ffmpeg .github/workflows/ffmpeg-macos.yml LICENSE LICENSE-APACHE-2.0 NOTICE)
+paths=(infra/ffmpeg .github/workflows/ffmpeg-macos.yml LICENSE)
 for path in "${paths[@]}"; do
   if [ ! -e "$repo/$path" ]; then
     echo "source-bundle.sh: $path is missing, so the scripts archive would not be complete" >&2
@@ -90,6 +92,8 @@ done
 Complete corresponding source for the ffmpeg programs published in the
 directory above this one: FFmpeg $FFMPEG_VERSION, x264 $X264_COMMIT and
 zlib $ZLIB_VERSION, all unmodified, built by the scripts in $scripts.
+The programs are GPL version 2 or later; the scripts are $XP_SCRIPTS_LICENCE
+(infra/ffmpeg/LICENSE in that archive).
 
 This directory holds, beside this file and MANIFEST:
 

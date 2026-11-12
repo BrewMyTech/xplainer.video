@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The acceptance test for one built ffmpeg: what it says about itself, and
 // three real encodes.
 //

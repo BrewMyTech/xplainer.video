@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Turn the build jobs' artefacts into one release directory, and report how the
 # repeated builds compared.
 #
