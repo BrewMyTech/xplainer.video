@@ -153,10 +153,15 @@ const EXPECTED_ACCESS = "public";
  *
  * The command is exact, and relative to the member, because that is where pnpm runs it. The
  * offline form only: `--self-test` would pass with every blocker open, and the network rule is
- * `release:publish`'s alone, run once rather than once per package.
+ * `release:publish`'s alone, run once rather than once per package. And `--prepublish`, because
+ * pnpm runs this workspace's `prepublishOnly` hooks on **install** as well (measured with pnpm
+ * 11.25.0, 2026-11-12: every injected member's hook, `npm_command=install`), so the bare check
+ * refused every fresh `pnpm install` while a blocker was open; with the flag the checker stands
+ * aside for anything pnpm says is not a publish (`check-release-ready.mjs`'s docblock).
  */
 const RELEASE_CHECK_SCRIPT = "scripts/check-release-ready.mjs";
-const releaseCheckHook = (memberDir) => `node ${posix.relative(memberDir, RELEASE_CHECK_SCRIPT)}`;
+const releaseCheckHook = (memberDir) =>
+  `node ${posix.relative(memberDir, RELEASE_CHECK_SCRIPT)} --prepublish`;
 
 /**
  * The name of the private repository the hosted tier moved to (ADR 0023).
@@ -1014,8 +1019,17 @@ const SELF_TESTS = [
       scripts: { prepublishOnly: `${releaseCheckHook(SELF_TEST_MEMBER.dir)} --self-test` },
     }),
     clean: selfTestManifest({
+      scripts: { prepublishOnly: "node ../../scripts/check-release-ready.mjs --prepublish" },
+    }),
+  },
+  {
+    rule: "prepublish-runs-the-release-check",
+    // The other near miss, and the one that shipped first: the check without `--prepublish`
+    // refuses every `pnpm install` while a blocker is open, because pnpm runs the hook there too.
+    violating: selfTestManifest({
       scripts: { prepublishOnly: "node ../../scripts/check-release-ready.mjs" },
     }),
+    clean: selfTestManifest({}),
   },
   {
     rule: "workspace-deps-use-the-protocol",

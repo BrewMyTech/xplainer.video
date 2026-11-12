@@ -139,7 +139,11 @@ with its evidence — then requires the manifest served at
 `apps/cli/src/setup/toolchain.manifest.json`, and only then runs
 `pnpm publish -r --no-git-checks --access public` with your arguments appended (ADR 0031's note of
 2026-11-12, D8). The check is also every published member's `prepublishOnly`, which
-`check-publish-contract` requires, so a bare `pnpm publish -r` is refused by it too; the manifest
+`check-publish-contract` requires, so a bare `pnpm publish -r` is refused by it too. That hook is
+`check-release-ready.mjs --prepublish`, because pnpm also runs this workspace's `prepublishOnly`
+hooks on **install** (with `npm_command=install`), and the bare check refused every fresh
+`pnpm install` while a blocker was open; with the flag it checks a publish, or a run nobody's
+lifecycle started, and stands aside for everything else. The manifest
 compare is not in the hook, because pnpm publishes one package at a time and a CDN failing between
 two of them would leave half a release on the registry.
 

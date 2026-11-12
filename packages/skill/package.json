@@ -26,7 +26,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepack": "xplainer-sync-license",
-    "prepublishOnly": "node ../../scripts/check-release-ready.mjs",
+    "prepublishOnly": "node ../../scripts/check-release-ready.mjs --prepublish",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

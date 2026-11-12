@@ -32,16 +32,29 @@
  * before `pnpm publish -r`, because pnpm publishes one package at a time and a CDN failing
  * between two of them must not leave a release half on the registry.
  *
- * TWO WAYS TO RUN IT.
+ * THREE WAYS TO RUN IT.
  *
- *   node scripts/check-release-ready.mjs              the self-tests, then every rule. Red until
- *                                                     every blocker is closed, which is the point.
- *                                                     What `prepublishOnly` and `pnpm
- *                                                     release:publish` run.
- *   node scripts/check-release-ready.mjs --self-test  the self-tests and nothing else. What
- *                                                     `pnpm verify` and CI run, because the rules
- *                                                     themselves have to fire on every commit while
- *                                                     the release they judge is still refused.
+ *   node scripts/check-release-ready.mjs               the self-tests, then every rule. Red until
+ *                                                      every blocker is closed, which is the
+ *                                                      point. What `pnpm release:publish` runs.
+ *   node scripts/check-release-ready.mjs --prepublish  the same, as every published member's
+ *                                                      `prepublishOnly` — except under a command
+ *                                                      that is not a publish, where it says so and
+ *                                                      exits 0 (below).
+ *   node scripts/check-release-ready.mjs --self-test   the self-tests and nothing else. What
+ *                                                      `pnpm verify` and CI run, because the rules
+ *                                                      themselves have to fire on every commit
+ *                                                      while the release they judge is still
+ *                                                      refused.
+ *
+ * WHY `--prepublish` EXISTS. **pnpm runs `prepublishOnly` on install, too**, for the members this
+ * workspace injects (`dependenciesMeta.*.injected`): measured with pnpm 11.25.0 on 2026-11-12, a
+ * fresh `pnpm install --frozen-lockfile` ran every member's hook with `npm_command=install`, so a
+ * hook that ran the whole check refused the install itself while any blocker was open — every
+ * fresh clone and every CI run, with AC-1a's bootstrap as the first casualty. A publish sets
+ * `npm_command=publish` (measured the same day, `pnpm publish` and `pnpm publish -r`, both with
+ * `--dry-run`). So the hook runs the check unless pnpm says the command is something else, and a
+ * run with no `npm_command` at all — somebody typing the line — is checked, never skipped.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every invocation, for the reason
  * `check-publish-contract.mjs` gives: a gate whose rules cannot be shown to fire is
@@ -579,6 +592,7 @@ function runSelfTests() {
     }
   }
   problems.push(...loaderSelfTest());
+  problems.push(...prepublishSelfTest());
   return { problems, verified: [...covered].sort(), samples: SELF_TESTS.length };
 }
 
@@ -716,13 +730,50 @@ const LOADERS = {
   blockers: loadBlockers,
 };
 
+/**
+ * Whether a `prepublishOnly` run checks the tree: `"check"` unless pnpm (or npm) names a command
+ * that is not a publish. Unset means nobody's lifecycle started it, and that is checked too.
+ */
+function prepublishVerdict(npmCommand) {
+  return typeof npmCommand === "string" && npmCommand !== "" && npmCommand !== "publish"
+    ? "skip"
+    : "check";
+}
+
+/** `prepublishVerdict` against the values it was measured on, run with every other self-test. */
+function prepublishSelfTest() {
+  const cases = [
+    ["publish", "check"],
+    [undefined, "check"],
+    ["", "check"],
+    ["install", "skip"],
+    ["add", "skip"],
+  ];
+  return cases
+    .filter(([command, expected]) => prepublishVerdict(command) !== expected)
+    .map(
+      ([command, expected]) =>
+        `prepublishVerdict(${JSON.stringify(command)}) is not "${expected}": the hook would ` +
+        (expected === "check" ? "wave a publish through unchecked." : "refuse an install."),
+    );
+}
+
 function main(argv) {
   const selfTestOnly = argv.length === 1 && argv[0] === "--self-test";
-  if (argv.length > 0 && !selfTestOnly) {
+  const prepublish = argv.length === 1 && argv[0] === "--prepublish";
+  if (argv.length > 0 && !selfTestOnly && !prepublish) {
     throw new UsageError(
-      `unexpected argument(s): ${argv.join(" ")}. The one this checker takes is --self-test; ` +
-        "rule (c), which needs the network, is `pnpm release:publish`'s.",
+      `unexpected argument(s): ${argv.join(" ")}. This checker takes --self-test or ` +
+        "--prepublish; rule (c), which needs the network, is `pnpm release:publish`'s.",
     );
+  }
+  if (prepublish && prepublishVerdict(process.env.npm_command) === "skip") {
+    process.stdout.write(
+      `check-release-ready: not run — this prepublishOnly was started by \`${process.env.npm_command}\`, ` +
+        "not a publish (pnpm runs the hook for injected workspace members on install). A " +
+        "publish runs it with npm_command=publish and is checked.\n",
+    );
+    return 0;
   }
 
   const selfTest = runSelfTests();

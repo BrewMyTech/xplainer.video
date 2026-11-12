@@ -32,7 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
     "prepack": "xplainer-sync-license",
-    "prepublishOnly": "node ../../scripts/check-release-ready.mjs",
+    "prepublishOnly": "node ../../scripts/check-release-ready.mjs --prepublish",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
