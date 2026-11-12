@@ -40,7 +40,9 @@
  *   node scripts/check-release-ready.mjs --prepublish  the same, as every published member's
  *                                                      `prepublishOnly` — except under a command
  *                                                      that is not a publish, where it says so and
- *                                                      exits 0 (below).
+ *                                                      exits 0, and under a publish that did not
+ *                                                      come through `pnpm release:publish`, which
+ *                                                      it refuses (both below).
  *   node scripts/check-release-ready.mjs --self-test   the self-tests and nothing else. What
  *                                                      `pnpm verify` and CI run, because the rules
  *                                                      themselves have to fire on every commit
@@ -55,6 +57,15 @@
  * `npm_command=publish` (measured the same day, `pnpm publish` and `pnpm publish -r`, both with
  * `--dry-run`). So the hook runs the check unless pnpm says the command is something else, and a
  * run with no `npm_command` at all — somebody typing the line — is checked, never skipped.
+ *
+ * WHY A PUBLISH MUST COME THROUGH `pnpm release:publish`. 0.1.0 was published on 2026-11-12 from
+ * a clone whose `dist/` directories were stale or absent. Every gate passed, because none of them
+ * builds, and the registry received `@xplainer/cli` 0.1.0 byte-identical to 0.0.11 and an
+ * `@xplainer/motion` with no `dist/` at all. `scripts/release-publish.mjs` now refuses a dirty
+ * tree, deletes every published `dist/`, runs a forced build and the publish contract before it
+ * publishes, and sets `XPLAINER_RELEASE_PUBLISH=1` for the `pnpm publish -r` it starts. So a hook
+ * started by a publish, without that variable, is a bare `pnpm publish` that skipped the build,
+ * and it is refused before the package is packed.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every invocation, for the reason
  * `check-publish-contract.mjs` gives: a gate whose rules cannot be shown to fire is
@@ -730,31 +741,49 @@ const LOADERS = {
   blockers: loadBlockers,
 };
 
+/** What `scripts/release-publish.mjs` sets for the `pnpm publish -r` it starts, after building. */
+const RELEASE_PUBLISH_ENV = "XPLAINER_RELEASE_PUBLISH";
+
 /**
- * Whether a `prepublishOnly` run checks the tree: `"check"` unless pnpm (or npm) names a command
- * that is not a publish. Unset means nobody's lifecycle started it, and that is checked too.
+ * What a `prepublishOnly` run does. `"skip"` when pnpm (or npm) names a command that is not a
+ * publish. `"refuse"` for a publish that `pnpm release:publish` did not start, because only that
+ * wrapper builds first. `"check"` otherwise: the wrapper's own publish, or a run no lifecycle
+ * started (unset `npm_command`, somebody typing the line).
  */
-function prepublishVerdict(npmCommand) {
-  return typeof npmCommand === "string" && npmCommand !== "" && npmCommand !== "publish"
-    ? "skip"
-    : "check";
+function prepublishVerdict(npmCommand, releasePublish) {
+  if (typeof npmCommand === "string" && npmCommand !== "" && npmCommand !== "publish") {
+    return "skip";
+  }
+  if (npmCommand === "publish" && releasePublish !== "1") {
+    return "refuse";
+  }
+  return "check";
 }
 
 /** `prepublishVerdict` against the values it was measured on, run with every other self-test. */
 function prepublishSelfTest() {
   const cases = [
-    ["publish", "check"],
-    [undefined, "check"],
-    ["", "check"],
-    ["install", "skip"],
-    ["add", "skip"],
+    ["publish", "1", "check"],
+    ["publish", undefined, "refuse"],
+    ["publish", "", "refuse"],
+    ["publish", "0", "refuse"],
+    [undefined, undefined, "check"],
+    ["", undefined, "check"],
+    ["install", undefined, "skip"],
+    ["install", "1", "skip"],
+    ["add", undefined, "skip"],
   ];
+  const consequence = {
+    check: "wave a publish through unchecked, or refuse the wrapper's own.",
+    refuse: "let a bare `pnpm publish` ship whatever dist/ is on disk.",
+    skip: "refuse an install.",
+  };
   return cases
-    .filter(([command, expected]) => prepublishVerdict(command) !== expected)
+    .filter(([command, wrapper, expected]) => prepublishVerdict(command, wrapper) !== expected)
     .map(
-      ([command, expected]) =>
-        `prepublishVerdict(${JSON.stringify(command)}) is not "${expected}": the hook would ` +
-        (expected === "check" ? "wave a publish through unchecked." : "refuse an install."),
+      ([command, wrapper, expected]) =>
+        `prepublishVerdict(${JSON.stringify(command)}, ${JSON.stringify(wrapper)}) is not ` +
+        `"${expected}": the hook would ${consequence[expected]}`,
     );
 }
 
@@ -771,13 +800,25 @@ function main(argv) {
   // declared in turbo.json's `globalPassThroughEnv`, which is what Biome's `noUndeclaredEnvVars`
   // reads; it changes no task hash.
   const npmCommand = process.env.npm_command;
-  if (prepublish && prepublishVerdict(npmCommand) === "skip") {
+  const verdict = prepublish
+    ? prepublishVerdict(npmCommand, process.env[RELEASE_PUBLISH_ENV])
+    : "check";
+  if (verdict === "skip") {
     process.stdout.write(
       `check-release-ready: not run — this prepublishOnly was started by \`${npmCommand}\`, ` +
         "not a publish (pnpm runs the hook for injected workspace members on install). A " +
         "publish runs it with npm_command=publish and is checked.\n",
     );
     return 0;
+  }
+  if (verdict === "refuse") {
+    process.stderr.write(
+      "check-release-ready: refused — this is a `pnpm publish` that `pnpm release:publish` did " +
+        `not start (${RELEASE_PUBLISH_ENV} is not 1). Only that wrapper builds every member ` +
+        "and checks the tarballs before publishing; a bare publish ships whatever dist/ is on " +
+        "disk, which is how 0.1.0 reached the registry stale. Run `pnpm release:publish`.\n",
+    );
+    return 1;
   }
 
   const selfTest = runSelfTests();

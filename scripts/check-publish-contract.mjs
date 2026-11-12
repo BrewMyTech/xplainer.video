@@ -38,6 +38,13 @@
  *                              release check, so no publish skips it.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
+ *   Per package                every file the manifest's `main`, `module`,
+ *                              `types`, `typings`, `bin` and `exports` name is
+ *                              IN the tarball, and a package whose `files`
+ *                              declares `dist` ships at least one file under
+ *                              it. Added after 0.1.0 reached the registry with
+ *                              an `@xplainer/motion` whose `exports` named a
+ *                              `dist/` the tarball did not carry.
  *   Whole workspace            the publishable set is exactly the declared eight.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every
@@ -157,7 +164,9 @@ const EXPECTED_ACCESS = "public";
  * pnpm runs this workspace's `prepublishOnly` hooks on **install** as well (measured with pnpm
  * 11.25.0, 2026-11-12: every injected member's hook, `npm_command=install`), so the bare check
  * refused every fresh `pnpm install` while a blocker was open; with the flag the checker stands
- * aside for anything pnpm says is not a publish (`check-release-ready.mjs`'s docblock).
+ * aside for anything pnpm says is not a publish (`check-release-ready.mjs`'s docblock), and
+ * refuses a publish that `pnpm release:publish` did not start, because only that wrapper builds
+ * before packing.
  */
 const RELEASE_CHECK_SCRIPT = "scripts/check-release-ready.mjs";
 const releaseCheckHook = (memberDir) =>
@@ -633,6 +642,120 @@ const PRESENCE_RULES = [
 ];
 
 /**
+ * ============================================================================
+ * ENTRY RULES — what the manifest promises a consumer can load.
+ * ============================================================================
+ *
+ * The rules above read the file list and the source manifest separately, so a
+ * manifest pointing at files the tarball does not carry passed all of them:
+ * `@xplainer/motion` 0.1.0 shipped LICENSE, NOTICE, README.md and package.json,
+ * and nothing its `exports` named. Every `import` of it fails with
+ * ERR_MODULE_NOT_FOUND on a user's machine and nowhere in this repository,
+ * where the workspace link reads the package directory instead.
+ *
+ * Each rule takes `{ manifest, shipped }`, the source manifest and the tarball's
+ * paths, and returns a problem sentence or `null`.
+ */
+const ENTRY_FIELDS = ["main", "module", "types", "typings"];
+
+/** Whether a manifest's `files` ships a `dist/`: `dist`, `./dist`, or anything under either. */
+function filesDeclareDist(files) {
+  return (
+    Array.isArray(files) &&
+    files.some((entry) => typeof entry === "string" && /^(\.\/)?dist(\/|$)/.test(entry))
+  );
+}
+
+/** `./dist/x.js` and `dist/x.js` name the same tarball path. */
+function tarballPathOf(target) {
+  return target.replace(/^\.\//, "");
+}
+
+/** Every string target in an `exports` value: a string, a conditions object, or an array. */
+function exportTargets(value, into) {
+  if (typeof value === "string") {
+    into.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) {
+      exportTargets(item, into);
+    }
+  } else if (value !== null && typeof value === "object") {
+    for (const item of Object.values(value)) {
+      exportTargets(item, into);
+    }
+  }
+  return into;
+}
+
+/** `[field, target]` for every file the manifest names as something a consumer loads. */
+function entryPointTargets(manifest) {
+  const targets = [];
+  for (const field of ENTRY_FIELDS) {
+    if (typeof manifest[field] === "string") {
+      targets.push([field, manifest[field]]);
+    }
+  }
+  if (typeof manifest.bin === "string") {
+    targets.push(["bin", manifest.bin]);
+  } else if (manifest.bin !== null && typeof manifest.bin === "object") {
+    for (const [name, target] of Object.entries(manifest.bin)) {
+      if (typeof target === "string") {
+        targets.push([`bin.${name}`, target]);
+      }
+    }
+  }
+  if (manifest.exports !== undefined) {
+    for (const target of exportTargets(manifest.exports, [])) {
+      targets.push(["exports", target]);
+    }
+  }
+  return targets;
+}
+
+/** Whether a target, which may be a subpath pattern with one `*`, is met by the tarball. */
+function targetShips(target, shipped) {
+  const path = tarballPathOf(target);
+  if (!path.includes("*")) {
+    return shipped.has(path);
+  }
+  const [head, tail] = path.split("*", 2);
+  return [...shipped].some(
+    (candidate) =>
+      candidate.length > head.length + tail.length &&
+      candidate.startsWith(head) &&
+      candidate.endsWith(tail),
+  );
+}
+
+const ENTRY_RULES = [
+  {
+    id: "entry-points-in-tarball",
+    check: ({ manifest, shipped }) => {
+      const missing = entryPointTargets(manifest)
+        .filter(([, target]) => !targetShips(target, shipped))
+        .map(([field, target]) => `${field} → ${target}`);
+      return missing.length === 0
+        ? null
+        : "the manifest names files the tarball does not carry, so loading the package fails " +
+            `on a user's machine and nowhere in the workspace: ${missing.join(", ")}. Build ` +
+            "before packing (`pnpm release:publish` does), and check `files`.";
+    },
+  },
+  {
+    id: "dist-in-tarball",
+    check: ({ manifest, shipped }) => {
+      if (!filesDeclareDist(manifest.files) || [...shipped].some((p) => p.startsWith("dist/"))) {
+        return null;
+      }
+      return (
+        'the manifest\'s "files" declares dist/ and the tarball carries nothing under it: the ' +
+        "package was packed unbuilt. Build before packing (`pnpm release:publish` does)."
+      );
+    },
+  },
+];
+
+/**
  * `git+https://…/x.git`, `https://…/x.git` and `https://…/x` are the same
  * repository, and npm normalises between them. Comparing the raw string would
  * make the rule fail on the conventional spelling, so it is normalised first.
@@ -1098,6 +1221,108 @@ const SELF_TESTS = [
     clean: ["dist/index.js", "LICENSE", "NOTICE", "README.md"],
   },
 
+  // --- ENTRY_RULES ----------------------------------------------------------
+  {
+    rule: "entry-points-in-tarball",
+    // @xplainer/motion 0.1.0 as it reached the registry: exports, no dist/.
+    violating: {
+      manifest: {
+        exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
+        files: ["dist", "LICENSE", "NOTICE"],
+      },
+      shipped: ["LICENSE", "NOTICE", "README.md", "package.json"],
+    },
+    clean: {
+      manifest: {
+        exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
+        files: ["dist", "LICENSE", "NOTICE"],
+      },
+      shipped: [
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "dist/index.d.ts",
+        "dist/index.js",
+        "package.json",
+      ],
+    },
+  },
+  {
+    rule: "entry-points-in-tarball",
+    // A bin whose target is gone: `npx` would install it and then fail to run it.
+    violating: {
+      manifest: { bin: { xplainer: "./dist/bin.js" }, main: "./dist/index.js" },
+      shipped: ["dist/index.js", "package.json"],
+    },
+    clean: {
+      manifest: { bin: { xplainer: "./dist/bin.js" }, main: "./dist/index.js" },
+      shipped: ["dist/bin.js", "dist/index.js", "package.json"],
+    },
+  },
+  {
+    rule: "entry-points-in-tarball",
+    // A subpath pattern that matches nothing in the tarball, and the same pattern matched.
+    violating: {
+      manifest: {
+        exports: { "./templates/*": "./dist/templates/*.txt", "./package.json": "./package.json" },
+      },
+      shipped: ["dist/index.js", "package.json"],
+    },
+    clean: {
+      manifest: {
+        exports: { "./templates/*": "./dist/templates/*.txt", "./package.json": "./package.json" },
+      },
+      shipped: ["dist/templates/Root.tsx.txt", "package.json"],
+    },
+  },
+  {
+    rule: "entry-points-in-tarball",
+    // A null condition hides a subpath and names no file; a `*` may stand for a nested path.
+    violating: {
+      manifest: { exports: { "./internal/*": null, "./data/*": "./dist/data/*" } },
+      shipped: ["dist/index.js", "package.json"],
+    },
+    clean: {
+      manifest: { exports: { "./internal/*": null, "./data/*": "./dist/data/*" } },
+      shipped: ["dist/data/voices/af_heart.json", "package.json"],
+    },
+  },
+  {
+    rule: "dist-in-tarball",
+    // `distribution` is not `dist`: a package that never declared dist/ owes none.
+    violating: {
+      manifest: { files: ["dist", "distribution"] },
+      shipped: ["distribution/index.js", "package.json"],
+    },
+    clean: {
+      manifest: { files: ["distribution"] },
+      shipped: ["distribution/index.js", "package.json"],
+    },
+  },
+  {
+    rule: "dist-in-tarball",
+    // `./dist` is the same declaration as `dist`.
+    violating: {
+      manifest: { files: ["./dist", "LICENSE"] },
+      shipped: ["LICENSE", "package.json"],
+    },
+    clean: {
+      manifest: { files: ["./dist", "LICENSE"] },
+      shipped: ["LICENSE", "dist/index.js", "package.json"],
+    },
+  },
+  {
+    rule: "dist-in-tarball",
+    violating: {
+      manifest: { files: ["dist", "LICENSE"] },
+      shipped: ["LICENSE", "README.md", "package.json"],
+    },
+    clean: {
+      manifest: { files: ["dist", "LICENSE"] },
+      shipped: ["LICENSE", "README.md", "dist/index.js", "package.json"],
+    },
+  },
+
   // --- The must-ship mechanism --------------------------------------------
   {
     rule: MUST_SHIP_RULE_ID,
@@ -1355,6 +1580,9 @@ function indexRules() {
   for (const rule of MANIFEST_RULES) {
     index.set(rule.id, { kind: "manifest", rule });
   }
+  for (const rule of ENTRY_RULES) {
+    index.set(rule.id, { kind: "entry", rule });
+  }
   for (const rule of PRESENCE_RULES) {
     index.set(rule.id, { kind: "presence", rule });
     if (rule.sameAsRoot) {
@@ -1376,6 +1604,9 @@ function ruleFires(kind, rule, sample) {
   }
   if (kind === "manifest") {
     return rule.check(sample.manifest, sample.member) !== null;
+  }
+  if (kind === "entry") {
+    return rule.check({ manifest: sample.manifest, shipped: new Set(sample.shipped) }) !== null;
   }
   if (kind === "presence") {
     return !new Set(sample).has(rule.file);
@@ -1524,6 +1755,14 @@ function inspectMember(root, member, tarballPaths) {
     }
   }
 
+  // --- What the manifest says a consumer can load must be in the tarball ---
+  for (const rule of ENTRY_RULES) {
+    const problem = rule.check({ manifest, shipped });
+    if (problem !== null) {
+      findings.note(problem, `Rule: ${rule.id}.`);
+    }
+  }
+
   // --- Files that must ship, and must ship untransformed -------------------
   const bytesOf = (path) => {
     const diskPath = toDiskPath(root, member.dir, path);
@@ -1658,10 +1897,7 @@ function checkBuilt(root) {
   const missing = [];
   for (const member of PUBLISHABLE_MEMBERS) {
     const manifest = readManifest(root, member.dir);
-    const declaresDist = (manifest.files ?? []).some(
-      (entry) => entry === "dist" || entry.startsWith("dist/"),
-    );
-    if (declaresDist && !existsSync(join(root, member.dir, "dist"))) {
+    if (filesDeclareDist(manifest.files) && !existsSync(join(root, member.dir, "dist"))) {
       missing.push(member.dir);
     }
   }

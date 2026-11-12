@@ -239,7 +239,8 @@ jobs:
       # its self-tests: each rule fired on a violating sample and held silent on
       # a clean one, and release:publish's manifest compare and ordering driven
       # with an injected fetch. The full check runs where it counts: as every
-      # published member's prepublishOnly, and first in `pnpm release:publish`.
+      # published member's prepublishOnly, and in `pnpm release:publish` before
+      # anything is deleted or built.
       # (ADR 0031's note of 2026-11-12, D8)
       - name: The release gates fire on what they refuse (ADR 0031 D8)
         run: pnpm check:release-gates
@@ -287,7 +288,7 @@ jobs:
         run: pnpm turbo build lint typecheck test
 
       # Placed immediately after the build because it packs dist/, and before
-      # the slower Terraform and Docker steps so a leak fails fast (~1s: six
+      # the slower Terraform and Docker steps so a leak fails fast (~1s: eight
       # `npm pack --dry-run` runs in parallel, no network).
       #
       # It asserts against `npm pack` output rather than the working tree. The
@@ -298,11 +299,13 @@ jobs:
       # fixtures, no Python bytecode, no sourceMappingURL left in shipped JS,
       # LICENSE actually inside every tarball with a matching `license` field
       # (Apache-2.0 since f07d06c; LICENSE-BINARY no longer exists), the
-      # publishable set still exactly six, and — the other direction
+      # publishable set still exactly the declared eight, and — the other direction
       # — that the workspace template, scaffold templates and SKILL.md still
       # ship byte-identical, because those have to be readable to work at all.
       # And every published manifest's prepublishOnly runs the release check,
-      # so no publish goes around it (ADR 0031 D8).
+      # so no publish goes around it (ADR 0031 D8), and every file a manifest's
+      # main, types, bin or exports names is in its tarball (0.1.0's motion
+      # shipped without dist/).
       - name: Published tarballs leak no source, maps or licence
         run: pnpm check:publish-contract
 

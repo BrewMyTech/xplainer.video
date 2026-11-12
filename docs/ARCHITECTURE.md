@@ -560,7 +560,8 @@ in the root [`AGENTS.md`](../AGENTS.md).
    `prepublishOnly` that runs the release check by its path from the member
    (`node ../../scripts/check-release-ready.mjs --prepublish`), so no publish of it goes around that
    check — `--prepublish` because pnpm runs this workspace's `prepublishOnly` hooks on install too,
-   and the flag lets the check stand aside for any command pnpm says is not a publish. The
+   and the flag lets the check stand aside for any command pnpm says is not a publish and refuse a
+   publish that `pnpm release:publish` did not start, since only that wrapper builds first. The
    same checker asserts all six, and each rule there carries its own negative test.
 6. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
    `pnpm api:report`.

@@ -8,7 +8,7 @@
     "biome.json",
     "ruff.toml"
   ],
-  "globalPassThroughEnv": ["npm_command"],
+  "globalPassThroughEnv": ["npm_command", "XPLAINER_RELEASE_PUBLISH"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
