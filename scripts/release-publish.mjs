@@ -3,104 +3,122 @@
  * `pnpm release:publish` — the one command that publishes a release (ADR 0031's note of
  * 2026-11-12, D8).
  *
- * Seven steps, each run only when the one before it passed:
+ * **It never builds or packs in the clone it is run from.** It publishes HEAD from a throwaway
+ * `git worktree` of that commit, so nothing on disk in the clone — a stale `dist/`, an uncommitted
+ * edit, an ignored file, an injected copy made by an earlier install — can reach a tarball, and
+ * nothing in the clone is deleted or relinked. Steps, each run only when the one before it passed:
  *
- *   1. The tree is the commit. `--no-git-checks` (step 7) turns pnpm's own checks off, and every
- *      member's build compiles whatever is under its `src/`, tracked or not, so this refuses:
- *      anything `git status` reports under `apps/`, `packages/`, `services/`, the root `LICENSE`
- *      and `NOTICE` (every tarball's `prepack` copies them in) or `pnpm-workspace.yaml` (its
- *      catalog is written into the published ranges); any gitignored file under a published
- *      member's `src/` or its other non-`dist` `files` roots, which `git status` never shows and
- *      the build and `npm pack` both take (`out/`, `release/` and `dist/` are ignored at any
- *      depth); and a HEAD that is not on `origin/main`. It runs again just before step 7, so a
- *      build or a pack that changed the tree publishes nothing.
- *   2. `node scripts/check-release-ready.mjs` — the offline release check: the template carries
- *      no package manifest and no trace of the previous renderer, every render platform's browser
- *      and ffmpeg row is recorded, and every entry of `docs/release-blockers.json` is closed with
- *      its evidence. It reads no build output, so it runs before the slow steps.
- *   3. Every published member's `dist/` is deleted: each member that is not `private` and whose
- *      `files` names `dist`. A roster that comes out empty is refused. Do not run this beside a
- *      `pnpm verify` in the same tree: that run reads the `dist/` this deletes.
- *   4. `pnpm turbo build`, forced (`TURBO_FORCE=true`): every member is built from the tree that is
- *      about to be published, never taken from a cache.
- *   5. `node scripts/check-publish-contract.mjs` — the tarball gate, on that fresh build: what
- *      `npm pack` would put in each tarball, including every file the manifest's `exports`,
- *      `main`, `types` and `bin` name, and a `dist/` in every package that declares one.
- *   6. Rule (c), here: the toolchain manifest the CDN serves at
- *      `https://cdn.xplainer.video/toolchain/v2/manifest.json` is byte-identical to the committed
- *      `apps/cli/src/setup/toolchain.manifest.json`, compared by SHA-256. A release whose
- *      `setup` would read a different document than the one reviewed here is refused.
- *   7. `pnpm publish -r --no-git-checks --access public`, with every argument given to this
- *      script appended — `pnpm release:publish --otp 123456`. A leading `--` is dropped. It runs
- *      with `XPLAINER_RELEASE_PUBLISH=1`, which every member's `prepublishOnly` requires of a
- *      publish, so a bare `pnpm publish` that skipped steps 3 to 5 is refused per package. That
- *      stops an accident, not a determined publisher: `--ignore-scripts` skips every hook.
+ *   1. HEAD is on `origin/main` (`git merge-base --is-ancestor`, local refs only): a release is a
+ *      commit `main` already records (AGENTS.md, §Publishing a release). Uncommitted changes in
+ *      the clone are reported and left alone; they are not in HEAD, so they are not published.
+ *   2. `git worktree add --detach <tmp>/tree HEAD`.
+ *   3. `node scripts/check-release-ready.mjs`, from the worktree — the offline release check: the
+ *      template carries no package manifest and no trace of the previous renderer, every render
+ *      platform's browser and ffmpeg row is recorded, and every entry of
+ *      `docs/release-blockers.json` is closed with its evidence. It needs only Node, so it runs
+ *      before the slow steps.
+ *   4. `pnpm install --frozen-lockfile --config.nodeLinker=isolated`, in the worktree. Isolated
+ *      because pnpm can rewrite `workspace:` ranges only through per-consumer links, which the
+ *      committed `hoisted` layout does not have (AGENTS.md); frozen so the release is built from the
+ *      committed lockfile or not at all. With `CI=1`, so lefthook's postinstall does not repoint the
+ *      clone's shared git hooks at a worktree about to be deleted. Every pnpm call in the worktree
+ *      also carries `pnpm_config_verify_deps_before_run=false`: pnpm otherwise checks the install
+ *      before `pnpm turbo` runs, sees the isolated layout disagree with the committed `hoisted`, and
+ *      re-installs hoisted in the middle of the release — measured on pnpm 11.25.0, a second install,
+ *      a mixed layout and lefthook repointing the clone's hooks, even with the `--config` flag on
+ *      that call. The `--config` flag is still what makes the install isolated:
+ *      `pnpm_config_node_linker` loses to the workspace file there.
+ *   5. `pnpm turbo build --cache=local:,remote:`, forced (`TURBO_FORCE=true`), in the worktree. A
+ *      linked worktree shares turbo's cache with the clone it came from — measured: its writes land
+ *      in the clone's `.turbo/cache` — so a cache hit could restore a `dist/` the clone built, orphans
+ *      and all. The flag turns both caches off for this run, and `TURBO_FORCE` is the second lock.
+ *   6. `node scripts/check-publish-contract.mjs`, in the worktree — the tarball gate, on that
+ *      build: what `npm pack` would put in each tarball, including every file the manifest's
+ *      `exports`, `main`, `types` and `bin` name, and a `dist/` in every package that declares one.
+ *   7. Rule (c): the toolchain manifest the CDN serves at
+ *      `https://cdn.xplainer.video/toolchain/v2/manifest.json` is byte-identical to the worktree's
+ *      `apps/cli/src/setup/toolchain.manifest.json`, compared by SHA-256. A release whose `setup`
+ *      would read a different document than the one reviewed here is refused.
+ *   8. The worktree is still exactly HEAD plus ignored build output (`git status` in it is empty),
+ *      and then `pnpm publish -r --no-git-checks --access public`, in it, with every argument given
+ *      to this script appended — `pnpm release:publish --otp 123456`. A leading `--` is dropped. It
+ *      runs with `XPLAINER_RELEASE_PUBLISH=1`, which every member's `prepublishOnly` requires of a
+ *      publish, so a bare `pnpm publish` is refused per package. That stops an accident, not a
+ *      determined publisher: `--ignore-scripts` skips every hook.
  *
- * WHY IT BUILDS, AND DELETES FIRST. 0.1.0 was published on 2026-11-12 from a clone whose `dist/`
- * directories were stale or absent, and every gate passed, because none of them built anything.
- * The registry received `@xplainer/cli` 0.1.0 byte-identical in `dist/` to 0.0.11, an
- * `@xplainer/motion` with no `dist/` at all, and pre-Phase-1 builds of render-core, skill,
- * protocol and mcp-server. A build alone is not enough either: `tsc` never removes what it emitted
- * for a source that has since been deleted, and `xplainer-minify-dist` rewrites those leftovers
- * with the rest, so they ship looking fresh. On 2026-11-12 a forced build of the release commit
- * still left four such files in the CLI's `dist/` (`runtime/template.*`,
- * `setup/providers/workspace.*`), and a clone's render-core still held the `dist/render/args.js`
- * that 0.1.0 shipped. Only a build into an empty `dist/` makes the tarballs describe the commit.
+ * The worktree is made with the clone's git hooks switched off, and removed afterwards whatever
+ * happened — a refusal, a failure, or a throw. Ctrl-C, SIGHUP and SIGTERM stop the run at the next
+ * step, before the publish included, and abort the manifest fetch; a Ctrl-C also reaches the running
+ * step, which fails like any other. Only a hard kill leaves a worktree behind, in the temporary
+ * directory, where `git worktree prune` forgets it once the directory is gone.
  *
- * WHY THE NETWORK RULE IS HERE AND NOT IN THE HOOK. Step 2 is also every published member's
+ * WHY A FRESH WORKTREE. Two releases went wrong in place on 2026-11-12. 0.1.0 was published from a
+ * clone whose `dist/` was stale or absent, because `pnpm publish` packs whatever is on disk and
+ * nothing built: `@xplainer/cli` carried 0.0.11's build and `@xplainer/motion` no `dist/` at all.
+ * The first fix built in place after deleting every published `dist/` — `tsc` never removes what it
+ * emitted for a deleted source, so a build alone left orphans that shipped — and that broke 0.1.1's
+ * first attempt instead. This workspace injects its members (`injectWorkspacePackages`), and an
+ * injected copy is made at install time and follows a rebuild only through the hardlinks it shares
+ * with the source: `syncInjectedDepsAfterScripts` never adds a new file (`.npmrc`). The owner's
+ * isolated install ran over a 0.0.11-era `dist/`, the delete broke every hardlink, and the CLI's
+ * build resolved `@xplainer/protocol` through a copy that still held the old types: 22 errors, and
+ * nothing published. A build that had compiled against stale types would have published silently.
+ * In a fresh checkout no `dist/` exists when the install runs, so every copy is materialised from
+ * this build, the path CI has always taken; nothing stale exists anywhere to be found, and a
+ * defect there is a missing file that fails loudly rather than an old one that passes.
+ *
+ * WHY THE NETWORK RULE IS HERE AND NOT IN THE HOOK. Step 3 is also every published member's
  * `prepublishOnly`; pnpm runs that hook per package, before packing it, and stops the whole run
- * at the first refusal. Step 6 cannot go there: a CDN that answered for the third package and
+ * at the first refusal. Step 7 cannot go there: a CDN that answered for the third package and
  * failed for the fourth would leave a release half on the registry. Here it runs once, before
  * the first package is touched.
  *
- * DO NOT RUN THIS BEFORE THE VERSION-2 MANIFEST IS UPLOADED. Step 6 requests its URL, and until the
+ * DO NOT RUN THIS BEFORE THE VERSION-2 MANIFEST IS UPLOADED. Step 7 requests its URL, and until the
  * cache rule in `infra/terraform` is applied an error answer can be kept at the edge for 30 days
- * (`docs/release-blockers.json`, `v2-manifest-upload` and `cdn-cache-rule-applied`). Step 2
+ * (`docs/release-blockers.json`, `v2-manifest-upload` and `cdn-cache-rule-applied`). Step 3
  * refuses while either is open, so the request is not made by accident.
  *
- * `--self-test` drives all seven steps with an injected `fetch` and injected effects — the
- * manifest compare on identical, different, missing and unreachable answers, and the order:
- * nothing runs on a tree that is not the commit, nothing is deleted or built when the check
- * refuses, nothing is checked after a failed build, nothing is fetched after a refused tarball,
- * nothing is published when the compare refuses or the tree changed, and the publish gets the
- * fixed arguments and then the caller's. It also runs the roster and the ignored-file filter
- * against fixtures, the roster in a temporary directory it removes. It requests nothing, spawns
- * nothing and touches nothing outside that directory, and it is what `pnpm verify` and CI run.
+ * `--self-test` drives every step with an injected `fetch` and injected effects — the manifest
+ * compare on identical, different, missing and unreachable answers, and the order: no worktree is
+ * made for a HEAD off `origin/main`, nothing is installed when the check refuses, nothing is built
+ * after a failed install, nothing is checked after a failed build, nothing is fetched after a
+ * refused tarball, nothing is published when the compare refuses, the publish gets the fixed
+ * arguments and then the caller's, an interruption stops the run before the next step, and the
+ * worktree is removed on every path that made one, including a step that throws. It also builds the
+ * real steps over a recording `spawnSync` and checks what each would run, and where: every pnpm and
+ * node step inside the worktree, the build with both caches off and forced, the publish with the
+ * variable set. It requests nothing, spawns nothing and writes nothing, and it is what
+ * `pnpm verify` and CI run.
  *
  * Exit codes:
  *   0  published (or every self-test passed)
- *   1  the tree is not the commit or git could not read it, the delete roster is empty, the build
- *      failed, the published manifest differs or could not be read, a self-test failed, or a step
- *      was killed by a signal
+ *   1  HEAD is not on origin/main or git could not say, the worktree could not be made, the
+ *      install or the build failed, the published manifest differs or could not be read, the
+ *      worktree changed, a self-test failed, or a step was killed by a signal
+ * 130  interrupted (Ctrl-C, SIGHUP or SIGTERM) between steps
  *   2  an argument this script cannot take, or no workspace root
  *  70  internal error
- *   *  any other code is a step's own, passed through: the release check's, the build's, the
- *      publish contract's (whose own `2` means it could not run) or `pnpm publish`'s
+ *   *  any other code is a step's own, passed through: the release check's, the install's, the
+ *      build's, the publish contract's (whose own `2` means it could not run) or `pnpm publish`'s
  */
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
 const RELEASE_CHECK = "scripts/check-release-ready.mjs";
 const PUBLISH_CONTRACT = "scripts/check-publish-contract.mjs";
-const BUILD_ARGS = ["turbo", "build"];
-/** Where workspace members live: `check-publish-contract.mjs`'s `MEMBER_ROOTS`. */
-const MEMBER_PARENTS = ["apps", "packages", "services"];
-/** What a release may not carry uncommitted: the members, and the root files a publish reads. */
-const TREE_PATHS = [...MEMBER_PARENTS, "LICENSE", "NOTICE", "pnpm-workspace.yaml"];
+const INSTALL_ARGS = ["install", "--frozen-lockfile", "--config.nodeLinker=isolated"];
+const BUILD_ARGS = ["turbo", "build", "--cache=local:,remote:"];
+/** On every pnpm call in the worktree: no implicit re-install that would undo the isolated layout. */
+const WORKTREE_PNPM_ENV = { pnpm_config_verify_deps_before_run: "false" };
+/** How many uncommitted paths the report names before it says how many more. */
+const DIRTY_SHOWN = 10;
+const INTERRUPTED = 130;
 /** The ref a published commit must already be on (AGENTS.md: publish, then tag, from `main`). */
 const RELEASE_BRANCH = "origin/main";
 /** Read by every member's `prepublishOnly` (`check-release-ready.mjs --prepublish`). */
@@ -149,121 +167,51 @@ async function checkPublishedManifest(fetchImpl, committed) {
   return [];
 }
 
-/** Whether a manifest's `files` ships a `dist/`: `dist`, `./dist`, or anything under either. */
-function filesDeclareDist(files) {
-  return (
-    Array.isArray(files) &&
-    files.some((entry) => typeof entry === "string" && /^(\.\/)?dist(\/|$)/.test(entry))
-  );
-}
-
 /**
- * Every member that is not `private` and whose `files` ships `dist/`: `{ dir, roots }`, where
- * `roots` are the paths besides `dist/` that reach its tarball — `src/`, which the build compiles,
- * and each other `files` entry up to its first glob segment.
+ * Steps 3 to 8, inside the worktree `tree`. Returns the exit status; the caller removes the tree.
  */
-function publishedMembers(root) {
-  const members = [];
-  for (const parent of MEMBER_PARENTS) {
-    const base = join(root, parent);
-    if (!existsSync(base)) {
-      continue;
-    }
-    for (const entry of readdirSync(base, { withFileTypes: true })) {
-      const manifestPath = join(base, entry.name, "package.json");
-      if (!entry.isDirectory() || !existsSync(manifestPath)) {
-        continue;
-      }
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (manifest.private !== true && filesDeclareDist(manifest.files)) {
-        const dir = `${parent}/${entry.name}`;
-        const roots = [`${dir}/src`];
-        for (const file of manifest.files) {
-          if (typeof file !== "string" || filesDeclareDist([file])) {
-            continue;
-          }
-          const plain = file.replace(/^\.\//, "").split("/");
-          const cut = plain.findIndex((segment) => segment.includes("*"));
-          const path = (cut === -1 ? plain : plain.slice(0, cut)).join("/");
-          if (path !== "") {
-            roots.push(`${dir}/${path}`);
-          }
-        }
-        members.push({ dir, roots });
-      }
-    }
+async function publishFromTree(tree, extra, steps) {
+  const stopped = (before) => {
+    steps.log(`release:publish: interrupted before ${before}; nothing was published.`);
+    return INTERRUPTED;
+  };
+  if (steps.interrupted()) {
+    return stopped("the release check");
   }
-  return members.sort((a, b) => a.dir.localeCompare(b.dir));
-}
-
-/**
- * Which of `git ls-files --others --ignored` under the shipped roots would reach a tarball. Not a
- * dot-segment under `src/` (tsc's `include` skips those, and agent tooling keeps state there), and
- * never `node_modules`, `__pycache__` or `.pyc`, which neither the build nor the contract admits.
- */
-function ignoredThatShip(paths) {
-  return paths.filter((path) => {
-    const segments = path.split("/");
-    if (
-      segments.some((s) => s === "node_modules" || s === "__pycache__") ||
-      path.endsWith(".pyc")
-    ) {
-      return false;
-    }
-    const src = segments.indexOf("src");
-    return !(src !== -1 && segments.slice(src + 1).some((s) => s.startsWith(".")));
-  });
-}
-
-/**
- * The seven steps, in order, each behind the last. `steps` supplies every effect:
- * `treeProblems()` returns why the tree is not the commit (`[]` when it is), `cleanDist()`
- * deletes every published `dist/` and returns `{ declared, deleted }`,
- * `runCheck()`, `runBuild()`, `runContract()` and `runPublish(args)` return an exit status
- * (`null` for a signal or a spawn failure), `readCommitted()` the committed manifest's bytes,
- * `fetch` the network, and `log(line)` where the refusals go.
- */
-async function releasePublish(argv, steps) {
-  const extra = argv[0] === "--" ? argv.slice(1) : argv;
-  const before = steps.treeProblems();
-  if (before.length > 0) {
-    steps.log(
-      "release:publish: the tree is not the commit it would publish, and the build would ship " +
-        "the difference; nothing was checked, built or published.",
-    );
-    for (const line of before) {
-      steps.log(`  ${line}`);
-    }
-    return 1;
-  }
-  const check = steps.runCheck();
+  const check = steps.runCheck(tree);
   if (check !== 0) {
     steps.log(
-      `release:publish: the release check refused (exit ${String(check)}); nothing was built, ` +
-        "fetched or published.",
+      `release:publish: the release check refused (exit ${String(check)}); nothing was installed, ` +
+        "built, fetched or published.",
     );
     return check ?? 1;
   }
-  const { declared, deleted } = steps.cleanDist();
-  if (declared.length === 0) {
-    steps.log(
-      "release:publish: no published member declares dist/, so the roster is wrong; nothing " +
-        "was deleted, built or published.",
-    );
-    return 1;
+  if (steps.interrupted()) {
+    return stopped("the install");
   }
-  steps.log(
-    `release:publish: deleted ${deleted.length === 0 ? "no dist/ (none existed)" : deleted.join(", ")} before building.`,
-  );
-  const build = steps.runBuild();
+  const install = steps.runInstall(tree);
+  if (install !== 0) {
+    steps.log(
+      `release:publish: the isolated install failed (exit ${String(install)}); nothing was built, ` +
+        "fetched or published.",
+    );
+    return install ?? 1;
+  }
+  if (steps.interrupted()) {
+    return stopped("the build");
+  }
+  const build = steps.runBuild(tree);
   if (build !== 0) {
     steps.log(
       `release:publish: the build failed (exit ${String(build)}); nothing was fetched or ` +
-        "published, and the published members' dist/ may be missing: run `pnpm build`.",
+        "published.",
     );
     return build ?? 1;
   }
-  const contract = steps.runContract();
+  if (steps.interrupted()) {
+    return stopped("the publish contract");
+  }
+  const contract = steps.runContract(tree);
   if (contract !== 0) {
     steps.log(
       `release:publish: a tarball breaks the publish contract (exit ${String(contract)}); ` +
@@ -271,7 +219,10 @@ async function releasePublish(argv, steps) {
     );
     return contract ?? 1;
   }
-  const problems = await checkPublishedManifest(steps.fetch, steps.readCommitted());
+  if (steps.interrupted()) {
+    return stopped("the manifest compare");
+  }
+  const problems = await checkPublishedManifest(steps.fetch, steps.readCommitted(tree));
   if (problems.length > 0) {
     for (const problem of problems) {
       steps.log(`release:publish: (c) ${problem}`);
@@ -282,24 +233,90 @@ async function releasePublish(argv, steps) {
   steps.log(
     `release:publish: (c) the published manifest is byte-identical to ${COMMITTED_MANIFEST}.`,
   );
-  const after = steps.treeProblems();
-  if (after.length > 0) {
+  const changes = steps.treeChanges(tree);
+  if (changes.length > 0) {
     steps.log(
-      "release:publish: building or packing changed the tree, so the tarballs are not the " +
-        "commit; nothing was published.",
+      "release:publish: the worktree is no longer HEAD plus build output, so its tarballs are not " +
+        "the commit; nothing was published.",
     );
-    for (const line of after) {
+    for (const line of changes) {
       steps.log(`  ${line}`);
     }
     return 1;
   }
-  return steps.runPublish([...PUBLISH_ARGS, ...extra]) ?? 1;
+  if (steps.interrupted()) {
+    return stopped("the publish");
+  }
+  return steps.runPublish(tree, [...PUBLISH_ARGS, ...extra]) ?? 1;
+}
+
+/**
+ * Every step, in order, each behind the last. `steps` supplies every effect: `head()` returns
+ * `{ commit, problems, dirty }` — why HEAD may not be published (`[]` when it may) and what the
+ * clone holds uncommitted; `createTree(commit)` makes the worktree and returns its path, or throws;
+ * `removeTree(tree)` removes it and returns whether it could, never throwing; `treeChanges(tree)`
+ * what `git status` reports in it; `interrupted()` whether a signal asked the run to stop;
+ * `runCheck`, `runInstall`,
+ * `runBuild`, `runContract` and `runPublish(tree, args)` return an exit status (`null` for a
+ * signal or a spawn failure); `readCommitted(tree)` the committed manifest's bytes; `fetch` the
+ * network; and `log(line)` where the refusals go.
+ */
+async function releasePublish(argv, steps) {
+  const extra = argv[0] === "--" ? argv.slice(1) : argv;
+  const head = steps.head();
+  if (head.problems.length > 0) {
+    steps.log("release:publish: HEAD may not be published; no worktree was made.");
+    for (const problem of head.problems) {
+      steps.log(`  ${problem}`);
+    }
+    return 1;
+  }
+  const reportDirty = () => {
+    if (head.dirty.length === 0) {
+      return;
+    }
+    steps.log(
+      `release:publish: ${String(head.dirty.length)} uncommitted path(s) in this clone are not ` +
+        `published: the release is built from ${head.commit} alone, in a fresh worktree.`,
+    );
+    for (const line of head.dirty.slice(0, DIRTY_SHOWN)) {
+      steps.log(`  ${line}`);
+    }
+    if (head.dirty.length > DIRTY_SHOWN) {
+      steps.log(`  … and ${String(head.dirty.length - DIRTY_SHOWN)} more`);
+    }
+  };
+  reportDirty();
+  let tree;
+  try {
+    tree = steps.createTree(head.commit);
+  } catch (error) {
+    steps.log(
+      `release:publish: could not make a worktree of ${head.commit} ` +
+        `(${error instanceof Error ? error.message : String(error)}); nothing was built.`,
+    );
+    return 1;
+  }
+  steps.log(`release:publish: publishing ${head.commit} from ${tree}.`);
+  try {
+    return await publishFromTree(tree, extra, steps);
+  } finally {
+    if (!steps.removeTree(tree)) {
+      steps.log(
+        `release:publish: could not remove ${tree}; run \`git worktree remove --force ${tree}\`.`,
+      );
+    }
+    // Said again at the end, where it is read: an uncommitted version bump publishes nothing.
+    reportDirty();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Self-tests
 
 const COMMITTED_SAMPLE = Buffer.from('{ "format_version": 2 }\n');
+const COMMIT = "6395f022efda43ba1b5c5111705403c2d2edafaf";
+const TREE = "/tmp/xplainer-release-test/tree";
 
 /** A fake `fetch` answering every request with `answer`, recording the URLs it was asked for. */
 function fakeFetch(answer) {
@@ -314,50 +331,72 @@ function fakeFetch(answer) {
   return { fetchImpl, urls };
 }
 
-/** One `releasePublish` run against fakes; returns what it did. */
+/**
+ * One `releasePublish` run against fakes; returns what it did. A step given `"throw"` throws, so
+ * the worktree's removal can be checked on that path too.
+ */
 async function rehearse({
   argv = [],
+  problems = [],
   dirty = [],
-  dirtyAfter = [],
-  declared = ["packages/motion/dist"],
+  createTree = TREE,
   check = 0,
+  install = 0,
   build = 0,
   contract = 0,
   answer,
+  changes = [],
+  interruptAfter,
   publish = 0,
 }) {
   const calls = [];
   const { fetchImpl, urls } = fakeFetch(answer ?? { status: 200, body: COMMITTED_SAMPLE });
-  const status = await releasePublish(argv, {
-    treeProblems: () => {
-      const first = !calls.includes("tree");
-      calls.push(first ? "tree" : "tree again");
-      return first ? dirty : dirtyAfter;
-    },
-    cleanDist: () => {
-      calls.push("clean");
-      return { declared, deleted: declared };
-    },
-    runBuild: () => {
-      calls.push("build");
-      return build;
-    },
-    runContract: () => {
-      calls.push("contract");
-      return contract;
-    },
-    runCheck: () => {
-      calls.push("check");
-      return check;
-    },
-    readCommitted: () => COMMITTED_SAMPLE,
-    fetch: fetchImpl,
-    runPublish: (args) => {
-      calls.push(["publish", ...args]);
-      return publish;
-    },
-    log: () => {},
-  });
+  const step = (name, result) => (tree) => {
+    calls.push(tree === TREE ? name : `${name} outside the tree`);
+    if (result === "throw") {
+      throw new Error(`${name} threw`);
+    }
+    return result;
+  };
+  let status;
+  try {
+    status = await releasePublish(argv, {
+      head: () => {
+        calls.push("head");
+        return { commit: COMMIT, problems, dirty };
+      },
+      createTree: (commit) => {
+        calls.push(commit === COMMIT ? "tree" : "tree of the wrong commit");
+        if (createTree instanceof Error) {
+          throw createTree;
+        }
+        return createTree;
+      },
+      removeTree: (tree) => {
+        calls.push(tree === TREE ? "remove" : "remove the wrong tree");
+        return true;
+      },
+      treeChanges: (tree) => {
+        calls.push(tree === TREE ? "changes" : "changes outside the tree");
+        return changes;
+      },
+      interrupted: () =>
+        interruptAfter === "fetch" ? urls.length > 0 : calls.includes(interruptAfter),
+      runCheck: step("check", check),
+      runInstall: step("install", install),
+      runBuild: step("build", build),
+      runContract: step("contract", contract),
+      readCommitted: () => COMMITTED_SAMPLE,
+      fetch: fetchImpl,
+      runPublish: (tree, args) => {
+        calls.push(tree === TREE ? ["publish", ...args] : ["publish outside the tree", ...args]);
+        return publish;
+      },
+      log: () => {},
+    });
+  } catch (error) {
+    status = `threw: ${error instanceof Error ? error.message : String(error)}`;
+  }
   return { status, calls, urls };
 }
 
@@ -376,153 +415,116 @@ const MANIFEST_TESTS = [
   { name: "an unreachable CDN is refused", answer: new TypeError("fetch failed"), fires: true },
 ];
 
-const RAN_GATES = ["tree", "check", "clean", "build", "contract"];
+const UP_TO_CHECK = ["head", "tree", "check"];
+const RAN_GATES = ["head", "tree", "check", "install", "build", "contract"];
+const PUBLISHED = (...extra) => [
+  ...RAN_GATES,
+  "changes",
+  ["publish", ...PUBLISH_ARGS, ...extra],
+  "remove",
+];
 
 const SEQUENCE_TESTS = [
   {
-    name: "a dirty tree checks nothing, deletes nothing and builds nothing",
-    run: { dirty: ["uncommitted: ?? apps/cli/src/scratch.ts"] },
-    expect: { status: 1, calls: ["tree"], fetched: 0 },
+    name: "a HEAD off origin/main makes no worktree and builds nothing",
+    run: { problems: ["HEAD is not on origin/main"] },
+    expect: { status: 1, calls: ["head"], fetched: 0 },
   },
   {
-    name: "an empty delete roster builds nothing",
-    run: { declared: [] },
-    expect: { status: 1, calls: ["tree", "check", "clean"], fetched: 0 },
+    name: "uncommitted changes in the clone are reported, not refused, and not published",
+    run: { dirty: ["?? apps/cli/src/scratch.ts"] },
+    expect: { status: 0, calls: PUBLISHED(), fetched: 1 },
   },
   {
-    name: "a tree the build or the pack changed publishes nothing",
-    run: { dirtyAfter: ["uncommitted:  M packages/motion/LICENSE"] },
-    expect: { status: 1, calls: [...RAN_GATES, "tree again"], fetched: 1 },
+    name: "a worktree that could not be made builds nothing and removes nothing",
+    run: { createTree: new Error("git worktree add failed") },
+    expect: { status: 1, calls: ["head", "tree"], fetched: 0 },
   },
   {
-    name: "a refused check deletes nothing, builds nothing and fetches nothing",
+    name: "a refused check installs nothing, and the worktree is removed",
     run: { check: 1 },
-    expect: { status: 1, calls: ["tree", "check"], fetched: 0 },
+    expect: { status: 1, calls: [...UP_TO_CHECK, "remove"], fetched: 0 },
   },
   {
     name: "a check that could not run passes its own code through",
     run: { check: 2 },
-    expect: { status: 2, calls: ["tree", "check"], fetched: 0 },
+    expect: { status: 2, calls: [...UP_TO_CHECK, "remove"], fetched: 0 },
   },
   {
     name: "a check killed by a signal is a refusal",
     run: { check: null },
-    expect: { status: 1, calls: ["tree", "check"], fetched: 0 },
+    expect: { status: 1, calls: [...UP_TO_CHECK, "remove"], fetched: 0 },
+  },
+  {
+    name: "a failed install builds nothing",
+    run: { install: 1 },
+    expect: { status: 1, calls: [...UP_TO_CHECK, "install", "remove"], fetched: 0 },
   },
   {
     name: "a failed build runs no contract, fetches nothing and publishes nothing",
     run: { build: 1 },
-    expect: { status: 1, calls: ["tree", "check", "clean", "build"], fetched: 0 },
+    expect: { status: 1, calls: [...UP_TO_CHECK, "install", "build", "remove"], fetched: 0 },
   },
   {
     name: "a build killed by a signal is a failure",
     run: { build: null },
-    expect: { status: 1, calls: ["tree", "check", "clean", "build"], fetched: 0 },
+    expect: { status: 1, calls: [...UP_TO_CHECK, "install", "build", "remove"], fetched: 0 },
+  },
+  {
+    name: "a build that throws still removes the worktree, and the throw is not swallowed",
+    run: { build: "throw" },
+    expect: {
+      status: "threw: build threw",
+      calls: [...UP_TO_CHECK, "install", "build", "remove"],
+      fetched: 0,
+    },
   },
   {
     name: "a tarball that breaks the contract fetches nothing and publishes nothing",
     run: { contract: 1 },
-    expect: { status: 1, calls: RAN_GATES, fetched: 0 },
+    expect: { status: 1, calls: [...RAN_GATES, "remove"], fetched: 0 },
   },
   {
     name: "a contract gate that could not run passes its own code through",
     run: { contract: 2 },
-    expect: { status: 2, calls: RAN_GATES, fetched: 0 },
+    expect: { status: 2, calls: [...RAN_GATES, "remove"], fetched: 0 },
+  },
+  {
+    name: "a Ctrl-C during the manifest fetch publishes nothing",
+    run: { interruptAfter: "fetch" },
+    expect: { status: INTERRUPTED, calls: [...RAN_GATES, "changes", "remove"], fetched: 1 },
+  },
+  {
+    name: "a signal between two steps stops the run before the next one",
+    run: { interruptAfter: "install" },
+    expect: { status: INTERRUPTED, calls: [...UP_TO_CHECK, "install", "remove"], fetched: 0 },
+  },
+  {
+    name: "a worktree the build or the pack changed publishes nothing",
+    run: { changes: [" M packages/motion/LICENSE"] },
+    expect: { status: 1, calls: [...RAN_GATES, "changes", "remove"], fetched: 1 },
   },
   {
     name: "a differing manifest publishes nothing",
     run: { answer: { status: 200, body: different } },
-    expect: { status: 1, calls: RAN_GATES, fetched: 1 },
+    expect: { status: 1, calls: [...RAN_GATES, "remove"], fetched: 1 },
   },
   {
-    name: "a passing release deletes, builds, checks, then publishes once, the caller's arguments last",
+    name: "a passing release checks, installs, builds, then publishes once, the caller's arguments last",
     run: { argv: ["--otp", "123456"] },
-    expect: {
-      status: 0,
-      calls: [...RAN_GATES, "tree again", ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
-      fetched: 1,
-    },
+    expect: { status: 0, calls: PUBLISHED("--otp", "123456"), fetched: 1 },
   },
   {
     name: "a leading -- is not passed to pnpm",
     run: { argv: ["--", "--otp", "123456"] },
-    expect: {
-      status: 0,
-      calls: [...RAN_GATES, "tree again", ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
-      fetched: 1,
-    },
+    expect: { status: 0, calls: PUBLISHED("--otp", "123456"), fetched: 1 },
   },
   {
-    name: "a failed publish is a failed release",
+    name: "a failed publish is a failed release, and the worktree is still removed",
     run: { publish: 1 },
-    expect: {
-      status: 1,
-      calls: [...RAN_GATES, "tree again", ["publish", ...PUBLISH_ARGS]],
-      fetched: 1,
-    },
+    expect: { status: 1, calls: PUBLISHED(), fetched: 1 },
   },
 ];
-
-/** `publishedDistDirs`'s predicate against the `files` shapes it has to tell apart. */
-const DIST_DECLARATION_TESTS = [
-  [["dist/**/*.js", "LICENSE"], true],
-  [["dist", "SKILL.md"], true],
-  [["./dist"], true],
-  [["distribution", "LICENSE"], false],
-  [["SKILL.md", { not: "a string" }], false],
-  [undefined, false],
-];
-
-/** `ignoredThatShip` against the paths it has to tell apart. */
-const IGNORED_TESTS = [
-  ["apps/cli/src/release/notes.ts", true],
-  ["packages/render-core/template/out/probe.txt", true],
-  ["packages/render-core/template/.env", true],
-  ["apps/cli/src/.omc/state/session.json", false],
-  ["packages/protocol/python/xplainer_protocol/__pycache__/m.cpython-312.pyc", false],
-  ["packages/render-core/template/node_modules/x/index.js", false],
-];
-
-/** `publishedMembers` over a fixture workspace in a temporary directory, removed afterwards. */
-function rosterSelfTest() {
-  const fixture = mkdtempSync(join(tmpdir(), "release-publish-roster-"));
-  const member = (dir, manifest) => {
-    mkdirSync(join(fixture, dir), { recursive: true });
-    if (manifest !== undefined) {
-      writeFileSync(join(fixture, dir, "package.json"), JSON.stringify(manifest));
-    }
-  };
-  try {
-    member("apps/cli", { files: ["dist/**/*.js", "LICENSE"] });
-    member("packages/core", {
-      files: ["dist/**/*.js", "template", "python/**/*.py", "./SKILL.md"],
-    });
-    member("packages/config", { private: true, files: ["dist"] });
-    member("packages/data", { files: ["distribution"] });
-    member("packages/empty");
-    writeFileSync(join(fixture, "packages", "README.md"), "not a member\n");
-    const got = JSON.stringify(publishedMembers(fixture));
-    const want = JSON.stringify([
-      { dir: "apps/cli", roots: ["apps/cli/src", "apps/cli/LICENSE"] },
-      {
-        dir: "packages/core",
-        roots: [
-          "packages/core/src",
-          "packages/core/template",
-          "packages/core/python",
-          "packages/core/SKILL.md",
-        ],
-      },
-    ]);
-    return got === want
-      ? []
-      : [
-          `publishedMembers over the fixture: expected ${want}, got ${got}: step 3 would delete the wrong dist/.`,
-        ];
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
-}
 
 async function runSelfTests() {
   const problems = [];
@@ -544,35 +546,211 @@ async function runSelfTests() {
       problems.push(`${test.name}: expected ${want}, got ${got}.`);
     }
   }
-  for (const [files, expected] of DIST_DECLARATION_TESTS) {
-    if (filesDeclareDist(files) !== expected) {
-      problems.push(
-        `filesDeclareDist(${JSON.stringify(files)}) is not ${String(expected)}: step 3 would ` +
-          (expected ? "leave a stale dist/ to be published." : "delete a directory nothing ships."),
-      );
-    }
-  }
-  for (const [path, ships] of IGNORED_TESTS) {
-    if ((ignoredThatShip([path]).length === 1) !== ships) {
-      problems.push(
-        `ignoredThatShip(${JSON.stringify(path)}) is not ${String(ships)}: step 1 would ` +
-          (ships ? "publish an ignored file." : "refuse a tree over a file nothing ships."),
-      );
-    }
-  }
-  problems.push(...rosterSelfTest());
-  return {
-    problems,
-    cases:
-      MANIFEST_TESTS.length +
-      SEQUENCE_TESTS.length +
-      DIST_DECLARATION_TESTS.length +
-      IGNORED_TESTS.length +
-      1,
-  };
+  problems.push(...(await realStepsSelfTest()));
+  return { problems, cases: MANIFEST_TESTS.length + SEQUENCE_TESTS.length + 1 };
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The steps `releasePublish` takes, over real effects. Every effect comes in through `io`, so the
+ * self-test can build these same functions over a recording `spawnSync` and check what each would
+ * run, and where — the part of this script that decides whether the release is built in the
+ * worktree or in the clone.
+ */
+function realSteps(root, io) {
+  // On Windows `pnpm` is a .cmd shim, which child_process refuses to spawn without a shell. The
+  // fixed arguments are literals and the caller's are the caller's own command line; the worktree
+  // path goes in `cwd`, never on the command line.
+  const isWindows = io.platform === "win32";
+  const statusOf = (what, result) => {
+    if (result.error !== undefined) {
+      io.log(`release:publish: could not run ${what}: ${result.error.message}`);
+    }
+    return result.status;
+  };
+  const pnpm = (tree, args, env) =>
+    statusOf(
+      "pnpm",
+      io.spawnSync(isWindows ? "pnpm.cmd" : "pnpm", args, {
+        cwd: tree,
+        stdio: "inherit",
+        shell: isWindows,
+        env: { ...io.env, ...WORKTREE_PNPM_ENV, ...env },
+      }),
+    );
+  const node = (tree, script) =>
+    statusOf(
+      script,
+      io.spawnSync(io.execPath, [join(tree, script)], { cwd: tree, stdio: "inherit" }),
+    );
+  const git = (args, cwd = root) =>
+    io.spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const why = (result) =>
+    (result.error?.message ?? result.stderr?.trim() ?? "") || `exit ${String(result.status)}`;
+  const lines = (text) => (text ?? "").split("\n").filter((line) => line !== "");
+  return {
+    head: () => {
+      const rev = git(["rev-parse", "--verify", "HEAD"]);
+      if (rev.error !== undefined || rev.status !== 0) {
+        return { commit: "HEAD", problems: [`git could not read HEAD: ${why(rev)}`], dirty: [] };
+      }
+      const commit = rev.stdout.trim();
+      const problems = [];
+      const onBranch = git(["merge-base", "--is-ancestor", "HEAD", RELEASE_BRANCH]);
+      if (onBranch.status === 1) {
+        problems.push(
+          `${commit} is not on ${RELEASE_BRANCH}: merge it, pull, and publish a commit main ` +
+            "already records.",
+        );
+      } else if (onBranch.error !== undefined || onBranch.status !== 0) {
+        problems.push(`could not tell whether ${commit} is on ${RELEASE_BRANCH}: ${why(onBranch)}`);
+      }
+      const status = git(["status", "--porcelain", "--untracked-files=normal"]);
+      return { commit, problems, dirty: status.status === 0 ? lines(status.stdout) : [] };
+    },
+    createTree: (commit) => {
+      // The real path: macOS hands out `/var/…` for what pnpm reports as `/private/var/…`, and
+      // Windows can hand out an 8.3 short name; one spelling throughout.
+      const base = io.realpathSync(io.mkdtempSync(join(io.tmp, "xplainer-release-")));
+      const tree = join(base, "tree");
+      // `core.hooksPath` at a directory that does not exist: no hook of the clone's runs in the
+      // worktree before a single gate has.
+      const added = git([
+        "-c",
+        `core.hooksPath=${join(base, "no-hooks")}`,
+        "worktree",
+        "add",
+        "--detach",
+        tree,
+        commit,
+      ]);
+      if (added.error !== undefined || added.status !== 0) {
+        io.rmSync(base, { recursive: true, force: true });
+        throw new Error(why(added));
+      }
+      return tree;
+    },
+    removeTree: (tree) => {
+      try {
+        const removed = git(["worktree", "remove", "--force", tree]);
+        io.rmSync(dirname(tree), { recursive: true, force: true, maxRetries: 3 });
+        if (removed.status !== 0) {
+          git(["worktree", "prune"]);
+        }
+        return !io.existsSync(tree);
+      } catch {
+        // Never throw from here: it runs in a `finally`, after a publish that cannot be undone.
+        return false;
+      }
+    },
+    treeChanges: (tree) => {
+      const status = git(["status", "--porcelain", "--untracked-files=all"], tree);
+      if (status.error !== undefined || status.status !== 0) {
+        return [`git status could not read the worktree: ${why(status)}`];
+      }
+      return lines(status.stdout);
+    },
+    interrupted: () => io.signal.aborted,
+    runCheck: (tree) => node(tree, RELEASE_CHECK),
+    runInstall: (tree) => pnpm(tree, INSTALL_ARGS, { CI: "1" }),
+    runBuild: (tree) => pnpm(tree, BUILD_ARGS, { TURBO_FORCE: "true" }),
+    runContract: (tree) => node(tree, PUBLISH_CONTRACT),
+    readCommitted: (tree) => io.readFileSync(join(tree, COMMITTED_MANIFEST)),
+    fetch: (url, init) =>
+      io.fetch(url, { ...init, signal: AbortSignal.any([init.signal, io.signal]) }),
+    runPublish: (tree, args) => pnpm(tree, args, { [RELEASE_PUBLISH_ENV]: "1" }),
+    log: io.log,
+  };
+}
+
+/** `realSteps` over recording effects: every pnpm and node step in the tree, with what it needs. */
+async function realStepsSelfTest() {
+  const ROOT = "/clone";
+  const spawned = [];
+  const read = [];
+  const steps = realSteps(ROOT, {
+    spawnSync: (command, args, options) => {
+      spawned.push({ command, args, cwd: options.cwd, env: options.env ?? {} });
+      if (command === "git" && args[0] === "rev-parse") {
+        return { status: 0, stdout: `${COMMIT}\n`, stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    mkdtempSync: (prefix) => `${prefix}TEST`,
+    realpathSync: (path) => path,
+    rmSync: () => {},
+    existsSync: () => false,
+    readFileSync: (path) => {
+      read.push(path);
+      return COMMITTED_SAMPLE;
+    },
+    fetch: async () => new Response(COMMITTED_SAMPLE, { status: 200 }),
+    signal: new AbortController().signal,
+    platform: "linux",
+    env: { PATH: "/usr/bin" },
+    execPath: "/usr/bin/node",
+    tmp: "/tmp",
+    log: () => {},
+  });
+  const problems = [];
+  const expect = (what, ok) => {
+    if (!ok) {
+      problems.push(`realSteps: ${what}.`);
+    }
+  };
+  const head = steps.head();
+  expect("head() reads the clone's HEAD", head.commit === COMMIT && head.problems.length === 0);
+  const tree = steps.createTree(COMMIT);
+  const added = spawned.find((call) => call.args.includes("worktree") && call.args.includes("add"));
+  expect(
+    "createTree adds a detached worktree of the commit, from the clone, with hooks off",
+    added !== undefined &&
+      added.cwd === ROOT &&
+      added.args.at(-2) === tree &&
+      added.args.at(-1) === COMMIT &&
+      added.args.includes("--detach") &&
+      added.args[0] === "-c" &&
+      added.args[1].startsWith("core.hooksPath="),
+  );
+  spawned.length = 0;
+  steps.runCheck(tree);
+  steps.runInstall(tree);
+  steps.runBuild(tree);
+  steps.runContract(tree);
+  steps.treeChanges(tree);
+  steps.runPublish(tree, [...PUBLISH_ARGS, "--otp", "123456"]);
+  const [check, install, build, contract, status, publish] = spawned;
+  expect(
+    "every step runs inside the worktree",
+    spawned.length === 6 && spawned.every((call) => call.cwd === tree),
+  );
+  expect("the release check is the worktree's", check?.args[0] === join(tree, RELEASE_CHECK));
+  expect("the contract is the worktree's", contract?.args[0] === join(tree, PUBLISH_CONTRACT));
+  expect(
+    "no pnpm call in the worktree may re-install on its own",
+    [install, build, publish].every(
+      (call) => call?.env.pnpm_config_verify_deps_before_run === "false",
+    ),
+  );
+  expect(
+    "the install is frozen and isolated, with CI set",
+    JSON.stringify(install?.args) === JSON.stringify(INSTALL_ARGS) && install?.env.CI === "1",
+  );
+  expect(
+    "the build is forced with both caches off",
+    build?.args.includes("--cache=local:,remote:") && build?.env.TURBO_FORCE === "true",
+  );
+  expect("the worktree's own status is read", status?.command === "git");
+  expect(
+    "the publish carries the variable and the caller's arguments",
+    publish?.env[RELEASE_PUBLISH_ENV] === "1" && publish?.args.at(-1) === "123456",
+  );
+  steps.readCommitted(tree);
+  expect("the manifest compared is the worktree's", read[0] === join(tree, COMMITTED_MANIFEST));
+  expect("removeTree reports a tree that is gone", steps.removeTree(tree) === true);
+  return problems;
+}
 
 /** Walk up for `pnpm-workspace.yaml`, from the working directory and then from this file. */
 function findWorkspaceRoot() {
@@ -608,10 +786,9 @@ async function main(argv) {
     }
     process.stdout.write(
       `release:publish: ${String(cases)} self-test case(s) passed with injected effects: rule (c) ` +
-        "passes only an identical document, nothing runs on a tree that is not the commit, " +
-        "the roster and the ignored-file filter match their fixtures, nothing is deleted or " +
-        "built after a refused check, nothing is fetched after a failed build or a refused " +
-        "tarball, and nothing is published after a refused compare.\n",
+        "passes only an identical document, no worktree is made for a HEAD off origin/main, each " +
+        "step runs only after the one before it passed and only inside the worktree, an " +
+        "interruption stops the run, and every worktree made is removed, a throw included.\n",
     );
     return 0;
   }
@@ -620,91 +797,31 @@ async function main(argv) {
   if (root === null) {
     throw new UsageError(`no ${WORKSPACE_FILE} found above the working directory.`);
   }
-  // On Windows `pnpm` is a .cmd shim, which child_process refuses to spawn without a shell. The
-  // fixed arguments are literals and the caller's are the caller's own command line.
-  const isWindows = process.platform === "win32";
-  const statusOf = (what, result) => {
-    if (result.error !== undefined) {
-      process.stderr.write(`release:publish: could not run ${what}: ${result.error.message}\n`);
-    }
-    return result.status;
-  };
-  const pnpm = (args, env) =>
-    statusOf(
-      "pnpm",
-      spawnSync(isWindows ? "pnpm.cmd" : "pnpm", args, {
-        cwd: root,
-        stdio: "inherit",
-        shell: isWindows,
-        env: { ...process.env, ...env },
-      }),
-    );
-  const node = (script) =>
-    statusOf(
-      script,
-      spawnSync(process.execPath, [join(root, script)], { cwd: root, stdio: "inherit" }),
-    );
-  return releasePublish(argv, {
-    treeProblems: () => {
-      const git = (args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
-      const why = (result) =>
-        (result.error?.message ?? result.stderr?.trim() ?? "") || `exit ${String(result.status)}`;
-      const lines = (text) => text.split("\n").filter((line) => line !== "");
-      const problems = [];
-      const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...TREE_PATHS]);
-      if (status.error !== undefined || status.status !== 0) {
-        return [`git status could not read the tree: ${why(status)}`];
-      }
-      problems.push(...lines(status.stdout).map((line) => `uncommitted: ${line}`));
-      const roots = publishedMembers(root).flatMap((member) => member.roots);
-      const ignored = git([
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--",
-        ...roots,
-      ]);
-      if (ignored.error !== undefined || ignored.status !== 0) {
-        problems.push(`git ls-files could not list ignored files: ${why(ignored)}`);
-      } else {
-        problems.push(
-          ...ignoredThatShip(lines(ignored.stdout)).map((p) => `ignored but shipped: ${p}`),
-        );
-      }
-      const onBranch = git(["merge-base", "--is-ancestor", "HEAD", RELEASE_BRANCH]);
-      if (onBranch.status === 1) {
-        problems.push(`HEAD is not on ${RELEASE_BRANCH}: publish a commit main already records.`);
-      } else if (onBranch.error !== undefined || onBranch.status !== 0) {
-        problems.push(`could not tell whether HEAD is on ${RELEASE_BRANCH}: ${why(onBranch)}`);
-      }
-      return problems;
-    },
-    cleanDist: () => {
-      const declared = publishedMembers(root).map((member) => `${member.dir}/dist`);
-      const deleted = [];
-      for (const dir of declared) {
-        // `<parent>/<member>/dist` under the root and nothing else, whatever the roster says.
-        const target = resolve(root, dir);
-        const parts = relative(root, target).split(sep);
-        if (parts.length !== 3 || !MEMBER_PARENTS.includes(parts[0]) || parts[2] !== "dist") {
-          throw new Error(`refusing to delete ${target}: not a member's dist/ inside ${root}`);
-        }
-        if (existsSync(target)) {
-          rmSync(target, { recursive: true, force: true, maxRetries: 3 });
-          deleted.push(dir);
-        }
-      }
-      return { declared, deleted };
-    },
-    runBuild: () => pnpm(BUILD_ARGS, { TURBO_FORCE: "true" }),
-    runContract: () => node(PUBLISH_CONTRACT),
-    runCheck: () => node(RELEASE_CHECK),
-    readCommitted: () => readFileSync(join(root, COMMITTED_MANIFEST)),
-    fetch: globalThis.fetch,
-    runPublish: (args) => pnpm(args, { [RELEASE_PUBLISH_ENV]: "1" }),
-    log: (line) => process.stderr.write(`${line}\n`),
-  });
+  // Ctrl-C, SIGHUP and SIGTERM stop the run at the next step and abort the manifest fetch. The
+  // terminal delivers Ctrl-C to the running step too, which ends it; caught here, this process
+  // lives on to remove the worktree.
+  const interrupt = new AbortController();
+  for (const signal of ["SIGINT", "SIGHUP", "SIGTERM"]) {
+    process.on(signal, () => interrupt.abort());
+  }
+  return releasePublish(
+    argv,
+    realSteps(root, {
+      spawnSync,
+      mkdtempSync,
+      realpathSync,
+      rmSync,
+      existsSync,
+      readFileSync,
+      fetch: globalThis.fetch,
+      signal: interrupt.signal,
+      platform: process.platform,
+      env: process.env,
+      execPath: process.execPath,
+      tmp: tmpdir(),
+      log: (line) => process.stderr.write(`${line}\n`),
+    }),
+  );
 }
 
 process.exitCode = await main(process.argv.slice(2)).catch((error) => {

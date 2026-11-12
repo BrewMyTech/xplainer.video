@@ -240,7 +240,7 @@ jobs:
       # a clean one, and release:publish's manifest compare and ordering driven
       # with an injected fetch. The full check runs where it counts: as every
       # published member's prepublishOnly, and in `pnpm release:publish` before
-      # anything is deleted or built.
+      # anything is installed or built.
       # (ADR 0031's note of 2026-11-12, D8)
       - name: The release gates fire on what they refuse (ADR 0031 D8)
         run: pnpm check:release-gates

@@ -61,11 +61,11 @@
  * WHY A PUBLISH MUST COME THROUGH `pnpm release:publish`. 0.1.0 was published on 2026-11-12 from
  * a clone whose `dist/` directories were stale or absent. Every gate passed, because none of them
  * builds, and the registry received `@xplainer/cli` 0.1.0 byte-identical to 0.0.11 and an
- * `@xplainer/motion` with no `dist/` at all. `scripts/release-publish.mjs` now refuses a dirty
- * tree, deletes every published `dist/`, runs a forced build and the publish contract before it
- * publishes, and sets `XPLAINER_RELEASE_PUBLISH=1` for the `pnpm publish -r` it starts. So a hook
- * started by a publish, without that variable, is a bare `pnpm publish` that skipped the build,
- * and it is refused before the package is packed.
+ * `@xplainer/motion` with no `dist/` at all. `scripts/release-publish.mjs` now publishes HEAD from
+ * a fresh worktree — an isolated install, a forced build and the publish contract first — and sets
+ * `XPLAINER_RELEASE_PUBLISH=1` for the `pnpm publish -r` it starts there. So a hook started by a
+ * publish, without that variable, is a bare `pnpm publish` that skipped the build, and it is
+ * refused before the package is packed.
  *
  * EVERY RULE CARRIES ITS OWN NEGATIVE TEST, and they run first, on every invocation, for the reason
  * `check-publish-contract.mjs` gives: a gate whose rules cannot be shown to fire is
