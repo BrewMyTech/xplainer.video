@@ -38,9 +38,22 @@
     {
       "id": "macos-default-encoder-patent",
       "title": "The patent decision on the default macOS encoder (the distribution analysis's Checklist B9)",
-      "status": "open",
+      "status": "closed",
       "closes_when": "The owner decides whether the first macOS release encodes with x264 or h264_videotoolbox by default — ADR 0031's owner decisions of 2026-11-11 require it 'before the first macOS release', and its note of 2026-11-12 leaves it open — and the decision is recorded in a dated note on ADR 0031.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "owner-ask",
+          "id": "c8b2569e",
+          "what": "The owner's decision of 2026-11-12, relayed by the coordinator: libx264 stays the macOS default encoder — the same encoder on every platform, byte-identical output, and no VideoToolbox on Intel virtual machines. The distributor's H.264 patent question stays with counsel and does not block."
+        },
+        {
+          "kind": "adr-note",
+          "adr": "0031",
+          "date": "2026-11-12",
+          "section": "libx264 stays the default encoder on macOS",
+          "what": "The dated note recording the decision, its reasons, that it changes no code, and what it leaves to counsel (the distribution analysis §5, questions 3 to 5)."
+        }
+      ]
     },
     {
       "id": "checklist-a7-pin-snapshot",
