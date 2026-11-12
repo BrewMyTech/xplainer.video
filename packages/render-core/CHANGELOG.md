@@ -1,5 +1,59 @@
 # @xplainer/render-core
 
+## 0.1.0
+
+### Minor Changes
+
+- 8852117: The scaffold is written against `@xplainer/motion`, and the previous renderer's CLI helpers are
+  gone.
+
+  Removed exports: `REMOTION_BIN`, `renderArgs`, `stillArgs`, `entryPoint`, `COMPOSITION_ID` and the
+  types `RenderArgsInput` and `StillArgsInput` — the argv builders for a CLI nothing spawns any more —
+  and, from the workspace layout, `remotionBinary`, `isWorkspaceInstalled` and
+  `workspaceNotInstalledMessage`. `DEFAULT_STILL_FRAME` and `DEFAULT_STILL_SCALE` are still exported,
+  from the workspace module rather than the deleted `render/args`.
+
+  `template/remotion.config.ts` is gone and `WORKSPACE_FILES` no longer names it; a workspace
+  materialised earlier keeps its copy, which nothing reads.
+
+  The engine-owned `index.ts`, `Root.tsx`, `Captions.tsx` and `Video.tsx` import from
+  `@xplainer/motion` and nothing else by package name, with their bodies unchanged except that
+  `Captions.tsx` pages through `paginateCaptions(sentence, { combineWithinMs })`. `scaffoldVideo()`
+  restores an engine-owned file whose bytes differ, so an existing video picks the new files up on
+  its next `explainer_create`, `explainer_still` or `explainer_render`. `types.ts` is the one file
+  still byte-identical to the reference implementation's scaffold.
+
+- b634869: The workspace template no longer carries a `package.json` or a `package-lock.json`. Both pinned the
+  previous renderer's packages for `xplainer setup --workspace` to install, and that command is gone:
+  the renderer bundles every video against `@xplainer/cli`'s own install, so the workspace is sources
+  and outputs and nothing a package manager reads.
+
+  `WORKSPACE_FILES` is `tailwind.css` and `tsconfig.json`, so `materialiseWorkspace()` copies those
+  two and creates `videos/`, `public/` and `out/`. `@xplainer/render-core/template/package.json` and
+  `@xplainer/render-core/template/package-lock.json` no longer resolve. A workspace materialised
+  earlier keeps the two files it was given until `xplainer setup` removes the tree they belonged to.
+
+### Patch Changes
+
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+- Updated dependencies [839886c]
+- Updated dependencies [78762b2]
+- Updated dependencies [b1de65d]
+- Updated dependencies [5ef65e9]
+  - @xplainer/protocol@0.1.0
+  - @xplainer/tts-client@0.0.3
+
 ## 0.0.5
 
 ### Patch Changes

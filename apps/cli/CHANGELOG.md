@@ -1,5 +1,248 @@
 # @xplainer/cli
 
+## 0.1.0
+
+### Minor Changes
+
+- 1147b52: **`xplainer setup` now acquires ffmpeg**, between the browser and speech. It downloads the FFmpeg
+  9.0.2 build the manifest names for this platform — our own build on macOS, BtbN's FFmpeg-Builds on
+  Linux and Windows — and before the first request it says who built and published that binary, the
+  licence it is under, and where its source is. It keeps the `ffmpeg` executable and its licence and
+  build files, checks the executable against the digest and size the manifest records, writes a
+  `PROVENANCE.txt` beside it, and asks the binary itself for its version, its `configure` flags and
+  its licence. A binary whose answers disagree with each other or with the manifest — a different
+  digest, a GPL build without `--enable-gpl`, a libavcodec older than 60, no `libx264`, an
+  experimental `aac` — is refused with exit `3`, and nothing is kept. A second run checks the kept
+  files and asks the binary again instead of downloading it.
+
+  `setup --ffmpeg-path <file>` records an ffmpeg you name instead: the same questions are asked of it,
+  its digest is recorded rather than expected, and the marker says it was named rather than acquired.
+  `setup --skip-ffmpeg` leaves ffmpeg out of the run; the two together are a usage error, exit `1`.
+  A later plain `setup` — and so every `xplainer update` — keeps an ffmpeg named this way while it is
+  still the binary that was checked, asks it again at the same path when it has changed (an upgrade in
+  place), and downloads the pinned build only once it is gone, saying which it did.
+  `setup --ffmpeg-pinned` downloads the pinned build in its place; it is a usage error beside
+  `--ffmpeg-path` or `--skip-ffmpeg`.
+  Where the manifest records this platform's FFmpeg as unavailable, `setup` says so and why, skips it,
+  names `--ffmpeg-path`, and still exits `0`; a platform the manifest has no FFmpeg row for at all is
+  refused with exit `3`, like any other artefact it has no reviewed digest for.
+
+- 69ba5f6: **A render no longer looks for ffmpeg on `PATH` or in the Homebrew directories.** It uses
+  `XPLAINER_FFMPEG` when that is set, and otherwise the ffmpeg `toolchain.json` records; with neither,
+  the render fails with `FFMPEG_NOT_FOUND` and says to run `xplainer setup`. `XPLAINER_FFMPEG` must
+  be an absolute path: a relative one, or a bare `ffmpeg`, is refused rather than looked up.
+
+  A still needs no ffmpeg, so the daemon now judges a job by its kind: a still is queued on a machine
+  with no ffmpeg recorded, or with a recorded one that has since been removed, replaced or found too
+  old, and a render is refused there with `WORKSPACE_NOT_INSTALLED`, as before — unless
+  `XPLAINER_FFMPEG` names an executable, which a render then uses whatever the recorded one has become.
+  A recorded ffmpeg that has lost its execute bit is refused as `toolchain_stale` at the call, rather
+  than by the render after the browser has started. `/healthz` reports `degraded` with
+  `toolchain_missing` or `toolchain_stale` whenever a render would be refused.
+
+  `xplainer status` and `xplainer daemon status` both print a `toolchain:` block — whether this
+  machine's `toolchain.json` admits a render, and which browser, ffmpeg and speech route it records —
+  and, on a line of its own, an `XPLAINER_FFMPEG` set in the shell running the command, which a
+  supervised daemon never inherits. `daemon status` takes its condition from the daemon's own
+  `/healthz` whenever the daemon answers, so the two agree, and says so when the toolchain has changed
+  since `setup` recorded it. With `--url`, `xplainer status` says the block is this machine's.
+  `xplainer status --json` gains `health.reason` and a `toolchain` object.
+
+- 8852117: `explainer_still` and `explainer_render` render with xplainer's own pipeline instead of the
+  Remotion CLI. The tools, their schemas and the job envelope are unchanged.
+
+  A render bundles the video with esbuild-wasm against this package's own React and
+  `@xplainer/motion` — the workspace's `node_modules` is never read — opens it in the headless shell
+  `xplainer setup` recorded in `toolchain.json`, captures one PNG per frame over the DevTools
+  protocol, and pipes every frame into ffmpeg: libx264 at CRF 18, AAC at 96 kb/s, BT.709, `+faststart`.
+  A still is one captured frame, taken after the page has stepped through every earlier frame, so it
+  is the frame the render will produce. No browser is downloaded during a render any more; the one `setup`
+  acquired is the one that draws. The page is served from `127.0.0.1` on a port the render picks,
+  never opened from `file://`, and a scene's imports must stay inside the workspace, so a scene cannot
+  draw or embed a file from elsewhere on the machine.
+
+  **A render now needs ffmpeg with libx264.** `xplainer setup` acquires one, or records one you name
+  with `--ffmpeg-path`, and `XPLAINER_FFMPEG` overrides both; nothing is looked up on `PATH`.
+
+  A failed still or render still ends `render_failed`, and its log now ends in one named line:
+  `BUNDLE_FAILED`, `CHROME_LAUNCH_FAILED`, `READINESS_TIMEOUT`, `PAGE_ERROR`,
+  `DELAY_RENDER_TIMEOUT`, `IMAGE_BROKEN`, `IMAGE_TIMEOUT`, `NOT_SUPPORTED_IN_V1`,
+  `FFMPEG_NOT_FOUND`, `FFMPEG_NO_LIBX264`, `ENCODE_FAILED`, `FRAME_OUT_OF_RANGE`,
+  `TOOLCHAIN_MISSING` or `RENDER_CANCELLED`. A render prints a progress line every 15 frames —
+  `{"event":"progress","frame":n,"of":N,"captureFps":x}` — and a final `{"event":"done",…}`, whose
+  `ffmpeg` names the encoder as `{"path","source"}` with `source` `XPLAINER_FFMPEG` or
+  `toolchain.json` (`null` for a still). It is the last line, so the job's sixty-line log tail always
+  keeps it, where a long render's progress lines push out the start line that says the same in prose.
+
+  A scene that imports `remotion`, `@remotion/media` or `@remotion/captions` still renders for one
+  release: those names are aliased to `@xplainer/motion`, and the job log names each file that used
+  one and what to import instead.
+
+  Remotion is no longer a devDependency of this package.
+
+- b634869: The render workspace payload is gone, and with it every command that built, verified or installed
+  it. `xplainer setup --workspace`, `xplainer runtime build --workspace`, `runtime build
+--from-runtime` and `runtime verify --workspace` are unknown options and exit `1`. `xplainer setup`
+  acquires three components — the browser, ffmpeg and speech — and `--skip-browser`, `--skip-ffmpeg`
+  and `--skip-speech` leave one out each; a run with all three skipped acquires nothing and still
+  rewrites a version-1 marker as version 2. `xplainer runtime` builds and verifies the runtime payload
+  only, and every refusal it makes exits `3`.
+
+  `xplainer setup` removes what an older `setup --workspace` installed in the video workspace —
+  `node_modules/`, `package.json`, `package-lock.json` and `workspace.manifest.json` — but only when
+  `workspace.manifest.json` records the previous renderer's entry **and** `package.json`'s name,
+  `dependencies` and `devDependencies` are exactly the last template's, and only after its refusal to
+  run under a daemon from before the `toolchain.json` cut has passed. It prints what it removed, and it
+  never touches `videos/`, `public/`, `out/`, `requests/`, `locks/`, `tailwind.css`, `tsconfig.json` or
+  anything else — so an `XPLAINER_VIDEOS_DIR` pointing at a project of your own is left exactly as it
+  is. A tree that looks like one `setup` wrote but whose `package.json` differs is kept, with a line
+  saying why. A removal interrupted after `package.json` went is finished by the next `setup`, which
+  removes the `workspace.manifest.json` left behind on its own.
+
+  `daemon update` no longer compares the two runtimes' template pins: its precondition is that both
+  runtimes read the same `toolchain.json` format and that the marker satisfies the incoming runtime.
+  Its step line reads "both runtimes read toolchain.json format 2, and the marker satisfies the
+  incoming runtime". Naming both `--from` and `--build`, neither, or a `--from` that does not exist is
+  still refused with exit `3`, now under its own reason.
+
+- 24a006e: The runtime payload no longer carries npm. It travelled with `runtime build`'s output — about
+  17 MB, a `bin/npm` shim and a `launch.npm_cli` entry in `runtime.manifest.json` — only so that
+  `setup --workspace` had a package manager on a machine with no Node, and that command is gone.
+  A payload is now its interpreter, the workspace packages and their runtime dependencies, and its
+  manifest records neither `npm_version` nor `launch.npm_cli`. A manifest that still records them,
+  from a payload built before this change, reads exactly as before; nothing reads either field.
+  `runtime build` stops printing its `npm:` line.
+- d54227e: Crossing from a daemon installed before `toolchain.json` format 2 to this release is a reinstall,
+  and nothing does it by accident. `xplainer setup` refuses with exit `3` while the installed daemon's
+  runtime reads format 1, and `xplainer update` refuses the same way before it runs anything — no
+  registry check, no `setup`, no `connect` — so a format-2 marker never lands under a daemon that
+  would read it as a missing toolchain. Both print the three commands that do the reinstall, and run
+  none of them:
+
+      xplainer daemon uninstall
+      xplainer setup
+      xplainer daemon install
+
+  `xplainer update --check` reports the same fact as a `daemon:` line and exits `0`. A `daemon.json`
+  whose recorded runtime cannot be read counts as a daemon from before the cut, and the refusal says
+  so; a `daemon.json` that cannot be read at all stops both commands with exit `11`.
+
+  `daemon update` refuses, exit `3`, having staged and drained nothing, when the installed and
+  incoming runtimes read different marker formats, in either direction. Within one format it no longer
+  re-hashes the render workspace against both runtimes; it refuses instead when `toolchain.json` does
+  not satisfy what the incoming runtime declares it needs — an `ffmpeg` recorded, present, the size
+  `setup` recorded and at or above its libavcodec floor — and names `xplainer setup`. A payload
+  `xplainer runtime build` assembles now records `toolchain: { format, ffmpeg_min_libavcodec }` in its
+  manifest, which moves to `manifest_version` 2; a payload without the block is read as format 1.
+
+  `daemon install --runtime <dir>` refuses, exit `3` and before anything is written, a payload whose
+  manifest reads a format other than this release's — a runtime from before the cut among them — and
+  names `xplainer daemon install` with no `--runtime` instead. `daemon update` refuses as well when the
+  two runtimes agree on a format this release's `setup` does not write, so a pre-cut daemon is not
+  moved onto another pre-cut runtime. `daemon update --build` and `xplainer update`'s daemon step ask
+  the precondition of the payload they would assemble **before** assembling it, so a refusal no longer
+  costs a ~146 MB build first.
+
+- 4756795: `xplainer setup` reads a new toolchain manifest, format 2, at
+  `https://cdn.xplainer.video/toolchain/v2/manifest.json`. The version-1 document stays where it is
+  for the CLIs already released, which keep reading it.
+
+  **The browser is Chrome for Testing 157.0.8103.50 on every platform** — macOS on Apple silicon and
+  Intel, Linux on x64 and arm64, and Windows on x64 — downloaded from Google's own storage. Linux on
+  arm64 gets the same publisher's build as the other four, with its licence file in the archive, and
+  nothing is fetched from `remotion.media` any more. The Linux builds need glibc 2.25 or newer, and
+  `setup` says so before it downloads anything on a machine that has less, or none.
+
+  The manifest now has a row per platform for the browser and, for the first time, for ffmpeg: our
+  own FFmpeg 9.0.2 build for macOS, and BtbN's FFmpeg-Builds 9.0.2 for Linux and Windows (on arm64
+  too), and `setup` acquires ffmpeg from them. Every
+  download URL in either block must come from a publisher the CLI names in its own code — Google's
+  Chrome for Testing bucket, BtbN's FFmpeg-Builds releases, or this project's CDN — and a manifest
+  naming anything else is refused when it is read, before anything is fetched.
+
+  `toolchain.json` records the browser's provider as `manifest`. A marker an older `setup` wrote
+  keeps reading as it did.
+
+- b1de65d: `xplainer setup` writes `toolchain.json` at `format_version` 2: the browser and speech it acquired,
+  the ffmpeg it acquired or was pointed at when there is one — ffmpeg is the one optional component —
+  and no longer the render workspace, because no render reads one. A marker an older `setup` wrote is
+  still read, as a toolchain that has a browser and speech and nothing else, and the next `setup` that
+  writes the marker rewrites it as version 2.
+
+  `explainer_still`, `explainer_render`, `daemon install` and `/healthz` judge the marker the same way
+  they did, minus the workspace: a still or a render is no longer refused, and `/healthz` no longer
+  reports `degraded`, because a workspace is missing or was resolved for another template. A marker
+  that records an ffmpeg has that ffmpeg checked too — its files must still exist (`toolchain_missing`),
+  the binary must still be the size `setup` recorded, and its recorded libavcodec must be 60 or newer
+  (`toolchain_stale`, both).
+
+### Patch Changes
+
+- 7ea82a6: `xplainer setup`'s archive readers refuse three more shapes of archive. The zip reader refuses a
+  member whose path passes through a symlink an earlier member made — a chain of links that each
+  land inside the tree could otherwise put a file outside it — and a link whose value is not in
+  normal form, such as `l/..`. It also judges "two members on one path" by asking the filesystem, so
+  `bin/ffmpeg` and `BIN/FFMPEG` are refused on a case-insensitive APFS or NTFS volume instead of the
+  second replacing the first. The tar reader reads a name prefix only from a POSIX ustar header, and
+  no longer from a GNU one, where those bytes are timestamps. No artefact the committed manifest pins
+  is affected: none carries a symlink, a case collision or a prefix.
+- 71cfaf7: `xplainer setup` no longer trusts a browser directory it finds already there. The headless shell
+  is committed under `toolchain/chrome-headless-shell-<version>-<digest>`, with a record of the
+  executable and the licence it was unpacked with, and a re-run re-hashes both before it records the
+  browser again; a tree that has changed since is refused with exit `3`, naming the directory to
+  remove. The executable recorded is the one the manifest row names rather than the first file a
+  search finds, and an archive without the licence the row names is refused. A browser acquired by an
+  earlier build, under `chrome-headless-shell-<version>`, is not reused, so the first `setup` after
+  upgrading downloads the browser once more; the old directory can be deleted.
+- c184479: `xplainer setup`'s downloader stops a body at the first byte past the size the toolchain manifest
+  records and discards it, as `checksum-mismatch`, instead of writing an unbounded body to disk and
+  keeping it as a short download. A `HEAD` that answers outside `2xx` — a `503` from a busy origin —
+  is no longer read as the artefact's length, so it stops being reported as "a different artefact":
+  the `GET` decides, and fails as `unreachable` naming its status if it fails the same way. An
+  archive whose digest matched and that the reader or the provider then refused is deleted from
+  `.setup/`, rather than left there to be refused again, silently, on the next run.
+
+  The toolchain manifest's `version` fields are refused at parse time unless they are one path segment
+  (letters, digits, `.`, `_`, `+`, `-`, and never `.` or `..`), because each names the directory a
+  component is installed into. An FFmpeg row whose kept members would land on one name — on each
+  other, or on the `PROVENANCE.txt` and `.acquired.json` setup writes beside them, in any case — is
+  refused before anything is fetched.
+
+- 6fbbbc8: `xplainer setup` can now unpack `.tar.xz` archives, which is the only form the Linux FFmpeg builds
+  it is about to acquire are published in. xz is decoded by `xz-decompress` 0.2.3 (MIT, no
+  dependencies, no install script), a new dependency of this package; `NOTICE` names it and the three
+  parts it contains. The zip reader can now take only the members a caller names, without inflating
+  the rest, and both readers refuse two members that would land on one path. A tarball whose own
+  compressed stream is damaged — an xz CRC64 that does not match, a stream cut short, a gzip handed to
+  the xz decoder — is refused as `corrupt-stream` rather than surfacing the decoder's raw error.
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+- Updated dependencies [9dff313]
+- Updated dependencies [839886c]
+- Updated dependencies [90b24b9]
+- Updated dependencies [78762b2]
+- Updated dependencies [b1de65d]
+- Updated dependencies [5ef65e9]
+- Updated dependencies [8852117]
+- Updated dependencies [b634869]
+- Updated dependencies [ba0eb64]
+  - @xplainer/mcp-server@0.0.4
+  - @xplainer/motion@0.1.0
+  - @xplainer/protocol@0.1.0
+  - @xplainer/render-core@0.1.0
+  - @xplainer/skill@0.1.0
+  - @xplainer/tts-client@0.0.3
+
 ## 0.0.11
 
 ### Patch Changes
@@ -129,7 +372,7 @@
   lands somewhere the person can answer it.
 
   **It asks nothing of someone who has already starred it.** Before anything is printed, `gh api
-  /user/starred/...` is consulted: a `204` means the star is already there and the prompt is skipped
+/user/starred/...` is consulted: a `204` means the star is already there and the prompt is skipped
   in silence. That is better than the local record on its own, because `<state>/star.json` only knows
   about answers given on _this_ machine — somebody who starred the repository from the web would
   otherwise be asked again on every new laptop. Only a definite yes counts; `gh` missing, signed out

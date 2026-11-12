@@ -1,5 +1,45 @@
 # @xplainer/skill
 
+## 0.1.0
+
+### Minor Changes
+
+- ba0eb64: The skill now describes xplainer's own renderer instead of Remotion.
+
+  Every authoring API is imported from `@xplainer/motion`, and the skill says so in one place.
+  `Easing.spring()` — which never existed — is now `spring()`. Images go through `<Img>` and
+  `staticFile()`; video assets and a second `<Audio>` fail the render with `NOT_SUPPORTED_IN_V1`,
+  because the narration is the only audio track, and `staticFile()` stays inside the video's public
+  directory. CSS and Tailwind animations are no longer
+  described as frozen: the renderer seeks them to the frame being drawn, and a still matches the
+  render, but CSS time ignores the timing components and the narration, so motion stays
+  `interpolate()`. The skill also explains the
+  `delayRender` timer rule, that a render needs ffmpeg, and that frames are reproducible on one
+  machine rather than across machines.
+
+  One paragraph covers videos written for the previous renderer: `remotion`, `@remotion/media` and
+  `@remotion/captions` imports still compile for one more release through an alias, and it lists what
+  does not carry over.
+
+  The Remotion licence line is gone from `SKILL.md` and from the three plugin and marketplace
+  `description` fields, because rendering no longer uses Remotion, and the `remotion` keyword and tag
+  are gone from the manifests.
+
+### Patch Changes
+
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+
 ## 0.0.4
 
 ### Patch Changes
