@@ -353,6 +353,30 @@ describe("a .tar.xz row", () => {
     expect(listing(toolchainDir).filter((name) => name !== ".setup")).toEqual([]);
   });
 
+  /**
+   * Every kept member lands at its base name beside the binary, next to the two files this
+   * provider writes itself. A row whose member would land on `PROVENANCE.txt` or `.acquired.json`
+   * — in any case, for APFS and NTFS — or on another kept member is refused before any request.
+   */
+  it("refuses a row whose kept members collide on one name, before anything is fetched", async () => {
+    const toolchainDir = temporaryDirectory("xplainer-ffmpeg-toolchain-");
+    const before = server.requests.length;
+    const colliding: Partial<RecordedFfmpegArtefact>[] = [
+      { licence_member: "ffmpeg-fixture-linuxarm64-gpl/PROVENANCE.txt" },
+      { licence_member: "ffmpeg-fixture-linuxarm64-gpl/doc/provenance.TXT" },
+      { extra_members: ["ffmpeg-fixture-linuxarm64-gpl/.acquired.json"] },
+      { extra_members: ["ffmpeg-fixture-linuxarm64-gpl/bin/LICENSE.txt"] },
+    ];
+
+    for (const overrides of colliding) {
+      await expect(
+        acquireFfmpeg({ manifest: withRow({ ...row, ...overrides }), toolchainDir }),
+      ).rejects.toMatchObject({ reason: "member-collision" });
+    }
+    expect(server.requests.length).toBe(before);
+    expect(listing(toolchainDir)).toEqual([]);
+  });
+
   it("takes the right member and refuses it when it does not answer the probe", async () => {
     const toolchainDir = temporaryDirectory("xplainer-ffmpeg-toolchain-");
 

@@ -80,6 +80,12 @@ export const ARTEFACT_ROUTES = {
   loop: "/loop.zip",
   /** Answers `HEAD`, then starts a body and stops sending — what a hung proxy looks like. */
   stalls: "/stalls.zip",
+  /** Answers `HEAD` truthfully, then sends a chunked body with no length, twice the artefact's. */
+  oversize: "/oversize.zip",
+  /** `503` on `HEAD`, with a length that is not the artefact's, and the artefact on `GET`. */
+  busyHead: "/busy-head.zip",
+  /** `503` to every request — an origin that is down, which is not a different artefact. */
+  busy: "/busy.zip",
 } as const;
 
 /**
@@ -117,6 +123,8 @@ const BLOCKED_PAGE =
   "<!DOCTYPE html><html><head><title>Access Denied</title></head><body>" +
   "<h1>Access Denied</h1><p>Your organisation has blocked this category: File Download.</p>" +
   "</body></html>";
+
+const BUSY_BODY = '{"busy":"retry"}\n';
 
 /** Start the server. The archive is the body every successful route serves. */
 export async function startArtefactServer(archive: Buffer): Promise<ArtefactServer> {
@@ -312,6 +320,26 @@ function route(context: RouteContext): void {
       response.write(archive.subarray(0, 16));
       // No end, no further writes: the socket stays open and silent until the client gives up.
       return;
+    case ARTEFACT_ROUTES.oversize:
+      if (isHead) {
+        head(response, archive.length, true);
+        return;
+      }
+      // No `Content-Length`, so the body is chunked and only its own end says how long it is.
+      response.writeHead(200, { "content-type": "application/zip" });
+      response.write(archive);
+      response.end(archive);
+      return;
+    case ARTEFACT_ROUTES.busyHead:
+      if (isHead) {
+        busy(response, true);
+        return;
+      }
+      serveRangeable(request, response, archive);
+      return;
+    case ARTEFACT_ROUTES.busy:
+      busy(response, isHead);
+      return;
     default:
       response.writeHead(404, { "content-length": "0" });
       response.end();
@@ -326,6 +354,16 @@ function head(response: ServerResponse, length: number, ranges: boolean): void {
     ...(ranges ? { "accept-ranges": "bytes" } : {}),
   });
   response.end();
+}
+
+/** What a busy origin answers: `503` with a short JSON body, whose length is not the artefact's. */
+function busy(response: ServerResponse, isHead: boolean): void {
+  response.writeHead(503, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(BUSY_BODY)),
+    "retry-after": "1",
+  });
+  response.end(isHead ? undefined : BUSY_BODY);
 }
 
 /** A clean end of body before the declared length — the ordinary truncated download. */

@@ -57,7 +57,7 @@ import type { ToolchainFfmpeg, ToolchainFfmpegProbe, ToolchainFile } from "@xpla
 import { PRECONDITION_UNMET_EXIT_CODE } from "../../daemon/exit-codes.js";
 import { isExecutableFile } from "../../render/encode.js";
 import { hashFile } from "../../runtime/manifest.js";
-import { type AcquiredFile, stageAcquired, verifyAcquired } from "../acquired.js";
+import { ACQUIRED_FILE, type AcquiredFile, stageAcquired, verifyAcquired } from "../acquired.js";
 import { extractZip } from "../archive.js";
 import { type ArchiveFormat, acquireArtefact, assertZipArtefact } from "../download.js";
 import {
@@ -94,6 +94,7 @@ const PROBE_TAIL_CHARS = 600;
 
 /** Why an FFmpeg was not recorded. One value per distinguishable condition. */
 export type FfmpegRefusalReason =
+  | "member-collision"
   | "member-missing"
   | "member-mismatch"
   | "cache-unverified"
@@ -209,9 +210,31 @@ function memberBasename(member: string): string {
  * The members this provider keeps, each mapped to the name it lands at: its own basename, so the
  * executable, its licence and the build's notes sit side by side. Executable first, which is the
  * order the marker's `files` records them in.
+ *
+ * Flattening them is only safe while every name is distinct, so a row whose members would land on
+ * one name — on each other, or on the {@link PROVENANCE_FILE} and `.acquired.json` this provider
+ * writes beside them — is refused here, before anything is fetched. The comparison ignores case,
+ * because APFS and NTFS do.
  */
 function keptMembers(selection: FfmpegSelection): ReadonlyMap<string, string> {
   const members = [selection.member, selection.licence_member, ...(selection.extra_members ?? [])];
+  const taken = new Map<string, string>([
+    [PROVENANCE_FILE.toLowerCase(), "the provenance record setup writes"],
+    [ACQUIRED_FILE.toLowerCase(), "the acquisition record setup writes"],
+  ]);
+  for (const member of members) {
+    const name = memberBasename(member).toLowerCase();
+    const holder = taken.get(name);
+    if (holder !== undefined) {
+      throw new FfmpegRefusal(
+        "member-collision",
+        `ffmpeg: the manifest row for ${selection.key} keeps ${member}, which would land at ` +
+          `${memberBasename(member)} beside the binary — where ${holder} lands. Every kept member ` +
+          "lands at its own base name, so the row has to name distinct ones. Nothing was fetched.",
+      );
+    }
+    taken.set(name, member);
+  }
   return new Map(members.map((member) => [member, memberBasename(member)]));
 }
 

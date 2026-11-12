@@ -132,6 +132,13 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** `2.31`, `2.35` — a glibc floor as its own release spells it. */
 const GLIBC_VERSION = /^\d+\.\d+$/;
 
+/**
+ * `157.0.8103.50`, `9.0.2`, `n9.0.2-39-g7adfbe40dc` — a version as one path segment, because every
+ * provider joins it into the name of the directory it installs under. `.` and `..` match it and are
+ * refused separately.
+ */
+const VERSION_SEGMENT = /^[A-Za-z0-9._+-]+$/;
+
 /** A document that is not a toolchain manifest, or is one this build cannot read. */
 export class ToolchainManifestError extends Error {
   constructor(message: string) {
@@ -626,7 +633,7 @@ function asBrowserArtefact(value: unknown, source: string, field: string): Brows
   const { url, publisher } = asAllowedUrl(entry.url, source, `${field}.url`);
   return {
     status: asRecorded(entry.status, source, field),
-    version: asNonEmptyString(entry.version, source, `${field}.version`),
+    version: asVersion(entry.version, source, `${field}.version`),
     url,
     sha256: asSha256(entry.sha256, source, `${field}.sha256`),
     size: asSize(entry.size, source, `${field}.size`),
@@ -648,7 +655,7 @@ function asFfmpegArtefact(value: unknown, source: string, field: string): Ffmpeg
   const { url, publisher } = asAllowedUrl(entry.url, source, `${field}.url`);
   return {
     status: asRecorded(entry.status, source, field),
-    version: asNonEmptyString(entry.version, source, `${field}.version`),
+    version: asVersion(entry.version, source, `${field}.version`),
     url,
     sha256: asSha256(entry.sha256, source, `${field}.sha256`),
     size: asSize(entry.size, source, `${field}.size`),
@@ -697,7 +704,7 @@ function asSpeechArtefact(value: unknown, source: string, field: string): Speech
   assertDeliveredByUs(url, source, `${field}.url`);
   return {
     status: asRecorded(entry.status, source, field),
-    version: asNonEmptyString(entry.version, source, `${field}.version`),
+    version: asVersion(entry.version, source, `${field}.version`),
     url,
     sha256: asSha256(entry.sha256, source, `${field}.sha256`),
     size: asSize(entry.size, source, `${field}.size`),
@@ -803,6 +810,25 @@ function asNonEmptyString(value: unknown, source: string, field: string): string
     throw new ToolchainManifestError(`${source}: ${field} is not a non-empty string.`);
   }
   return value;
+}
+
+/**
+ * A version that is safe to join into a directory name: one path segment, never `.` or `..`.
+ *
+ * Checked when the document is parsed rather than where it is joined, because the providers join it
+ * in three places and a version that climbs (`9/../../../../tmp/planted`) moved the whole install
+ * outside the toolchain directory.
+ */
+function asVersion(value: unknown, source: string, field: string): string {
+  const version = asNonEmptyString(value, source, field);
+  if (!VERSION_SEGMENT.test(version) || version === "." || version === "..") {
+    throw new ToolchainManifestError(
+      `${source}: ${field} is ${JSON.stringify(version)}, which is not one path segment. A version ` +
+        "names the directory setup installs into, so it is letters, digits, '.', '_', '+' and '-', " +
+        "and never '.' or '..'.",
+    );
+  }
+  return version;
 }
 
 function asRecorded(value: unknown, source: string, field: string): "recorded" {

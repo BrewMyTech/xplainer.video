@@ -386,6 +386,52 @@ describe("the four failures ADR 0005 makes the downloader responsible for", () =
     });
   });
 
+  /**
+   * A chunked body declares no length, so only counting can tell it has run past the artefact's.
+   * It is stopped at the first byte over, and the partial is discarded like any other body that is
+   * not the reviewed artefact — rather than written out in full and kept as a "short body".
+   */
+  it("stops a body that runs past the length the manifest records, and discards it", async () => {
+    await withServer(async (server) => {
+      const partFile = join(scratchDir(), `chrome${PART_SUFFIX}`);
+
+      const refusal = await refusalOf(
+        downloadArtefact({ request: request(server, ARTEFACT_ROUTES.oversize), partFile }),
+      );
+
+      expect(refusal.reason).toBe("checksum-mismatch");
+      expect(refusal.message).toContain(`more than the ${archive.length} bytes`);
+      expect(existsSync(partFile)).toBe(false);
+    });
+  });
+
+  /** A `503` on `HEAD` is an origin that is busy, not one describing a different artefact. */
+  it("takes a HEAD that answers 503 as no probe at all, and downloads on the GET", async () => {
+    await withServer(async (server) => {
+      const outcome = await downloadArtefact({
+        request: request(server, ARTEFACT_ROUTES.busyHead),
+        partFile: join(scratchDir(), `chrome${PART_SUFFIX}`),
+      });
+
+      expect(outcome.sha256).toBe(digest);
+      expect(outcome.transfer).toBe("fresh");
+    });
+  });
+
+  it("names an origin that answers 503 to everything as unreachable, not as another artefact", async () => {
+    await withServer(async (server) => {
+      const refusal = await refusalOf(
+        downloadArtefact({
+          request: request(server, ARTEFACT_ROUTES.busy),
+          partFile: join(scratchDir(), `chrome${PART_SUFFIX}`),
+        }),
+      );
+
+      expect(refusal.reason).toBe("unreachable");
+      expect(refusal.message).toContain("503");
+    });
+  });
+
   it("refuses a length the server and the manifest disagree about, before the GET", async () => {
     await withServer(async (server) => {
       const refusal = await refusalOf(
@@ -490,13 +536,36 @@ describe("committing an artefact", () => {
 
         await expect(refusal).rejects.toThrow(/not a zip archive/);
         expect(existsSync(destination)).toBe(false);
-        expect(
-          readdirNames(join(root, WORK_DIR_NAME)).filter((name) => name.startsWith(".staging-")),
-        ).toEqual([]);
+        // No staging tree, and no verified archive left to fail the same way on the next run.
+        expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
       } finally {
         await notAnArchive.close();
       }
       expect(server.requests).toEqual([]);
+    });
+  });
+
+  /**
+   * A provider's `stage` hook refusing what it unpacked is a fact about bytes whose digest already
+   * matched, so the same bytes would be refused the same way next time. The verified archive is
+   * deleted rather than left in `.setup/` as a resume point for a download that is already whole.
+   */
+  it("deletes the verified archive when the provider's stage hook refuses what it unpacked", async () => {
+    await withServer(async (server) => {
+      const root = scratchDir();
+      const destination = join(root, "chrome");
+
+      const refusal = acquireArtefact({
+        request: request(server, ARTEFACT_ROUTES.good),
+        destination,
+        stage: () => {
+          throw new Error("the provider refused what it unpacked");
+        },
+      });
+
+      await expect(refusal).rejects.toThrow(/the provider refused what it unpacked/);
+      expect(existsSync(destination)).toBe(false);
+      expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
     });
   });
 

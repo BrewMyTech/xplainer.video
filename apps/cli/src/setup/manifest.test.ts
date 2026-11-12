@@ -578,6 +578,32 @@ describe("reading a manifest document", () => {
     }, /ffmpeg\.expected\.darwin-arm64\.extra_members\[1\] is refused: .*absolute path/);
   });
 
+  /**
+   * A version becomes part of the directory a component is installed under —
+   * `ffmpeg-<version>-<digest>`, `chrome-headless-shell-<version>-<digest>` — so one that could be
+   * read as a path (`9/../../../../tmp/planted` put the ffmpeg tree in `/tmp`) is refused before it
+   * is ever joined onto one.
+   */
+  it("refuses a version that is not one path segment, in every block that installs by it", () => {
+    for (const version of ["9/../../../../tmp/planted", "..", ".", "9.0 2", "9\\..\\x"]) {
+      refuses((d) => {
+        row(d, "ffmpeg", "darwin-arm64").version = version;
+      }, /ffmpeg\.expected\.darwin-arm64\.version is .*, which is not one path segment/);
+    }
+    refuses((d) => {
+      row(d, "browser", "linux-x64").version = "157/../../../../tmp/planted-browser";
+    }, /browser\.expected\.linux-x64\.version is .*, which is not one path segment/);
+    refuses((d) => {
+      (d.speech as Record<string, unknown>)["linux-x64"] = {
+        status: "recorded",
+        version: "../0.19.0",
+        url: `https://${TOOLCHAIN_CDN_HOSTNAME}/toolchain/v1/speech-linux-x64.zip`,
+        sha256: "a".repeat(64),
+        size: 123,
+      };
+    }, /speech\.linux-x64\.version is .*, which is not one path segment/);
+  });
+
   it("refuses a member digest that is not a lowercase 64-character hex SHA-256", () => {
     refuses((d) => {
       row(d, "ffmpeg", "linux-arm64").member_sha256 = "091FE4DF";

@@ -15,9 +15,11 @@
  * - A **short body** is a connection that ended before the length the server itself declared. It is
  *   resumable, and saying so is the difference between "run setup again" and "your network is
  *   broken".
- * - A **checksum mismatch** is bytes that arrived whole and are not the reviewed artefact. The
- *   partial file is deleted rather than kept, because resuming onto bytes that are already wrong
- *   would re-download the same mismatch for ever.
+ * - A **checksum mismatch** is bytes that arrived whole and are not the reviewed artefact — or more
+ *   bytes than the manifest records, which no reviewed artefact is, so the body is stopped at the
+ *   first byte over rather than written out in full. The partial file is deleted rather than kept,
+ *   because resuming onto bytes that are already wrong would re-download the same mismatch for
+ *   ever.
  * - A **resume that was not honoured** is a server that answered a `Range` request with something
  *   other than that range. Appending the body of such a response to a partial file produces a file
  *   of exactly the right length made of the wrong bytes — which the digest would catch, but only
@@ -247,6 +249,17 @@ export async function downloadArtefact(options: DownloadOptions): Promise<Downlo
       response.body,
       async function* (chunks: AsyncIterable<Buffer>) {
         for await (const chunk of chunks) {
+          // Before the chunk is written: a body with no `Content-Length` says how long it is only
+          // by ending, and one that does not end would otherwise fill the disk.
+          if (received + chunk.length > request.size) {
+            throw new DownloadRefusal(
+              "checksum-mismatch",
+              request.url,
+              `${request.url} sent more than the ${request.size} bytes the toolchain manifest ` +
+                "records, so it is not the artefact whose digest was reviewed. The download was " +
+                "stopped there and discarded, and nothing was unpacked.",
+            );
+          }
           hash.update(chunk);
           received += chunk.length;
           options.onProgress?.(received, probe.length);
@@ -256,6 +269,14 @@ export async function downloadArtefact(options: DownloadOptions): Promise<Downlo
       sink,
     );
   } catch (error) {
+    if (error instanceof DownloadRefusal) {
+      // The descriptor is closed before the file goes, so the removal also holds on Windows.
+      if (!sink.closed) {
+        await new Promise<void>((resolve) => sink.once("close", () => resolve()));
+      }
+      rmSync(partFile, { force: true });
+      throw error;
+    }
     throw classifyTransferFailure(request, error, received);
   }
 
@@ -294,9 +315,12 @@ type ArtefactProbe = { length: number; acceptsRanges: boolean };
  *
  * A server that answers without a `Content-Length`, or that refuses `HEAD` outright, is not an
  * error: the manifest already records the size, so the recorded one stands and the resume is simply
- * not attempted. What the probe must not do is let a **disagreement** through — a server offering a
- * different length than the manifest records is serving a different artefact, and that is worth
- * saying before a hundred megabytes rather than after.
+ * not attempted. Nor is any other status outside `2xx` — a `503` from a busy origin describes the
+ * error, not the artefact, and its `Content-Length` is the length of that error — so the `GET`
+ * decides, and a `GET` that fails the same way is reported as `unreachable` by its status. What the
+ * probe must not do is let a **disagreement** through — a `2xx` offering a different length than
+ * the manifest records is serving a different artefact, and that is worth saying before a hundred
+ * megabytes rather than after.
  */
 async function headArtefact(options: DownloadOptions): Promise<ArtefactProbe> {
   const { request } = options;
@@ -306,6 +330,9 @@ async function headArtefact(options: DownloadOptions): Promise<ArtefactProbe> {
     return { length: request.size, acceptsRanges: false };
   }
   await assertServedByOrigin(request.url, response);
+  if (response.status < 200 || response.status > 299) {
+    return { length: request.size, acceptsRanges: false };
+  }
   const declared = response.headers["content-length"];
   if (declared === undefined) {
     return { length: request.size, acceptsRanges: false };
@@ -791,10 +818,14 @@ export async function acquireArtefact(options: AcquireOptions): Promise<AcquireO
     options.stage?.(staging, download);
     mkdirSync(parent, { recursive: true });
     renameSync(staging, destination);
-    rmSync(download.path, { force: true });
     return { destination, download, extraction, flush: flushDirectory(parent) };
   } finally {
     rmSync(staging, { recursive: true, force: true });
+    // Whatever happened after the digest matched. A `.part` is a resume point for a download that
+    // is not whole yet; this one is whole and verified, so a refusal from the reader or from the
+    // provider's `stage` hook is a fact about these bytes, and keeping them would only have the
+    // next run refuse the same bytes again, silently, from a 100 MB file nothing mentions.
+    rmSync(download.path, { force: true });
   }
 }
 
