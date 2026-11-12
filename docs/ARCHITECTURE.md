@@ -556,8 +556,10 @@ in the root [`AGENTS.md`](../AGENTS.md).
    `scripts/check-publish-contract.mjs`. There is no third option: the checker fails on a member it
    does not know, in either direction.
 5. If it is publishable, it also needs a `README.md` — or its npm page renders blank — plus
-   `license`, `homepage`, `author` and a `repository` whose `directory` names this member. The
-   same checker asserts all five, and each rule there carries its own negative test.
+   `license`, `homepage`, `author`, a `repository` whose `directory` names this member, and a
+   `prepublishOnly` that runs the release check by its path from the member
+   (`node ../../scripts/check-release-ready.mjs`), so no publish of it goes around that check. The
+   same checker asserts all six, and each rule there carries its own negative test.
 6. If it is published *and* has a `tsconfig.build.json`, it needs an `api/` report — run
    `pnpm api:report`.
 7. Write its `AGENTS.md` and its one-line `CLAUDE.md`, and add its row to

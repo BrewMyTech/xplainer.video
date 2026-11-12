@@ -365,6 +365,7 @@ every rule adopted and every rule rejected.
   - *Amended 2026-09-11 (`packages/alias`):* **ten** member stubs, **eleven** files.
 - **19c** `pnpm check:docs-contract` exits **1** when a member's `AGENTS.md` is removed.
 - **19d** `pnpm verify` exists in the root `package.json` and chains every gate that a local run can execute: `turbo build lint typecheck test`, `biome check .`, `check:no-suppressions`, `lint:tiers`, `check:publish-contract`, `check:codegen-fresh`, `check:api-report`, `check:docs-contract`. **The list is the criterion, not the phrase "every gate"** — an earlier draft asserted the phrase while omitting three of them, which is exactly the drift a criterion is for. Task coverage (AC-2b, AC-2f, AC-2g) is CI-only and named as such, because it asserts a property of the workspace roster that a local run cannot make false.
+  - *Amended 2026-11-12 (ADR 0031's note of 2026-11-12, D8 and D9):* the chain gains two gates, so the list is now `turbo build lint typecheck test`, `biome check .`, `check:no-suppressions`, `check:no-remotion`, `lint:tiers`, `check:publish-contract`, `check:release-gates`, `check:codegen-fresh`, `check:api-report`, `check:docs-contract`. `check:release-gates` runs the release check's self-tests and `release:publish`'s, and not the release check itself: that one refuses until every entry of `docs/release-blockers.json` is closed, which is a property of a release rather than of a commit, so it runs as every published member's `prepublishOnly` and first in `pnpm release:publish` instead.
 
 ---
 

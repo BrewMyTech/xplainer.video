@@ -36,6 +36,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && xplainer-minify-dist",
     "prepack": "xplainer-sync-license",
+    "prepublishOnly": "node ../../scripts/check-release-ready.mjs",
     "codegen": "node scripts/codegen.mjs",
     "codegen:check": "node scripts/codegen.mjs --check",
     "lint": "biome check . && pnpm run lint:py",

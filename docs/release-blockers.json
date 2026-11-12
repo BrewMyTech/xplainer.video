@@ -1,0 +1,81 @@
+{
+  "$comment": "What stands between this tree and a release (ADR 0031's note of 2026-11-12, D8). scripts/check-release-ready.mjs refuses a publish while any entry is open, or is closed without evidence: a GitHub Actions run id (kind run), a dated ADR note that exists (adr-note), a commit on main (commit) or an owner ask id (owner-ask), each with a sentence saying what it shows. Close an entry by setting status to closed and adding its evidence; never delete one.",
+  "blockers": [
+    {
+      "id": "linux-12fps-run",
+      "title": "The Linux 12 fps throughput bar, on the shipped render worker",
+      "status": "open",
+      "closes_when": "A Linux run of the throughput gate — capture plus encode of 1080p on the shipped render worker and Chrome for Testing 157 — clears 12 fps (ADR 0031's Decision Drivers, P0-6), and its run id is recorded here. ADR 0031 Follow-up 8 makes it part of the release gate; it has never been run, because the Docker engine did not answer on the day the macOS gate was measured.",
+      "evidence": []
+    },
+    {
+      "id": "windows-remote-debugging-pipe",
+      "title": "Windows --remote-debugging-pipe, proved end to end on a hosted runner",
+      "status": "open",
+      "closes_when": "A windows-latest run in which the render worker drives a real Chrome for Testing over --remote-debugging-pipe through a still and a render, with its run id recorded here (ADR 0031 Follow-ups 6 and 8). Until then the CDP client has run against Chrome on macOS and Linux only.",
+      "evidence": []
+    },
+    {
+      "id": "page-network-decision",
+      "title": "The page's network: deny by default, or a recorded decision not to",
+      "status": "closed",
+      "closes_when": "The owner decides, with the cost of remote web fonts in front of them, and the decision is recorded in a dated note on ADR 0031 (Follow-up 8's first bullet).",
+      "evidence": [
+        {
+          "kind": "owner-ask",
+          "id": "1be7850f",
+          "what": "The owner's decision of 2026-11-12, relayed by the coordinator: the page keeps the network, as it had under the previous renderer; an opt-in deny is not in Phase 2."
+        },
+        {
+          "kind": "adr-note",
+          "adr": "0031",
+          "date": "2026-11-12",
+          "section": "The page's network: allowed by default",
+          "what": "The dated note recording that decision and the sentence of the record it amends."
+        }
+      ]
+    },
+    {
+      "id": "macos-default-encoder-patent",
+      "title": "The patent decision on the default macOS encoder (the distribution analysis's Checklist B9)",
+      "status": "open",
+      "closes_when": "The owner decides whether the first macOS release encodes with x264 or h264_videotoolbox by default — ADR 0031's owner decisions of 2026-11-11 require it 'before the first macOS release', and its note of 2026-11-12 leaves it open — and the decision is recorded in a dated note on ADR 0031.",
+      "evidence": []
+    },
+    {
+      "id": "checklist-a7-pin-snapshot",
+      "title": "The re-pin snapshot the distribution analysis's Checklist A7 asks for",
+      "status": "open",
+      "closes_when": "The snapshot of the pinned upstream FFmpeg artefacts that Checklist A7 asks for before a release is taken and recorded — BtbN keeps an autobuild for about two years, so the autobuild-2026-10-31-12-59 pins can move or disappear — and the commit on main or run that records it is added here.",
+      "evidence": []
+    },
+    {
+      "id": "v2-manifest-upload",
+      "title": "The committed format-2 toolchain manifest, uploaded to toolchain/v2/manifest.json",
+      "status": "open",
+      "closes_when": "The owner uploads apps/cli/src/setup/toolchain.manifest.json to https://cdn.xplainer.video/toolchain/v2/manifest.json and purges that URL (infra/README.md, the cache rule and publishing a manifest). pnpm release:publish then compares the served document with the committed one byte for byte before it publishes anything, and refuses on any difference; the upload's run id or owner ask is the evidence here. Nothing run from a checkout requests that URL before the upload, because an error answer can be cached.",
+      "evidence": []
+    },
+    {
+      "id": "cdn-cache-rule-applied",
+      "title": "The CDN cache rule applied to the live zone",
+      "status": "open",
+      "closes_when": "The owner applies infra/terraform's cloudflare_ruleset.cdn_cache as committed in 6802d60 — no response in the 400–499 range is ever cached, and a manifest.json is cached for five minutes — with terraform plan showing one in-place update of that ruleset and nothing else (infra/README.md). Until then an error answer can be kept at the edge for 30 days. The owner ask or run of the apply is the evidence.",
+      "evidence": []
+    },
+    {
+      "id": "linux-windows-setup-proof",
+      "title": "A real xplainer setup download and render on a Linux and a Windows runner",
+      "status": "open",
+      "closes_when": "A dispatch of e2e-toolchain.yml with linux and windows selected passes — setup downloads the BtbN FFmpeg and Chrome for Testing from their publishers and a render comes out — and its run id is recorded here. It reads the published manifest, so it waits on v2-manifest-upload.",
+      "evidence": []
+    },
+    {
+      "id": "chrome-157-throughput",
+      "title": "The idle-machine throughput gate, re-run on Chrome for Testing 157",
+      "status": "open",
+      "closes_when": "Plan step 11: apps/cli/spikes/p1-render-fps.mjs clears the 20 fps macOS bar on Chrome for Testing 157.0.8103.50 in three runs with the load recorded, and a dated note on ADR 0031 records them — or ADR 0031 D4's fallback is taken and that note says so.",
+      "evidence": []
+    }
+  ]
+}

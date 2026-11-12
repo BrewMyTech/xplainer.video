@@ -1633,11 +1633,18 @@ records its twelve decisions (D1–D12); the status of each item is as of that d
    across the cut is **decided and built** (D1, D2); ffmpeg is **judged at the gate**, by job kind
    (D12), and `daemon status` now takes its verdict from the same check `/healthz` does (D10). The
    check that fails a publish while the hard condition is unmet, and a committed grep gate for the
-   previous renderer's name, are **open** (D8, D9).
+   previous renderer's name, are **built** (D8, D9): `scripts/check-release-ready.mjs`, every
+   published member's `prepublishOnly`, refuses while the template carries a manifest or the name,
+   while any render platform's browser or ffmpeg row is not recorded, and while any entry of
+   `docs/release-blockers.json` is open or closed without evidence; `scripts/check-no-remotion.mjs`
+   runs in `pnpm verify` and in CI over every tracked file against an allowlist written out in the
+   script.
 6. **The release**, only after 1–5 have landed on `main`, with a changeset that names the alias's
    removal in the release after it — and after the owner uploads the committed version-2 manifest
-   to `toolchain/v2/manifest.json` and purges its URL, which nothing yet enforces
-   (`infra/README.md` §*The delivery position*). **Open.**
+   to `toolchain/v2/manifest.json` and purges its URL (`infra/README.md` §*The delivery
+   position*). `pnpm release:publish` now enforces that: it compares the served document with the
+   committed one byte for byte before `pnpm publish -r`, and publishes nothing on a difference.
+   What still blocks it is listed, entry by entry, in `docs/release-blockers.json`. **Open.**
 
 **Booked, not scheduled:** from the Phase 1 code review, `chrome.kill()` waiting its full grace on a
 zombie helper where orphans are not reaped (a container whose PID 1 is not an init), and no ageing-out
@@ -1649,6 +1656,13 @@ capture tab, and `HeadlessExperimental.beginFrame` on Linux only, behind a probe
 is closed by D10. musl/Alpine has no browser that runs there — every Chrome for Testing Linux build
 is glibc — so it cannot render even with an FFmpeg named by `--ffmpeg-path`; win32-arm64 has an
 FFmpeg row and no Chrome, so it cannot render either.
+
+**Booked, and not a release blocker: the intro video is a recording of the previous renderer.**
+`docs/media/xplainer-intro.mp4` was rendered by it — its metadata says so — and
+`docs/media/xplainer-intro/source.json` keeps two lines of on-screen copy that name it. Both are
+admitted by `scripts/check-no-remotion.mjs`'s allowlist as a historical recording. Re-render the
+video on the owned renderer with copy that describes it, then delete those two entries: the gate
+fails on an entry that no longer admits anything, so the second half cannot be forgotten.
 
 ---
 
