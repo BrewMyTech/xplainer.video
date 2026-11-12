@@ -80,8 +80,13 @@ else
 fi
 git -C "$repo" archive --format=tar --prefix=xplainer-ffmpeg-build/ --mtime="$commit_time" "$tree" |
   gzip -n -9 >"$source_dir/$scripts"
+# The listing is read whole before it is searched. `tar -t | grep -q` fails
+# under pipefail whenever grep exits on its match while tar is still writing
+# ("tar: stdout: write error"), and reported a complete archive as missing
+# build.sh on CI (run 43132204888).
+listing="$(tar -tzf "$source_dir/$scripts")"
 for member in infra/ffmpeg/build.sh infra/ffmpeg/pins.env .github/workflows/ffmpeg-macos.yml; do
-  if ! tar -tzf "$source_dir/$scripts" | grep -qx "xplainer-ffmpeg-build/$member"; then
+  if ! grep -qx "xplainer-ffmpeg-build/$member" <<<"$listing"; then
     echo "source-bundle.sh: $scripts does not contain $member" >&2
     exit 1
   fi

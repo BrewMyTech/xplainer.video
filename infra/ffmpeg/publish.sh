@@ -38,7 +38,9 @@ if [ ! -f "$release/SHA256SUMS" ] || [ ! -f "$release/source/MANIFEST" ]; then
   echo "publish.sh: $release is not an assembled release directory" >&2
   exit 1
 fi
-if find "$release/source" -name 'xplainer-ffmpeg-build-*-dirty-*' | grep -q .; then
+# No `find | grep -q`: under pipefail, find failing to write after grep has
+# exited on a match would make this test false and let a dirty bundle through.
+if [ -n "$(find "$release/source" -name 'xplainer-ffmpeg-build-*-dirty-*' -print -quit)" ]; then
   echo "publish.sh: the source bundle was made from modified scripts; publish from a commit" >&2
   exit 1
 fi
