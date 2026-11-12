@@ -44,9 +44,11 @@ terraform -chdir=infra/terraform validate
 | Resource | Purpose |
 | --- | --- |
 | `cloudflare_r2_bucket.artifacts` | Release artefacts: signed CLI and desktop builds, the per-OS TTS bundles, and the version/checksum manifest naming them. No AWS (ADR 0011). |
-| `cloudflare_dns_record.cdn` | `cdn.<zone>` → the bucket, proxied. The hostname an update feed or a first-run download is served from. |
+| `cloudflare_r2_custom_domain.cdn` | `cdn.<zone>` → the bucket, proxied, with the DNS record and certificate R2 owns. The hostname an update feed or a first-run download is served from. |
+| `cloudflare_ruleset.cdn_cache` | The Cache Rule: artefacts 30 days at the edge, manifests five minutes, errors never (below). |
 
-That is the whole module. Four inputs, two outputs, one bucket, one record.
+That is the whole module. Four inputs, two outputs, one bucket, one custom domain, one ruleset of
+two rules.
 
 ### Why a public, local-first repository declares any infrastructure at all
 
@@ -115,6 +117,51 @@ Verify with a cold then a warm request:
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect MISS
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect HIT
 ```
+
+### The cache rule, and publishing a manifest
+
+*Added 2026-11-12.* `cf-cache-status` on `cdn.xplainer.video` reads **`DYNAMIC`** on that date:
+the Cache Rule declared below has never been applied, so every download is served from R2 with no
+caching at all. Applying it turns caching on for the first time. The ruleset has two rules, in
+this order, and a later matching rule's setting wins:
+
+1. **Every key on the hostname**: cacheable, 30 days at the edge, an hour in the browser — and
+   **every 4xx and 5xx `no-store`** (`status_code_ttl`, value `-1`). The edge TTL *overrides* the
+   origin, so without that clause one request made before an object's upload would cache its `404`
+   for 30 days after the object arrived. That is why no session requests an artefact or manifest
+   URL before it is published, a rule this clause makes cheaper to break but does not retire.
+2. **Any path ending `/manifest.json`** (`toolchain/v1/manifest.json`, `toolchain/v2/manifest.json`):
+   five minutes at the edge and in the browser, errors still `no-store`. A manifest is the one key
+   that is rewritten in place.
+
+**Applying it is the owner's step.** It needs an API token with `Zone:Cache Rules:Edit` beside the
+DNS and R2 permissions `variables.tf` lists:
+
+```sh
+cd infra/terraform
+TF_VAR_cloudflare_api_token=<token> terraform init
+TF_VAR_cloudflare_api_token=<token> terraform plan
+TF_VAR_cloudflare_api_token=<token> terraform apply
+```
+
+`plan` must show exactly one change, to `cloudflare_ruleset.cdn_cache` — a create if the ruleset
+was never applied, as `DYNAMIC` suggests, otherwise an in-place update — and nothing else. If the
+create is refused because the zone already has an `http_request_cache_settings` entry-point
+ruleset (one made in the dashboard), that ruleset has to be deleted or imported first. Then check
+with the cold-and-warm `curl` pair above, once on an artefact (`MISS` then `HIT`) and once on a key
+that does not exist (`cf-cache-status` never `HIT`).
+
+**Publishing a manifest** is an upload to its key followed by either a purge of that one URL (a
+token with `Zone:Cache Purge`) or a five-minute wait:
+
+```sh
+curl -X POST "https://api.cloudflare.com/client/v4/zones/<zone_id>/purge_cache" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  --data '{"files":["https://cdn.xplainer.video/toolchain/v2/manifest.json"]}'
+```
+
+An artefact key is never rewritten and never needs a purge: a changed build is a new version and a
+new key.
 
 ### The delivery position
 

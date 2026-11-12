@@ -3,7 +3,7 @@
 # account id.
 
 variable "cloudflare_api_token" {
-  description = "Cloudflare API token with Zone:DNS:Edit on the zone and Workers R2 Storage:Edit on the account. Supply via TF_VAR_cloudflare_api_token or a local, untracked tfvars file."
+  description = "Cloudflare API token with Zone:DNS:Edit and Zone:Cache Rules:Edit on the zone and Workers R2 Storage:Edit on the account. Supply via TF_VAR_cloudflare_api_token or a local, untracked tfvars file."
   type        = string
   sensitive   = true
 }
