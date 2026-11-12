@@ -1,5 +1,48 @@
 # xplainer
 
+## 0.1.0
+
+### Minor Changes
+
+- f23a63b: `npx -y xplainer` and `npm i -g xplainer` now install `@xplainer/cli` 0.1.0, so everything in that
+  release reaches this name too. xplainer renders with its own renderer instead of Remotion, and
+  `xplainer setup` acquires a pinned FFmpeg beside the browser and speech. **A daemon installed by
+  0.0.11 or earlier has to be reinstalled**: `xplainer update` and `xplainer setup` refuse with exit
+  `3` and print the three commands that do it, `xplainer daemon uninstall`, `xplainer setup` and
+  `xplainer daemon install`.
+
+### Patch Changes
+
+- 9dff313: Wording only, no behaviour change: the `xplainer` README's licence paragraph and a doc comment in
+  `@xplainer/mcp-server`'s published types describe xplainer's own renderer rather than Remotion.
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+- Updated dependencies [7ea82a6]
+- Updated dependencies [71cfaf7]
+- Updated dependencies [c184479]
+- Updated dependencies [1147b52]
+- Updated dependencies [69ba5f6]
+- Updated dependencies [8852117]
+- Updated dependencies [b634869]
+- Updated dependencies [24a006e]
+- Updated dependencies [d54227e]
+- Updated dependencies [4756795]
+- Updated dependencies [b1de65d]
+- Updated dependencies [6fbbbc8]
+- Updated dependencies [839886c]
+- Updated dependencies [5ef65e9]
+  - @xplainer/cli@0.1.0
+
 ## 0.0.11
 
 ### Patch Changes

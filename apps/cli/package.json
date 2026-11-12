@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/cli",
-  "version": "0.0.11",
+  "version": "0.1.0",
   "type": "module",
   "description": "The xplainer local runtime: the `xplainer` binary, its always-on daemon, and the HTTP and MCP server core they serve.",
   "homepage": "https://xplainer.video",

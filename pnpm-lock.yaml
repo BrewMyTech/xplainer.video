@@ -168,7 +168,7 @@ importers:
   packages/alias:
     dependencies:
       '@xplainer/cli':
-        specifier: workspace:0.0.11
+        specifier: workspace:0.1.0
         version: file:apps/cli(supports-color@8.1.1)(zod@4.5.4)
     devDependencies:
       '@modelcontextprotocol/sdk':
@@ -4222,6 +4222,7 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       tailwindcss: 4.2.0
+      xz-decompress: 0.2.3
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - supports-color

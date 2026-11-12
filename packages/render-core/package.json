@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/render-core",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "type": "module",
   "description": "The video workspace template, the ownership-aware scaffold generator (engine-owned composition shell written against @xplainer/motion, agent-owned scenes), the narration port and the render preflight.",
   "homepage": "https://xplainer.video",

@@ -1,5 +1,39 @@
 # @xplainer/protocol
 
+## 0.1.0
+
+### Minor Changes
+
+- b1de65d: `toolchain.json`'s schema describes the marker at `format_version` 2. `workspace` is no longer
+  required — it is kept as a deprecated optional property, so a version-1 marker still validates — and
+  `ffmpeg` is a new optional component with its own definition, `ToolchainFfmpeg`: the executable's
+  version, path, digest and provider, the files it is made of (the executable first, at least one),
+  the libavcodec version it reported, its licence as an SPDX id, an optional publisher and source URL,
+  and `probe`, the verbatim output of `ffmpeg -version`, `-buildconf` and `-L`
+  (`ToolchainFfmpegProbe`). Both new types are exported, and the generated TypeScript and Python carry
+  them. `Toolchain.workspace` is now optional in both languages, which is a change for any reader that
+  assumed it was present.
+
+### Patch Changes
+
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 78762b2: Descriptions only, no shape change: `captions.json` is described as the `Caption[]` form
+  `@xplainer/motion` reads, `timestampMs` says the caption pager pages on `startMs` and does not read
+  it, a segment's `from` is for the composition's `Sequence`, and `explainer_put_source` writes
+  agent-authored scene source written against `@xplainer/motion`. The generated TypeScript and
+  Python carry the same wording.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+
 ## 0.0.3
 
 ### Patch Changes

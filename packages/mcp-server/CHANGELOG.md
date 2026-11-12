@@ -1,5 +1,29 @@
 # @xplainer/mcp-server
 
+## 0.0.4
+
+### Patch Changes
+
+- 9dff313: Wording only, no behaviour change: the `xplainer` README's licence paragraph and a doc comment in
+  `@xplainer/mcp-server`'s published types describe xplainer's own renderer rather than Remotion.
+- 839886c: Wording only, no behaviour change. Every package's `LICENSE` and `NOTICE` drop the paragraphs about
+  Remotion, because nothing installs it any more, and `NOTICE` now closes by saying that Apache-2.0
+  does not cover the components `xplainer setup` acquires, the FFmpeg builds among them; it names
+  BtbN's FFmpeg-Builds at its current address, `github.com/FFmpeg-Builds/FFmpeg-Builds`. The
+  `@xplainer/cli`, `xplainer` and `@xplainer/render-core` READMEs describe `setup` acquiring the
+  browser, FFmpeg and speech, the licences those downloads carry, and the two-file workspace template,
+  and a doc comment in `@xplainer/mcp-server`'s published types no longer names Remotion.
+- 5ef65e9: No behaviour change for anyone who installs the package. Its `package.json` gains a
+  `prepublishOnly` script, which runs this repository's release check before the package is
+  published and refuses the publish while anything listed as blocking a release is still open. An
+  install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+  installs the workspace, the check stands aside unless a publish started it.
+- Updated dependencies [839886c]
+- Updated dependencies [78762b2]
+- Updated dependencies [b1de65d]
+- Updated dependencies [5ef65e9]
+  - @xplainer/protocol@0.1.0
+
 ## 0.0.3
 
 ### Patch Changes
