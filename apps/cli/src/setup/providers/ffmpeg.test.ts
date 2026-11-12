@@ -72,6 +72,12 @@ const XZ_FIXTURE = join(HERE, "..", "fixtures", "ffmpeg-build-fixture.tar.xz");
 
 const directories: string[] = [];
 
+/**
+ * The budget for a case whose member is text a C library may hand to `/bin/sh`: the probe's own
+ * 10 s, plus room for the shell to walk the file once.
+ */
+const NOT_AN_EXECUTABLE_TIMEOUT_MS = 30_000;
+
 function temporaryDirectory(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   directories.push(directory);
@@ -377,14 +383,35 @@ describe("a .tar.xz row", () => {
     expect(listing(toolchainDir)).toEqual([]);
   });
 
-  it("takes the right member and refuses it when it does not answer the probe", async () => {
-    const toolchainDir = temporaryDirectory("xplainer-ffmpeg-toolchain-");
-
-    await expect(acquireFfmpeg({ manifest: withRow(row), toolchainDir })).rejects.toMatchObject({
-      reason: "probe-failed",
-    });
-    expect(listing(toolchainDir).filter((name) => name !== ".setup")).toEqual([]);
-  });
+  /**
+   * The fixture's `bin/ffmpeg` is 6,000 lines of text with no `#!` line, and how that fails to run
+   * depends on the C library. macOS refuses it with `ENOEXEC` at once; glibc's `execvp` hands an
+   * `ENOEXEC` file to `/bin/sh`, which runs each line as a command — `ffmpeg fixture body, …` —
+   * so on a runner with an ffmpeg on `PATH` it started a real ffmpeg 6,000 times and the probe was
+   * killed at its 10 s budget, past this suite's 5 s default (PR #9's CI, 2026-11-12). The refusal
+   * is the same either way. An empty `PATH` stops the shell starting anything, but walking 6,000
+   * "not found" lines still costs seconds (5.6 s under macOS's `/bin/sh`, measured), so the case
+   * gets its own budget rather than leaning on how fast one machine's shell is.
+   */
+  it(
+    "takes the right member and refuses it when it does not answer the probe",
+    async () => {
+      const toolchainDir = temporaryDirectory("xplainer-ffmpeg-toolchain-");
+      const savedPath = process.env.PATH;
+      process.env.PATH = temporaryDirectory("xplainer-ffmpeg-empty-path-");
+      try {
+        await expect(acquireFfmpeg({ manifest: withRow(row), toolchainDir })).rejects.toMatchObject(
+          {
+            reason: "probe-failed",
+          },
+        );
+      } finally {
+        process.env.PATH = savedPath;
+      }
+      expect(listing(toolchainDir).filter((name) => name !== ".setup")).toEqual([]);
+    },
+    NOT_AN_EXECUTABLE_TIMEOUT_MS,
+  );
 });
 
 // A real ffmpeg, so the same switch as the render test: CI installs one and never sets it.
