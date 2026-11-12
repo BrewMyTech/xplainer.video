@@ -73,9 +73,17 @@
     {
       "id": "chrome-157-throughput",
       "title": "The idle-machine throughput gate, re-run on Chrome for Testing 157",
-      "status": "open",
+      "status": "closed",
       "closes_when": "Plan step 11: apps/cli/spikes/p1-render-fps.mjs clears the 20 fps macOS bar on Chrome for Testing 157.0.8103.50 in three runs with the load recorded, and a dated note on ADR 0031 records them — or ADR 0031 D4's fallback is taken and that note says so.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "adr-note",
+          "adr": "0031",
+          "date": "2026-11-12",
+          "section": "Chrome for Testing 157 clears the 20 fps gate",
+          "what": "The gate re-run on 2026-11-12 on the Apple M5 Pro every number in ADR 0031 comes from, on Chrome for Testing 157.0.8103.50 and our FFmpeg 9.0.2 as xplainer setup acquired them from the committed manifest, with XPLAINER_FFMPEG set explicitly: one invocation of three runs at 21.53–21.62 fps loop and three single-run invocations at 21.56–21.58, the one-minute load between 1.51 and 2.60. Local runs on a developer machine, so there is no Actions run id; D4 stands and its fallback is not taken."
+        }
+      ]
     }
   ]
 }

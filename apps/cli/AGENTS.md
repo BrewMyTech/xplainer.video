@@ -685,7 +685,8 @@ first acquisition cannot reject an incorrect-but-intact archive; it only detects
 not a cache of upstream; each is a reviewed choice that expires
 ([ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) sets the
 checklists). **Chrome for Testing** is pinned at 157.0.8103.50, and the idle-machine throughput
-gate ADR 0031 describes has not yet been re-run on it (`docs/ROADMAP.md` books that). A re-pin
+gate ADR 0031 describes passed on it at 21.53–21.62 fps against the 20 fps macOS bar (that
+record's second note of 2026-11-12). A re-pin
 reads the version out of Google's `known-good-versions-with-downloads.json`, downloads all five
 headless-shell zips, hashes each one here rather than trusting a published digest, confirms that
 each still carries `LICENSE.headless_shell`, takes the Linux rows' `min_glibc` from the

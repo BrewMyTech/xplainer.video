@@ -173,14 +173,19 @@ function evidenceProblem(evidence, { adrText, commitExists }) {
       return `ADR ${evidence.adr} does not exist under ${ADR_DIR}/`;
     }
     const lines = text.split(/\r?\n/);
-    const note = lines.findIndex((line) => line.startsWith(`## Note, ${evidence.date}`));
-    if (note === -1) {
+    // A record can carry several notes of one date ("…, later the same day"), so every one counts.
+    const notes = lines.flatMap((line, index) =>
+      line.startsWith(`## Note, ${evidence.date}`) ? [index] : [],
+    );
+    if (notes.length === 0) {
       return `ADR ${evidence.adr} has no note dated ${evidence.date}`;
     }
     if (evidence.section !== undefined) {
-      const end = lines.findIndex((line, index) => index > note && line.startsWith("## "));
-      const body = lines.slice(note + 1, end === -1 ? undefined : end);
-      if (!body.includes(`### ${evidence.section}`)) {
+      const inNote = (note) => {
+        const end = lines.findIndex((line, index) => index > note && line.startsWith("## "));
+        return lines.slice(note + 1, end === -1 ? undefined : end);
+      };
+      if (!notes.some((note) => inNote(note).includes(`### ${evidence.section}`))) {
         return (
           `ADR ${evidence.adr}'s note of ${evidence.date} has no section ` +
           `"### ${String(evidence.section)}"`
@@ -312,7 +317,13 @@ const SAMPLE_ADR = [
   "",
   "### The page's network: allowed by default",
   "",
+  "## Note, 2026-11-12, later the same day: a measurement",
+  "",
+  "### The gate, re-run",
+  "",
   "## Note, 2026-11-13: a later one",
+  "",
+  "### A section of the next day",
 ].join("\n");
 
 const sampleEnvironment = {
@@ -417,6 +428,33 @@ const SELF_TESTS = [
           date: "2026-11-12",
           section: "The page's network: allowed by default",
           what: "the decision",
+        },
+      ]),
+    }),
+  },
+  {
+    rule: "release-blockers-closed",
+    // Every note of the date is searched, and only notes of that date: a section the next day's
+    // note carries does not close anything for an earlier date.
+    violating: sampleBlockers({
+      "chrome-157-throughput": closedBlocker("chrome-157-throughput", [
+        {
+          kind: "adr-note",
+          adr: "0031",
+          date: "2026-11-12",
+          section: "A section of the next day",
+          what: "a note",
+        },
+      ]),
+    }),
+    clean: sampleBlockers({
+      "chrome-157-throughput": closedBlocker("chrome-157-throughput", [
+        {
+          kind: "adr-note",
+          adr: "0031",
+          date: "2026-11-12",
+          section: "The gate, re-run",
+          what: "the second note of the day",
         },
       ]),
     }),

@@ -1624,8 +1624,9 @@ records its twelve decisions (D1–D12); the status of each item is as of that d
    platforms, from Google's own storage with `LICENSE.headless_shell` in every archive; the
    `remotion` provider token is `manifest` and no `remotion.media` URL remains (D3, D4). linux-arm64
    did not need a second source after all: Chrome for Testing has published it since 153.0.8001.0.
-   **Still open:** the idle-machine throughput gate re-run on 157 by the shipped worker, or D4's
-   fallback to 149 plus Playwright's linux-arm64 build.
+   The idle-machine throughput gate, re-run on 157 by the shipped worker with our FFmpeg 9.0.2,
+   cleared the 20 fps macOS bar at 21.53–21.62 fps, so D4's fallback to 149 plus Playwright's
+   linux-arm64 build is not taken (ADR 0031's second note of 2026-11-12).
 4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner, and the Linux
    container's 12 fps gate re-run on the shipped worker. **Open.**
 5. **From the final design review (ADR 0031, Follow-up 8):** the page's network is **decided** —

@@ -93,7 +93,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
 | [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
-| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted — note 2026-11-12 |
+| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted — dated notes, latest 2026-11-12 |
 
 ### The relocated five, and why each could not stay
 
@@ -263,6 +263,14 @@ installs Remotion any more, so the four READMEs that still carried the disclosur
 copies drop it; item 2 has no object, the "binding **today**" paragraph is history, item 1 is
 untouched, and what a user is told now is about the FFmpeg `setup` acquires, in `NOTICE`,
 `docs/third-party-components.md` and the root `README.md`.
+
+**ADR 0031 then gained a second note of its own, later the same day**, recording the Phase 2 plan's
+step 11 and one correction. The idle-machine throughput gate, re-run by the shipped worker on Chrome
+for Testing 157.0.8103.50 and our FFmpeg 9.0.2, cleared the 20 fps macOS bar in all six runs
+(21.53–21.62 fps, load 1.51–2.60), so D4 stands and its fallback is not taken — with a margin of
+7.6 % at the slowest, thinner than the 8–12 % measured on 149. And D9's "allows exactly" list is
+amended to the allowlist `scripts/check-no-remotion.mjs` was committed with, which is wider; the
+note names each addition and why.
 
 ## Licence
 

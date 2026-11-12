@@ -838,3 +838,107 @@ The licence position under §Decision Outcome; counsel's questions, which stay o
 condition, which D8 turns into a gate without changing what it requires; the patent decision before
 the first macOS release; Follow-ups 3, 6 and 7; and Follow-up 5's "win32-arm64 has an FFmpeg pin and
 no Chrome row, so it cannot render", which Chrome for Testing 157 does not change.
+
+## Note, 2026-11-12, later the same day: the throughput gate on Chrome 157, and the grep gate as committed
+
+Added as a dated note: nothing above is edited, including the note before this one. It records two
+things that note left to be measured or written: the throughput gate re-run on the browser D4 pins,
+which D4 says "is recorded in a later dated note — or D4's fallback is taken", and the allowlist
+D9's gate was committed with, which is not the list D9 wrote down.
+
+### Chrome for Testing 157 clears the 20 fps gate
+
+**Method — unchanged** from §The idle-machine throughput gate: `apps/cli/spikes/p1-render-fps.mjs`
+spawns the built `dist/workers/render.js` as `daemon/workers.ts` does, on the same animated stress
+scene — 491 frames, four segments, a 220 Hz tone — and reports per run the loop fps (first progress
+line to the `done` line: capture plus encode, the quantity P0-6 bounds), the total fps from spawn to
+exit, and the one-minute load average before and after. It exits `1` when any run's loop fps is
+under 20. Only where the browser and the encoder come from has changed: the script now takes them
+from a `toolchain.json` written by `xplainer setup`, because the `PATH` and Homebrew lookups the
+Phase 1 runs relied on are gone (D6). Here that marker came from
+`setup --manifest apps/cli/src/setup/toolchain.manifest.json` — the committed format-2 manifest,
+never the network one — into a scratch state directory, and records both components with provider
+`manifest`; and, as the plan's AC-A12 requires, **`XPLAINER_FFMPEG` was set explicitly** to the same
+ffmpeg, which the worker's first line names as its source on every run.
+
+**Toolchain and machine.** Chrome for Testing **157.0.8103.50** (`chrome-headless-shell-mac-arm64`,
+archive sha256 `082e3fe8…63ed`; `--version` prints `Google Chrome for Testing 157.0.8103.50`); our
+FFmpeg **9.0.2** for darwin-arm64 (archive `543246c6…8071`, binary `0a8b6c74…d3c6`, re-hashed on
+disk before the runs, libavcodec 63.1.102, `GPL-2.0-or-later`); the render worker as Phase 2's plan
+steps 1–10b leave it; Node 24.20.0. The machine is the one every number in this record comes from:
+macOS 27.0 (26A428) on the Apple M5 Pro, 6 performance and 12 efficiency cores, 18 logical CPUs,
+64 GB. The command, with `<state>` the scratch state directory:
+
+```
+XPLAINER_FFMPEG=<state>/toolchain/ffmpeg-9.0.2-543246c663ec/ffmpeg \
+  node apps/cli/spikes/p1-render-fps.mjs --marker <state>/toolchain.json             # three runs
+XPLAINER_FFMPEG=<same> node apps/cli/spikes/p1-render-fps.mjs --marker <same> --runs 1   # three times
+```
+
+**Result, 2026-11-12, 06:09–06:12 UTC.** The first line is the method above as it was run for
+Phase 1, one invocation of three runs; the second is three separate invocations of one run each,
+with `uptime` read before every one. **The machine was not idle**: other sessions held the
+one-minute load average between 1.51 and 2.60 (five- and fifteen-minute averages 2.22–2.44), and
+every number is the script's own output.
+
+| Harness | Scene | Runs | Loop fps | Total fps | Load before → after | Verdict |
+|---|---|---|---|---|---|---|
+| Phase 2, Chrome for Testing 157.0.8103.50, our FFmpeg 9.0.2 | animated | 3 | **21.53–21.62** | 20.42–20.60 | 1.51 → 1.71 | **pass** |
+| the same, three invocations of `--runs 1` | animated | 3 | **21.56–21.58** | 20.54–20.59 | 1.70 → 2.60 | **pass** |
+
+Run by run, loop / total fps and load: 21.62 / 20.42 (1.51 → 2.42), 21.60 / 20.60 (2.42 → 2.11),
+21.53 / 20.53 (2.11 → 1.71); then 21.58 / 20.59 (1.70 → 2.09), 21.56 / 20.55 (2.09 → 2.54),
+21.56 / 20.54 (2.54 → 2.60). The median of the six is 21.57 fps and the slowest is 21.53. The MP4
+was **1,363,076 bytes in all six**; its digest was not taken. It is not the 1,991,045 bytes above,
+and is not expected to be: both the browser and the encoder changed, and determinism is promised
+per host and per toolchain (§Consequences).
+
+**Verdict: pass. D4 stands and its fallback is not taken.** The release blocker
+`chrome-157-throughput` in `docs/release-blockers.json` is closed with this section as its
+evidence.
+
+**The margin is thinner than on 149.** The slowest run is 7.6 % over the bar, where the last
+Phase 1 row (`4922e6d`, 22.24–22.38 fps) was 11–12 %: about 3 % slower, at a lower load. Two
+things moved at once — the browser, 149.0.7790.0 → 157.0.8103.50, and the encoder, Homebrew's
+8.1.1 → our static 9.0.2 — and these runs do not separate them. §The idle-machine throughput gate's
+"**The margin is 8–12 %, and it is this machine's.**" stands as a measurement of 149 with Homebrew's
+encoder; on the pinned toolchain the figure is 7.6–8.1 %, and the rest of that paragraph is
+unchanged: no run at a load average under 1, no host with 4 to 8 cores, no Intel Mac, and the Linux
+container's 12 fps bar still unrun — that one stays open as its own release blocker,
+`linux-12fps-run`.
+
+### The grep gate's allowlist is wider than D9's list
+
+D9 says the gate "allows exactly" a list: `LEGACY_IMPORT_ALIASES` in `render/bundle.ts` and its
+test, `SKILL.md`'s migration paragraph, `AC-14f` and the places that describe it, a pronunciation
+entry in `lexicon.txt`, `docs/adr/`, `docs/ROADMAP.md`, the changelogs, `.changeset/` and the
+checker. **This note amends that sentence**: the list `scripts/check-no-remotion.mjs` was committed
+with is wider, and the script — where every entry carries its reason and is held to the lines it was
+written for — is the authority. What it admits beyond D9's list, and why:
+
+- **`apps/cli/src/setup/previous-renderer.ts`, `LAST_TEMPLATE`'s pins only** — the lines naming the
+  old template's packages at `4.0.495`. D7 deletes an older `setup --workspace`'s tree only when its
+  `package.json` names and pins equal the last template's, so the recogniser has to carry them
+  verbatim; nothing else in that file is admitted.
+- **`lexicon.txt`'s header line** that lists the words CMUdict lacks, beside the pronunciation entry
+  D9 named: it is why that entry exists.
+- **Three criteria in `docs/acceptance-criteria.md`, quoted as written** — AC-7's quoted text and
+  row 7a with its amendment of 2026-11-11, and AC-11's quoted text — each scoped by its heading, so
+  a new line in those sections is still a hit. They are retired by the dated notes beneath them
+  (7a by the note of 2026-11-12; 11a, the half of AC-11 that named it, relocated with
+  media-service), and a criterion quoted as written cannot be reworded. D9 named only that file's
+  `AC-14f` lines.
+- **`docs/media/xplainer-intro.mp4` and `docs/media/xplainer-intro/source.json`** — the intro video,
+  a recording the previous renderer made, which carries the name in its metadata, and its source,
+  whose on-screen copy names it. It is kept as it was made; its re-render is booked in
+  `docs/ROADMAP.md`, and both entries are deleted with it, which the gate enforces by failing on an
+  entry that admits nothing.
+- **Two names, exempted rather than allowlisted** — taken out of a line before it is judged, so a
+  line that still matches afterwards is a hit like any other: this record's own file name, linked
+  wherever the decision is cited, and the checker's, as a file (`check-no-remotion`) and as the
+  root script (`check:no-remotion`), wherever either is wired in or described. D9 admitted the
+  checker as a file; these admit its name and this record's elsewhere.
+
+One item of D9's list is **narrower** as committed: `render/bundle.ts`'s test has no entry, because
+it reads the legacy names out of `LEGACY_IMPORT_ALIASES` rather than spelling them, and the entry
+for `bundle.ts` admits only the alias table's lines.
