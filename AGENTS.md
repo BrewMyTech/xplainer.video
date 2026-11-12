@@ -119,59 +119,70 @@ to `minimumReleaseAgeExclude`. Keep the protocol, and publish with pnpm.
 
 So a release is published from a **one-off isolated install**, which supplies the per-consumer
 links the rewriter needs and leaves the committed configuration alone — `hoisted` exists for
-packaging the desktop app, which is not involved in publishing:
+packaging the desktop app, which is not involved in publishing. `pnpm release:publish` makes that
+install itself, in a throwaway worktree, so the clone you run it from keeps its own layout:
 
 ```bash
 pnpm changeset version          # consumes .changeset/ into CHANGELOGs, bumps versions
 TURBO_FORCE=true pnpm verify    # the gate, on the versioned tree
-git commit && git push          # the repository records what is about to ship, first
+git commit && git push          # and merge: only a commit on origin/main is published
 
-pnpm install --config.nodeLinker=isolated     # ONLY for the publish; do not commit a lockfile from it
-pnpm release:publish                          # add --otp <code> for a classic authenticator
-find . -name node_modules -type d -prune -exec rm -rf {} +
-pnpm install --frozen-lockfile                # restore the committed hoisted layout
+pnpm release:publish            # add --otp <code> for a classic authenticator
 ```
 
-The restore deletes first because pnpm never prunes the other linker's files: after the isolated
-install, a plain `pnpm install`, and `pnpm install --force` too, reports the tree hoisted and leaves
-every member's isolated `node_modules` in place (measured with pnpm 11.25.0, 2026-11-12) — which is
-the symlinked tree `hoisted` exists to keep away from electron-builder.
-
-`pnpm release:publish` first refuses a tree that is not the commit: anything `git status` reports
-under `apps/`, `packages/`, `services/`, the root `LICENSE` and `NOTICE` or `pnpm-workspace.yaml`;
-any gitignored file under a published member's `src/` or its other non-`dist` `files` roots,
-which `git status` never shows and the build and `npm pack` both take (`out/`, `release/` and
-`dist/` are ignored at any depth); and a HEAD that is not on `origin/main`. It checks again just
-before publishing, so a build or a pack that changed the tree publishes nothing. It runs the release
+`pnpm release:publish` never builds or packs in your clone. It refuses a HEAD that is not on
+`origin/main`, reports (and leaves alone) anything uncommitted, and makes a
+`git worktree add --detach` of HEAD in the temporary directory. In that worktree it runs the release
 check — `scripts/check-release-ready.mjs`: no `package.json` in the render template and no trace
 of the previous renderer under it, every render platform's browser and ffmpeg row `recorded`,
-every entry of `docs/release-blockers.json` closed with its evidence. It deletes every published
-member's `dist/`, builds with `TURBO_FORCE=true pnpm turbo build`, never a cache hit, and runs
-`check-publish-contract` on that fresh output. Then it requires the manifest served at
+every entry of `docs/release-blockers.json` closed with its evidence — then
+`pnpm install --frozen-lockfile --config.nodeLinker=isolated`, `TURBO_FORCE=true pnpm turbo build`
+with turbo's caches off (a linked worktree shares the clone's) and `check-publish-contract`. Every
+pnpm call there carries `pnpm_config_verify_deps_before_run=false`, because otherwise pnpm sees the
+isolated layout disagree with the committed `hoisted` before `pnpm turbo` runs and re-installs
+hoisted in the middle of the release. It requires the manifest served at
 `https://cdn.xplainer.video/toolchain/v2/manifest.json` to be byte-identical to the committed
 `apps/cli/src/setup/toolchain.manifest.json`, and only then runs
-`pnpm publish -r --no-git-checks --access public` with your arguments appended (ADR 0031's note of
-2026-11-12, D8). The check is also every published member's `prepublishOnly`, which
-`check-publish-contract` requires, so a bare `pnpm publish -r` is refused by it too. That hook is
+`pnpm publish -r --no-git-checks --access public` there with your arguments appended (ADR 0031's
+note of 2026-11-12, D8). The worktree is removed afterwards, on every path, Ctrl-C included. The
+check is also every published member's `prepublishOnly`, which `check-publish-contract` requires,
+so a bare `pnpm publish -r` is refused by it too. That hook is
 `check-release-ready.mjs --prepublish`, because pnpm also runs this workspace's `prepublishOnly`
-hooks on **install** (with `npm_command=install`), and the bare check refused every fresh
-`pnpm install` while a blocker was open; with the flag it stands aside for every command that is
-not a publish, and **refuses** a publish that `pnpm release:publish` did not start: the wrapper sets
-`XPLAINER_RELEASE_PUBLISH=1` for the one it runs, and nothing else does. The manifest
-compare is not in the hook, because pnpm publishes one package at a time and a CDN failing between
-two of them would leave half a release on the registry.
+hooks on **install** (with
+`npm_command=install`), and the bare check refused every fresh `pnpm install` while a blocker was
+open; with the flag it stands aside for every command that is not a publish, and **refuses** a
+publish that `pnpm release:publish` did not start: the wrapper sets `XPLAINER_RELEASE_PUBLISH=1`
+for the one it runs, and nothing else does. The manifest compare is not in the hook, because pnpm
+publishes one package at a time and a CDN failing between two of them would leave half a release
+on the registry.
 
-**Why it builds, and why a bare publish is refused.** `pnpm publish` packs whatever `dist/` is on
-disk and builds nothing. 0.1.0 was published on 2026-11-12 from a clone whose `dist/` predated the
-release commit, and six of its eight tarballs differed from a fresh build: `@xplainer/cli` lacked
-16 files, and `@xplainer/motion` shipped no `dist/` at all, so every import of it failed on a
-user's machine and nowhere in the workspace. 0.1.1 republishes them. A build alone would not
-have been enough: `tsc` never removes what it emitted for a deleted source, so a forced build of
-the release commit still left four orphaned files in the CLI's `dist/`, and they would have
-shipped — hence the delete. `check-publish-contract` also fails a tarball that lacks a file its
-`main`, `module`, `types`, `typings`, `bin` or `exports` names, or that declares `dist` in `files`
-and carries nothing under it. The hook stops an accident, not a determined publisher:
-`--ignore-scripts` skips it.
+**Why a fresh worktree, and why a bare publish is refused.** `pnpm publish` packs whatever `dist/`
+is on disk and builds nothing. 0.1.0 was published on 2026-11-12 from a clone whose `dist/` predated
+the release commit, and six of its eight tarballs differed from a fresh build: `@xplainer/cli`
+lacked 16 files, and `@xplainer/motion` shipped no `dist/` at all, so every import of it failed on a
+user's machine and nowhere in the workspace. Building in place is not the cure, for two measured
+reasons. `tsc` never removes what it emitted for a deleted source, so a forced build of the release
+commit still left four orphaned files in the CLI's `dist/` that would have shipped. And deleting
+`dist/` first, which fixes that, breaks the build instead: every member is injected
+(`injectWorkspacePackages`), an injected copy is made at install time and follows a rebuild only
+through the hardlinks it shares with the source — a `dist/` that did not exist at install time is
+materialised whole after the build, but a file new to an existing one never arrives (`.npmrc`) —
+and the delete severs every one. 0.1.1's first attempt did exactly that over an isolated
+install made while `dist/` still held the 0.0.11 build: the CLI compiled against an injected
+`@xplainer/protocol` with the old types, 22 errors, nothing published — and had the old types
+happened to compile, it would have published silently. A fresh checkout has no `dist/` when the
+install runs, so every copy is materialised whole from this build, the path CI has always taken,
+and nothing stale exists anywhere to be found. `check-publish-contract` also fails a tarball that
+lacks a file its `main`, `module`, `types`, `typings`, `bin` or `exports` names, or that declares
+`dist` in `files` and carries nothing under it. The hook stops an accident, not a determined
+publisher: `--ignore-scripts` skips it.
+
+**If you switch a clone's linker by hand, delete before switching back.** pnpm never prunes the
+other linker's files: after `pnpm install --config.nodeLinker=isolated`, a plain `pnpm install`,
+and `--force` too, reports the tree hoisted and leaves every member's isolated `node_modules` in
+place (measured with pnpm 11.25.0, 2026-11-12). Restore it with
+`find . -name node_modules -type d -prune -exec rm -rf {} +` and then
+`pnpm install --frozen-lockfile`.
 
 **Verify from the registry rather than from the tarball**, because the tarball is what you already
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
