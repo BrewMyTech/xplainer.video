@@ -229,16 +229,27 @@ describe("xplainer setup", () => {
   /**
    * The document that lands on disk is the one three other surfaces read, so it is asserted through
    * the reader `install/preflight.ts` uses rather than as the object this command happened to build.
+   *
+   * It starts from a **version-1** marker, which is what every machine set up before ADR 0031's cut
+   * holds: the run reads its two components, acquires the workspace without recording it, and
+   * writes version 2 with no `workspace` at all (§Note, 2026-11-12, D1).
    */
-  it("writes a marker whose validating reader accepts it, once all three are recorded", async () => {
+  it("rewrites a version-1 marker as version 2, without a workspace, keeping what it recorded", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");
     const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
-    // The browser and speech halves this suite does not download, recorded exactly as `setup`
-    // records them; the run under test then re-resolves the workspace and completes the document.
-    recordTestToolchain({ stateDir, workspaceRoot: workspace });
-    rmSync(join(workspace, WORKSPACE_MANIFEST_FILE));
+    // The browser and speech halves this suite does not download, recorded exactly as a
+    // version-1 `setup` recorded them, with the workspace beside them.
+    const recorded = recordTestToolchain({ stateDir });
+    writeFileSync(
+      toolchainMarkerPath(stateDir),
+      `${JSON.stringify({
+        ...recorded,
+        format_version: 1,
+        workspace: { platform: `${process.platform}-${process.arch}`, version: "1.0.0" },
+      })}\n`,
+    );
     const { exitCode, stdout } = await runWithEnv(
       ["setup", "--state-dir", stateDir, "--workspace"],
       {
@@ -249,10 +260,14 @@ describe("xplainer setup", () => {
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("recorded ");
+    // The workspace was still acquired; it is simply no longer part of the record.
+    expect(existsSync(join(workspace, "node_modules", "@remotion", "cli"))).toBe(true);
     const marker = readToolchainMarker(stateDir);
-    expect(marker).not.toBeNull();
-    expect(marker?.workspace.platform).toBe(`${process.platform}-${process.arch}`);
+    expect(marker?.format_version).toBe(2);
+    expect(marker?.chrome).toEqual(recorded.chrome);
+    expect(marker?.speech).toEqual(recorded.speech);
     const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Toolchain;
+    expect(onDisk).not.toHaveProperty("workspace");
     expect(onDisk.speech.provider).toBe("docker");
     expect(onDisk.chrome.provider).toBe(CHROME_PROVIDER);
   });

@@ -50,6 +50,8 @@ export type {
   TimingsSegment,
   Toolchain,
   ToolchainComponent,
+  ToolchainFfmpeg,
+  ToolchainFfmpegProbe,
   ToolchainFile,
   ToolchainWorkspace,
   VideoSummary,

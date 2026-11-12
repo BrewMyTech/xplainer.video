@@ -4,8 +4,8 @@
  * The document itself is a checked contract (`packages/protocol/schemas/toolchain.json`) and this
  * module is the only place in the CLI that writes it and the only place that judges it. Three
  * surfaces read what is written here and none of them owns it: `daemon install`'s read-only
- * preflight (`install/preflight.ts`), `daemon update`'s compatibility check, and — added by this
- * story — the daemon itself, at two points.
+ * preflight (`install/preflight.ts`, whose `parseToolchainMarker` is the one reader both use),
+ * `daemon update`'s compatibility check, and the daemon itself, at two points.
  *
  * **The gate exists because the daemon never downloads.** ADR 0005 makes acquisition a visible,
  * interruptible user step and ADR 0020 §Degraded paths makes its absence a *reported* condition
@@ -17,34 +17,32 @@
  *
  * **Two reasons, and they are different repairs.** {@link TOOLCHAIN_MISSING} is "what setup
  * recorded is not here": no marker at all, a marker that cannot be read, a recorded path that has
- * been cleaned away, a workspace with no Remotion in it. {@link TOOLCHAIN_STALE} is "what setup
- * recorded is here and is the wrong thing": a workspace resolved for another platform, or one whose
- * installed Remotion no longer matches the template this build ships. The second is exactly the
- * skew decision D2 was written for — round 3's staleness check compared only the Remotion version,
- * which is identical on both sides of the skew that made `remotion versions` exit `1` — so the
- * comparison here is over **every** pin the template declares, not over one package.
+ * been cleaned away, an `ffmpeg` a caller requires and the marker does not record.
+ * {@link TOOLCHAIN_STALE} is "what setup recorded is here and is the wrong thing": a marker from a
+ * newer build, an `ffmpeg` whose size is no longer the size `setup` recorded, or one whose
+ * libavcodec is below the floor this build encodes with.
  *
- * **The workspace is checked from its own manifest, never re-hashed.** `runtime verify --workspace`
- * re-hashes a payload and refuses anything the manifest does not describe, which is right for an
- * artefact and wrong for a live workspace: `videos/`, `public/` and `out/` are files the manifest
- * has never described and never should. So this gate reads `workspace.manifest.json` and compares
- * its recorded resolution against the template's pins, and leaves re-hashing to the command whose
- * subject is the payload.
+ * **Both shapes either side of ADR 0031's cut are read, and judged the same way** (§Note,
+ * 2026-11-12, D1). A version-1 marker records a workspace and no `ffmpeg`, a version-2 marker the
+ * reverse; the workspace is not judged at all, because no render reads it. Whether a missing
+ * `ffmpeg` stops anything is the **caller's** question, through {@link ToolchainCheck.requireFfmpeg}:
+ * the schema leaves the component optional, and what a job needs is decided at the gate (D12).
+ *
+ * **Every check here is a `stat` or a read, never a hash and never a spawn.** `/healthz` asks it on
+ * every request, so a replaced binary is caught by its size and not by re-hashing a hundred
+ * megabytes, and a recorded libavcodec is compared without running the executable it describes.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import process from "node:process";
-import type { Toolchain, ToolchainComponent, ToolchainFile } from "@xplainer/protocol";
+import type { Toolchain, ToolchainComponent, ToolchainFfmpeg } from "@xplainer/protocol";
 import { writeJsonDurably } from "../daemon/durable-write.js";
 import {
   componentPaths,
+  parseToolchainMarker,
   TOOLCHAIN_FORMAT_VERSION,
   toolchainMarkerPath,
 } from "../install/preflight.js";
-import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
-import { readTemplatePins } from "../runtime/verify.js";
-import { readWorkspaceResolution } from "./providers/workspace.js";
 
 export { componentPaths, TOOLCHAIN_FORMAT_VERSION, toolchainMarkerPath };
 
@@ -53,6 +51,16 @@ export const TOOLCHAIN_MISSING = "toolchain_missing";
 
 /** The `reason` `/healthz` reports when what is on this machine is no longer the right thing. */
 export const TOOLCHAIN_STALE = "toolchain_stale";
+
+/**
+ * The oldest libavcodec major this build encodes with: FFmpeg 6.0.
+ *
+ * A code constant and not a manifest field, because it is a fact about the argv this build hands
+ * the encoder rather than about any artefact. A runtime records it in its own manifest's
+ * `toolchain` block so that `daemon update` can judge a marker against the runtime it would
+ * install rather than against the one doing the asking.
+ */
+export const FFMPEG_MIN_LIBAVCODEC = 60;
 
 /** One of the two conditions this gate distinguishes. */
 export type ToolchainReason = typeof TOOLCHAIN_MISSING | typeof TOOLCHAIN_STALE;
@@ -68,21 +76,37 @@ export type ToolchainStatus =
   | { ok: true; reason: null; marker: Toolchain; detail: null }
   | { ok: false; reason: ToolchainReason; marker: Toolchain | null; detail: string };
 
-/** Where the gate looks. Both paths are resolved by the caller, never by this module. */
+/** Where the gate looks, and what the caller needs of it. */
 export type ToolchainCheck = {
   /** The daemon's state directory — `<state>/toolchain.json` is the marker. */
   stateDir: string;
-  /** The shared Remotion workspace root, as `workspace-root.ts` resolved it. */
-  workspaceRoot: string;
+  /**
+   * Whether a marker that records no `ffmpeg` is incomplete for this caller.
+   *
+   * `false` by default, which judges exactly what the gate judged before FFmpeg was a component: a
+   * still encodes nothing, and a marker written before FFmpeg was acquired is a valid document. An
+   * `ffmpeg` the marker *does* record is always checked, whatever this says — a recorded component
+   * that is gone or replaced is never "ready". The callers that pass `true` are the ones for which
+   * the encoder is the point: a render job (ADR 0031 §Note, 2026-11-12, D12), and `daemon update`
+   * judging the marker against an incoming runtime that declares a libavcodec floor (D2).
+   */
+  requireFfmpeg?: boolean | undefined;
+  /**
+   * The libavcodec major a recorded `ffmpeg` must reach. Defaults to {@link FFMPEG_MIN_LIBAVCODEC};
+   * `daemon update` passes the incoming runtime's own, which is the floor that runtime encodes with.
+   */
+  ffmpegMinLibavcodec?: number | undefined;
 };
 
 /**
  * Read `<state>/toolchain.json`, or `null` where there is no readable marker.
  *
  * Shape is validated rather than cast, because this is data arriving from disk and the file being
- * a `.json` says nothing about what is in it. A marker written by a **newer** build is returned
- * rather than refused: its `format_version` is reported by the gate, which is the rollback signal
- * the schema asks for and not corruption.
+ * a `.json` says nothing about what is in it — by `install/preflight.ts`'s `parseToolchainMarker`,
+ * so the install preflight and this gate read one document one way. Either side of the cut is
+ * accepted: a version-1 marker comes back without its `workspace`, which nothing reads. A marker
+ * written by a **newer** build is returned rather than refused: its `format_version` is reported by
+ * the gate, which is the rollback signal the schema asks for and not corruption.
  */
 export function readToolchainMarker(stateDir: string): Toolchain | null {
   let parsed: unknown;
@@ -91,103 +115,7 @@ export function readToolchainMarker(stateDir: string): Toolchain | null {
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return null;
-  }
-  const document = parsed as Record<string, unknown>;
-  const chrome = asComponent(document.chrome);
-  const speech = asComponent(document.speech);
-  const workspace = asWorkspace(document.workspace);
-  if (
-    typeof document.format_version !== "number" ||
-    typeof document.created_at !== "string" ||
-    chrome === null ||
-    speech === null ||
-    workspace === null
-  ) {
-    return null;
-  }
-  return {
-    format_version: document.format_version,
-    created_at: document.created_at,
-    chrome,
-    speech,
-    workspace,
-  };
-}
-
-function asComponent(value: unknown): ToolchainComponent | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const entry = value as Record<string, unknown>;
-  const fields = ["version", "path", "sha256", "provider"] as const;
-  for (const field of fields) {
-    if (typeof entry[field] !== "string" || entry[field] === "") {
-      return null;
-    }
-  }
-  const files = asFiles(entry.files);
-  if (files === undefined) {
-    return null;
-  }
-  return {
-    version: entry.version as string,
-    path: entry.path as string,
-    sha256: entry.sha256 as string,
-    provider: entry.provider as string,
-    ...files,
-  };
-}
-
-/**
- * The optional `files` array, or `undefined` for a document this build will not accept.
- *
- * Three answers rather than two, and the distinction is the reason this is a separate function:
- * **absent** is valid — every route that acquires one artefact records no `files` at all — while
- * **present and malformed** is not, because a reader that dropped a field it could not parse would
- * turn a corrupt marker into a marker recording fewer files than the component really has, and the
- * existence check downstream would then pass over what is missing. So `{}` means "there was none",
- * `{ files }` means "here it is", and `undefined` means "reject the whole document".
- */
-function asFiles(value: unknown): { files?: ToolchainFile[] } | undefined {
-  if (value === undefined) {
-    return {};
-  }
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const files: ToolchainFile[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      return undefined;
-    }
-    const raw = entry as Record<string, unknown>;
-    if (
-      typeof raw.path !== "string" ||
-      raw.path === "" ||
-      typeof raw.sha256 !== "string" ||
-      typeof raw.bytes !== "number"
-    ) {
-      return undefined;
-    }
-    files.push({ path: raw.path, sha256: raw.sha256, bytes: raw.bytes });
-  }
-  return { files };
-}
-
-function asWorkspace(value: unknown): Toolchain["workspace"] | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const entry = value as Record<string, unknown>;
-  if (typeof entry.platform !== "string" || typeof entry.version !== "string") {
-    return null;
-  }
-  if (entry.platform === "" || entry.version === "") {
-    return null;
-  }
-  return { platform: entry.platform, version: entry.version };
+  return parseToolchainMarker(parsed);
 }
 
 /**
@@ -204,18 +132,18 @@ export function writeToolchainMarker(stateDir: string, marker: Toolchain): strin
   return path;
 }
 
-/** `<platform>-<arch>` in Node's own spelling, which is how the marker records a workspace. */
+/** `<platform>-<arch>` in Node's own spelling, which is how `setup` reports this machine. */
 export function hostPlatformKey(): string {
   return `${process.platform}-${process.arch}`;
 }
 
 /**
- * Judge this machine's toolchain: the marker, the two recorded paths, and the workspace.
+ * Judge this machine's toolchain: the marker, every path it records, and the FFmpeg it records.
  *
- * The order is the order the repairs are in. A missing marker is `xplainer setup`; a marker whose
- * paths are gone is the same command; a workspace with no Remotion is `xplainer setup --workspace`;
- * a workspace that is the wrong one is that command too, and the message says which pin disagrees
- * so the user is not left to diff two trees.
+ * The order is the order the repairs are in, and every one of them is `xplainer setup`: a missing
+ * marker, a marker whose paths are gone, an FFmpeg that has been replaced or is too old, and — for
+ * a caller that requires one — an FFmpeg the marker does not record at all. The sentence says which
+ * so the user is not left to diff a file against a directory.
  */
 export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
   const markerPath = toolchainMarkerPath(check.stateDir);
@@ -244,9 +172,10 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     };
   }
 
-  const recorded: readonly (readonly [string, ToolchainComponent])[] = [
+  const recorded: readonly (readonly [string, ToolchainComponent | ToolchainFfmpeg])[] = [
     ["chrome", marker.chrome],
     ["speech", marker.speech],
+    ...(marker.ffmpeg === undefined ? [] : [["ffmpeg", marker.ffmpeg] as const]),
   ];
   // Every recorded path, not only `path`. A component made of several files — the ONNX speech
   // route's model, voice and platform runtime — records them all in `files`, and checking only the
@@ -269,83 +198,47 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     };
   }
 
-  return checkWorkspace(check.workspaceRoot, marker);
-}
-
-/** The workspace half: installed at all, resolved for this machine, and still the template's tree. */
-function checkWorkspace(workspaceRoot: string, marker: Toolchain): ToolchainStatus {
-  const manifestFile = join(workspaceRoot, WORKSPACE_MANIFEST_FILE);
-  const resolution = readWorkspaceResolution(workspaceRoot);
-  if (resolution === null) {
+  if (marker.ffmpeg !== undefined) {
+    const stale = staleFfmpeg(marker.ffmpeg, check.ffmpegMinLibavcodec ?? FFMPEG_MIN_LIBAVCODEC);
+    if (stale !== null) {
+      return { ok: false, reason: TOOLCHAIN_STALE, marker, detail: stale };
+    }
+  } else if (check.requireFfmpeg === true) {
     return {
       ok: false,
       reason: TOOLCHAIN_MISSING,
       marker,
       detail:
-        `the Remotion workspace at ${workspaceRoot} has no ${WORKSPACE_MANIFEST_FILE} beside an ` +
-        "installed tree, so there is nothing to render with. Run `xplainer setup --workspace`.",
-    };
-  }
-  if (resolution.platform !== hostPlatformKey()) {
-    return {
-      ok: false,
-      reason: TOOLCHAIN_STALE,
-      marker,
-      detail:
-        `${manifestFile} records a workspace resolved for ${resolution.platform} and this machine ` +
-        `is ${hostPlatformKey()}. @remotion/compositor-<platform> is a platform-specific optional ` +
-        "dependency, so that tree cannot render here. Run `xplainer setup --workspace`.",
-    };
-  }
-  if (marker.workspace.platform !== resolution.platform) {
-    return {
-      ok: false,
-      reason: TOOLCHAIN_STALE,
-      marker,
-      detail:
-        `the marker records a ${marker.workspace.platform} workspace and ${manifestFile} records ` +
-        `a ${resolution.platform} one. The two describe the same directory and disagree about ` +
-        "what is in it. Run `xplainer setup --workspace`.",
-    };
-  }
-
-  // The manifest's `pins` and not its `resolved`: `pins` is what this workspace was resolved
-  // **for**, and a daemon update that changes a template pin changes what this build wants while
-  // leaving what is on disk exactly as it was. Comparing the tree instead would re-ask a question
-  // `setup` already answered strictly at acquisition (`assertPinsSatisfied`) and would say nothing
-  // about the skew this gate exists to catch. Every pin, never only Remotion's — that narrowing is
-  // what made round 3's check blind to the `zod` skew `remotion versions` exits 1 on (D2).
-  const skew = firstPinSkew(resolution.pins, readTemplatePins());
-  if (skew !== null) {
-    return {
-      ok: false,
-      reason: TOOLCHAIN_STALE,
-      marker,
-      detail:
-        `the workspace at ${workspaceRoot} was resolved for ${skew.name} ${skew.found} and this ` +
-        `build's template pins ${skew.expected}. Remotion polices its own tree — ` +
-        "`remotion versions` exits 1 on a skew like this one — so the render would fail after the " +
-        "job had started. Run `xplainer setup --workspace`.",
+        `${markerPath} records no ffmpeg. Every render pipes its frames to an ffmpeg process and ` +
+        "there is no built-in encoder to fall back on, and a marker written before ffmpeg was " +
+        "acquired says nothing about one. Run `xplainer setup`.",
     };
   }
 
   return { ok: true, reason: null, marker, detail: null };
 }
 
-/** The first pin the installed tree disagrees with, in name order, or `null` when none does. */
-export function firstPinSkew(
-  resolved: Readonly<Record<string, string>>,
-  pins: Readonly<Record<string, string>>,
-): { name: string; expected: string; found: string } | null {
-  for (const name of Object.keys(pins).sort()) {
-    const expected = pins[name] as string;
-    const found = resolved[name];
-    if (found === undefined) {
-      return { name, expected, found: "nothing" };
-    }
-    if (found !== expected) {
-      return { name, expected, found };
-    }
+/**
+ * Why a recorded FFmpeg is not the one `setup` recorded, or not one this build encodes with — or
+ * `null` when it is both. Two reads and no execution, because `/healthz` asks on every request.
+ */
+function staleFfmpeg(ffmpeg: ToolchainFfmpeg, floor: number): string | null {
+  const [binary] = ffmpeg.files;
+  const size = statSync(binary.path).size;
+  if (size !== binary.bytes) {
+    return (
+      `the ffmpeg at ${binary.path} is ${String(size)} bytes and setup recorded ` +
+      `${String(binary.bytes)}: it has been replaced since setup checked it. Run ` +
+      "`xplainer setup`."
+    );
+  }
+  const major = Number(ffmpeg.libavcodec.split(".")[0]);
+  if (major < floor) {
+    return (
+      `the ffmpeg at ${ffmpeg.path} is ${ffmpeg.version} (libavcodec ${ffmpeg.libavcodec}) and ` +
+      `this build needs libavcodec ${String(floor)} or newer, which is FFmpeg 6.0. Run ` +
+      "`xplainer setup`."
+    );
   }
   return null;
 }

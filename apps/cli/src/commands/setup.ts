@@ -13,6 +13,13 @@
  * the selection, the printed report and the marker; every decision about *how* a component is
  * acquired lives with that component.
  *
+ * **The workspace is acquired and no longer recorded.** The marker is `format_version` 2 since
+ * ADR 0031's cut (§Note, 2026-11-12, D1): `chrome`, `speech` and an optional `ffmpeg`, and no
+ * `workspace`, because no render reads that workspace and no gate judges it. The provider still runs
+ * where it is selected — it is removed with payload 2 itself, in a step of its own — so a run that
+ * acquires it changes the tree on disk and leaves `toolchain.json` exactly as the other two
+ * components decide.
+ *
  * **Selection is a union, and that is what makes both spellings mean what they say.** Positive
  * flags name components to acquire; `--skip-*` flags name components to leave out of the default
  * run; giving both asks for the union of the two:
@@ -37,11 +44,12 @@
  * how a user asks for that switch, and `--speech docker` is how a machine or a proof pins the
  * container route on a host where `onnx` would otherwise win.
  *
- * **A partial run is a success that says what is still missing.** `toolchain.json` records all
- * three components or it is not a valid document, so a run that acquired one of them merges into
+ * **A partial run is a success that says what is still missing.** `toolchain.json` records the
+ * browser and speech or it is not a valid document, so a run that acquired one of them merges into
  * whatever the last run recorded and, where the result is still incomplete, exits `0` naming the
  * components a full `setup` would still fetch. Refusing a partial run would make `--workspace`
- * unusable on exactly the machine it exists for.
+ * unusable on exactly the machine it exists for. A version-1 marker the last run left is read as
+ * the two components it records and rewritten as version 2 by the next run that writes at all.
  *
  * **The exit codes are the table's** (`docs/ARCHITECTURE.md` §6): `1` for commander's usage errors,
  * `3` for a precondition unmet with nothing written — no reachable manifest, no reviewed digest for
@@ -74,11 +82,7 @@ import {
   PINNABLE_SPEECH_ROUTES,
   SpeechRefusal,
 } from "../setup/providers/speech.js";
-import {
-  materialiseRenderWorkspace,
-  templateVersion,
-  WorkspaceRefusal,
-} from "../setup/providers/workspace.js";
+import { materialiseRenderWorkspace, WorkspaceRefusal } from "../setup/providers/workspace.js";
 import { loadToolchainManifest, ManifestUnreachable } from "../setup/source.js";
 import { offerStar } from "../setup/star.js";
 import {
@@ -201,7 +205,6 @@ export function createSetupCommand(io: CliIo): Command {
       const previous = readToolchainMarker(stateDir);
       let chrome: ToolchainComponent | null = previous?.chrome ?? null;
       let speech: ToolchainComponent | null = previous?.speech ?? null;
-      let workspace: Toolchain["workspace"] | null = previous?.workspace ?? null;
 
       try {
         const needsManifest =
@@ -253,7 +256,6 @@ export function createSetupCommand(io: CliIo): Command {
 
         if (components.includes("workspace")) {
           const materialised = materialiseRenderWorkspace({ workspaceRoot, log });
-          workspace = { platform: materialised.resolution.platform, version: templateVersion() };
           log(`workspace: ${materialised.remotionShim}`);
         }
       } catch (error) {
@@ -275,11 +277,10 @@ export function createSetupCommand(io: CliIo): Command {
         log(`pronunciations you can edit: ${lexicon.path}`);
       }
 
-      if (chrome === null || speech === null || workspace === null) {
+      if (chrome === null || speech === null) {
         const missing = [
           chrome === null ? "browser" : null,
           speech === null ? "speech" : null,
-          workspace === null ? "workspace" : null,
         ].filter((name): name is string => name !== null);
         log(
           `nothing was recorded in toolchain.json yet: ${missing.join(", ")} ` +
@@ -288,12 +289,15 @@ export function createSetupCommand(io: CliIo): Command {
         return;
       }
 
+      // `ffmpeg` is carried over from what the last run recorded rather than dropped, since this
+      // run acquired none: a rewrite that lost a recorded component would turn a complete toolchain
+      // into an incomplete one behind its owner's back.
       const marker: Toolchain = {
         format_version: TOOLCHAIN_FORMAT_VERSION,
         created_at: new Date().toISOString(),
         chrome,
         speech,
-        workspace,
+        ...(previous?.ffmpeg === undefined ? {} : { ffmpeg: previous.ffmpeg }),
       };
       log(`recorded ${writeToolchainMarker(stateDir, marker)}`);
       log(`platform ${hostPlatformKey()}`);

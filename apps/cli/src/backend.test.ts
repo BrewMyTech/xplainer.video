@@ -29,8 +29,7 @@ import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import { readJobRequest } from "./job-request.js";
-import { WORKSPACE_MANIFEST_FILE } from "./runtime/manifest.js";
-import { recordTestToolchain, writeTestWorkspaceManifest } from "./setup/testing/toolchain.js";
+import { recordTestToolchain } from "./setup/testing/toolchain.js";
 
 /** `packages/protocol/schemas/`, from this file rather than from a hard-coded depth. */
 const SCHEMAS = fileURLToPath(new URL("../../../packages/protocol/schemas/", import.meta.url));
@@ -77,14 +76,14 @@ afterEach(async () => {
 });
 
 /**
- * A machine where `xplainer setup` has run: the marker, and the workspace manifest it describes.
+ * A machine where `xplainer setup` has run: the marker, and the files it records.
  *
  * Because the two render tools ask the same question the worker factory asks a moment later — a
  * tool call that succeeded and a job that then failed on the toolchain is exactly the outcome an
  * agent holding a `job_id` cannot act on.
  */
 function pretendInstalled(): void {
-  recordTestToolchain({ stateDir, workspaceRoot: root });
+  recordTestToolchain({ stateDir });
 }
 
 /** A narrated video, without running a narration: what `still` and `render` require on disk. */
@@ -328,28 +327,16 @@ describe("explainer_still and explainer_render", () => {
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/timings\.json/);
   });
 
-  it("refuse a workspace whose dependencies were never installed", async () => {
-    await backend.explainer_create({ slug: "demo" });
-    pretendNarrated("demo");
-    recordTestToolchain({ stateDir, workspaceRoot: root });
-    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
-
-    await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
-      /xplainer setup --workspace/,
-    );
-  });
-
   /**
    * The gate the tool call and the worker factory now share.
    *
-   * An installed workspace is not the whole answer: the browser every frame is drawn with comes
-   * from `xplainer setup` and nothing else on this machine records that it is here, so a machine
-   * with a workspace and no marker has to be refused at the call rather than inside a job.
+   * The browser every frame is drawn with comes from `xplainer setup` and nothing else on this
+   * machine records that it is here, so a machine with no marker has to be refused at the call
+   * rather than inside a job.
    */
-  it("refuse a machine where setup has never run, even with a workspace installed", async () => {
+  it("refuse a machine where setup has never run", async () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");
-    writeTestWorkspaceManifest({ stateDir, workspaceRoot: root });
 
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
     await expect(backend.explainer_still({ slug: "demo" })).rejects.toThrow(/xplainer setup/);

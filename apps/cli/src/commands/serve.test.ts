@@ -70,7 +70,6 @@ import { createProgram } from "../program.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { DRAIN_PATH } from "../server.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
-import { VIDEOS_DIR_ENV, WORKSPACE_DIR_NAME } from "../workspace-root.js";
 import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
@@ -149,10 +148,7 @@ async function serveUntilReady(
   stateDir: string,
   env: Record<string, string> = {},
 ): Promise<{ child: SpawnedChild; ready: ReadyAnnouncement; token: string }> {
-  recordTestToolchain({
-    stateDir,
-    workspaceRoot: env[VIDEOS_DIR_ENV] ?? join(stateDir, WORKSPACE_DIR_NAME),
-  });
+  recordTestToolchain({ stateDir });
   const child = run(entry, ["--port", "0"], { XPLAINER_STATE_DIR: stateDir, ...env });
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   const token = readFileSync(env[TOKEN_FILE_ENV] ?? join(stateDir, TOKEN_FILE), "utf8").trim();
@@ -874,7 +870,7 @@ describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () =>
     // R-SEC-9 lets guard a remote listener.
     const token = randomBytes(32).toString("base64url");
     writeFileSync(join(stateDir, TOKEN_FILE), `${token}\n`, { mode: 0o600 });
-    recordTestToolchain({ stateDir, workspaceRoot: join(stateDir, WORKSPACE_DIR_NAME) });
+    recordTestToolchain({ stateDir });
 
     const child = run(
       CHILD_SERVE,

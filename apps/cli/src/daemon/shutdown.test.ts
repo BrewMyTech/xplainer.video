@@ -324,7 +324,6 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
       const chrome = await testChrome();
       recordTestToolchain({
         stateDir,
-        workspaceRoot: root,
         overrides: {
           chrome: {
             version: chrome.version,

@@ -21,8 +21,7 @@ import process from "node:process";
 import { readScaffoldTemplate, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readJobRequest, writeJobRequest } from "../job-request.js";
-import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
-import { recordTestToolchain, writeTestWorkspaceManifest } from "../setup/testing/toolchain.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import { makeJobRecord } from "./testing/records.js";
 import { videoLockPath } from "./video-lock.js";
@@ -65,12 +64,12 @@ function narratedVideo(slug: string): void {
 }
 
 /**
- * A machine where `xplainer setup` has run: the marker, its two acquisitions, and the workspace
- * manifest. The factory reads all three before it builds a spec. There is no `node_modules`: the
- * render worker reads nothing from the workspace's own install.
+ * A machine where `xplainer setup` has run: the marker and its two acquisitions, which the factory
+ * reads before it builds a spec. There is no `node_modules`: the render worker reads nothing from
+ * the workspace's own install.
  */
 function pretendSetUp(): void {
-  recordTestToolchain({ stateDir, workspaceRoot: root });
+  recordTestToolchain({ stateDir });
 }
 
 beforeEach(() => {
@@ -159,19 +158,6 @@ describe("the render worker", () => {
     ).toThrow(/captions/);
   });
 
-  it("refuses a workspace nobody set up, naming the command that fixes it", () => {
-    narratedVideo("demo");
-    recordTestToolchain({ stateDir, workspaceRoot: root });
-    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
-    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
-
-    expect(() =>
-      createWorkerRegistry({ root, stateDir }).explainer_render?.(
-        record(1, "explainer_render", "demo"),
-      ),
-    ).toThrow(/xplainer setup --workspace/);
-  });
-
   /**
    * The gate `toolchain.json` exists for, asked at the one moment it can still be reported.
    *
@@ -179,7 +165,7 @@ describe("the render worker", () => {
    * the daemon never downloads, so a machine where `setup` has not run renders nothing and the only
    * question is whether it says so now or three minutes into a job.
    */
-  it("refuses a machine where setup has never run, before it looks at the workspace at all", () => {
+  it("refuses a machine where setup has never run", () => {
     narratedVideo("demo");
     pretendSetUp();
     rmSync(join(stateDir, "toolchain.json"));
@@ -195,7 +181,7 @@ describe("the render worker", () => {
   /** A recorded artefact that has been cleaned away is a different repair from a missing marker. */
   it("refuses when a path the marker recorded is no longer on this machine", () => {
     narratedVideo("demo");
-    const marker = recordTestToolchain({ stateDir, workspaceRoot: root });
+    const marker = recordTestToolchain({ stateDir });
     pretendSetUp();
     rmSync(marker.chrome.path);
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
@@ -205,25 +191,6 @@ describe("the render worker", () => {
         record(1, "explainer_render", "demo"),
       ),
     ).toThrow(/no longer on this machine/);
-  });
-
-  /** The skew D2 is about: the workspace is intact and is not the one this build's template wants. */
-  it("refuses a workspace resolved for a template this build no longer ships", () => {
-    narratedVideo("demo");
-    pretendSetUp();
-    writeTestWorkspaceManifest({
-      stateDir,
-      workspaceRoot: root,
-      resolved: { remotion: "4.0.495" },
-      pins: { remotion: "4.0.494" },
-    });
-    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
-
-    expect(() =>
-      createWorkerRegistry({ root, stateDir }).explainer_render?.(
-        record(1, "explainer_render", "demo"),
-      ),
-    ).toThrow(/remotion versions/);
   });
 });
 

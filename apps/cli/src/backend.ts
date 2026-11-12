@@ -339,12 +339,12 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
    * The call asks `checkToolchain`, the same judgement `daemon/workers.ts` applies a moment later:
    * two predicates over one condition is how a tool call succeeds and the job it queued then
    * fails, which is precisely the outcome an agent holding a `job_id` cannot act on. Its sentence
-   * names whichever component is absent and the command that fixes it. The workspace's own
-   * `node_modules` is not asked about at all: the render worker bundles every video against this
-   * program's own install and reads nothing from it.
+   * names whichever component is absent and the command that fixes it. The workspace is not asked
+   * about at all: the render worker bundles every video against this program's own install and
+   * reads nothing from it.
    */
   function requireInstalledWorkspace(): void {
-    const toolchain = checkToolchain({ stateDir, workspaceRoot: root });
+    const toolchain = checkToolchain({ stateDir });
     if (!toolchain.ok) {
       throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", toolchain.detail);
     }

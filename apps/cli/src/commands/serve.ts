@@ -516,11 +516,11 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         // recorded state — and a server that resolved it again could answer for a different
         // directory than the one this daemon is rendering into.
         api: { library: createWorkspaceLibrary({ root: daemon.workspaceRoot }) },
-        // Asked per request rather than once: `xplainer setup` runs in another process, and a
-        // workspace can be removed while this daemon is up, so a snapshot would answer for a
+        // Asked per request rather than once: `xplainer setup` runs in another process, and an
+        // acquired file can be removed while this daemon is up, so a snapshot would answer for a
         // machine that no longer exists.
         toolchain: () => {
-          const status = checkToolchain({ stateDir, workspaceRoot: daemon.workspaceRoot });
+          const status = checkToolchain({ stateDir });
           return { ok: status.ok, reason: status.reason };
         },
         // The operator's certificate, or nothing at all. `remoteExposureRefusal()` above is what

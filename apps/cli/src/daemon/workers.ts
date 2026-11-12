@@ -201,7 +201,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_still");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
-      assertToolchainReady({ stateDir, workspaceRoot: root });
+      assertToolchainReady({ stateDir });
       assertReadyToRender(video.source, video.publicDir);
       const { command, args } = renderWorkerCommand();
       return {
@@ -219,7 +219,7 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_render");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
-      assertToolchainReady({ stateDir, workspaceRoot: root });
+      assertToolchainReady({ stateDir });
       assertReadyToRender(video.source, video.publicDir);
       const { command, args } = renderWorkerCommand();
       return {

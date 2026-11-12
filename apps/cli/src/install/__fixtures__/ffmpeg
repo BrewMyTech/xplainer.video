@@ -1,0 +1,5 @@
+This file stands in for the FFmpeg that `xplainer setup` acquires.
+
+It exists for the same reason as the Chrome stand-in beside it: the install preflight checks that
+the paths `toolchain.json` records still exist, and the daemon's gate compares this file's size with
+the `bytes` the marker records for it. Nothing here is ever executed.

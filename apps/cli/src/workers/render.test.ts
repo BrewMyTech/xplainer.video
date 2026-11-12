@@ -305,7 +305,6 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     // since the fixture above is what narrates. The acquisition itself is `setup`'s own tests'.
     recordTestToolchain({
       stateDir,
-      workspaceRoot: root,
       overrides: {
         chrome: {
           version: chrome.version,
