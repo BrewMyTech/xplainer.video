@@ -100,6 +100,7 @@ import {
 import { type LockedOperation, withOperationLock } from "./lock.js";
 import {
   type IncomingSource,
+  requireCompatibleAssembly,
   requireCompatibleUpdate,
   resolveIncomingSource,
   stageIncomingRuntime,
@@ -266,6 +267,21 @@ export async function updateDaemon(request: UpdateRequest): Promise<UpdateOutcom
   return withOperationLock(request.stateDir, "update", async () => {
     const context = updateContext(request);
     requireNoUnfinishedTransaction(context, "update");
+
+    // `--build` assembles ~146 MB before the precondition below could read the result, and what
+    // it would read is a constant of this build. So the precondition is asked of that constant
+    // first, and a refusal costs nothing; `openTransaction` asks again of the payload itself.
+    if (request.build === true && request.from === undefined) {
+      const installed = installedSide(context, readDaemonState(context.stateDir));
+      try {
+        requireCompatibleAssembly({
+          installedRuntimeDir: installed.runtime_dir,
+          stateDir: context.stateDir,
+        });
+      } catch (error) {
+        throw asRefusal("precondition", error, context.steps);
+      }
+    }
 
     let source: IncomingSource;
     try {

@@ -90,6 +90,12 @@ import { resolveIpcPath } from "../daemon/ipc.js";
 import { STATE_DIR_MODE, stateDirLayout } from "../daemon/state-dir.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import { buildLaunchSpec, type LaunchSpec } from "../runtime/launch-spec.js";
+import {
+  PRE_CUT_TOOLCHAIN_FORMAT,
+  readRuntimeManifest,
+  runtimeToolchainFormat,
+} from "../runtime/manifest.js";
+import { TOOLCHAIN_FORMAT_VERSION } from "../setup/toolchain.js";
 import { CLI_VERSION } from "../version.js";
 import {
   awaitHealthy,
@@ -274,6 +280,36 @@ export type InstallRequest = {
 type Undo = { what: string; undo: () => void };
 
 /**
+ * Why the payload at `payloadDir` must not be installed by this build, or `null` when it may.
+ *
+ * **It reads a different `toolchain.json` format** (ADR 0031 §Note, 2026-11-12, D2). This build's
+ * `setup` writes format 2, and a runtime from before the cut reads format 1 — which records a
+ * workspace and no ffmpeg — so installed, it would read this machine's marker as a missing
+ * toolchain and report itself degraded on its first `/healthz`. `daemon update` and `setup` already
+ * refuse to cross the cut; `--runtime` was the one way left to install across it by accident. A
+ * manifest that cannot be read is left to the stager, which refuses it in words of its own.
+ */
+function payloadFormatRefusal(payloadDir: string): string | null {
+  let format: number;
+  try {
+    format = runtimeToolchainFormat(readRuntimeManifest(payloadDir));
+  } catch {
+    return null;
+  }
+  if (format === TOOLCHAIN_FORMAT_VERSION) {
+    return null;
+  }
+  return (
+    `--runtime ${payloadDir} reads toolchain.json format ${String(format)}` +
+    `${format === PRE_CUT_TOOLCHAIN_FORMAT ? ", from before ADR 0031's cut," : ""} and this ` +
+    `xplainer's setup writes format ${String(TOOLCHAIN_FORMAT_VERSION)}: installed, that runtime ` +
+    "would read this machine's marker as a missing toolchain and could not render. Nothing was " +
+    "written. Install a runtime this xplainer built — `xplainer daemon install` with no " +
+    "--runtime, or `xplainer runtime build --out <dir>` and then `--runtime <dir>`."
+  );
+}
+
+/**
  * Install the daemon, or leave the machine exactly as it was.
  *
  * @throws {InstallRefusal} carrying the documented exit code and what the rollback undid.
@@ -303,6 +339,15 @@ export async function installDaemon(request: InstallRequest): Promise<InstallOut
   const firstRefusal = preflight.refusals[0];
   if (firstRefusal !== undefined) {
     throw new InstallRefusal("preflight", firstRefusal.exitCode, firstRefusal.message, []);
+  }
+  // A payload named with `--runtime` is judged here, before anything is written, for the one fact
+  // about it that no later phase asks: which `toolchain.json` format it reads. A payload this build
+  // assembles — the argument-free install's thunk — always reads this build's.
+  if (typeof request.payloadDir === "string") {
+    const refusal = payloadFormatRefusal(request.payloadDir);
+    if (refusal !== null) {
+      throw new InstallRefusal("preflight", PRECONDITION_UNMET_EXIT_CODE, refusal, []);
+    }
   }
   const kind = preflight.supervisor.kind;
   if (kind === null) {

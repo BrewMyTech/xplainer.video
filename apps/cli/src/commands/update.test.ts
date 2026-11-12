@@ -34,11 +34,13 @@ import { STATE_DIR_ENV } from "../daemon/state-dir.js";
 import { toolchainMarkerPath } from "../install/preflight.js";
 import { stageRuntime } from "../install/stage.js";
 import { buildFixturePayload } from "../install/testing/payload.js";
+import { writeToolchainMarker } from "../install/testing/toolchain.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import {
   attachedForm,
   compareVersions,
+  daemonUpdateRefusal,
   planDaemonReconcile,
   stagedRuntimeVersion,
   upgradeCommand,
@@ -246,6 +248,82 @@ describe("planDaemonReconcile", () => {
     expect(plan.kind).toBe("skip");
     expect(plan.kind === "skip" && plan.line).toContain("xplainer daemon update --build");
     expect(plan.kind === "skip" && plan.line).toContain("0.0.2 installed, 0.0.8 here");
+  });
+
+  it("stops before it assembles a payload the update would refuse, and says why", () => {
+    // `materialiseProgramPayload` builds ~146 MB for a `daemon update --from` whose precondition
+    // reads a constant of this build — so the refusal is asked first, and nothing is assembled.
+    const plan = planDaemonReconcile(
+      "0.0.2",
+      "0.0.8",
+      "/opt/node/lib/node_modules/xplainer",
+      () => "the toolchain recorded in toolchain.json does not satisfy the incoming runtime",
+    );
+    expect(plan).toEqual({
+      kind: "refused",
+      staged: "0.0.2",
+      refusal: "the toolchain recorded in toolchain.json does not satisfy the incoming runtime",
+    });
+  });
+
+  it("asks for the refusal only when there is an update to refuse", () => {
+    const asked = vi.fn(() => "refused");
+    expect(planDaemonReconcile(null, "0.0.8", "/opt/x", asked).kind).toBe("skip");
+    expect(planDaemonReconcile("0.0.8", "0.0.8", "/opt/x", asked).kind).toBe("skip");
+    expect(planDaemonReconcile("0.0.2", "0.0.8", null, asked).kind).toBe("skip");
+    expect(asked).not.toHaveBeenCalled();
+  });
+});
+
+describe("daemonUpdateRefusal", () => {
+  let scratch = "";
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), "xplainer-update-refusal-"));
+  });
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  /** A state directory whose `daemon.json` registers a staged format-2 runtime, and a marker. */
+  function installedMachine(name: string): string {
+    const stateDir = join(scratch, name);
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const payload = buildFixturePayload({
+      outDir: join(scratch, `${name}-payload`),
+      version: "0.0.9",
+      marker: name,
+      runnable: false,
+    });
+    const staged = stageRuntime({ payloadDir: payload.outDir, stateDir });
+    updateDaemonState(stateDir, { runtime_dir: staged.path });
+    writeToolchainMarker(stateDir);
+    return stateDir;
+  }
+
+  it("is null where the marker serves the runtime this build assembles", () => {
+    expect(daemonUpdateRefusal(installedMachine("served"))).toBeNull();
+  });
+
+  it("is daemon update's own refusal where the marker records no ffmpeg", () => {
+    const stateDir = installedMachine("no-ffmpeg");
+    const marker = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    delete marker.ffmpeg;
+    writeFileSync(toolchainMarkerPath(stateDir), `${JSON.stringify(marker)}\n`);
+
+    const refusal = daemonUpdateRefusal(stateDir);
+    expect(refusal).toContain("does not satisfy the incoming runtime (toolchain_missing)");
+    expect(refusal).toContain("  xplainer setup\n");
+  });
+
+  it("is null with no daemon registered, which leaves the plan's own skip to say so", () => {
+    const stateDir = join(scratch, "none");
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    expect(daemonUpdateRefusal(stateDir)).toBeNull();
   });
 });
 

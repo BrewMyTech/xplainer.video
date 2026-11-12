@@ -456,6 +456,56 @@ describe("daemon install — the refusal writes nothing", () => {
   });
 
   /**
+   * ADR 0031 §Note, 2026-11-12, D2: `--runtime` naming a payload from before the cut — no
+   * `toolchain` block, so format 1 — would install a daemon that reads this machine's format-2
+   * marker as a missing toolchain. Refused with `3` in phase 1, on a machine that is otherwise
+   * installable, with every hashed location unchanged and no supervisor command run.
+   */
+  it("refuses 3 for a --runtime from before the cut, and every hashed location is unchanged", async () => {
+    const root = scratchDirectory();
+    const stateDir = installableState();
+    const environment: SupervisorEnvironment = fixtureEnvironment(root);
+    mkdirSync(join(environment.home, "Library", "LaunchAgents"), { recursive: true });
+    const harness = supervisorHarness({ stateDir });
+    const preCut = buildFixturePayload({
+      outDir: join(root, "pre-cut-payload"),
+      version: "0.0.9",
+      marker: "pre-cut",
+      runnable: false,
+      toolchain: null,
+    }).outDir;
+    const { locations } = await writeLocations({
+      stateDir,
+      platform: "darwin",
+      environment,
+      run: harness.run,
+    });
+    const before = hashLocations(locations);
+
+    const refusal = await installDaemon({
+      stateDir,
+      payloadDir: preCut,
+      port: 0,
+      platform: "darwin",
+      environment,
+      run: harness.run,
+      uid: 501,
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(InstallRefusal);
+    expect((refusal as InstallRefusal).exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+    expect((refusal as InstallRefusal).phase).toBe("preflight");
+    expect((refusal as InstallRefusal).message).toContain(
+      `--runtime ${preCut} reads toolchain.json format 1, from before ADR 0031's cut,`,
+    );
+    expect((refusal as InstallRefusal).message).toContain("`xplainer daemon install` with no");
+    expect((refusal as InstallRefusal).undone).toEqual([]);
+    expect(hashLocations(locations)).toEqual(before);
+    expect(existsSync(stagedRuntimeRoot(stateDir))).toBe(false);
+    expect(harness.commands.filter((entry) => !entry.includes("print-disabled"))).toEqual([]);
+  });
+
+  /**
    * The ordering the argument-free install turns on: **phase 1 refuses before a payload is built**.
    *
    * `--runtime` names a directory that already exists, so the cost of resolving it early is

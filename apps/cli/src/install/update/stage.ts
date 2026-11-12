@@ -29,13 +29,16 @@
  *
  * ## The precondition is two clauses, and refusal-only
  *
- * 1. **The installed and incoming runtimes read the same `toolchain.json` format.** ADR 0031's cut
- *    (§Note, 2026-11-12, D2 (a)) moved the marker from format 1 — which records a workspace — to
- *    format 2, which records an `ffmpeg` and no workspace. A daemon on one side of it reads the
- *    other side's marker as a missing toolchain, and a rollback across it would land on exactly
- *    that daemon, so crossing the cut in either direction is a reinstall. A payload built before
- *    the cut declares no format and reads as format 1, and so does an installed runtime whose
- *    manifest this build cannot read.
+ * 1. **The installed and incoming runtimes read the same `toolchain.json` format, and it is the
+ *    one this build's `setup` writes.** ADR 0031's cut (§Note, 2026-11-12, D2 (a)) moved the marker
+ *    from format 1 — which records a workspace — to format 2, which records an `ffmpeg` and no
+ *    workspace. A daemon on one side of it reads the other side's marker as a missing toolchain,
+ *    and a rollback across it would land on exactly that daemon, so crossing the cut in either
+ *    direction is a reinstall. A payload built before the cut declares no format and reads as
+ *    format 1, and so does an installed runtime whose manifest this build cannot read. **Two
+ *    format-1 runtimes agree with each other and are still refused**: the marker they would read
+ *    next is the one this build's `setup` writes, which is format 2, so an update between them
+ *    would install a daemon nothing this build records can serve.
  * 2. **The marker satisfies the incoming runtime's own `toolchain` requirements**, as
  *    `setup/toolchain.ts`'s `checkToolchain` judges them — its `ffmpeg` recorded, present, the size
  *    `setup` recorded, and at or above the libavcodec floor that runtime encodes with. This takes
@@ -61,16 +64,16 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../../daemon/exit-codes.js";
-import { assembleRuntime } from "../../runtime/assemble.js";
+import { ASSEMBLED_TOOLCHAIN, assembleRuntime } from "../../runtime/assemble.js";
 import {
   PRE_CUT_TOOLCHAIN_FORMAT,
   type RuntimeManifest,
   readRuntimeManifest,
-  runtimeToolchainFormat,
 } from "../../runtime/manifest.js";
 import {
   checkToolchain,
   REINSTALL_ACROSS_THE_CUT,
+  TOOLCHAIN_FORMAT_VERSION,
   toolchainMarkerPath,
 } from "../../setup/toolchain.js";
 import { type StageOutcome, stageRuntime } from "../stage.js";
@@ -78,7 +81,11 @@ import { type StageOutcome, stageRuntime } from "../stage.js";
 /** Why the precondition refused. One value per distinguishable condition, never a catch-all. */
 export type PreconditionReason =
   /** `--from` and `--build` both, neither, or a `--from` that does not exist. */
-  "incoming-unresolved" | "format-differs" | "toolchain-unsatisfied";
+  | "incoming-unresolved"
+  | "format-differs"
+  /** The two runtimes agree, on a format this build's `setup` does not write. */
+  | "format-unsupported"
+  | "toolchain-unsatisfied";
 
 /**
  * A precondition of updating was not met, and nothing has been staged or drained.
@@ -104,10 +111,18 @@ export type CompatibilityRequest = {
   installedRuntimeDir: string;
   /** The payload-1 directory the update would switch to — B. */
   incomingRuntimeDir: string;
+  /**
+   * How a refusal names B, when that is not "the incoming runtime at `incomingRuntimeDir`" — a
+   * payload that has not been assembled yet has no directory to name.
+   */
+  incomingDescription?: string | undefined;
   /** The daemon's state directory, whose `toolchain.json` both runtimes read. */
   stateDir: string;
-  /** The incoming payload's manifest, when the caller has already read it. */
-  incomingManifest?: RuntimeManifest | null | undefined;
+  /**
+   * The incoming payload's manifest, when the caller has already read it — or only its `toolchain`
+   * block, which is all the precondition asks, when the payload has not been assembled yet.
+   */
+  incomingManifest?: Pick<RuntimeManifest, "toolchain"> | null | undefined;
   /** The installed payload's manifest, when the caller has already read it. */
   installedManifest?: RuntimeManifest | null | undefined;
 };
@@ -121,8 +136,8 @@ export type CompatibilityVerdict = {
 /** A runtime's manifest as the caller passed it, read here when it did not, `null` if unreadable. */
 function manifestOf(
   runtimeDir: string,
-  given: RuntimeManifest | null | undefined,
-): RuntimeManifest | null {
+  given: Pick<RuntimeManifest, "toolchain"> | null | undefined,
+): Pick<RuntimeManifest, "toolchain"> | null {
   if (given !== null && given !== undefined) {
     return given;
   }
@@ -141,8 +156,8 @@ function manifestOf(
  * that cannot say is one from before the cut. Treating it as current is the one answer that lets an
  * update cross the cut unnoticed.
  */
-function formatOf(manifest: RuntimeManifest | null): number {
-  return manifest === null ? PRE_CUT_TOOLCHAIN_FORMAT : runtimeToolchainFormat(manifest);
+function formatOf(manifest: Pick<RuntimeManifest, "toolchain"> | null): number {
+  return manifest?.toolchain?.format ?? PRE_CUT_TOOLCHAIN_FORMAT;
 }
 
 /**
@@ -161,10 +176,17 @@ export function requireCompatibleUpdate(request: CompatibilityRequest): Compatib
       formatDiffersMessage(installedFormat, incomingFormat, request),
     );
   }
+  if (incomingFormat !== TOOLCHAIN_FORMAT_VERSION) {
+    throw new UpdatePrecondition(
+      "format-unsupported",
+      formatUnsupportedMessage(incomingFormat, request),
+    );
+  }
 
   // The incoming runtime's own requirements, because it is the one that will read the marker
-  // next — and, by clause 1, the rollback target reads the same format of the same file. A runtime
-  // that declares no `toolchain` block is from before the cut and asks for no `ffmpeg`.
+  // next — and, by clause 1, the rollback target reads the same format of the same file. Clause 1
+  // also means it declares a `toolchain` block: one that declares none reads format 1 and was
+  // refused above.
   const requirement = incomingManifest?.toolchain;
   const status = checkToolchain({
     stateDir: request.stateDir,
@@ -195,7 +217,7 @@ function formatDiffersMessage(
   const direction = incoming > installed ? "forwards" : "backwards";
   return (
     `the installed runtime at ${request.installedRuntimeDir} reads toolchain.json format ` +
-    `${String(installed)} and the incoming runtime at ${request.incomingRuntimeDir} reads format ` +
+    `${String(installed)} and ${incomingName(request)} reads format ` +
     `${String(incoming)}. That is ADR 0031's cut, crossed ${direction}, and it is one-way for an ` +
     `update: each side reads the other's marker as a missing toolchain, so neither the runtime ` +
     `this would install nor the one it would roll back to could render from the marker on this ` +
@@ -203,6 +225,55 @@ function formatDiffersMessage(
     `was drained. Reinstall the daemon with the xplainer you mean it to run:\n\n` +
     `${REINSTALL_ACROSS_THE_CUT.map((line) => `  ${line}`).join("\n")}\n`
   );
+}
+
+/** B, as a refusal names it. */
+function incomingName(request: CompatibilityRequest): string {
+  return request.incomingDescription ?? `the incoming runtime at ${request.incomingRuntimeDir}`;
+}
+
+/**
+ * Clause 1's second half: both runtimes agree, on a format this build's `setup` does not write.
+ *
+ * Two runtimes from before the cut agree with each other, and the marker on this machine is the
+ * one this build's `setup` writes. Updating between them would install a daemon that reads that
+ * marker as a missing toolchain, behind a readiness check that answers `200` either way.
+ */
+function formatUnsupportedMessage(incoming: number, request: CompatibilityRequest): string {
+  const side =
+    incoming < TOOLCHAIN_FORMAT_VERSION ? "from before ADR 0031's cut" : "newer than this xplainer";
+  return (
+    `the installed runtime at ${request.installedRuntimeDir} and ${incomingName(request)} ` +
+    `both read toolchain.json format ${String(incoming)}, ${side}, ` +
+    `and this xplainer's \`setup\` writes format ${String(TOOLCHAIN_FORMAT_VERSION)}. The two agree ` +
+    `with each other and not with the marker either of them would read next, so the runtime this ` +
+    `would install could not render from anything this xplainer records. Nothing was staged and ` +
+    `nothing was drained. Reinstall the daemon with this xplainer:\n\n` +
+    `${REINSTALL_ACROSS_THE_CUT.map((line) => `  ${line}`).join("\n")}\n`
+  );
+}
+
+/**
+ * The precondition, asked of the payload `--build` **would** assemble, before it is assembled.
+ *
+ * `runtime/assemble.ts` writes {@link ASSEMBLED_TOOLCHAIN} into every manifest this build makes,
+ * so whether the update would be refused is knowable from the installed side and the marker alone
+ * — and asking first spares the ~146 MB a refused `--build` would otherwise assemble and discard.
+ * `xplainer update`'s daemon step asks the same question for the same payload.
+ *
+ * @throws {UpdatePrecondition}
+ */
+export function requireCompatibleAssembly(request: {
+  installedRuntimeDir: string;
+  stateDir: string;
+}): CompatibilityVerdict {
+  return requireCompatibleUpdate({
+    ...request,
+    // Never read: the manifest is given, and the description is what a refusal names.
+    incomingRuntimeDir: "",
+    incomingDescription: "the runtime this xplainer assembles",
+    incomingManifest: { toolchain: ASSEMBLED_TOOLCHAIN },
+  });
 }
 
 // ── The source of version B, and the staging that follows ─────────────────────────────────────

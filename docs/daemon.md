@@ -203,9 +203,12 @@ would leave `ExecStart` pointing at the old copy and report success. Every write
 the journal is durable, and `daemon status` reports an interrupted transaction by naming the
 transition it stopped at and the command that finishes it.
 
-**Two refusals, both exit `3`, both before anything is staged or drained:**
+**Two refusals, both exit `3`, both before anything is staged or drained** — and for
+`daemon update --build`, before anything is assembled, since what the payload it would build
+requires is a constant of the build:
 
-- **the two runtimes read different `toolchain.json` formats.** Format 2 records an FFmpeg and no
+- **the two runtimes read different `toolchain.json` formats, or agree on one this `setup` does not
+  write.** Format 2 records an FFmpeg and no
   render workspace, and a daemon on one side of that cut reads the other side's marker as a missing
   toolchain — so a rollback across it would land on exactly such a daemon. Crossing it, in either
   direction, is therefore a **reinstall**, and the refusal prints it rather than running it:
@@ -217,8 +220,10 @@ transition it stopped at and the command that finishes it.
   ```
 
   A payload built before the cut declares no format and counts as the earlier one, and so does an
-  installed runtime whose manifest cannot be read. `xplainer update` and `xplainer setup` refuse the
-  same crossing, with the same three commands, before they run or write anything
+  installed runtime whose manifest cannot be read; two such runtimes agree with each other and are
+  refused all the same. `xplainer update` and `xplainer setup` refuse the same crossing, with the
+  same three commands, before they run or write anything, and `daemon install --runtime` refuses a
+  payload from the other side of it
   ([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of 2026-11-12,
   D2).
 - **the marker does not satisfy the incoming runtime.** Within one format, `toolchain.json` has to

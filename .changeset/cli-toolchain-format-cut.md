@@ -24,3 +24,11 @@ not satisfy what the incoming runtime declares it needs — an `ffmpeg` recorded
 `setup` recorded and at or above its libavcodec floor — and names `xplainer setup`. A payload
 `xplainer runtime build` assembles now records `toolchain: { format, ffmpeg_min_libavcodec }` in its
 manifest, which moves to `manifest_version` 2; a payload without the block is read as format 1.
+
+`daemon install --runtime <dir>` refuses, exit `3` and before anything is written, a payload whose
+manifest reads a format other than this release's — a runtime from before the cut among them — and
+names `xplainer daemon install` with no `--runtime` instead. `daemon update` refuses as well when the
+two runtimes agree on a format this release's `setup` does not write, so a pre-cut daemon is not
+moved onto another pre-cut runtime. `daemon update --build` and `xplainer update`'s daemon step ask
+the precondition of the payload they would assemble **before** assembling it, so a refusal no longer
+costs a ~146 MB build first.

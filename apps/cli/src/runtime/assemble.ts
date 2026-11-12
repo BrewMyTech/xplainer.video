@@ -68,9 +68,20 @@ import {
   RUNTIME_MANIFEST_FILE,
   RUNTIME_ROOT_PACKAGE,
   type RuntimeManifest,
+  type RuntimeToolchain,
   scanTree,
   toPayloadPath,
 } from "./manifest.js";
+
+/**
+ * What every runtime this build assembles requires of `toolchain.json`, from the constants it
+ * judges the marker with — so a later `daemon update`, `update` or `setup` can ask a runtime it is
+ * not running, and `daemon update --build` can ask before it has assembled one.
+ */
+export const ASSEMBLED_TOOLCHAIN: RuntimeToolchain = {
+  format: TOOLCHAIN_FORMAT_VERSION,
+  ffmpeg_min_libavcodec: FFMPEG_MIN_LIBAVCODEC,
+};
 
 /** npm ships this whatever a `files` allowlist says, and `version.ts` reads it at startup. */
 const ALWAYS_SHIPPED = new Set(["package.json"]);
@@ -214,9 +225,7 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
     arch: process.arch,
     node_version: process.version,
     host: kind,
-    // What this runtime requires of `toolchain.json`, from the constants it judges the marker
-    // with — so a later `daemon update`, `update` or `setup` can ask a runtime it is not running.
-    toolchain: { format: TOOLCHAIN_FORMAT_VERSION, ffmpeg_min_libavcodec: FFMPEG_MIN_LIBAVCODEC },
+    toolchain: ASSEMBLED_TOOLCHAIN,
     launch,
     packages,
     files: scan.files,

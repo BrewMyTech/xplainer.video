@@ -36,13 +36,16 @@
  * **Not real, and stated rather than glossed:**
  *
  * 1. **The pre-cut runtime is this build's payload with a pre-cut manifest.** A copy of the payload
- *    under its own version, whose `runtime.manifest.json` is rewritten to the shape every release
- *    before the cut wrote — `manifest_version` 1 and no `toolchain` block — and rescanned with the
- *    shipped scanner, so the stager accepts it. Detection reads exactly that manifest, through
- *    `daemon.json`'s `runtime_dir`, so what is under test is real; the daemon's *code* is this
- *    build's, which is why the marker it serves from is the committed format-2 fixture and why it
- *    answers `ok` before and after. A real 0.0.10 daemon would read that file as missing — which is
- *    the reason the refusals exist, and the reason this proof does not try to stand one up.
+ *    under its own version, rescanned with the shipped scanner so the stager accepts it, installed,
+ *    and **then** given the manifest every release before the cut wrote — `manifest_version` 1 and
+ *    no `toolchain` block — in its staged directory. In that order because this build's
+ *    `daemon install` refuses a payload that reads format 1, so the install an earlier release
+ *    made is the one step here that cannot be run as it was. Detection reads exactly that
+ *    manifest, through `daemon.json`'s `runtime_dir`, so what is under test is real; the daemon's
+ *    *code* is this build's, which is why the marker it serves from is the committed format-2
+ *    fixture and why it answers `ok` before and after. A real 0.0.10 daemon would read that file
+ *    as missing — which is the reason the refusals exist, and the reason this proof does not try
+ *    to stand one up.
  * 2. **The label, on macOS only**, exactly as `failure-proof.ts`: every command is translated to
  *    {@link THROWAWAY_LABEL}, and on Linux the real `xplainer.service` is installed in the
  *    account's own config directory and removed in the `finally`.
@@ -256,9 +259,7 @@ try {
   require(currentFormat ===
     2, "this build's payload declares format 2, the side of the cut it writes");
 
-  say(
-    "copying it into a pre-cut payload: its own version, and the manifest every earlier release wrote",
-  );
+  say("copying it into the payload the pre-cut daemon runs, under its own version");
   const preCutDir = join(root, "payload-pre-cut");
   cpSync(current.outDir, preCutDir, {
     recursive: true,
@@ -270,17 +271,14 @@ try {
   preCutPackage.version = PRE_CUT_VERSION;
   writeFileSync(preCutPackageFile, `${JSON.stringify(preCutPackage, null, 2)}\n`);
   const manifestFile = join(preCutDir, RUNTIME_MANIFEST_FILE);
-  const { toolchain: _declared, ...preCutManifest } = JSON.parse(
-    readFileSync(manifestFile, "utf8"),
-  ) as RuntimeManifest;
+  const copied = JSON.parse(readFileSync(manifestFile, "utf8")) as RuntimeManifest;
   const rescan = scanTree(preCutDir, { exclude: [RUNTIME_MANIFEST_FILE] });
   writeFileSync(
     manifestFile,
     `${JSON.stringify(
       {
-        ...preCutManifest,
-        manifest_version: 1,
-        packages: preCutManifest.packages.map((entry) =>
+        ...copied,
+        packages: copied.packages.map((entry) =>
           entry.name === "@xplainer/cli" ? { ...entry, version: PRE_CUT_VERSION } : entry,
         ),
         files: rescan.files,
@@ -290,8 +288,6 @@ try {
       2,
     )}\n`,
   );
-  require(runtimeToolchainFormat(readRuntimeManifest(preCutDir)) ===
-    1, "the shipped reader reads the pre-cut payload as format 1: no toolchain block, manifest_version 1");
 
   say("writing the setup marker");
   writeToolchainMarker(stateDir);
@@ -312,6 +308,17 @@ try {
     `  installed: ${install.runtimeDir}, answering ${install.health.url} as release ` +
       `${install.health.version} after ${String(install.health.elapsedMs)} ms`,
   );
+  say("rewriting the staged runtime's manifest to the shape every earlier release wrote");
+  const stagedManifestFile = join(install.runtimeDir, RUNTIME_MANIFEST_FILE);
+  const { toolchain: _declared, ...preCutManifest } = JSON.parse(
+    readFileSync(stagedManifestFile, "utf8"),
+  ) as RuntimeManifest;
+  writeFileSync(
+    stagedManifestFile,
+    `${JSON.stringify({ ...preCutManifest, manifest_version: 1 }, null, 2)}\n`,
+  );
+  require(runtimeToolchainFormat(readRuntimeManifest(install.runtimeDir)) ===
+    1, "the shipped reader reads the staged pre-cut runtime as format 1: no toolchain block, manifest_version 1");
   const detected = installedDaemonFormat(stateDir);
   require(detected.installed &&
     detected.format === 1 &&

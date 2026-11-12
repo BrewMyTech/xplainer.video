@@ -59,6 +59,7 @@ import {
 } from "../install/materialise.js";
 import { resolveProgram } from "../install/program.js";
 import { rootPackageOf } from "../install/stage.js";
+import { requireCompatibleAssembly, UpdatePrecondition } from "../install/update/stage.js";
 import type { CliIo } from "../io.js";
 import { crossingTheCutRefusal, REINSTALL_ACROSS_THE_CUT } from "../setup/toolchain.js";
 import { CLI_VERSION } from "../version.js";
@@ -230,13 +231,20 @@ export function stagedRuntimeVersion(stateDir: string): string | null {
  */
 function reconcileDaemon(io: CliIo): Step {
   const label = "daemon";
+  const stateDir = resolveStateDir();
   const plan = planDaemonReconcile(
-    stagedRuntimeVersion(resolveStateDir()),
+    stagedRuntimeVersion(stateDir),
     CLI_VERSION,
     installedPackageRoot(),
+    () => daemonUpdateRefusal(stateDir),
   );
   if (plan.kind === "skip") {
     return { label, line: plan.line };
+  }
+  if (plan.kind === "refused") {
+    // Printed as `daemon update` prints it, because it is that command's refusal, asked early.
+    io.writeErr(`xplainer daemon update: ${plan.refusal}\n`);
+    return { label, line: `${plan.staged} left alone — see the refusal above` };
   }
   let payload: MaterialisedPayload;
   try {
@@ -264,9 +272,42 @@ function reconcileDaemon(io: CliIo): Step {
   }
 }
 
-/** Either a line to print and nothing to do, or the install to assemble the new runtime from. */
+/**
+ * The refusal `daemon update` would give the payload this build assembles, or `null` if none.
+ *
+ * Asked **before** {@link materialiseProgramPayload} builds ~146 MB for a child that would refuse
+ * it in its precondition: what that payload requires of the marker is a constant of this build, so
+ * the answer needs only the installed runtime and the marker. A state directory this cannot read
+ * answers `null` and is left to `daemon update`, which has the sentence for it.
+ */
+export function daemonUpdateRefusal(stateDir: string): string | null {
+  let installedRuntimeDir: string | null;
+  try {
+    installedRuntimeDir = readDaemonState(stateDir).runtime_dir;
+  } catch {
+    return null;
+  }
+  if (installedRuntimeDir === null) {
+    return null;
+  }
+  try {
+    requireCompatibleAssembly({ installedRuntimeDir, stateDir });
+    return null;
+  } catch (error) {
+    if (error instanceof UpdatePrecondition) {
+      return error.message;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Either a line to print and nothing to do, the refusal the update would end in, or the install
+ * to assemble the new runtime from.
+ */
 export type DaemonPlan =
   | { kind: "skip"; line: string }
+  | { kind: "refused"; staged: string; refusal: string }
   | { kind: "update"; installRoot: string; staged: string };
 
 /**
@@ -274,12 +315,15 @@ export type DaemonPlan =
  *
  * Split out from {@link reconcileDaemon} because the branches are the part worth testing and the
  * execution is a `spawnSync` of this same binary: a test that could only reach this table through a
- * child process would be an integration test for a decision that is pure.
+ * child process would be an integration test for a decision that is pure. The fourth argument is
+ * {@link daemonUpdateRefusal}, passed as a function so it is asked only when there is an update to
+ * refuse.
  */
 export function planDaemonReconcile(
   staged: string | null,
   cliVersion: string,
   installRoot: string | null,
+  refusal: () => string | null = () => null,
 ): DaemonPlan {
   if (staged === null) {
     return { kind: "skip", line: "none installed — nothing to update" };
@@ -296,6 +340,10 @@ export function planDaemonReconcile(
         `${staged} installed, ${cliVersion} here — this build is not a package install, so run ` +
         "`xplainer daemon update --build` from the checkout",
     };
+  }
+  const refused = refusal();
+  if (refused !== null) {
+    return { kind: "refused", staged, refusal: refused };
   }
   return { kind: "update", installRoot, staged };
 }

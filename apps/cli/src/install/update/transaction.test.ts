@@ -53,7 +53,7 @@ import {
   untilGone,
 } from "../../daemon/testing/spawn-child.js";
 import { isAlive } from "../../daemon/worker-identity.js";
-import { readRuntimeManifest } from "../../runtime/manifest.js";
+import { RUNTIME_MANIFEST_FILE, readRuntimeManifest } from "../../runtime/manifest.js";
 import { checkToolchain, toolchainMarkerPath } from "../../setup/toolchain.js";
 import { installDaemon } from "../install.js";
 import { launcherPath } from "../launcher.js";
@@ -192,7 +192,8 @@ beforeAll(() => {
     extraInterpreters: ["node.exe"],
   });
   // A runtime from before ADR 0031's cut: no `toolchain` block in its manifest, so it reads
-  // `toolchain.json` format 1. Runnable, because one case installs it and updates away from it.
+  // `toolchain.json` format 1. Only ever the incoming side: this build refuses to install it, so
+  // the cases with a pre-cut daemon make one with `preCutInstalled` instead.
   preCut = buildFixturePayload({
     outDir: join(suiteScratch, "pre-cut"),
     version: "0.9.0-precut",
@@ -381,6 +382,26 @@ function stateDigest(stateDir: string): string {
   };
   walk(stateDir, "");
   return hash.digest("hex");
+}
+
+/**
+ * Make the installed runtime one from before ADR 0031's cut, as an earlier release left it.
+ *
+ * `daemon install` refuses a payload that reads format 1, so this build cannot stand a pre-cut
+ * daemon up. What the precondition reads is the manifest `daemon.json`'s `runtime_dir` leads to,
+ * so that manifest is rewritten to the shape every release before the cut wrote — `manifest_version`
+ * 1 and no `toolchain` block — and the daemon already running from it is left alone.
+ */
+function preCutInstalled(stateDir: string): void {
+  const runtimeDir = readDaemonState(stateDir).runtime_dir;
+  expect(runtimeDir).not.toBeNull();
+  const path = join(runtimeDir ?? "", RUNTIME_MANIFEST_FILE);
+  const { toolchain: _declared, ...manifest } = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  writeFileSync(path, `${JSON.stringify({ ...manifest, manifest_version: 1 }, null, 2)}\n`);
+  expect(readRuntimeManifest(runtimeDir ?? "").toolchain).toBeUndefined();
 }
 
 /** Rewrite the machine's marker without its `ffmpeg`: one `setup` wrote before it acquired one. */
@@ -1360,7 +1381,8 @@ describe("daemon update — ADR 0031's cut is a reinstall (§Note, 2026-11-12, D
     async () => {
       const where = machine();
       const harness = harnessFor(where);
-      await installed(where, preCut, harness);
+      await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
       const before = readRuntimeState(where.stateDir);
       const digest = stateDigest(where.stateDir);
 
@@ -1386,7 +1408,82 @@ describe("daemon update — ADR 0031's cut is a reinstall (§Note, 2026-11-12, D
       expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
       expect(existsSync(operationLockPath(where.stateDir))).toBe(false);
       expect(stateDigest(where.stateDir)).toBe(digest);
-      expect((await askHealth(where.stateDir))?.version).toBe("0.9.0-precut");
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses two runtimes from before the cut that agree, because this setup writes format 2",
+    async () => {
+      // Clause 1 compared the two sides with each other and nothing else, so a pre-cut daemon
+      // updated to another pre-cut runtime passed it — and the clause-2 check that followed asks a
+      // runtime with no `toolchain` block for no ffmpeg, so it passed too.
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
+      const before = readRuntimeState(where.stateDir);
+      const digest = stateDigest(where.stateDir);
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: preCut.outDir,
+          environment: where.environment,
+          run: harness.run,
+          healthTimeoutMs: HEALTH_MS,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain(
+        `the incoming runtime at ${preCut.outDir} both read toolchain.json format 1, from ` +
+          "before ADR 0031's cut, and this xplainer's `setup` writes format 2.",
+      );
+      expectReinstall(refusal.message);
+
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
+      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses `--build` across the cut before it assembles anything",
+    async () => {
+      // `--build` assembled a ~146 MB payload and only then read the manifest the refusal turns
+      // on — a constant of this build, knowable without the payload. Named as what it is rather
+      // than as the temporary directory it would have been assembled into.
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
+      const digest = stateDigest(where.stateDir);
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          build: true,
+          environment: where.environment,
+          run: harness.run,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain(
+        "reads toolchain.json format 1 and the runtime this xplainer assembles reads format 2.",
+      );
+      expect(refusal.message).toContain("crossed forwards");
+      expect(refusal.message).not.toContain("xplainer-update-build-");
+      expectReinstall(refusal.message);
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(stateDigest(where.stateDir)).toBe(digest);
     },
     SPAWN_TIMEOUT_MS,
   );
