@@ -293,6 +293,7 @@ describe("xplainer", () => {
       "--skip-ffmpeg",
       "--skip-speech",
       "--ffmpeg-path",
+      "--ffmpeg-pinned",
       "--tts-url",
       "--speech",
       "--state-dir",

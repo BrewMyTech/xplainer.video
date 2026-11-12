@@ -485,7 +485,12 @@ archive reader between them.
 the browser, ffmpeg and speech, in that order; `--skip-browser`, `--skip-ffmpeg` and `--skip-speech`
 each trim one from this run, and there is no positive component flag since `--workspace` left with
 payload 2 — it is an unknown option, exit `1`. `--ffmpeg-path <file>` records a binary the user
-names instead of acquiring the pin, and is a usage error beside `--skip-ffmpeg`. A platform whose
+names instead of acquiring the pin, and is a usage error beside `--skip-ffmpeg`. **A named ffmpeg
+survives a plain re-run**, as a working `docker` route does: `keepNamedFfmpeg` keeps it while its
+digest is the recorded one, probes it again where it is when that has changed, and gives way to the
+pin only once it is no longer an executable file — because `xplainer update` runs a plain `setup`
+on every upgrade, and on musl the pin's C-library check would fail. `--ffmpeg-pinned` is the way
+back to the pin, a usage error beside `--ffmpeg-path` or `--skip-ffmpeg`. A platform whose
 `ffmpeg` row is `unavailable` prints a skip and still exits `0`, with no `ffmpeg` in the marker:
 stills work there, and every render is refused until one is recorded; a platform with **no** row is
 a refusal like any other component's. A partial run **exits `0`** and names what is still to

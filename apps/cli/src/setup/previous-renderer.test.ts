@@ -123,6 +123,30 @@ describe("removePreviousRendererTree", () => {
     });
   });
 
+  /**
+   * The interruption the evidence-last order cannot recover from by reading the two documents:
+   * `package.json` gone, the manifest still there. Nothing is left for `package.json` to vouch for,
+   * so the manifest is removed on its own word and the run says so — before, it was `kept` on every
+   * later run, for want of the file this module had itself removed.
+   */
+  it("finishes a removal interrupted between package.json and the manifest", () => {
+    const root = workspace();
+    for (const entry of ["node_modules", "package-lock.json", "package.json"]) {
+      rmSync(join(root, entry), { recursive: true });
+    }
+
+    expect(removePreviousRendererTree(root)).toEqual({
+      kind: "removed",
+      removed: [PREVIOUS_WORKSPACE_MANIFEST],
+    });
+    expect(existsSync(join(root, PREVIOUS_WORKSPACE_MANIFEST))).toBe(false);
+    for (const path of KEPT) {
+      expect(readFileSync(join(root, path), "utf8"), path).toBe(`user's ${path}\n`);
+    }
+    // And a second run finds nothing to do.
+    expect(removePreviousRendererTree(root)).toEqual({ kind: "absent" });
+  });
+
   it("leaves a user's own project alone: no manifest, another name, other pins", () => {
     const root = workspace({
       packageJson: { name: "my-videos", dependencies: { react: "19.2.8" } },

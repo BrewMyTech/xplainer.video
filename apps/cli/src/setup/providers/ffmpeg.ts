@@ -511,6 +511,67 @@ export function recordFfmpegPath(options: RecordFfmpegPathOptions): ToolchainFfm
   };
 }
 
+/**
+ * What a plain `setup` does with an ffmpeg an earlier `setup --ffmpeg-path` recorded: keep it, ask
+ * it again, or — only when it is gone — give way to the pinned build. `null` is the last of the
+ * three, and says so.
+ *
+ * **A user-chosen ffmpeg survives a re-run**, which is the speech route's migration rule applied to
+ * ffmpeg (`providers/speech.ts`), and for a sharper reason. `xplainer update` runs a plain `setup`
+ * on every upgrade, and `--ffmpeg-path` exists for the machines the pinned build cannot serve —
+ * musl and Alpine above all (ADR 0031 §Note, 2026-11-12, D6) — so replacing the named binary with
+ * the pin there would fail the pin's own C-library check and break `setup` and `update` both. So:
+ *
+ * - the recorded binary is still the one probed — its digest equals the recorded one — and it is
+ *   kept, with a line naming `--ffmpeg-pinned` and `--ffmpeg-path`, the two ways to change it;
+ * - it is there and is a different binary — a package manager upgraded it in place — and it is
+ *   probed again at the same path and recorded anew, or refused as `--ffmpeg-path` would refuse it;
+ * - it is not an executable file any more, and the pinned build is acquired in its place.
+ *
+ * The digest is a full read of the binary, which `/healthz`'s stat-only gate never does: this is a
+ * `setup`, a command somebody ran, and the one moment it is affordable.
+ */
+export function keepNamedFfmpeg(
+  recorded: ToolchainFfmpeg,
+  log: (line: string) => void,
+): ToolchainFfmpeg | null {
+  const path = recorded.path;
+  if (!isExecutableFile(path)) {
+    log(
+      `ffmpeg: ${path}, which an earlier \`xplainer setup --ffmpeg-path\` recorded, is no longer ` +
+        "an executable file there, so the pinned build is acquired in its place.",
+    );
+    return null;
+  }
+  if (hashFile(path) === recorded.sha256) {
+    log(
+      `ffmpeg: kept ${path}, which an earlier \`xplainer setup --ffmpeg-path\` recorded — it is ` +
+        "still the binary setup probed, so a re-run does not swap it for the pinned build. " +
+        "`xplainer setup --ffmpeg-pinned` downloads the pinned build in its place, and " +
+        "`xplainer setup --ffmpeg-path <file>` records another.",
+    );
+    return recorded;
+  }
+  log(
+    `ffmpeg: ${path}, which an earlier \`xplainer setup --ffmpeg-path\` recorded, is no longer ` +
+      "the binary setup probed — its digest has changed, as an upgrade in place changes it — so " +
+      "it is probed again where it is.",
+  );
+  try {
+    return recordFfmpegPath({ path, log });
+  } catch (error) {
+    if (error instanceof FfmpegRefusal) {
+      throw new FfmpegRefusal(
+        error.reason,
+        `${error.message} It was recorded with --ffmpeg-path: name a working one with ` +
+          "`xplainer setup --ffmpeg-path <file>`, or download the pinned build with " +
+          "`xplainer setup --ffmpeg-pinned`.",
+      );
+    }
+    throw error;
+  }
+}
+
 // ── the probe ──────────────────────────────────────────────────────────────────────────────────
 
 /**

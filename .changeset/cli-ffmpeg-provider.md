@@ -16,6 +16,11 @@ files and asks the binary again instead of downloading it.
 `setup --ffmpeg-path <file>` records an ffmpeg you name instead: the same questions are asked of it,
 its digest is recorded rather than expected, and the marker says it was named rather than acquired.
 `setup --skip-ffmpeg` leaves ffmpeg out of the run; the two together are a usage error, exit `1`.
+A later plain `setup` — and so every `xplainer update` — keeps an ffmpeg named this way while it is
+still the binary that was checked, asks it again at the same path when it has changed (an upgrade in
+place), and downloads the pinned build only once it is gone, saying which it did.
+`setup --ffmpeg-pinned` downloads the pinned build in its place; it is a usage error beside
+`--ffmpeg-path` or `--skip-ffmpeg`.
 Where the manifest records this platform's FFmpeg as unavailable, `setup` says so and why, skips it,
 names `--ffmpeg-path`, and still exits `0`; a platform the manifest has no FFmpeg row for at all is
 refused with exit `3`, like any other artefact it has no reviewed digest for.

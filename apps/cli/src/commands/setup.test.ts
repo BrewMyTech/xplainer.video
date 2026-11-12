@@ -378,6 +378,173 @@ describe("xplainer setup — ffmpeg", () => {
 });
 
 /**
+ * A plain `setup` — which `xplainer update` runs on every upgrade — keeps an ffmpeg the user named
+ * with `--ffmpeg-path` rather than replacing it with the pinned build: on musl or Alpine, the reason
+ * the flag exists, the pin's C-library check would fail and take `setup` and `update` with it. The
+ * named binary is kept while it verifies, probed again where it is when it has changed, and given
+ * up for the pin only once it is gone. `--ffmpeg-pinned` is the way back.
+ */
+describe("xplainer setup — an ffmpeg named with --ffmpeg-path, on a plain re-run", () => {
+  /** A machine whose last run recorded `fake` with `--ffmpeg-path`. */
+  async function namedFfmpegMachine(): Promise<{
+    stateDir: string;
+    env: Record<string, string>;
+    fake: string;
+    fakeDir: string;
+  }> {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    const env = { XPLAINER_VIDEOS_DIR: temporaryDirectory("xplainer-setup-workspace-") };
+    const fakeDir = temporaryDirectory("xplainer-setup-ffmpeg-");
+    const fake = writeFakeFfmpeg(fakeDir, { version: "6.1.1", libavcodec: "60.31.102" });
+    const first = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--ffmpeg-path", fake],
+      env,
+    );
+    expect(first.exitCode, first.stderr).toBe(0);
+    return { stateDir, env, fake, fakeDir };
+  }
+
+  /** A manifest that is not there: a run that reads one fails, so a pass proves none was read. */
+  const NO_MANIFEST = (): string =>
+    join(temporaryDirectory("xplainer-setup-manifest-"), "absent.json");
+
+  /** A manifest whose row for this platform is unavailable, so the pin route ends in its skip. */
+  function unavailableRowManifest(): string {
+    const committed = JSON.parse(readFileSync(committedManifestPath() ?? "", "utf8")) as {
+      ffmpeg: { expected: Record<string, unknown> };
+    };
+    committed.ffmpeg.expected[`${process.platform}-${process.arch}`] = {
+      status: "unavailable",
+      reason: "the build for this platform is not published yet.",
+    };
+    const path = join(temporaryDirectory("xplainer-setup-manifest-"), "manifest.json");
+    writeFileSync(path, `${JSON.stringify(committed)}\n`);
+    return path;
+  }
+
+  it("keeps the named ffmpeg while it is the binary setup probed, and reads no manifest", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+    const recorded = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+      { ...env, XPLAINER_TOOLCHAIN_MANIFEST: NO_MANIFEST() },
+    );
+    const again = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(again.exitCode, again.stderr).toBe(0);
+    expect(stdout).toContain(`ffmpeg: kept ${fake}, which an earlier`);
+    expect(stdout).toContain("`xplainer setup --ffmpeg-pinned`");
+    expect(stdout).toContain("`xplainer setup --ffmpeg-path <file>`");
+    expect(stdout).not.toContain("manifest:");
+    const marker = readToolchainMarker(stateDir);
+    expect(marker?.ffmpeg).toMatchObject({ path: fake, provider: "path", version: "6.1.1" });
+    expect(marker?.ffmpeg?.sha256).toBe((JSON.parse(recorded) as Toolchain).ffmpeg?.sha256);
+  });
+
+  it("probes the named ffmpeg again where it is when it has changed in place", async () => {
+    const { stateDir, env, fake, fakeDir } = await namedFfmpegMachine();
+    // An upgrade in place: a different binary at the same path, saying a different version.
+    writeFakeFfmpeg(fakeDir, { version: "7.1.2", libavcodec: "61.19.101" });
+    writeFileSync(fake, `${readFileSync(fake, "utf8")}# upgraded\n`);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("is no longer the binary setup probed — its digest has changed");
+    expect(readToolchainMarker(stateDir)?.ffmpeg).toMatchObject({
+      path: fake,
+      provider: "path",
+      version: "7.1.2",
+      libavcodec: "61.19.101",
+    });
+  });
+
+  it("refuses a changed named ffmpeg the probe refuses, naming both ways out", async () => {
+    const { stateDir, env, fake, fakeDir } = await namedFfmpegMachine();
+    writeFakeFfmpeg(fakeDir, { version: "5.1.6", libavcodec: "59.37.100" });
+    writeFileSync(fake, `${readFileSync(fake, "utf8")}# downgraded\n`);
+    const before = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const { stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode).toBe(3);
+    expect(stderr).toContain("libavcodec 59.37.100");
+    expect(stderr).toContain("`xplainer setup --ffmpeg-pinned`");
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(before);
+  });
+
+  it("acquires the pinned build in place of a named ffmpeg that is gone, and says so", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+    rmSync(fake);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", unavailableRowManifest()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain(
+      `ffmpeg: ${fake}, which an earlier \`xplainer setup --ffmpeg-path\` recorded, is no longer ` +
+        "an executable file there, so the pinned build is acquired in its place.",
+    );
+    // The pin route ran: here it meets this manifest's unavailable row.
+    expect(stdout).toContain("ffmpeg: skipped — The toolchain manifest records the ffmpeg");
+  });
+
+  it("takes the pin route on --ffmpeg-pinned, and refuses it beside --ffmpeg-path or --skip-ffmpeg", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+
+    const pinned = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--ffmpeg-pinned", "--manifest", unavailableRowManifest()],
+      ],
+      env,
+    );
+    const withPath = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-pinned", "--ffmpeg-path", fake],
+      env,
+    );
+    const withSkip = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-pinned", "--skip-ffmpeg"],
+      env,
+    );
+
+    expect(pinned.exitCode, pinned.stderr).toBe(0);
+    expect(pinned.stdout).not.toContain("ffmpeg: kept");
+    expect(pinned.stdout).toContain("ffmpeg: skipped — The toolchain manifest records the ffmpeg");
+    expect(withPath.exitCode).toBe(1);
+    expect(withPath.stderr).toContain("--ffmpeg-path records one you name instead");
+    expect(withSkip.exitCode).toBe(1);
+    expect(withSkip.stderr).toContain("--skip-ffmpeg leaves ffmpeg out of this run");
+  });
+});
+
+/**
  * D2 (c): `setup` writes a version-2 marker, and a daemon installed from before ADR 0031's cut reads
  * version 1 — so under such a daemon it refuses, exit `3`, having written nothing, and names the
  * reinstall rather than running it (§Note, 2026-11-12). The daemon is found the way every surface

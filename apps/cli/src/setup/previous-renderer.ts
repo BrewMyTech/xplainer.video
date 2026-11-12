@@ -24,7 +24,10 @@
  * `public/`, `out/`, `requests/` and `locks/` are the user's work and the daemon's, and
  * `tailwind.css` and `tsconfig.json` are still template files the renderer reads. The order is the
  * evidence last: `node_modules/` first, because it is the cost, and the two documents that license
- * the deletion after it, so an interrupted run leaves a tree the next one still recognises.
+ * the deletion after it, so an interrupted run leaves a tree the next one still recognises. The
+ * one interruption that leaves `package.json` gone and `workspace.manifest.json` behind is finished
+ * on the manifest's word alone: with the other three entries already removed there is nothing left
+ * for `package.json` to vouch for, and the manifest is the only entry left to remove.
  *
  * It is called by `commands/setup.ts` only after the refusal to cross the marker's cut has passed
  * (D2 (c)): a machine still running a daemon from before the cut is one whose renderer may still
@@ -102,13 +105,29 @@ export function removePreviousRendererTree(workspaceRoot: string): PreviousRende
     return { kind: "absent" };
   }
 
+  // **The last step of an interrupted removal.** `package.json` is removed second to last, so a run
+  // stopped between it and the manifest leaves the manifest alone — and the template check below
+  // would then keep it for ever, for want of the very file this module had already removed. With
+  // the other three entries gone there is nothing of anyone's left that the manifest could be
+  // vouching for, so it goes on its own word.
+  const evidenceOnly = PREVIOUS_RENDERER_ENTRIES.filter(
+    (entry) => entry !== PREVIOUS_WORKSPACE_MANIFEST,
+  ).every((entry) => !existsSync(join(workspaceRoot, entry)));
+  if (evidenceOnly) {
+    return removeEntries(workspaceRoot, [PREVIOUS_WORKSPACE_MANIFEST]);
+  }
+
   const reason = templateMismatch(readObject(join(workspaceRoot, "package.json")));
   if (reason !== null) {
     return { kind: "kept", reason };
   }
+  return removeEntries(workspaceRoot, PREVIOUS_RENDERER_ENTRIES);
+}
 
+/** Remove `entries` from `workspaceRoot` in order, skipping what is already gone. */
+function removeEntries(workspaceRoot: string, entries: readonly string[]): PreviousRendererOutcome {
   const removed: string[] = [];
-  for (const entry of PREVIOUS_RENDERER_ENTRIES) {
+  for (const entry of entries) {
     const path = join(workspaceRoot, entry);
     if (!existsSync(path)) {
       continue;

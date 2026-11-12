@@ -203,8 +203,10 @@ xplainer setup --ffmpeg-path /usr/bin/ffmpeg
 ```
 
 It must be FFmpeg 6.0 or newer with `libx264` and the built-in `aac` encoder, and `setup` checks
-that before recording it. `XPLAINER_FFMPEG` overrides the recorded binary for any process it is set
-in. xplainer never looks for FFmpeg on `PATH` or in Homebrew's directories by itself. A render on a
+that before recording it. A later plain `xplainer setup` — which `xplainer update` runs — keeps it,
+checks it again if it has changed, and downloads the pinned build only once it is gone;
+`xplainer setup --ffmpeg-pinned` switches back to the pinned build. `XPLAINER_FFMPEG`, an absolute
+path, overrides the recorded binary for any process it is set in. xplainer never looks for FFmpeg on `PATH` or in Homebrew's directories by itself. A render on a
 machine with no FFmpeg recorded is refused at once, naming `xplainer setup`; `explainer_still` does
 not need one.
 

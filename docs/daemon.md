@@ -34,6 +34,7 @@ restate their meanings.
 ```sh
 xplainer setup                          # browser, ffmpeg and speech route; writes toolchain.json
 xplainer setup --ffmpeg-path <file>     # the same, recording an ffmpeg you name instead of the pin
+xplainer setup --ffmpeg-pinned          # the pin again, replacing one --ffmpeg-path recorded
 xplainer runtime build --out <dir>      # assemble payload 1 (a checkout only; it is the builder)
 xplainer daemon install --runtime <dir> # register with this machine's supervisor and start it
 xplainer daemon status                  # installed? running? healthy? — and which of the three

@@ -18,7 +18,8 @@ run under a daemon from before the `toolchain.json` cut has passed. It prints wh
 never touches `videos/`, `public/`, `out/`, `requests/`, `locks/`, `tailwind.css`, `tsconfig.json` or
 anything else — so an `XPLAINER_VIDEOS_DIR` pointing at a project of your own is left exactly as it
 is. A tree that looks like one `setup` wrote but whose `package.json` differs is kept, with a line
-saying why.
+saying why. A removal interrupted after `package.json` went is finished by the next `setup`, which
+removes the `workspace.manifest.json` left behind on its own.
 
 `daemon update` no longer compares the two runtimes' template pins: its precondition is that both
 runtimes read the same `toolchain.json` format and that the marker satisfies the incoming runtime.

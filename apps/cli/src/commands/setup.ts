@@ -44,6 +44,14 @@
  * of downloading the pin (ADR 0031 §Note, 2026-11-12, D6); `--skip-ffmpeg` beside it is a usage
  * error, because the two ask for opposite things.
  *
+ * **And a named ffmpeg survives a plain re-run**, as a working `docker` speech route does: a run
+ * without `--ffmpeg-path` keeps the one an earlier run recorded from it while that binary still
+ * verifies, probes it again where it is when it has changed, and acquires the pin only once it is
+ * gone (`providers/ffmpeg.ts`'s `keepNamedFfmpeg`). `xplainer update` runs a plain `setup` on every
+ * upgrade, and the machines `--ffmpeg-path` exists for — musl and Alpine — are the ones the pin
+ * cannot serve. `--ffmpeg-pinned` is the way back to the pin, as `--speech onnx` is speech's; it is
+ * a usage error beside `--ffmpeg-path` or `--skip-ffmpeg`.
+ *
  * **FFmpeg is optional in the marker, and its absence is said rather than refused.** A run that
  * skipped it, or met a manifest row recording this platform's build as unavailable, still writes a
  * complete marker of the other two and exits `0`, naming `--ffmpeg-path`: stills need no encoder,
@@ -92,7 +100,9 @@ import { acquireChrome, ChromeRefusal } from "../setup/providers/chrome.js";
 import {
   type AcquiredFfmpeg,
   acquireFfmpeg,
+  FFMPEG_PATH_PROVIDER,
   FfmpegRefusal,
+  keepNamedFfmpeg,
   recordFfmpegPath,
 } from "../setup/providers/ffmpeg.js";
 import {
@@ -128,6 +138,7 @@ type SetupOptions = {
   skipBrowser?: boolean;
   skipFfmpeg?: boolean;
   ffmpegPath?: string;
+  ffmpegPinned?: boolean;
   ttsUrl?: string;
   speech?: string;
   stateDir?: string;
@@ -159,6 +170,10 @@ export function createSetupCommand(io: CliIo): Command {
     .option("--skip-ffmpeg", "leave ffmpeg out of this run")
     .option("--skip-speech", "leave speech out of this run")
     .option("--ffmpeg-path <file>", "record this ffmpeg instead of downloading the pinned build")
+    .option(
+      "--ffmpeg-pinned",
+      "download the pinned ffmpeg, replacing one an earlier --ffmpeg-path recorded",
+    )
     .option("--tts-url <url>", "record a Kokoro-FastAPI server this machine does not own")
     .option(
       "--speech <route>",
@@ -199,6 +214,19 @@ export function createSetupCommand(io: CliIo): Command {
         );
         io.exit(USAGE_EXIT_CODE);
       }
+      if (
+        options.ffmpegPinned === true &&
+        (options.ffmpegPath !== undefined || options.skipFfmpeg === true)
+      ) {
+        io.writeErr(
+          `xplainer setup: --ffmpeg-pinned downloads the pinned ffmpeg and ${
+            options.ffmpegPath === undefined
+              ? "--skip-ffmpeg leaves ffmpeg out of this run"
+              : "--ffmpeg-path records one you name instead"
+          }; give one or the other.\n`,
+        );
+        io.exit(USAGE_EXIT_CODE);
+      }
       const stateDir = resolveStateDirSetting({ flag: options.stateDir }).path;
       let crossing: string | null;
       try {
@@ -232,21 +260,22 @@ export function createSetupCommand(io: CliIo): Command {
       // into an incomplete one behind its owner's back.
       let ffmpeg: ToolchainFfmpeg | null = previous?.ffmpeg ?? null;
 
-      try {
-        const needsManifest =
-          components.includes("browser") ||
-          (components.includes("ffmpeg") && options.ffmpegPath === undefined) ||
-          (components.includes("speech") && options.ttsUrl === undefined);
-        const loaded = needsManifest
-          ? await loadToolchainManifest({
-              ...(options.manifest === undefined ? {} : { override: options.manifest }),
-              log,
-            })
-          : null;
+      // Loaded once, by the first component that needs it and by none that does not: a run that
+      // keeps a named ffmpeg and records a `--tts-url` reads no manifest at all, so it works on a
+      // machine that cannot reach the published address.
+      let loading: Promise<ToolchainManifest> | null = null;
+      const manifest = (): Promise<ToolchainManifest> => {
+        loading ??= loadToolchainManifest({
+          ...(options.manifest === undefined ? {} : { override: options.manifest }),
+          log,
+        }).then((loaded) => loaded.manifest);
+        return loading;
+      };
 
-        if (loaded !== null && components.includes("browser")) {
+      try {
+        if (components.includes("browser")) {
           const acquired = await acquireChrome({
-            manifest: loaded.manifest,
+            manifest: await manifest(),
             toolchainDir,
             log,
           });
@@ -257,11 +286,22 @@ export function createSetupCommand(io: CliIo): Command {
         }
 
         if (components.includes("ffmpeg")) {
+          // The binary a user named stands until they name another or ask for the pin: what the
+          // last run recorded from `--ffmpeg-path`, kept, probed again, or — gone — given up.
+          const named =
+            options.ffmpegPath === undefined &&
+            options.ffmpegPinned !== true &&
+            previous?.ffmpeg?.provider === FFMPEG_PATH_PROVIDER
+              ? keepNamedFfmpeg(previous.ffmpeg, log)
+              : null;
           if (options.ffmpegPath !== undefined) {
             ffmpeg = recordFfmpegPath({ path: options.ffmpegPath, log });
             log(`ffmpeg: recorded the path route at ${ffmpeg.path}`);
-          } else if (loaded !== null) {
-            const acquired = await acquireFfmpegOrSkip(loaded.manifest, toolchainDir, log);
+          } else if (named !== null) {
+            ffmpeg = named;
+            log(`ffmpeg: recorded the path route at ${ffmpeg.path}`);
+          } else {
+            const acquired = await acquireFfmpegOrSkip(await manifest(), toolchainDir, log);
             if (acquired !== null) {
               ffmpeg = acquired.component;
               log(
@@ -274,10 +314,9 @@ export function createSetupCommand(io: CliIo): Command {
 
         if (components.includes("speech")) {
           const acquired = await acquireSpeech({
-            // A thunk: the `--tts-url`, `onnx` and `docker` routes need no manifest, and this
-            // phase's published address answers nothing, so loading one eagerly would refuse a run
-            // that had no use for it.
-            manifest: async () => loaded?.manifest ?? (await requireManifest(options, log)),
+            // A thunk: the `--tts-url`, `onnx` and `docker` routes need no manifest, so loading one
+            // for speech alone would refuse a run that had no use for it.
+            manifest,
             toolchainDir,
             ...(options.ttsUrl === undefined ? {} : { ttsUrl: options.ttsUrl }),
             ...(route === undefined ? {} : { route }),
@@ -420,24 +459,6 @@ function reportPreviousRendererTree(workspaceRoot: string, log: (line: string) =
       );
       return;
   }
-}
-
-/**
- * Load the manifest for a speech run that had no other reason to.
- *
- * Reached only when the `bundle` route is actually tried — every earlier route needs no manifest,
- * and this is what lets `setup --tts-url … --skip-browser` work on a machine that cannot reach the
- * published address at all.
- */
-async function requireManifest(
-  options: SetupOptions,
-  log: (line: string) => void,
-): Promise<ToolchainManifest> {
-  const loaded = await loadToolchainManifest({
-    ...(options.manifest === undefined ? {} : { override: options.manifest }),
-    log,
-  });
-  return loaded.manifest;
 }
 
 /** The message a refusal shows, which is the refusal's own sentence and never a stack. */
