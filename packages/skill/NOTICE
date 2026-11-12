@@ -36,6 +36,15 @@ Apache-2.0, as the authoritative list of the symbols the speech model accepts.
 The model weights themselves are neither bundled nor redistributed here; they
 are fetched from their upstream home, pinned by revision and digest.
 
+`@xplainer/cli` depends on xz-decompress
+(https://github.com/httptoolkit/xz-decompress), MIT, to unpack the `.tar.xz`
+FFmpeg builds `xplainer setup` downloads on Linux. It is installed from the npm
+registry as a declared dependency, not bundled. It contains, compiled to
+WebAssembly, xzwasm (Copyright (c) Steve Sanderson, MIT), XZ Embedded by Lasse
+Collin and Igor Pavlov (public domain) and walloc (Copyright (c) 2020 Igalia,
+S.L., MIT). Its package carries no licence file; those are the terms its
+`package.json` and the header of its own code state.
+
 `xplainer setup` fetches two more components onto the machine it runs on, and
 neither is bundled in or redistributed by any package here. The speech model
 weights and voice pack of `onnx-community/Kokoro-82M-v1.0-ONNX-timestamped` are

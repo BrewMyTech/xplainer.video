@@ -30,16 +30,19 @@ import {
   downloadArtefact,
   PART_SUFFIX,
   redirectTarget,
+  TAR_XZ_ARCHIVE,
   WORK_DIR_NAME,
 } from "./download.js";
 import {
   ARTEFACT_ROUTES,
   type ArtefactServer,
   startArtefactServer,
+  tarXzRoute,
 } from "./testing/artefact-server.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "fixtures", "toolchain-fixture.zip");
+const XZ_FIXTURE = join(HERE, "fixtures", "ffmpeg-build-fixture.tar.xz");
 const scratch: string[] = [];
 let archive: Buffer;
 let digest: string;
@@ -514,11 +517,72 @@ describe("committing an artefact", () => {
   it("refuses an archive format it does not unpack, before it is fetched", () => {
     expect(() =>
       assertZipArtefact("https://cdn.xplainer.video/toolchain/v1/speech.tar.gz"),
-    ).toThrow(/only archive format/);
+    ).toThrow(/is not a \.zip, and this artefact is read as a zip archive/);
     // remotion.media's own URLs carry a query string, which is not part of the format.
     expect(() =>
       assertZipArtefact("https://remotion.media/chromium-headless-shell-linux-x64-1.zip?clear"),
     ).not.toThrow();
+  });
+});
+
+describe("committing an xz tarball", () => {
+  it("fetches a .tar.xz, verifies it, and commits every member through TAR_XZ_ARCHIVE", async () => {
+    const tarXz = readFileSync(XZ_FIXTURE);
+    const server = await startArtefactServer(tarXz);
+    try {
+      const root = scratchDir();
+      const destination = join(root, "ffmpeg");
+
+      const outcome = await acquireArtefact({
+        request: {
+          url: server.url(tarXzRoute(ARTEFACT_ROUTES.good)),
+          sha256: sha256Of(tarXz),
+          size: tarXz.length,
+        },
+        destination,
+        archive: TAR_XZ_ARCHIVE,
+      });
+
+      expect(outcome.extraction).toMatchObject({ files: 4, directories: 3, bytes: 198_086 });
+      expect(
+        readFileSync(join(destination, "ffmpeg-fixture-linuxarm64-gpl", "LICENSE.txt"), "utf8"),
+      ).toMatch(/^GNU GENERAL PUBLIC LICENSE/);
+      expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
+      expect(server.requests.map((seen) => seen.path)).toContain("/good.tar.xz");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("names a corrupt .tar.xz by its digest, before the decoder is asked", async () => {
+    const tarXz = readFileSync(XZ_FIXTURE);
+    const server = await startArtefactServer(tarXz);
+    try {
+      const destination = join(scratchDir(), "ffmpeg");
+      const refusal = await refusalOf(
+        acquireArtefact({
+          request: {
+            url: server.url(tarXzRoute(ARTEFACT_ROUTES.corrupt)),
+            sha256: sha256Of(tarXz),
+            size: tarXz.length,
+          },
+          destination,
+          archive: TAR_XZ_ARCHIVE,
+        }),
+      );
+
+      expect(refusal.reason).toBe("checksum-mismatch");
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("refuses a zip as an xz tarball, and an xz tarball as a zip, before either is fetched", () => {
+    expect(() => TAR_XZ_ARCHIVE.assert("https://example.test/ffmpeg.zip")).toThrow(
+      /is not a .tar.xz/,
+    );
+    expect(() => assertZipArtefact("https://example.test/ffmpeg.tar.xz")).toThrow(/is not a \.zip/);
   });
 });
 

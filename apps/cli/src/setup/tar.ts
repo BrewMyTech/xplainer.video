@@ -1,5 +1,6 @@
 /**
- * Reading a gzipped tarball, and writing out only the members this machine has a use for.
+ * Reading a tarball — gzipped or xz-compressed — and writing out only the members this machine has
+ * a use for.
  *
  * `archive.ts` opens by saying that every artefact `setup` fetches is a zip, and until the ONNX
  * speech route that was true. It is no longer: **ONNX Runtime's Node binding exists only inside the
@@ -37,8 +38,26 @@
  * the members they name. `onnxruntime-node` ships every platform in one package (five `napi-v6`
  * subtrees, 296 MB unpacked), and the whole reason the runtime is an acquired component rather than
  * a dependency is that a machine should hold its own platform and no other. So
- * {@link extractTarGz} takes a function from an archive member to the path it should land at, or to
+ * {@link extractTar} takes a function from an archive member to the path it should land at, or to
  * `null`, and a skipped member costs one `subarray` walk past its body.
+ *
+ * **Two decompressors, and only the second is a dependency.** The npm registry serves gzip, which
+ * `node:zlib` decodes. Both Linux FFmpeg pins — BtbN's `linux64` and `linuxarm64` builds — are
+ * published **only** as `.tar.xz`, and Node has no xz decoder, so xz is `xz-decompress@0.2.3`: MIT,
+ * no dependencies, no install script, XZ Embedded compiled to WebAssembly and inlined, owner-approved
+ * and audited in [ADR 0031](../../../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s
+ * note of 2026-11-12, which also carries its measurement on the real 128.7 MB linux-arm64 pin. The tar
+ * parser below is the same for both; only the bytes it is handed differ.
+ *
+ * **Decoding can stop at the last member a caller wants** (`stopAfter`). The archive's digest is
+ * verified before a byte of it is decoded (`download.ts`), so nothing after that member can change
+ * what was written, and a build whose binary comes first need not inflate the documentation behind
+ * it. What stopping gives up is the trailer check below, which exists only to notice a file changed
+ * on disk *after* that verification. **An xz decoder is one per process and is not reentrant**:
+ * `xz-decompress` instantiates one WebAssembly module and serialises every stream through a lock
+ * that only a finished, failed or **cancelled** stream gives back — so an extraction that stops early
+ * cancels the stream before it returns, or the next xz extraction in the process would wait for
+ * ever.
  *
  * **Every member type but a file and a directory is refused by name**, and the reason it is safe to
  * be that strict is that every tarball this reader is pointed at is **pinned by digest**. An entry
@@ -52,6 +71,7 @@
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { createGunzip } from "node:zlib";
+import xzDecompress from "xz-decompress";
 import { ArchiveRefusal, safeJoin } from "./archive.js";
 
 /** One tar header block. */
@@ -98,7 +118,23 @@ export type TarHeader = {
  */
 export type TarSelector = (header: TarHeader) => string | null;
 
-/** What {@link extractTarGz} wrote. */
+/** How a tarball's one compressed stream is decoded: gzip for an npm package, xz for an FFmpeg build. */
+export type TarDecompressor = "gzip" | "xz";
+
+/** How {@link extractTar} reads its archive. */
+export type TarExtractOptions = {
+  decompressor: TarDecompressor;
+  /**
+   * Archive member names — as the archive records them — after which decoding may stop.
+   *
+   * Once every one has been passed, the stream is cancelled and the extraction returns. It is an
+   * economy and nothing more: a name the archive lacks costs the early stop, and whether a member
+   * arrived is still the caller's to check, exactly as it is without this option.
+   */
+  stopAfter?: readonly string[];
+};
+
+/** What {@link extractTar} wrote. */
 export type TarExtractionSummary = {
   files: number;
   directories: number;
@@ -109,18 +145,31 @@ export type TarExtractionSummary = {
 };
 
 /**
- * Unpack the members `select` names out of a gzipped tarball.
+ * Unpack the members `select` names out of a tarball.
  *
- * The destination is created; nothing else about it is assumed, because the one caller hands it a
+ * The destination is created; nothing else about it is assumed, because every caller hands it a
  * staging directory it is about to `rename` and would delete if this throws.
  */
-export async function extractTarGz(
+export async function extractTar(
   archive: string,
   destination: string,
   select: TarSelector,
+  options: TarExtractOptions,
 ): Promise<TarExtractionSummary> {
   const summary: TarExtractionSummary = { files: 0, directories: 0, skipped: 0, bytes: 0 };
   mkdirSync(destination, { recursive: true });
+
+  /** The `stopAfter` names not yet passed; reaching none of them left is what ends the read. */
+  const outstanding = new Set(options.stopAfter ?? []);
+  const stopping = outstanding.size > 0;
+  /** Whether every `stopAfter` member has been passed, so nothing after it needs decoding. */
+  let complete = false;
+  /** The name of the member whose body is being read, so its end can be noticed. */
+  let current = "";
+  const passed = (name: string): void => {
+    outstanding.delete(name);
+    complete = stopping && outstanding.size === 0;
+  };
 
   /** Header bytes seen so far, when a read chunk ended part way through a header block. */
   let pending: Buffer = Buffer.alloc(0);
@@ -133,12 +182,10 @@ export async function extractTarGz(
   /** Whether the two-zero-block trailer has been reached; anything after it is not a member. */
   let trailer = false;
 
-  const source = createReadStream(archive).pipe(createGunzip());
   try {
-    for await (const raw of source) {
-      const chunk = raw as Buffer;
+    for await (const chunk of decompressed(archive, options.decompressor)) {
       let cursor = 0;
-      while (cursor < chunk.length) {
+      while (cursor < chunk.length && !complete) {
         if (trailer) {
           // A tarball is padded to a fixed block factor, so the trailer is followed by zeroes that
           // are part of the file and not part of the archive.
@@ -152,9 +199,12 @@ export async function extractTarGz(
           }
           cursor += take;
           remaining -= take;
-          if (remaining === 0 && sink !== null) {
-            closeSync(sink);
-            sink = null;
+          if (remaining === 0) {
+            if (sink !== null) {
+              closeSync(sink);
+              sink = null;
+            }
+            passed(current);
           }
           continue;
         }
@@ -181,16 +231,30 @@ export async function extractTarGz(
         const header = readHeader(block, archive);
         remaining = header.size;
         padding = (BLOCK - (header.size % BLOCK)) % BLOCK;
+        current = header.name;
         sink = admit(header, destination, select, summary);
+        if (remaining === 0) {
+          if (sink !== null) {
+            closeSync(sink);
+            sink = null;
+          }
+          passed(current);
+        }
+      }
+      if (complete) {
+        // Leaving the loop is what cancels the stream: see `decompressed`.
+        break;
       }
     }
   } finally {
     if (sink !== null) {
       closeSync(sink);
     }
-    source.destroy();
   }
 
+  if (complete) {
+    return summary;
+  }
   if (!trailer) {
     throw new ArchiveRefusal(
       "not-a-tarball",
@@ -357,23 +421,139 @@ function octal(block: Buffer, at: number, length: number, entry: string, field: 
   return Number.parseInt(digits, 8);
 }
 
-/** The extensions a gzipped tarball is published under. npm uses the first. */
-const TARBALL_SUFFIXES: readonly string[] = [".tgz", ".tar.gz"];
+/**
+ * The archive's one compressed stream, decoded, as `Buffer` chunks.
+ *
+ * A failure of the **decoder** — not the file read, which is rethrown as itself — is
+ * `corrupt-stream`. An error the consumer throws never reaches the `catch` here: leaving a
+ * `for await` early returns the generator rather than throwing into it, and that return is what
+ * runs the `finally` that cancels an xz stream which has not ended (the module docblock says why
+ * it must).
+ */
+async function* decompressed(
+  archive: string,
+  decompressor: TarDecompressor,
+): AsyncGenerator<Buffer> {
+  const file = createReadStream(archive);
+  let readError: unknown;
+  file.on("error", (error) => {
+    readError = error;
+  });
+  if (decompressor === "gzip") {
+    const gunzip = createGunzip();
+    file.on("error", (error) => gunzip.destroy(error));
+    try {
+      for await (const chunk of file.pipe(gunzip)) {
+        yield chunk as Buffer;
+      }
+    } catch (error) {
+      throw readError ?? corruptStream(archive, decompressor, error);
+    } finally {
+      gunzip.destroy();
+      file.destroy();
+    }
+    return;
+  }
+  // The decoder takes a web stream. Node's `Readable.toWeb` returns one whose declared type is not
+  // the one `xz-decompress` names, so the file is handed over through the global constructor.
+  const chunks = file[Symbol.asyncIterator]();
+  const compressed = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await chunks.next();
+      if (next.done === true) {
+        controller.close();
+      } else {
+        controller.enqueue(next.value as Buffer);
+      }
+    },
+    async cancel() {
+      await chunks.return?.();
+    },
+  });
+  const reader = new xzDecompress.XzReadableStream(compressed).getReader();
+  /** Whether the stream ended or failed by itself, so that there is nothing to cancel. */
+  let settled = false;
+  try {
+    for (;;) {
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        settled = true;
+        throw readError ?? corruptStream(archive, decompressor, error);
+      }
+      if (next.done) {
+        settled = true;
+        return;
+      }
+      yield Buffer.from(next.value.buffer, next.value.byteOffset, next.value.byteLength);
+    }
+  } finally {
+    if (!settled) {
+      await reader.cancel();
+    }
+    file.destroy();
+  }
+}
 
 /**
- * Refuse an artefact this reader cannot unpack, by extension and before it is fetched.
+ * What XZ Embedded's `enum xz_ret` values mean, for the ones that are a refusal.
+ *
+ * `xz-decompress` reports a failure as `get_next_output failed with error code <n>` and no more, so
+ * the sentence a user is shown comes from here.
+ */
+const XZ_FAILURES: Readonly<Record<string, string>> = {
+  "2": "it uses an integrity check this decoder does not implement",
+  "3": "the decoder could not allocate the memory it needs",
+  "4": "it needs more memory than the decoder allows",
+  "5": "it is not an xz stream",
+  "6": "it uses xz options this decoder does not implement",
+  "7": "its compressed data is corrupt, or an integrity check does not match it",
+  "8": "it ends before the xz stream does",
+};
+
+/** The refusal for a stream its own decoder would not decode. */
+function corruptStream(
+  archive: string,
+  decompressor: TarDecompressor,
+  error: unknown,
+): ArchiveRefusal {
+  const detail = error instanceof Error ? error.message : String(error);
+  const code = /error code (\d+)/.exec(detail)?.[1];
+  const meaning =
+    decompressor === "xz" && code !== undefined ? (XZ_FAILURES[code] ?? detail) : detail;
+  return new ArchiveRefusal(
+    "corrupt-stream",
+    `${archive} does not decompress as ${decompressor}: ${meaning}. Its digest is checked before ` +
+      "it is read, so either the file was changed on disk after that, or the pinned archive is " +
+      "itself damaged.",
+  );
+}
+
+/** The extensions each kind of tarball is published under. npm uses `.tgz`; BtbN, `.tar.xz`. */
+const TARBALL_SUFFIXES: Readonly<Record<TarDecompressor, readonly string[]>> = {
+  gzip: [".tgz", ".tar.gz"],
+  xz: [".tar.xz"],
+};
+
+/**
+ * Refuse an artefact this reader cannot unpack as `decompressor`, by extension and before it is
+ * fetched.
  *
  * The counterpart of `download.ts`'s `assertZipArtefact`, and it exists for the same reason: the
  * check that costs nothing belongs before the hundred megabytes rather than after. The query string
- * is ignored for the same reason too — a URL is allowed to carry one.
+ * is ignored for the same reason too — a URL is allowed to carry one. It is asked about one
+ * decompressor rather than about "a tarball", because a `.tar.xz` handed to the gzip decoder would
+ * pass a looser check and then fail a hundred megabytes later as a corrupt stream.
  */
-export function assertTarballArtefact(url: string): void {
+export function assertTarballArtefact(url: string, decompressor: TarDecompressor): void {
   const pathname = new URL(url).pathname.toLowerCase();
-  if (!TARBALL_SUFFIXES.some((suffix) => pathname.endsWith(suffix))) {
+  const suffixes = TARBALL_SUFFIXES[decompressor];
+  if (!suffixes.some((suffix) => pathname.endsWith(suffix))) {
     throw new ArchiveRefusal(
       "not-a-tarball",
-      `${url} is not a ${TARBALL_SUFFIXES.join(" or a ")}, and this reader unpacks nothing else. ` +
-        "Every tarball setup fetches is an npm package, and the registry serves them as .tgz.",
+      `${url} is not a ${suffixes.join(" or a ")}, which is how a ${decompressor} tarball is ` +
+        "published, so it is not the archive this reader was asked to unpack.",
     );
   }
 }

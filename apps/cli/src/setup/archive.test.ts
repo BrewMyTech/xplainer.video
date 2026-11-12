@@ -166,6 +166,77 @@ describe("an archive that would write outside the directory it is unpacked into"
   });
 });
 
+describe("a selector, which takes the members a caller names and nothing else", () => {
+  it("writes the named members at the paths it answers, with their modes", () => {
+    const entries = new Map(readZipEntries(readFileSync(FIXTURE)).map((e) => [e.name, e]));
+    const keep: Record<string, string> = {
+      "toolchain-fixture/shell": "bin/shell",
+      "toolchain-fixture/nested/notes.txt": "notes.txt",
+    };
+    const destination = join(scratchDir(), "selected");
+
+    const summary = extractZip(FIXTURE, destination, (name) => keep[name] ?? null);
+
+    expect(summary).toEqual({
+      files: 2,
+      directories: 0,
+      symlinks: 0,
+      bytes:
+        (entries.get("toolchain-fixture/shell")?.uncompressedSize ?? 0) +
+        (entries.get("toolchain-fixture/nested/notes.txt")?.uncompressedSize ?? 0),
+    });
+    expect(existsSync(join(destination, "toolchain-fixture"))).toBe(false);
+    expect(readFileSync(join(destination, "notes.txt")).length).toBe(
+      entries.get("toolchain-fixture/nested/notes.txt")?.uncompressedSize,
+    );
+    if (process.platform !== "win32") {
+      const ran = spawnSync(join(destination, "bin", "shell"), [], { encoding: "utf8" });
+      expect(ran.stdout).toBe("fixture-shell 1.0.0\n");
+    }
+  });
+
+  it("never inflates a member it leaves out, so a corrupt one there costs nothing", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "root/ffmpeg", contents: "the binary" },
+        { name: "root/doc.html", contents: "eight...", crcOverride: 0x0badc0de },
+      ]),
+    );
+    const destination = join(scratchDir(), "unpacked");
+
+    const summary = extractZip(archive, destination, (name) =>
+      name === "root/ffmpeg" ? "ffmpeg" : null,
+    );
+
+    expect(summary.files).toBe(1);
+    expect(readFileSync(join(destination, "ffmpeg"), "utf8")).toBe("the binary");
+  });
+
+  it("holds the selector's answer to the same rule as an archive's own name", () => {
+    expect(() => extractZip(FIXTURE, join(scratchDir(), "out"), () => "../escaped")).toThrow(
+      /climbs out of the directory/,
+    );
+  });
+
+  it("refuses two members the selector would land on one path", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "a/LICENSE", contents: "first" },
+        { name: "b/LICENSE", contents: "second" },
+      ]),
+    );
+    const collapse = (name: string): string => name.split("/").slice(-1)[0] ?? name;
+
+    try {
+      extractZip(archive, join(scratchDir(), "out"), collapse);
+      expect.unreachable("a collapsing selector must refuse");
+    } catch (error) {
+      expect((error as ArchiveRefusal).reason).toBe("unsafe-entry");
+      expect((error as ArchiveRefusal).message).toMatch(/already been written to/);
+    }
+  });
+});
+
 describe("an archive whose bytes do not add up", () => {
   it("refuses a member whose CRC-32 does not match what it inflated to", () => {
     const archive = writeArchive(

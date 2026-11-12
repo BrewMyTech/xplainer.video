@@ -70,6 +70,7 @@ import { pipeline } from "node:stream/promises";
 import { flushDirectory } from "../daemon/durable-write.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { extractZip } from "./archive.js";
+import { assertTarballArtefact, extractTar } from "./tar.js";
 
 /** Why a download was refused. One value per distinguishable condition, never a catch-all. */
 export type DownloadRefusalReason =
@@ -693,6 +694,20 @@ export const ZIP_ARCHIVE: ArchiveFormat = {
   extract: extractZip,
 };
 
+/**
+ * A tarball compressed with xz, every member written at the name it carries.
+ *
+ * The counterpart of {@link ZIP_ARCHIVE}, for the one publisher that ships nothing else: both
+ * Linux FFmpeg pins are BtbN `.tar.xz` builds. A caller that wants one binary out of a build's
+ * 400 MB builds its own format around `extractTar`'s selector and `stopAfter`, as the ONNX route
+ * builds one around its gzip tarball.
+ */
+export const TAR_XZ_ARCHIVE: ArchiveFormat = {
+  assert: (url) => assertTarballArtefact(url, "xz"),
+  extract: (archive, staging) =>
+    extractTar(archive, staging, (header) => header.name, { decompressor: "xz" }),
+};
+
 /** Where the work happens and where the result lands. */
 export type AcquireOptions = {
   request: ArtefactRequest;
@@ -861,8 +876,8 @@ export function assertZipArtefact(url: string): void {
     throw new DownloadRefusal(
       "unsupported-archive",
       url,
-      `${url} is not a .zip, and zip is the only archive format setup unpacks. Every artefact ` +
-        "the toolchain manifest names is one.",
+      `${url} is not a .zip, and this artefact is read as a zip archive. A tarball is read by ` +
+        "tar.ts, under the extension its own compression is published with.",
     );
   }
 }

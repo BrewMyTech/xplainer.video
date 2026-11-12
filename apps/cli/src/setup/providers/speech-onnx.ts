@@ -122,7 +122,7 @@ import { hashFile } from "../../runtime/manifest.js";
 import { type AcquiredExpectation, stageAcquired, verifyAcquired } from "../acquired.js";
 import { type ArchiveFormat, acquireArtefact, acquireFile, WORK_DIR_NAME } from "../download.js";
 import { type HostProbe, probeHost, speechPlatformKey } from "../manifest.js";
-import { assertTarballArtefact, extractTarGz, type TarSelector } from "../tar.js";
+import { assertTarballArtefact, extractTar, type TarSelector } from "../tar.js";
 
 /** The `provider` token the marker records for this route. */
 export const ONNX_PROVIDER = "onnx";
@@ -509,8 +509,9 @@ async function admitTree(options: AdmitTreeOptions): Promise<boolean> {
   options.log(`speech: ${artefact.url}`);
   options.log(`speech: expecting sha256 ${artefact.sha256} (${artefact.size} bytes)`);
   const archive: ArchiveFormat = {
-    assert: assertTarballArtefact,
-    extract: (tarball, staging) => extractTarGz(tarball, staging, options.select),
+    assert: (url) => assertTarballArtefact(url, "gzip"),
+    extract: (tarball, staging) =>
+      extractTar(tarball, staging, options.select, { decompressor: "gzip" }),
   };
   const outcome = await acquireArtefact({
     request: artefact,

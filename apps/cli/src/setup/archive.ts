@@ -42,14 +42,18 @@ import { crc32, inflateRawSync } from "node:zlib";
  * the same either way and three of the four conditions are literally the same rule: `unsafe-entry`
  * is {@link safeJoin} in both, `unsupported-entry` is a member kind neither will write, and
  * `corrupt-entry` is a member whose own integrity field disagrees with its bytes (a CRC-32 in a
- * zip, a header checksum in a tar). Only the two format assertions are per format.
+ * zip, a header checksum in a tar). The two format assertions are per format, and so is
+ * `corrupt-stream`: a tarball is compressed as one stream around every member — gzip or xz — and
+ * that stream's decoder refusing it is a different fact from any one member being wrong, where a
+ * zip compresses each member on its own and reports the same fault as `corrupt-entry`.
  */
 export type ArchiveRefusalReason =
   | "not-a-zip"
   | "not-a-tarball"
   | "unsupported-entry"
   | "unsafe-entry"
-  | "corrupt-entry";
+  | "corrupt-entry"
+  | "corrupt-stream";
 
 /** The archive will not be unpacked, and the destination holds nothing this call made. */
 export class ArchiveRefusal extends Error {
@@ -81,6 +85,17 @@ export type ZipEntry = {
   /** Byte offset of this member's local header. */
   localHeaderOffset: number;
 };
+
+/**
+ * Which members to write, and where — `tar.ts`'s selector contract, over a zip member's name.
+ *
+ * Answer with a **destination-relative** path to write the member there, or `null` to leave it
+ * out. A member left out is never decompressed, which is what lets a caller take one binary out of
+ * a 195 MB archive without inflating the rest. The answer goes through {@link safeJoin} whatever it
+ * says, because a selector that composed a path out of an archive-supplied name would otherwise be
+ * a way around the check.
+ */
+export type ZipSelector = (name: string) => string | null;
 
 /** What {@link extractZip} unpacked. */
 export type ExtractionSummary = {
@@ -175,24 +190,47 @@ export function readZipEntries(archive: Buffer): ZipEntry[] {
  * The destination is expected to be a **staging** directory — one that nothing else can see yet —
  * because a half-unpacked tree under a name a caller may read is exactly the state
  * `download.ts`'s temp-then-rename exists to make impossible.
+ *
+ * With no `select`, every member lands at the name it carries. Two members landing on one path is
+ * refused either way, because the later one would silently win: a selector can collapse two
+ * distinct names, and an archive can carry one name twice.
  */
-export function extractZip(archiveFile: string, destination: string): ExtractionSummary {
+export function extractZip(
+  archiveFile: string,
+  destination: string,
+  select?: ZipSelector,
+): ExtractionSummary {
   const archive = readFileSync(archiveFile);
   const entries = readZipEntries(archive);
   mkdirSync(destination, { recursive: true });
   const root = resolve(destination);
   const summary: ExtractionSummary = { files: 0, directories: 0, symlinks: 0, bytes: 0 };
+  /** Every file and link this call has written, so a second member onto one of them is refused. */
+  const written = new Set<string>();
   for (const entry of entries) {
     if (entry.name.startsWith("__MACOSX/")) {
       continue;
     }
-    const target = safeJoin(destination, entry.name);
+    const name = select === undefined ? entry.name : select(entry.name);
+    if (name === null) {
+      continue;
+    }
+    const target = safeJoin(destination, name);
     if (entry.isDirectory) {
       mkdirSync(target, { recursive: true, mode: entry.mode ?? DEFAULT_DIRECTORY_MODE });
       summary.directories += 1;
       continue;
     }
     mkdirSync(dirname(target), { recursive: true });
+    if (written.has(target)) {
+      throw new ArchiveRefusal(
+        "unsafe-entry",
+        `${entry.name} would be written to ${target}, which another member of the same archive ` +
+          "has already been written to, and the later one would silently win.",
+        entry.name,
+      );
+    }
+    written.add(target);
     const contents = readMember(archive, entry);
     if (entry.isSymlink) {
       const link = contents.toString("utf8");

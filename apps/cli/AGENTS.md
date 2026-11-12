@@ -465,8 +465,8 @@ archive reader between them.
 | `manifest.ts` | The manifest's address, its shape, and the mirror of the pinned Remotion line's own Chrome URL selector |
 | `source.ts` | Which of the three manifest sources answered — `--manifest`, the published address, this checkout's committed copy |
 | `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, the archive-format seam, the staging-then-`rename` commit, and `acquireFile` for an artefact that is not an archive |
-| `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, and every unsafe entry refused |
-| `tar.ts` | The gzipped-tarball reader: streamed, ustar only, header checksums, and a **selector** so a package carrying five platforms lands one |
+| `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, every unsafe entry refused, and an optional **selector** so one binary leaves a 195 MB archive without the rest being inflated |
+| `tar.ts` | The tarball reader, gzip or xz: streamed, ustar only, header checksums, a **selector** so a package carrying five platforms lands one, and `stopAfter`, so decoding ends at the last member a caller keeps |
 | `acquired.ts` | The record a committed acquisition carries inside itself, and the check a warm cache passes |
 | `providers/chrome.ts` | The headless shell the pinned selector names, admitted on the manifest's **expected** digest |
 | `providers/speech.ts` | The four speech routes, their precedence, `--speech`, and the refusal that names all four |
@@ -703,17 +703,32 @@ never reaches a `fetch` caller — undici turns it into a network error whose `c
 redirect (the arm64 Linux build's CDN answers `307`), and the redirect policy is a pure function so
 the https-downgrade refusal is asserted rather than assumed.
 
-**Both archive readers are written here rather than depended on.** A new *runtime* dependency of
-this package is a change to payload 1, to the publish contract and to every installer, which is a
-large blast radius for two fully specified formats. The zip reader reads the central directory,
-never the local headers, and it refuses an entry that climbs out of the destination before anything
-is written. The tar reader **streams** — `gunzipSync` on `onnxruntime-node`'s tarball would hold
-111 MB compressed and 296 MB decompressed in two live Buffers — refuses every member type but a file
-and a directory (a pinned archive cannot contain one this build has not seen), checks each header's
-own checksum because that is the one way a streaming parser can go wrong, and shares `safeJoin` with
-the zip reader because that rule is the same rule. What a tar cannot promise is what a central
-directory buys: with no index, a member is judged before **that member** is opened rather than before
-the first one, and the staging-then-`rename` commit is what still makes a refusal commit nothing.
+**Both archive *parsers* are written here, and of the three decompressors behind them one is a
+dependency.** A new *runtime* dependency of this package is a change to payload 1, to the publish
+contract and to every installer, which is a large blast radius for two fully specified container
+formats — so the zip reader and the tar parser are this package's own, deflate and gzip are
+`node:zlib`'s, and the one exception is **xz**, which Node does not decode and which both Linux
+FFmpeg pins are published in only. It is `xz-decompress@0.2.3`, pinned exactly: MIT, no
+dependencies, no install script, XZ Embedded compiled to WebAssembly and inlined, `stream/web` its
+only `require` and no network code. The owner accepted it on 2026-11-11 over writing an LZMA2
+decoder here, with a root `NOTICE` paragraph for its three parts, because its package carries no
+licence file; the audit and the measurement on the real 128.7 MB linux-arm64 pin are
+[ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
+2026-11-12. **Its decoder is one per process and not reentrant**: a stream that stops early has to
+be cancelled or the next xz extraction waits for ever, which `tar.ts`'s `decompressed()` does in a
+`finally` and `tar.test.ts` proves. The zip reader reads the central directory, never the local
+headers, refuses an entry that climbs out of the destination before anything is written, and with a
+selector never inflates a member it leaves out. The tar parser **streams** — `gunzipSync` on
+`onnxruntime-node`'s tarball would hold 111 MB compressed and 296 MB decompressed in two live
+Buffers — refuses every member type but a file and a directory (a pinned archive cannot contain one
+this build has not seen), checks each header's own checksum because that is the one way a streaming
+parser can go wrong, and shares `safeJoin` with the zip reader because that rule is the same rule;
+both refuse two members landing on one path. A decoder refusing its stream — a CRC64 that does not
+match, a stream cut short, a gzip handed to xz — is `corrupt-stream`, by name. What a tar cannot
+promise is what a central directory buys: with no index, a member is judged before **that member**
+is opened rather than before the first one, and the staging-then-`rename` commit is what still makes
+a refusal commit nothing. Stopping at `stopAfter` gives up only the trailer check, which exists to
+notice a file changed on disk after its digest was verified.
 
 **The ONNX runtime is acquired, not depended on, and the reason is measured** (D7,
 `providers/speech-onnx.ts`'s docblock carries the whole argument). `onnxruntime-node` declares no
@@ -763,6 +778,12 @@ reaching for one, which is what keeps that boundary a compile-time fact rather t
 ```bash
 pnpm --filter @xplainer/cli test
 pnpm turbo build --filter @xplainer/cli          # where TS9010 appears
+
+# The real BtbN linux-arm64 FFmpeg pin through the xz route: a 128.7 MB download verified against
+# its digest, decoded until LICENSE.txt, bin/ffmpeg checked against its recorded sha256, and the
+# decode time and peak RSS printed. Never part of `pnpm verify`.
+XPLAINER_REAL_FFMPEG_PIN=1 pnpm --filter @xplainer/cli exec vitest run src/setup/tar.test.ts \
+  -t "real BtbN" --reporter=verbose
 
 # The render test bundles a composition, drives Chrome and pipes frames into ffmpeg; it takes ~10 s
 # once it has a headless shell — XPLAINER_TEST_CHROME naming one `xplainer setup` acquired, or the

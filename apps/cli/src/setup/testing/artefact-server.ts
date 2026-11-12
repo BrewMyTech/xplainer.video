@@ -41,7 +41,8 @@ export type ArtefactServer = {
  * because `download.ts` refuses an artefact by extension before fetching it, so a route has to be
  * spelled as something the caller under test will agree to download. The ONNX route fetches npm
  * tarballs and is refused by the same rule the other way round, which is why {@link tarballRoute}
- * exists — the same behaviours, under `.tgz`, over the same server.
+ * exists — the same behaviours, under `.tgz`, over the same server — and the Linux FFmpeg builds
+ * are `.tar.xz`, which is {@link tarXzRoute}.
  */
 export const ARTEFACT_ROUTES = {
   /** Serves the archive, honouring `Range` with a correct `206`. */
@@ -94,9 +95,19 @@ export function tarballRoute(route: string): string {
   return `${route.replace(/\.zip$/, "")}.tgz`;
 }
 
+/** The same route, spelled as an xz-compressed tarball: {@link tarballRoute}'s twin. */
+export function tarXzRoute(route: string): string {
+  return `${route.replace(/\.zip$/, "")}.tar.xz`;
+}
+
 /** A requested path back to the {@link ARTEFACT_ROUTES} entry whose behaviour it asks for. */
 export function canonicalRoute(path: string): string {
-  return path.endsWith(".tgz") ? `${path.slice(0, -".tgz".length)}.zip` : path;
+  for (const suffix of [".tgz", ".tar.xz"]) {
+    if (path.endsWith(suffix)) {
+      return `${path.slice(0, -suffix.length)}.zip`;
+    }
+  }
+  return path;
 }
 
 /** How long a dropped body's bytes are given to reach the client before the socket is reset. */
@@ -151,8 +162,9 @@ type RouteContext = {
 function route(context: RouteContext): void {
   const { request, response, archive, corrupted } = context;
   const isHead = request.method === "HEAD";
-  // A `.tgz` request is the same behaviour under the name a tarball caller will accept; see
-  // {@link tarballRoute}. Mapped here so every route below has exactly one implementation.
+  // A `.tgz` or `.tar.xz` request is the same behaviour under the name a tarball caller will
+  // accept; see {@link tarballRoute}. Mapped here so every route below has exactly one
+  // implementation.
   const path = canonicalRoute(context.path);
   switch (path) {
     case ARTEFACT_ROUTES.good:
