@@ -281,7 +281,8 @@ describe("xplainer", () => {
    *
    * `--speech` sits beside `--tts-url` in the listing because that is where it belongs in the
    * reading: both name where speech comes from, one by URL and one by route, and neither is part of
-   * the `--workspace`/`--skip-*` union rule above them.
+   * the `--workspace`/`--skip-*` union rule above them. `--ffmpeg-path` is the same kind of flag for
+   * ffmpeg — which one, not whether — and opens that group.
    */
   it("offers setup's documented options exactly, now that it is no longer a stub", () => {
     const setup = createProgram().commands.find((command) => command.name() === "setup");
@@ -289,7 +290,9 @@ describe("xplainer", () => {
     expect(setup?.options.map((option) => option.long)).toEqual([
       "--workspace",
       "--skip-browser",
+      "--skip-ffmpeg",
       "--skip-speech",
+      "--ffmpeg-path",
       "--tts-url",
       "--speech",
       "--state-dir",

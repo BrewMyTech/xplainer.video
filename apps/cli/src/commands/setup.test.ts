@@ -38,9 +38,10 @@ import { readTemplatePins } from "../runtime/verify.js";
 import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
 import { WORKSPACE_PAYLOAD_ENV } from "../setup/providers/workspace.js";
 import { committedManifestPath } from "../setup/source.js";
+import { writeFakeFfmpeg } from "../setup/testing/fake-ffmpeg.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import { readToolchainMarker } from "../setup/toolchain.js";
-import { selectedComponents, TOOLCHAIN_DIR_NAME } from "./setup.js";
+import { SETUP_COMPONENTS, selectedComponents, TOOLCHAIN_DIR_NAME } from "./setup.js";
 
 const directories: string[] = [];
 
@@ -92,14 +93,23 @@ describe("selectedComponents", () => {
    * browser download or a Docker pull in behind it would make that proof unrunnable.
    */
   it("restricts to what a positive flag names, and trims what a negative one excludes", () => {
-    expect(selectedComponents({})).toEqual(["browser", "speech", "workspace"]);
+    expect(selectedComponents({})).toEqual(["browser", "ffmpeg", "speech", "workspace"]);
     expect(selectedComponents({ workspace: true })).toEqual(["workspace"]);
-    expect(selectedComponents({ skipSpeech: true })).toEqual(["browser", "workspace"]);
+    expect(selectedComponents({ skipSpeech: true })).toEqual(["browser", "ffmpeg", "workspace"]);
     expect(selectedComponents({ skipSpeech: true, workspace: true })).toEqual([
       "browser",
+      "ffmpeg",
       "workspace",
     ]);
-    expect(selectedComponents({ skipBrowser: true, skipSpeech: true })).toEqual(["workspace"]);
+    expect(selectedComponents({ skipBrowser: true, skipSpeech: true })).toEqual([
+      "ffmpeg",
+      "workspace",
+    ]);
+    expect(selectedComponents({ skipBrowser: true, skipFfmpeg: true, skipSpeech: true })).toEqual([
+      "workspace",
+    ]);
+    // `--ffmpeg-path` says which ffmpeg, not whether: like `--tts-url`, it restricts nothing.
+    expect(selectedComponents({ ffmpegPath: "/usr/bin/ffmpeg" })).toEqual(SETUP_COMPONENTS);
   });
 });
 
@@ -115,6 +125,7 @@ describe("xplainer setup", () => {
         "--state-dir",
         stateDir,
         "--skip-browser",
+        "--skip-ffmpeg",
         "--skip-speech",
         "--manifest",
         committedManifestPath() ?? "",
@@ -173,6 +184,7 @@ describe("xplainer setup", () => {
         "--state-dir",
         stateDir,
         "--skip-browser",
+        "--skip-ffmpeg",
         "--tts-url",
         "http://127.0.0.1:8880",
         "--manifest",
@@ -244,8 +256,8 @@ describe("xplainer setup", () => {
     const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
     // The browser and speech halves this suite does not download, recorded exactly as a
-    // version-1 `setup` recorded them, with the workspace beside them.
-    const recorded = recordTestToolchain({ stateDir });
+    // version-1 `setup` recorded them, with the workspace beside them and no ffmpeg.
+    const recorded = recordTestToolchain({ stateDir, ffmpeg: false });
     writeFileSync(
       toolchainMarkerPath(stateDir),
       `${JSON.stringify({
@@ -278,6 +290,116 @@ describe("xplainer setup", () => {
 });
 
 /**
+ * The ffmpeg component (ADR 0031 §Note, 2026-11-12, D6 and D12). The download route itself is
+ * `providers/ffmpeg.test.ts`'s, against a real binary over the loopback server; what is asserted
+ * here is what the command does with it — the route a flag selects, and that a row recording this
+ * platform's build as unavailable is a printed skip and a marker without ffmpeg rather than a
+ * failure, so `setup` and `xplainer update` keep working on such a platform.
+ */
+describe("xplainer setup — ffmpeg", () => {
+  /** A machine whose browser and speech are already recorded, with no ffmpeg, and a payload. */
+  function machineWithoutFfmpeg(): { stateDir: string; env: Record<string, string> } {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    return {
+      stateDir,
+      env: {
+        XPLAINER_VIDEOS_DIR: temporaryDirectory("xplainer-setup-workspace-"),
+        [WORKSPACE_PAYLOAD_ENV]: stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-")),
+      },
+    };
+  }
+
+  it("records the ffmpeg --ffmpeg-path names, as provider path, without reading a manifest", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const fake = writeFakeFfmpeg(temporaryDirectory("xplainer-setup-ffmpeg-"), {
+      licence: "GPL-3.0-or-later",
+    });
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--ffmpeg-path", fake],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("acquiring: ffmpeg, workspace");
+    expect(stdout).not.toContain("manifest");
+    const marker = readToolchainMarker(stateDir);
+    expect(marker?.ffmpeg).toMatchObject({
+      path: fake,
+      provider: "path",
+      licence: "GPL-3.0-or-later",
+      files: [{ path: fake }],
+    });
+    expect(marker?.ffmpeg).not.toHaveProperty("publisher");
+  });
+
+  it("refuses --ffmpeg-path beside --skip-ffmpeg, and a path that is no ffmpeg, writing nothing", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const before = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const both = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-path", "/usr/bin/ffmpeg", "--skip-ffmpeg"],
+      env,
+    );
+    expect(both.exitCode).toBe(1);
+    expect(both.stderr).toContain("give one or the other");
+
+    const missing = join(temporaryDirectory("xplainer-setup-ffmpeg-"), "ffmpeg");
+    const nothing = await runWithEnv(
+      [
+        "setup",
+        "--state-dir",
+        stateDir,
+        "--skip-browser",
+        "--skip-speech",
+        "--ffmpeg-path",
+        missing,
+      ],
+      env,
+    );
+    expect(nothing.exitCode).toBe(3);
+    expect(nothing.stderr).toContain(`--ffmpeg-path names ${missing}`);
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(before);
+  });
+
+  /**
+   * The generic form of D12's skip. Every row in the committed manifest is recorded, so the case is
+   * seeded: this platform's row is replaced by an `unavailable` one, as a manifest would carry a
+   * platform whose build is not yet published.
+   */
+  it("prints a skip naming --ffmpeg-path and writes the marker without ffmpeg for an unavailable row", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const committed = JSON.parse(readFileSync(committedManifestPath() ?? "", "utf8")) as {
+      ffmpeg: { expected: Record<string, unknown> };
+    };
+    const key = `${process.platform}-${process.arch}`;
+    committed.ffmpeg.expected[key] = {
+      status: "unavailable",
+      reason: "the build for this platform is not published yet.",
+    };
+    const manifest = join(temporaryDirectory("xplainer-setup-manifest-"), "manifest.json");
+    writeFileSync(manifest, `${JSON.stringify(committed)}\n`);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--manifest", manifest],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain(
+      `ffmpeg: skipped — The toolchain manifest records the ffmpeg for ${key} as unavailable: ` +
+        "the build for this platform is not published yet.",
+    );
+    expect(stdout).toContain("`xplainer setup --ffmpeg-path <file>`");
+    expect(stdout).toContain("ffmpeg is not recorded: stills will work");
+    const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Toolchain;
+    expect(onDisk.format_version).toBe(2);
+    expect(onDisk).not.toHaveProperty("ffmpeg");
+  });
+});
+
+/**
  * D2 (c): `setup` writes a version-2 marker, and a daemon installed from before ADR 0031's cut reads
  * version 1 — so under such a daemon it refuses, exit `3`, having written nothing, and names the
  * reinstall rather than running it (§Note, 2026-11-12). The daemon is found the way every surface
@@ -287,7 +409,7 @@ describe("xplainer setup — under a daemon installed from the other side of the
   /** A state directory holding a version-1 marker and a daemon registered from `runtimeDir`. */
   function preCutMachine(runtimeDir: string): { stateDir: string; marker: string } {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
-    const recorded = recordTestToolchain({ stateDir });
+    const recorded = recordTestToolchain({ stateDir, ffmpeg: false });
     const marker = `${JSON.stringify({
       ...recorded,
       format_version: 1,
@@ -303,6 +425,7 @@ describe("xplainer setup — under a daemon installed from the other side of the
     "--state-dir",
     stateDir,
     "--skip-browser",
+    "--skip-ffmpeg",
     "--skip-speech",
     "--manifest",
     committedManifestPath() ?? "",

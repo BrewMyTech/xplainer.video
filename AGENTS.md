@@ -212,12 +212,12 @@ Each one, and the thing that catches you:
   `(process.env.X ?? "").trim()`). A `describe.skipIf(SKIPPED)` reads as an unconditional skip to
   everyone but the author of the constant, and the gate cannot tell the two apart; an inline
   `process.env.X === "1"` says what is being waited for and where to set it. There is no `.skipIf`
-  that is not gated on one of those two, and the twelve files in the tree that carry one are
+  that is not gated on one of those two, and the thirteen files in the tree that carry one are
   `commands/config.test.ts`, `daemon/shutdown.test.ts`, `install/preflight.test.ts`,
   `render/capture.test.ts` (twice), `render/encode.test.ts`, `setup/providers/chrome.test.ts`,
-  `setup/providers/workspace.test.ts` (twice), `setup/tar.test.ts`, `speech/synthesiser.test.ts`
+  `setup/providers/ffmpeg.test.ts`, `setup/providers/workspace.test.ts` (twice), `setup/tar.test.ts`, `speech/synthesiser.test.ts`
   and `workers/render.test.ts` in `apps/cli/src/`, and `tts-client/src/client.test.ts` and
-  `tts-client/src/elevenlabs/client.test.ts`. The four render ones are all on
+  `tts-client/src/elevenlabs/client.test.ts`. The five render ones are all on
   `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
   `setup/tar.test.ts`'s downloads the real 128.7 MB BtbN linux-arm64 FFmpeg pin and decodes it, so
   it runs only on `XPLAINER_REAL_FFMPEG_PIN=1`. The last one **bills** whoever exports

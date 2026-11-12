@@ -469,6 +469,7 @@ archive reader between them.
 | `tar.ts` | The tarball reader, gzip or xz: streamed, ustar only, header checksums, a **selector** so a package carrying five platforms lands one, and `stopAfter`, so decoding ends at the last member a caller keeps |
 | `acquired.ts` | The record a committed acquisition carries inside itself, and the check a warm cache passes |
 | `providers/chrome.ts` | The Chrome for Testing headless shell this platform's row names, admitted on the manifest's **expected** digest |
+| `providers/ffmpeg.ts` | The FFmpeg this platform's row names: the publisher-and-licence sentence before the first request, the executable member checked against the row's `member_sha256` and `size`, `PROVENANCE.txt`, the probe (`-version`, `-buildconf`, `-L`, `-encoders`; no shell, 10 s each) and the licence cross-check, all before the commit; and `--ffmpeg-path`, a user-named binary whose digest is recorded rather than expected |
 | `providers/speech.ts` | The four speech routes, their precedence, `--speech`, and the refusal that names all four |
 | `speech-locate.ts` | The marker read back as three paths: the locator `resolveSpeech()` defaults to |
 | `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
@@ -477,14 +478,18 @@ archive reader between them.
 | `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
 | `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
 | `toolchain.manifest.json` | The reviewed document itself — format 2, one `browser` and one `ffmpeg` row per platform and the `speech` map, every expected digest captured at manifest-build time |
-| `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, and a real marker for the suites downstream |
+| `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, `fake-ffmpeg.ts` (a scripted ffmpeg for each way a binary is wrong), and a real marker for the suites downstream, whose ffmpeg is a copy of the one a test-only lookup finds (`XPLAINER_FFMPEG`, `PATH`, Homebrew) |
 
 **`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
 run to themselves; `--skip-*` flags trim the default; both together give the union. So
 `setup --workspace` is the workspace and nothing else — the form the D8 proof runs under a scrubbed
 `PATH`, which must not drag a browser download or a Docker pull in behind it — while
-`setup --skip-speech` is the browser and the workspace, which is the form a machine takes when the
-speech acquisition is not wanted in this run. A partial run **exits `0`** and names what is still to
+`setup --skip-speech` is the browser, ffmpeg and the workspace, which is the form a machine takes
+when the speech acquisition is not wanted in this run. The components are ordered browser, ffmpeg,
+speech, workspace. `--ffmpeg-path <file>` records a binary the user names instead of acquiring the
+pin, and is a usage error beside `--skip-ffmpeg`. A platform whose `ffmpeg` row is `unavailable`
+prints a skip and still exits `0`, with no `ffmpeg` in the marker.
+A partial run **exits `0`** and names what is still to
 acquire: `toolchain.json` records all three components or it is not a valid document, so an
 incomplete run merges into what the last one recorded and writes nothing until the set is complete.
 

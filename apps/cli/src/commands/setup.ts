@@ -7,11 +7,12 @@
  * connection". Neither `daemon install` nor the daemon itself ever fetches anything, and the record
  * this command leaves — `<state>/toolchain.json` — is what both of them read instead.
  *
- * **Three components, and each has its own provider module.** The browser
- * (`setup/providers/chrome.ts`), speech (`setup/providers/speech.ts`, over four routes) and the
- * render workspace (`setup/providers/workspace.ts`, over two). The command's own job is the order,
- * the selection, the printed report and the marker; every decision about *how* a component is
- * acquired lives with that component.
+ * **Four components, and each has its own provider module.** The browser
+ * (`setup/providers/chrome.ts`), FFmpeg (`setup/providers/ffmpeg.ts`, the pinned build or one named
+ * with `--ffmpeg-path`), speech (`setup/providers/speech.ts`, over four routes) and the render
+ * workspace (`setup/providers/workspace.ts`, over two). The command's own job is the order, the
+ * selection, the printed report and the marker; every decision about *how* a component is acquired
+ * lives with that component.
  *
  * **The workspace is acquired and no longer recorded.** The marker is `format_version` 2 since
  * ADR 0031's cut (§Note, 2026-11-12, D1): `chrome`, `speech` and an optional `ffmpeg`, and no
@@ -25,11 +26,12 @@
  * run; giving both asks for the union of the two:
  *
  * ```
- * xplainer setup                        browser, speech, workspace
+ * xplainer setup                        browser, ffmpeg, speech, workspace
  * xplainer setup --workspace            the workspace only
- * xplainer setup --skip-speech          browser and workspace
- * xplainer setup --skip-speech --workspace   browser and workspace
- * xplainer setup --tts-url http://…     browser, workspace, and a recorded external server
+ * xplainer setup --skip-speech          browser, ffmpeg and workspace
+ * xplainer setup --skip-speech --workspace   browser, ffmpeg and workspace
+ * xplainer setup --tts-url http://…     browser, ffmpeg, workspace, and a recorded external server
+ * xplainer setup --ffmpeg-path <file>   browser, the named ffmpeg, speech, workspace
  * ```
  *
  * `--workspace` on its own is the form the D8 proof runs under a scrubbed `PATH`, and it must not
@@ -43,6 +45,16 @@
  * onto the in-process engine — `setup/providers/speech.ts`'s migration rule — so `--speech onnx` is
  * how a user asks for that switch, and `--speech docker` is how a machine or a proof pins the
  * container route on a host where `onnx` would otherwise win.
+ *
+ * **`--ffmpeg-path <file>` is the same kind of flag for ffmpeg**: it names which ffmpeg is recorded
+ * rather than whether one is, so it does not restrict the run. It records the binary named instead
+ * of downloading the pin (ADR 0031 §Note, 2026-11-12, D6); `--skip-ffmpeg` beside it is a usage
+ * error, because the two ask for opposite things.
+ *
+ * **FFmpeg is optional in the marker, and its absence is said rather than refused.** A run that
+ * skipped it, or met a manifest row recording this platform's build as unavailable, still writes a
+ * complete marker of the other two and exits `0`, naming `--ffmpeg-path`: stills need no encoder,
+ * and the gate (D12) is what refuses a render on a machine with none.
  *
  * **A partial run is a success that says what is still missing.** `toolchain.json` records the
  * browser and speech or it is not a valid document, so a run that acquired one of them merges into
@@ -66,7 +78,7 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
+import type { Toolchain, ToolchainComponent, ToolchainFfmpeg } from "@xplainer/protocol";
 import { Command } from "commander";
 import { StateFileUnreadableError } from "../daemon/daemon-state.js";
 import {
@@ -84,6 +96,12 @@ import {
   ToolchainSelectionRefusal,
 } from "../setup/manifest.js";
 import { acquireChrome, ChromeRefusal } from "../setup/providers/chrome.js";
+import {
+  type AcquiredFfmpeg,
+  acquireFfmpeg,
+  FfmpegRefusal,
+  recordFfmpegPath,
+} from "../setup/providers/ffmpeg.js";
 import {
   acquireSpeech,
   isSpeechRoute,
@@ -103,11 +121,19 @@ import {
 import { seedUserLexicon } from "../speech/user-lexicon.js";
 import { resolveWorkspaceRoot } from "../workspace-root.js";
 
-/** The three things `setup` can acquire. */
-export type SetupComponent = "browser" | "speech" | "workspace";
+/** The four things `setup` can acquire. */
+export type SetupComponent = "browser" | "ffmpeg" | "speech" | "workspace";
 
-/** All three, in acquisition order: the two downloads first, the install last. */
-export const SETUP_COMPONENTS: readonly SetupComponent[] = ["browser", "speech", "workspace"];
+/**
+ * All four, in acquisition order: the browser and ffmpeg, the two the manifest pins, then speech,
+ * then the install last.
+ */
+export const SETUP_COMPONENTS: readonly SetupComponent[] = [
+  "browser",
+  "ffmpeg",
+  "speech",
+  "workspace",
+];
 
 /** Where acquisitions live, under the state directory. */
 export const TOOLCHAIN_DIR_NAME = "toolchain";
@@ -117,6 +143,8 @@ type SetupOptions = {
   workspace?: boolean;
   skipSpeech?: boolean;
   skipBrowser?: boolean;
+  skipFfmpeg?: boolean;
+  ffmpegPath?: string;
   ttsUrl?: string;
   speech?: string;
   stateDir?: string;
@@ -144,6 +172,9 @@ export function selectedComponents(options: SetupOptions): SetupComponent[] {
   if (options.skipBrowser === true) {
     negatives.add("browser");
   }
+  if (options.skipFfmpeg === true) {
+    negatives.add("ffmpeg");
+  }
 
   if (positives.size === 0 && negatives.size === 0) {
     return [...SETUP_COMPONENTS];
@@ -165,7 +196,9 @@ export function createSetupCommand(io: CliIo): Command {
     .description("Acquire the local render and TTS toolchain, and record what arrived")
     .option("--workspace", "acquire the render workspace only")
     .option("--skip-browser", "leave the browser out of this run")
+    .option("--skip-ffmpeg", "leave ffmpeg out of this run")
     .option("--skip-speech", "leave speech out of this run")
+    .option("--ffmpeg-path <file>", "record this ffmpeg instead of downloading the pinned build")
     .option("--tts-url <url>", "record a Kokoro-FastAPI server this machine does not own")
     .option(
       "--speech <route>",
@@ -199,6 +232,13 @@ export function createSetupCommand(io: CliIo): Command {
         );
         io.exit(USAGE_EXIT_CODE);
       }
+      if (options.ffmpegPath !== undefined && options.skipFfmpeg === true) {
+        io.writeErr(
+          "xplainer setup: --ffmpeg-path names the ffmpeg to record and --skip-ffmpeg leaves " +
+            "ffmpeg out of this run; give one or the other.\n",
+        );
+        io.exit(USAGE_EXIT_CODE);
+      }
       const stateDir = resolveStateDirSetting({ flag: options.stateDir }).path;
       let crossing: string | null;
       try {
@@ -226,10 +266,15 @@ export function createSetupCommand(io: CliIo): Command {
       const previous = readToolchainMarker(stateDir);
       let chrome: ToolchainComponent | null = previous?.chrome ?? null;
       let speech: ToolchainComponent | null = previous?.speech ?? null;
+      // What the last run recorded stands until this run records something in its place: a run
+      // that leaves ffmpeg out, or meets an unavailable row, must not turn a complete toolchain
+      // into an incomplete one behind its owner's back.
+      let ffmpeg: ToolchainFfmpeg | null = previous?.ffmpeg ?? null;
 
       try {
         const needsManifest =
           components.includes("browser") ||
+          (components.includes("ffmpeg") && options.ffmpegPath === undefined) ||
           (components.includes("speech") && options.ttsUrl === undefined);
         const loaded = needsManifest
           ? await loadToolchainManifest({
@@ -248,6 +293,22 @@ export function createSetupCommand(io: CliIo): Command {
           log(
             `browser: ${acquired.fetched ? "acquired" : "already present"} at ${acquired.component.path}`,
           );
+        }
+
+        if (components.includes("ffmpeg")) {
+          if (options.ffmpegPath !== undefined) {
+            ffmpeg = recordFfmpegPath({ path: options.ffmpegPath, log });
+            log(`ffmpeg: recorded the path route at ${ffmpeg.path}`);
+          } else if (loaded !== null) {
+            const acquired = await acquireFfmpegOrSkip(loaded.manifest, toolchainDir, log);
+            if (acquired !== null) {
+              ffmpeg = acquired.component;
+              log(
+                `ffmpeg: ${acquired.fetched ? "acquired" : "already present"} — FFmpeg ` +
+                  `${ffmpeg.version}, ${ffmpeg.licence}, at ${ffmpeg.path}`,
+              );
+            }
+          }
         }
 
         if (components.includes("speech")) {
@@ -310,17 +371,20 @@ export function createSetupCommand(io: CliIo): Command {
         return;
       }
 
-      // `ffmpeg` is carried over from what the last run recorded rather than dropped, since this
-      // run acquired none: a rewrite that lost a recorded component would turn a complete toolchain
-      // into an incomplete one behind its owner's back.
       const marker: Toolchain = {
         format_version: TOOLCHAIN_FORMAT_VERSION,
         created_at: new Date().toISOString(),
         chrome,
         speech,
-        ...(previous?.ffmpeg === undefined ? {} : { ffmpeg: previous.ffmpeg }),
+        ...(ffmpeg === null ? {} : { ffmpeg }),
       };
       log(`recorded ${writeToolchainMarker(stateDir, marker)}`);
+      if (ffmpeg === null) {
+        log(
+          "ffmpeg is not recorded: stills will work, and every render is refused until it is. " +
+            "Run `xplainer setup` again, or name one with `xplainer setup --ffmpeg-path <file>`.",
+        );
+      }
       log(`platform ${hostPlatformKey()}`);
 
       // Last, and never able to fail the command: everything a user came for is already recorded
@@ -335,6 +399,33 @@ export function createSetupCommand(io: CliIo): Command {
         }
       }
     });
+}
+
+/**
+ * The pinned ffmpeg, or `null` with a printed skip where this platform's row says it is unavailable.
+ *
+ * The skip is the one refusal that is not an error, because a manifest that records a platform's
+ * build as unavailable has said so deliberately and given its reason: the run goes on, the marker is
+ * written without ffmpeg, and the line names the route that needs no row. Every other refusal — no
+ * row at all, a C library this machine lacks, a digest or a licence that does not match — is one.
+ */
+async function acquireFfmpegOrSkip(
+  manifest: ToolchainManifest,
+  toolchainDir: string,
+  log: (line: string) => void,
+): Promise<AcquiredFfmpeg | null> {
+  try {
+    return await acquireFfmpeg({ manifest, toolchainDir, log });
+  } catch (error) {
+    if (error instanceof ToolchainSelectionRefusal && error.reason === "artefact-unavailable") {
+      log(
+        `ffmpeg: skipped — ${error.message} Name an ffmpeg with ` +
+          "`xplainer setup --ffmpeg-path <file>` to render on this machine.",
+      );
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -375,6 +466,7 @@ function exitCodeFor(error: unknown): number {
     error instanceof DownloadRefusal ||
     error instanceof ArchiveRefusal ||
     error instanceof ChromeRefusal ||
+    error instanceof FfmpegRefusal ||
     error instanceof SpeechRefusal
   ) {
     return PRECONDITION_UNMET_EXIT_CODE;
