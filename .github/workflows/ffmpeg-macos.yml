@@ -149,8 +149,11 @@ jobs:
         run: |
           . infra/ffmpeg/pins.env
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
-          xcodebuild -version
-          xcodebuild -version | grep -qx "Build version ${XCODE_BUILD}"
+          # Read whole, then searched: `xcodebuild | grep -q` under pipefail
+          # can fail on a correct Xcode when grep exits first.
+          xcode="$(xcodebuild -version)"
+          echo "$xcode"
+          grep -qx "Build version ${XCODE_BUILD}" <<<"$xcode"
           echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           # The source bundle is the build's only input: fetch.sh finds every
           # pinned file there and verifies it, and never needs the network.
