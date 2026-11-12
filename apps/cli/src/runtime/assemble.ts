@@ -80,6 +80,7 @@ import {
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { FFMPEG_MIN_LIBAVCODEC, TOOLCHAIN_FORMAT_VERSION } from "../setup/toolchain.js";
 import {
   classifyHost,
   describeHost,
@@ -279,6 +280,9 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
     node_version: process.version,
     npm_version: npm.version,
     host: kind,
+    // What this runtime requires of `toolchain.json`, from the constants it judges the marker
+    // with — so a later `daemon update`, `update` or `setup` can ask a runtime it is not running.
+    toolchain: { format: TOOLCHAIN_FORMAT_VERSION, ffmpeg_min_libavcodec: FFMPEG_MIN_LIBAVCODEC },
     launch,
     packages,
     files: scan.files,

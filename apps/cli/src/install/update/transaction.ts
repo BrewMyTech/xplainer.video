@@ -63,7 +63,6 @@ import { resolveIpcPath } from "../../daemon/ipc.js";
 import { resolveTokenPath } from "../../daemon/token.js";
 import { buildLaunchSpec, type LaunchSpec, PORT_FLAG } from "../../runtime/launch-spec.js";
 import { type RuntimeManifest, readRuntimeManifest } from "../../runtime/manifest.js";
-import { resolveWorkspaceRoot } from "../../workspace-root.js";
 import { awaitHealthy, type HealthAnswer, HealthTimeout, type HealthTransport } from "../health.js";
 import { DEFAULT_INSTALL_PORT } from "../install.js";
 import {
@@ -236,8 +235,6 @@ export type UpdateRequest = {
   rollbackHealthTimeoutMs?: number | undefined;
   /** How the readiness poll reaches the daemon. Defaults to a real loopback request. */
   health?: HealthTransport | undefined;
-  /** The workspace root the precondition verifies. Defaults to `resolveWorkspaceRoot()`. */
-  workspaceRoot?: string | undefined;
   /** Told what each step is doing, as it happens. */
   log?: ((line: string) => void) | undefined;
 };
@@ -851,15 +848,13 @@ function openTransaction(context: UpdateContext, source: IncomingSource): Update
       installedRuntimeDir: previous.runtime_dir,
       incomingRuntimeDir: source.payloadDir,
       incomingManifest,
-      workspaceRoot:
-        context.request.workspaceRoot ?? resolveWorkspaceRoot(context.stateDir, context.env),
+      stateDir: context.stateDir,
       incomingProgram: incomingProgramLine(source.payloadDir, incomingManifest),
     });
     context.steps.push(
-      `the incoming and installed template pins are identical (${String(
-        Object.keys(verdict.pins).length,
-      )} packages) and the workspace satisfies both: ` +
-        `${String(verdict.workspaceFilesChecked)} files re-hashed`,
+      `both runtimes read toolchain.json format ${String(verdict.format)}, their template pins ` +
+        `are identical (${String(Object.keys(verdict.pins).length)} packages), and the marker ` +
+        `satisfies the incoming runtime`,
     );
   } catch (error) {
     throw asRefusal("precondition", error, context.steps);

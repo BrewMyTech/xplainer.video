@@ -32,6 +32,14 @@
  * command that exists to reconcile a machine after an upgrade cannot be the one that skips the
  * largest stale thing on it. {@link reconcileDaemon} is that step, and it is a no-op on the
  * majority case of a machine with no daemon at all.
+ *
+ * **Except across ADR 0031's cut, which stops it before it runs anything** (§Note, 2026-11-12,
+ * D2 (b)). Its first step is `setup`, which writes this build's `toolchain.json` — format 2 — and a
+ * daemon installed from before the cut reads format 1, so running `setup` would turn that daemon's
+ * toolchain into a missing one before the daemon step could refuse to update it. So the installed
+ * daemon's format is read first, ahead of the registry and of every child, and a daemon on the other
+ * side of the cut ends the command with exit `3` and the reinstall it needs, run by nobody. `--check`
+ * changes nothing either way, so it reports the same fact as a line instead of stopping.
  */
 
 import { spawnSync } from "node:child_process";
@@ -41,7 +49,7 @@ import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
 import { codexConfigPath } from "../connect/codex.js";
 import { copilotConfigPath } from "../connect/copilot.js";
-import { readDaemonState } from "../daemon/daemon-state.js";
+import { readDaemonState, StateFileUnreadableError } from "../daemon/daemon-state.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import {
@@ -52,6 +60,7 @@ import {
 import { resolveProgram } from "../install/program.js";
 import { rootPackageOf } from "../install/stage.js";
 import type { CliIo } from "../io.js";
+import { crossingTheCutRefusal, REINSTALL_ACROSS_THE_CUT } from "../setup/toolchain.js";
 import { CLI_VERSION } from "../version.js";
 
 /** The published name a user installs, which is the alias rather than the scoped package. */
@@ -385,6 +394,13 @@ export function createUpdateCommand(io: CliIo): Command {
     )
     .option("--check", "report the version comparison and change nothing")
     .action(async (options: UpdateOptions) => {
+      // Before the registry and before every child: `setup` is the first thing this runs, and it
+      // is the step that would put a marker under the daemon that the daemon cannot read.
+      const crossing = crossingTheCut(io);
+      if (crossing !== null && options.check !== true) {
+        io.writeErr(crossing);
+        io.exit(PRECONDITION_UNMET_EXIT_CODE);
+      }
       const latest = await latestPublished();
       const steps: Step[] = [];
 
@@ -424,6 +440,14 @@ export function createUpdateCommand(io: CliIo): Command {
       }
 
       if (options.check === true) {
+        if (crossing !== null) {
+          steps.push({
+            label: "daemon",
+            line:
+              "installed from the other side of ADR 0031's cut, so `xplainer update` would stop " +
+              `before it ran anything — reinstall it: ${REINSTALL_ACROSS_THE_CUT.join(", then ")}`,
+          });
+        }
         report(io, steps);
         return;
       }
@@ -456,6 +480,23 @@ export function createUpdateCommand(io: CliIo): Command {
 
       report(io, steps);
     });
+}
+
+/**
+ * Why the daemon installed here stops this command, or `null` when it does not (D2 (b)).
+ *
+ * A `daemon.json` that exists and cannot be read ends the command here, with its own sentence and
+ * its own code, `11`: `setup` would stop on the same file, so carrying on would only reach it later.
+ */
+function crossingTheCut(io: CliIo): string | null {
+  try {
+    return crossingTheCutRefusal(resolveStateDir(), "xplainer update");
+  } catch (error) {
+    io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+    io.exit(
+      error instanceof StateFileUnreadableError ? error.exitCode : PRECONDITION_UNMET_EXIT_CODE,
+    );
+  }
 }
 
 /** The summary, one labelled line per step, in the shape `connect` and `daemon status` use. */

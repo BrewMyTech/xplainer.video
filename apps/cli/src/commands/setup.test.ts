@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -26,7 +27,10 @@ import { join } from "node:path";
 import process from "node:process";
 import type { Toolchain } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { updateDaemonState } from "../daemon/daemon-state.js";
+import { stateDirLayout } from "../daemon/state-dir.js";
 import { toolchainMarkerPath } from "../install/preflight.js";
+import { buildFixturePayload } from "../install/testing/payload.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import { MANIFEST_VERSION, WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
@@ -270,6 +274,116 @@ describe("xplainer setup", () => {
     expect(onDisk).not.toHaveProperty("workspace");
     expect(onDisk.speech.provider).toBe("docker");
     expect(onDisk.chrome.provider).toBe(CHROME_PROVIDER);
+  });
+});
+
+/**
+ * D2 (c): `setup` writes a version-2 marker, and a daemon installed from before ADR 0031's cut reads
+ * version 1 — so under such a daemon it refuses, exit `3`, having written nothing, and names the
+ * reinstall rather than running it (§Note, 2026-11-12). The daemon is found the way every surface
+ * finds it: `daemon.json`'s `runtime_dir`, then that runtime's own manifest.
+ */
+describe("xplainer setup — under a daemon installed from the other side of the cut", () => {
+  /** A state directory holding a version-1 marker and a daemon registered from `runtimeDir`. */
+  function preCutMachine(runtimeDir: string): { stateDir: string; marker: string } {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    const recorded = recordTestToolchain({ stateDir });
+    const marker = `${JSON.stringify({
+      ...recorded,
+      format_version: 1,
+      workspace: { platform: `${process.platform}-${process.arch}`, version: "1.0.0" },
+    })}\n`;
+    writeFileSync(toolchainMarkerPath(stateDir), marker);
+    updateDaemonState(stateDir, { runtime_dir: runtimeDir });
+    return { stateDir, marker };
+  }
+
+  const setupArgv = (stateDir: string): string[] => [
+    "setup",
+    "--state-dir",
+    stateDir,
+    "--skip-browser",
+    "--skip-speech",
+    "--manifest",
+    committedManifestPath() ?? "",
+  ];
+
+  function expectReinstall(stderr: string): void {
+    const uninstall = stderr.indexOf("  xplainer daemon uninstall\n");
+    expect(uninstall).toBeGreaterThan(-1);
+    expect(stderr.indexOf("  xplainer setup\n")).toBeGreaterThan(uninstall);
+    expect(stderr.indexOf("  xplainer daemon install\n")).toBeGreaterThan(
+      stderr.indexOf("  xplainer setup\n"),
+    );
+  }
+
+  it("refuses with exit 3 and leaves the marker's bytes exactly as they were", async () => {
+    const preCut = buildFixturePayload({
+      outDir: join(temporaryDirectory("xplainer-setup-precut-"), "payload"),
+      version: "0.0.9",
+      marker: "0.0.9",
+      runnable: false,
+      toolchain: null,
+    });
+    const { stateDir, marker } = preCutMachine(preCut.outDir);
+    const listing = readdirSync(stateDir, { recursive: true }).map(String).sort();
+
+    const { stdout, stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(3);
+    expect(stderr).toContain(`runs the runtime at ${preCut.outDir}`);
+    expect(stderr).toContain("reads toolchain.json format 1");
+    expect(stderr).toContain("Nothing was run and nothing was written.");
+    expectReinstall(stderr);
+    expect(stdout).toBe("");
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+    // Not one entry added or removed: the refusal comes before the toolchain directory is made.
+    expect(readdirSync(stateDir, { recursive: true }).map(String).sort()).toEqual(listing);
+  });
+
+  it("treats a recorded runtime it cannot read as one from before the cut, and says so", async () => {
+    const gone = join(temporaryDirectory("xplainer-setup-gone-"), "runtime", "0.0.9-0123456789ab");
+    const { stateDir, marker } = preCutMachine(gone);
+
+    const { stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(3);
+    expect(stderr).toContain(`records the runtime at ${gone}, whose manifest cannot be read`);
+    expect(stderr).toContain("treated as a runtime from before the cut");
+    expectReinstall(stderr);
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+  });
+
+  it("stops with exit 11 on a daemon.json it cannot read, rather than guessing", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    writeFileSync(stateDirLayout(stateDir).daemonState, "{ not json");
+
+    const { stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(11);
+    expect(stderr).toContain("cannot be read as JSON");
+    expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(false);
+  });
+
+  it("runs as usual under a daemon whose runtime reads format 2", async () => {
+    const current = buildFixturePayload({
+      outDir: join(temporaryDirectory("xplainer-setup-current-"), "payload"),
+      version: "0.0.12",
+      marker: "0.0.12",
+      runnable: false,
+    });
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    updateDaemonState(stateDir, { runtime_dir: current.outDir });
+    const workspace = temporaryDirectory("xplainer-setup-workspace-");
+    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
+
+    const { stdout, stderr, exitCode } = await runWithEnv(setupArgv(stateDir), {
+      XPLAINER_VIDEOS_DIR: workspace,
+      [WORKSPACE_PAYLOAD_ENV]: payload,
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("acquiring: workspace");
   });
 });
 

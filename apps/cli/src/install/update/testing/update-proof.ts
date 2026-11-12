@@ -191,7 +191,6 @@ try {
     from: beta.outDir,
     environment,
     run: labelTranslatingProbe,
-    workspaceRoot,
     log: (line) => {
       say(`  ${line}`);
     },

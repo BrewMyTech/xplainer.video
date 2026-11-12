@@ -36,6 +36,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import process from "node:process";
 import type { Toolchain, ToolchainComponent, ToolchainFfmpeg } from "@xplainer/protocol";
+import { readDaemonState } from "../daemon/daemon-state.js";
 import { writeJsonDurably } from "../daemon/durable-write.js";
 import {
   componentPaths,
@@ -43,6 +44,11 @@ import {
   TOOLCHAIN_FORMAT_VERSION,
   toolchainMarkerPath,
 } from "../install/preflight.js";
+import {
+  PRE_CUT_TOOLCHAIN_FORMAT,
+  readRuntimeManifest,
+  runtimeToolchainFormat,
+} from "../runtime/manifest.js";
 
 export { componentPaths, TOOLCHAIN_FORMAT_VERSION, toolchainMarkerPath };
 
@@ -256,4 +262,91 @@ export function assertToolchainReady(check: ToolchainCheck): Toolchain {
     throw new Error(status.detail);
   }
   return status.marker;
+}
+
+// ── ADR 0031's cut, as seen from the installed daemon ──────────────────────────────────────────
+
+/**
+ * The three commands that carry an installed daemon across the cut, in order (§Note, 2026-11-12,
+ * D2). Printed and never run: whether to reinstall is the owner's step (Q3).
+ */
+export const REINSTALL_ACROSS_THE_CUT: readonly string[] = [
+  "xplainer daemon uninstall",
+  "xplainer setup",
+  "xplainer daemon install",
+];
+
+/** Which `toolchain.json` format the daemon installed in a state directory reads, if there is one. */
+export type InstalledDaemonFormat =
+  | { installed: false }
+  | {
+      installed: true;
+      /** `daemon.json`'s `runtime_dir`: the staged runtime the supervisor executes. */
+      runtimeDir: string;
+      /** Its manifest's `toolchain.format`, or format 1 when it has none or cannot be read. */
+      format: number;
+      /** Why its manifest could not be read, or `null` when it was. */
+      unreadable: string | null;
+    };
+
+/**
+ * Ask the installed daemon's own runtime which marker format it reads.
+ *
+ * **Through `daemon.json`'s `runtime_dir`, and never "whichever runtime is staged"**, for the reason
+ * `commands/update.ts`'s `stagedRuntimeVersion` gives: an update stages a second runtime beside the
+ * first, and only the registration says which of the two the supervisor runs. No `runtime_dir` is
+ * no installed daemon — a machine that only ever ran `serve` in a terminal runs this very build.
+ *
+ * **A recorded runtime whose manifest cannot be read is format 1**, and says why. It is installed,
+ * so something will start it, and the one thing a build that cannot read it can be sure of is that
+ * it is not a runtime that wrote down which format it reads — which every one from before the cut
+ * is. Treating it as current would be the one answer here that can break a daemon.
+ *
+ * @throws {StateFileUnreadableError} when `daemon.json` exists and cannot be read (exit `11`).
+ */
+export function installedDaemonFormat(stateDir: string): InstalledDaemonFormat {
+  const runtimeDir = readDaemonState(stateDir).runtime_dir;
+  if (runtimeDir === null) {
+    return { installed: false };
+  }
+  try {
+    const format = runtimeToolchainFormat(readRuntimeManifest(runtimeDir));
+    return { installed: true, runtimeDir, format, unreadable: null };
+  } catch (error) {
+    const unreadable = error instanceof Error ? error.message : String(error);
+    return { installed: true, runtimeDir, format: PRE_CUT_TOOLCHAIN_FORMAT, unreadable };
+  }
+}
+
+/**
+ * Why `command` must not run under the daemon installed in `stateDir`, or `null` when it may.
+ *
+ * `setup` and `update` both write a marker of this build's format — `update` because its first step
+ * *is* `setup` — and a daemon that reads another format would then read the machine's record as
+ * missing: a runtime from before the cut requires the `workspace` a version-2 marker no longer
+ * carries. No update can move that daemon across, so the sentence ends in the reinstall and runs
+ * none of it (§Note, 2026-11-12, D2 (b) and (c)). No daemon installed is no refusal.
+ *
+ * @throws {StateFileUnreadableError} when `daemon.json` exists and cannot be read (exit `11`).
+ */
+export function crossingTheCutRefusal(stateDir: string, command: string): string | null {
+  const installed = installedDaemonFormat(stateDir);
+  if (!installed.installed || installed.format === TOOLCHAIN_FORMAT_VERSION) {
+    return null;
+  }
+  const which =
+    installed.unreadable === null
+      ? `runs the runtime at ${installed.runtimeDir}, which reads toolchain.json format ` +
+        `${String(installed.format)}`
+      : `records the runtime at ${installed.runtimeDir}, whose manifest cannot be read ` +
+        `(${installed.unreadable}), so it is treated as a runtime from before the cut, which ` +
+        `reads toolchain.json format ${String(PRE_CUT_TOOLCHAIN_FORMAT)}`;
+  return (
+    `${command}: the daemon installed in ${stateDir} ${which}, and this xplainer writes format ` +
+    `${String(TOOLCHAIN_FORMAT_VERSION)}. A marker that daemon cannot read is a toolchain it ` +
+    "reports as missing, and no update can carry an installed daemon from one format to the " +
+    "other: crossing it is a reinstall. Nothing was run and nothing was written. Reinstall the " +
+    "daemon with the xplainer you mean it to run:\n\n" +
+    `${REINSTALL_ACROSS_THE_CUT.map((line) => `  ${line}`).join("\n")}\n`
+  );
 }

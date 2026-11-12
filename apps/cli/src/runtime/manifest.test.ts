@@ -21,9 +21,11 @@ import {
   isPayloadPath,
   listTree,
   ManifestError,
+  PRE_CUT_TOOLCHAIN_FORMAT,
   RUNTIME_MANIFEST_FILE,
   readRuntimeManifest,
   readWorkspaceManifest,
+  runtimeToolchainFormat,
   scanTree,
   toPayloadPath,
   WORKSPACE_MANIFEST_FILE,
@@ -253,6 +255,54 @@ describe("reading a manifest back", () => {
     expect(() => readRuntimeManifest(root)).toThrowError(
       /files\[0\]\.bytes is not a finite number/,
     );
+  });
+
+  /**
+   * Which `toolchain.json` a runtime reads, from its own manifest — the fact `daemon update`,
+   * `update` and `setup` ask of a runtime they are not running (ADR 0031 §Note, 2026-11-12, D2).
+   */
+  it("reads the toolchain block, and reads a manifest without one as a pre-cut runtime", () => {
+    const document = {
+      kind: "runtime",
+      manifest_version: 2,
+      created_at: "2026-11-12T00:00:00.000Z",
+      platform: "linux",
+      arch: "x64",
+      node_version: "v24.20.0",
+      npm_version: "11.19.0",
+      host: "node",
+      toolchain: { format: 2, ffmpeg_min_libavcodec: 60 },
+      launch: { interpreter: "bin/node", entry: "e", npm_cli: "n", argv: [] },
+      packages: [],
+      files: [],
+      links: [],
+    };
+    writeFileSync(join(root, RUNTIME_MANIFEST_FILE), JSON.stringify(document));
+    const current = readRuntimeManifest(root);
+    expect(current.toolchain).toEqual({ format: 2, ffmpeg_min_libavcodec: 60 });
+    expect(runtimeToolchainFormat(current)).toBe(2);
+
+    const { toolchain: _dropped, ...preCut } = document;
+    writeFileSync(
+      join(root, RUNTIME_MANIFEST_FILE),
+      JSON.stringify({ ...preCut, manifest_version: 1 }),
+    );
+    const before = readRuntimeManifest(root);
+    expect(before).not.toHaveProperty("toolchain");
+    expect(runtimeToolchainFormat(before)).toBe(PRE_CUT_TOOLCHAIN_FORMAT);
+    expect(PRE_CUT_TOOLCHAIN_FORMAT).toBe(1);
+
+    // Present and damaged is refused, never read as absent: absent means format 1, and a damaged
+    // block from a format-2 runtime would otherwise be judged as the very runtime it is not.
+    for (const toolchain of [
+      { format: "2", ffmpeg_min_libavcodec: 60 },
+      { format: 0, ffmpeg_min_libavcodec: 60 },
+      { format: 2 },
+      null,
+    ]) {
+      writeFileSync(join(root, RUNTIME_MANIFEST_FILE), JSON.stringify({ ...document, toolchain }));
+      expect(() => readRuntimeManifest(root)).toThrowError(ManifestError);
+    }
   });
 
   it("refuses a workspace manifest that claims to be a runtime one", () => {

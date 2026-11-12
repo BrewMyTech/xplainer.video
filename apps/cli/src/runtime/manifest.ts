@@ -35,6 +35,12 @@
  * The manifests are read back by {@link readRuntimeManifest} and {@link readWorkspaceManifest},
  * which validate rather than cast: a manifest is data that arrives from disk, and the file being a
  * `.json` says nothing about its shape.
+ *
+ * **Payload 1 says which `toolchain.json` it reads.** From `manifest_version` 2 a runtime manifest
+ * carries {@link RuntimeToolchain}: the marker format the runtime reads and writes, and the oldest
+ * libavcodec its encoder works with. A payload built before ADR 0031's cut has no such block and
+ * reads as format {@link PRE_CUT_TOOLCHAIN_FORMAT}, which is what lets `daemon update`, `update`
+ * and `setup` refuse to carry an installed daemon across the cut (§Note, 2026-11-12, D2).
  */
 
 import { createHash } from "node:crypto";
@@ -66,8 +72,20 @@ export const PAYLOAD_LIB_DIR = "lib/node_modules";
 /** The npm entry inside payload 1, payload-relative. Spawned, never imported. */
 export const PAYLOAD_NPM_CLI = "lib/node_modules/npm/bin/npm-cli.js";
 
-/** The version stamped into every manifest this module writes. */
-export const MANIFEST_VERSION = 1;
+/**
+ * The version stamped into every manifest this module writes.
+ *
+ * `2` since ADR 0031's cut, when a runtime manifest gained its {@link RuntimeToolchain} block.
+ * Nothing compares it: a reader asks for the block itself, and a manifest without one — every
+ * payload stamped `1` — is a runtime from before the cut.
+ */
+export const MANIFEST_VERSION = 2;
+
+/**
+ * The `toolchain.json` format a runtime with no {@link RuntimeToolchain} block reads: every payload
+ * built before ADR 0031's cut, whose reader requires the marker's `workspace` and knows no `ffmpeg`.
+ */
+export const PRE_CUT_TOOLCHAIN_FORMAT = 1;
 
 /**
  * The package whose runtime dependency closure payload 1 is.
@@ -196,6 +214,20 @@ export type LaunchContract = {
   argv: string[];
 };
 
+/**
+ * What a runtime requires of the machine's `toolchain.json`, written down by the runtime itself.
+ *
+ * Recorded in the payload rather than inferred from its version, because the question is asked of
+ * a runtime that is **not** the one running: `daemon update` judges the marker against the runtime
+ * it would switch to, and `update` and `setup` against the one the supervisor runs.
+ */
+export type RuntimeToolchain = {
+  /** The marker `format_version` this runtime reads and its `setup` writes. */
+  format: number;
+  /** The oldest libavcodec major this runtime's encoder works with. */
+  ffmpeg_min_libavcodec: number;
+};
+
 /** Payload 1's manifest. */
 export type RuntimeManifest = {
   kind: "runtime";
@@ -212,6 +244,8 @@ export type RuntimeManifest = {
   npm_version: string;
   /** Which host assembled it. Always `node`: the other two are refused. */
   host: RuntimeHost;
+  /** Absent from a payload built before ADR 0031's cut: {@link runtimeToolchainFormat}. */
+  toolchain?: RuntimeToolchain;
   launch: LaunchContract;
   packages: ManifestPackage[];
   files: ManifestFile[];
@@ -394,6 +428,11 @@ function readLinkTarget(file: string): string {
   return toPayloadPath(readlinkSync(file));
 }
 
+/** The `toolchain.json` format a runtime reads: its own block's, or the pre-cut one without it. */
+export function runtimeToolchainFormat(manifest: RuntimeManifest): number {
+  return manifest.toolchain?.format ?? PRE_CUT_TOOLCHAIN_FORMAT;
+}
+
 /** Read and validate payload 1's manifest. */
 export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
   const document = readManifestDocument(join(payloadDir, RUNTIME_MANIFEST_FILE));
@@ -413,6 +452,7 @@ export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
     node_version: asString(document.node_version, "node_version"),
     npm_version: asString(document.npm_version, "npm_version"),
     host: asHost(document.host),
+    ...asToolchain(document.toolchain),
     launch: {
       interpreter: asString(launch.interpreter, "launch.interpreter"),
       entry: asString(launch.entry, "launch.entry"),
@@ -517,6 +557,28 @@ function asHost(value: unknown): RuntimeHost {
     throw new ManifestError(`host is ${JSON.stringify(host)}, which is not a known runtime host.`);
   }
   return host;
+}
+
+/**
+ * The optional `toolchain` block: `{}` when absent — a runtime from before the cut — and the block
+ * when it is one. Present and malformed is refused rather than read as absent, because absent means
+ * "format 1", and a damaged block from a version-2 runtime would otherwise be judged as the very
+ * runtime it is not.
+ */
+function asToolchain(value: unknown): { toolchain?: RuntimeToolchain } {
+  if (value === undefined) {
+    return {};
+  }
+  const block = asRecord(value, "toolchain");
+  const format = asNumber(block.format, "toolchain.format");
+  const floor = asNumber(block.ffmpeg_min_libavcodec, "toolchain.ffmpeg_min_libavcodec");
+  if (!Number.isInteger(format) || format < 1 || !Number.isInteger(floor) || floor < 0) {
+    throw new ManifestError(
+      "toolchain.format must be a positive integer and toolchain.ffmpeg_min_libavcodec a " +
+        "non-negative one.",
+    );
+  }
+  return { toolchain: { format, ffmpeg_min_libavcodec: floor } };
 }
 
 function asVersionMap(value: unknown, field: string): Record<string, string> {

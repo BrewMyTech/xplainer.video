@@ -51,16 +51,24 @@
  * unusable on exactly the machine it exists for. A version-1 marker the last run left is read as
  * the two components it records and rewritten as version 2 by the next run that writes at all.
  *
+ * **It will not write a marker an installed daemon cannot read.** Before anything else — before the
+ * toolchain directory exists — it asks the daemon `daemon.json` records which `toolchain.json`
+ * format its runtime reads, and refuses with `3` when that is not this build's: a version-2 marker
+ * under a daemon from before ADR 0031's cut is a toolchain that daemon reports as missing, and the
+ * way across is a reinstall it prints and does not run (§Note, 2026-11-12, D2 (c)).
+ *
  * **The exit codes are the table's** (`docs/ARCHITECTURE.md` §6): `1` for commander's usage errors,
- * `3` for a precondition unmet with nothing written — no reachable manifest, no reviewed digest for
- * this machine, no speech route at all, a staged payload for another platform — and `70` for a
- * subprocess that failed for its own reasons.
+ * `3` for a precondition unmet with nothing written — an installed daemon that reads another marker
+ * format, no reachable manifest, no reviewed digest for this machine, no speech route at all, a
+ * staged payload for another platform — `11` for a `daemon.json` that cannot be read, and `70` for
+ * a subprocess that failed for its own reasons.
  */
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
 import { Command } from "commander";
+import { StateFileUnreadableError } from "../daemon/daemon-state.js";
 import {
   DAEMON_INTERNAL_EXIT_CODE,
   PRECONDITION_UNMET_EXIT_CODE,
@@ -86,6 +94,7 @@ import { materialiseRenderWorkspace, WorkspaceRefusal } from "../setup/providers
 import { loadToolchainManifest, ManifestUnreachable } from "../setup/source.js";
 import { offerStar } from "../setup/star.js";
 import {
+  crossingTheCutRefusal,
   hostPlatformKey,
   readToolchainMarker,
   TOOLCHAIN_FORMAT_VERSION,
@@ -191,6 +200,18 @@ export function createSetupCommand(io: CliIo): Command {
         io.exit(USAGE_EXIT_CODE);
       }
       const stateDir = resolveStateDirSetting({ flag: options.stateDir }).path;
+      let crossing: string | null;
+      try {
+        crossing = crossingTheCutRefusal(stateDir, "xplainer setup");
+      } catch (error) {
+        // `daemon.json` exists and cannot be read: its own sentence and its own code, `11`.
+        io.writeErr(`${describe(error)}\n`);
+        io.exit(error instanceof StateFileUnreadableError ? error.exitCode : exitCodeFor(error));
+      }
+      if (crossing !== null) {
+        io.writeErr(crossing);
+        io.exit(PRECONDITION_UNMET_EXIT_CODE);
+      }
       const toolchainDir = join(stateDir, TOOLCHAIN_DIR_NAME);
       const workspaceRoot = resolveWorkspaceRoot(stateDir);
       const components = selectedComponents(options);

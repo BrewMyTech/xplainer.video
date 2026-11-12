@@ -241,3 +241,40 @@ and is no longer read by any render; Phase 2 removes it.
 
 Nothing above is rewritten. Download-on-first-run is still the decision, and it now covers the one
 component that a render cannot run without and that this record never named.
+
+## Note, 2026-11-12: `toolchain.json` records ffmpeg as its third component, and the workspace as none
+
+Added as a dated note rather than a rewrite. The decision is unchanged. It records what
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of 2026-11-12 (D1, D2)
+does to the record this decision's acquisition step writes, and corrects two sentences of this
+record's note of 2026-11-11.
+
+**The marker is version 2, and its three components are the browser, speech and ffmpeg.**
+`toolchain.json` at `format_version` 2 records `chrome`, `speech` and, optionally, `ffmpeg` — a
+component with a recorded libavcodec version, its licence and the probe output it was admitted on —
+and no `workspace`. The render workspace, this record's third artefact since the note of 2026-09-08,
+stops being something the marker records, because no render reads it: `setup --workspace` still
+acquires it until Phase 2 removes it, and records nothing when it does. A version-1 marker is still
+read, and judged exactly as a version-2 one is: the gate no longer asks about a workspace at all. The provider that acquires ffmpeg, and writes the component
+this note describes, is the next step of the same plan — so for now a marker records the component
+only where one was already written.
+
+**The note of 2026-11-11 said two things that stop being true.** Its "giving linux-arm64 a source,
+since Chrome for Testing publishes none" was true of the 149 line and is not of 157: Chrome for
+Testing has published linux-arm64 since 153.0.8001.0, so the browser on all five platform keys now
+comes from one publisher (ADR 0031 §Note, 2026-11-12, D4), and the `remotion` provider token and the
+`remotion.media` URLs that note expected Phase 2 to rename are gone with the manifest's version 2
+(D3). And its description of the renderer resolving `XPLAINER_FFMPEG`, then `PATH`, then
+`/opt/homebrew/bin` and `/usr/local/bin` is the order D6 retires: with the ffmpeg provider, an
+override or the recorded `ffmpeg.path` is the whole of it, and a system ffmpeg is used only when it
+is named to `setup --ffmpeg-path`. That retirement lands with the provider, not with this note.
+
+**Crossing the marker's version is a reinstall, and the first-run step says so.** A daemon installed
+from before this date reads version 1, which requires the workspace a version-2 marker no longer
+carries. So `xplainer setup` refuses, exit `3`, while such a daemon is installed, and so does
+`xplainer update` before it runs anything — each printing `xplainer daemon uninstall`,
+`xplainer setup` and `xplainer daemon install` and running none of them — and `daemon update` will
+not move a daemon across the cut in either direction (ADR 0031 §Note, 2026-11-12, D2). This record's
+option 1, the visible and interruptible step, is the step those refusals point back to.
+
+Nothing above is rewritten. Download-on-first-run is still the decision.

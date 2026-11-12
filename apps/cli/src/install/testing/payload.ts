@@ -46,8 +46,10 @@ import {
   PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   type RuntimeManifest,
+  type RuntimeToolchain,
   scanTree,
 } from "../../runtime/manifest.js";
+import { FFMPEG_MIN_LIBAVCODEC, TOOLCHAIN_FORMAT_VERSION } from "../../setup/toolchain.js";
 
 /** The package a payload's launch contract names, and the directory it lives in. */
 export const FIXTURE_PACKAGE = "@xplainer/cli";
@@ -94,6 +96,15 @@ export type FixturePayloadOptions = {
    * package in it is a payload with a different content digest and therefore a different slot name.
    */
   templatePins?: Readonly<Record<string, string>> | undefined;
+  /**
+   * What the payload's manifest says it requires of `toolchain.json`, or `null` for none at all.
+   *
+   * Defaults to what this build's assembler writes. `null` is a payload from **before** ADR 0031's
+   * cut, whose manifest has no `toolchain` block and so reads as format 1 — the runtime every
+   * installed daemon ran until then, and the one `daemon update`, `update` and `setup` refuse to
+   * carry across the cut.
+   */
+  toolchain?: RuntimeToolchain | null | undefined;
 };
 
 /** One built fixture payload. */
@@ -195,13 +206,22 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
   const scan = scanTree(options.outDir, { exclude: [RUNTIME_MANIFEST_FILE] });
   const manifest: RuntimeManifest = {
     kind: "runtime",
-    manifest_version: MANIFEST_VERSION,
+    // A pre-cut payload was stamped `1`, and nothing but the missing block distinguishes it.
+    manifest_version: options.toolchain === null ? 1 : MANIFEST_VERSION,
     created_at: new Date().toISOString(),
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
     npm_version: "0.0.0-fixture",
     host: "node",
+    ...(options.toolchain === null
+      ? {}
+      : {
+          toolchain: options.toolchain ?? {
+            format: TOOLCHAIN_FORMAT_VERSION,
+            ffmpeg_min_libavcodec: FFMPEG_MIN_LIBAVCODEC,
+          },
+        }),
     launch: {
       interpreter: relativeInterpreter,
       entry: relativeEntry,

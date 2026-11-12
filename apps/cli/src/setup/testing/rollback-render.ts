@@ -521,7 +521,6 @@ try {
         from: betaDir,
         environment,
         run: harness.run,
-        workspaceRoot,
         healthTimeoutMs: DOOMED_HEALTH_MS,
       }).then(
         () => null,
@@ -538,7 +537,6 @@ try {
         XPLAINER_TEST_HOME: home,
         XPLAINER_TEST_PAYLOAD_A: alpha.outDir,
         XPLAINER_TEST_PAYLOAD_B: betaDir,
-        XPLAINER_TEST_WORKSPACE: workspaceRoot,
         XPLAINER_TEST_PARK_AT: current,
         XPLAINER_TEST_REFUSE_START: join(stagedRuntimeRoot(stateDir), `${INCOMING_VERSION}-`),
         XPLAINER_TEST_HEALTH_MS: String(DOOMED_HEALTH_MS),
@@ -563,7 +561,6 @@ try {
         stateDir,
         environment,
         run: harness.run,
-        workspaceRoot,
         healthTimeoutMs: DOOMED_HEALTH_MS,
       }).then(
         () => null,

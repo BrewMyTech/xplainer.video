@@ -16,15 +16,26 @@
  * download a browser, write into an agent's configuration and replace a supervised runtime;
  * asserting them belongs in `scripts/e2e/`, where the cost is expected. What a unit suite can
  * honestly hold is the arithmetic, the advice and the branch each fact leads to.
+ *
+ * **One execution is asserted, because it is the one that runs nothing.** Across ADR 0031's cut the
+ * command stops before its first child (§Note, 2026-11-12, D2 (b)), and that is checkable without a
+ * download: `process.argv[1]` — the entry every child re-runs — is pointed at a script that only
+ * leaves a file behind, so "setup was not spawned" is the absence of that file rather than a
+ * reading of the code.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import process from "node:process";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { updateDaemonState } from "../daemon/daemon-state.js";
+import { STATE_DIR_ENV } from "../daemon/state-dir.js";
+import { toolchainMarkerPath } from "../install/preflight.js";
 import { stageRuntime } from "../install/stage.js";
 import { buildFixturePayload } from "../install/testing/payload.js";
+import type { CliIo } from "../io.js";
+import { createProgram } from "../program.js";
 import {
   attachedForm,
   compareVersions,
@@ -301,3 +312,119 @@ describe("stagedRuntimeVersion", () => {
     expect(stagedRuntimeVersion(stateDir)).toBe("4.5.6");
   });
 });
+
+describe("xplainer update — across ADR 0031's cut", () => {
+  let root = "";
+  let stateDir = "";
+  let sentinel = "";
+  let marker = "";
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "xplainer-update-cut-"));
+    stateDir = join(root, "state");
+    mkdirSync(stateDir, { recursive: true });
+    // A daemon installed from 0.0.9: its runtime's manifest has no `toolchain` block, so it reads
+    // format 1, and the marker beside it is the version-1 document that runtime wrote.
+    const preCut = buildFixturePayload({
+      outDir: join(root, "payload"),
+      version: "0.0.9",
+      marker: "0.0.9",
+      runnable: false,
+      toolchain: null,
+    });
+    updateDaemonState(stateDir, { runtime_dir: preCut.outDir });
+    marker = `${JSON.stringify({ format_version: 1, created_at: "2026-11-01T00:00:00.000Z" })}\n`;
+    writeFileSync(toolchainMarkerPath(stateDir), marker);
+    sentinel = join(root, "spawned");
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Run `xplainer <argv>` with every child it would spawn replaced by one that leaves a file. */
+  async function runUpdate(
+    argv: string[],
+  ): Promise<{ stdout: string; stderr: string; code: number }> {
+    const entry = join(root, "child.mjs");
+    writeFileSync(
+      entry,
+      'import { writeFileSync } from "node:fs";\n' +
+        `writeFileSync(${JSON.stringify(sentinel)}, process.argv.slice(2).join(" "));\n`,
+    );
+    let stdout = "";
+    let stderr = "";
+    let code = 0;
+    const io: CliIo = {
+      writeOut(text) {
+        stdout += text;
+      },
+      writeErr(text) {
+        stderr += text;
+      },
+      exit(exitCode) {
+        code = exitCode;
+        throw new Exited();
+      },
+    };
+    const before = { entry: process.argv[1], stateDir: process.env[STATE_DIR_ENV] };
+    process.argv[1] = entry;
+    process.env[STATE_DIR_ENV] = stateDir;
+    // The registry is never asked: a refusal stops before it, and `--check` is given an
+    // unreachable one, which is a state the command already reports.
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("offline in this suite")));
+    try {
+      await createProgram(io).parseAsync(["node", "xplainer", ...argv]);
+    } catch (error) {
+      if (!(error instanceof Exited)) {
+        throw error;
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      if (before.entry !== undefined) {
+        process.argv[1] = before.entry;
+      }
+      if (before.stateDir === undefined) {
+        delete process.env[STATE_DIR_ENV];
+      } else {
+        process.env[STATE_DIR_ENV] = before.stateDir;
+      }
+    }
+    return { stdout, stderr, code };
+  }
+
+  it("stops with exit 3 before it spawns setup, and the marker's bytes are unchanged", async () => {
+    const { stdout, stderr, code } = await runUpdate(["update"]);
+
+    expect(code, stderr).toBe(3);
+    expect(stderr).toContain("xplainer update: the daemon installed in");
+    expect(stderr).toContain("reads toolchain.json format 1");
+    const uninstall = stderr.indexOf("  xplainer daemon uninstall\n");
+    expect(uninstall).toBeGreaterThan(-1);
+    expect(stderr.indexOf("  xplainer setup\n")).toBeGreaterThan(uninstall);
+    expect(stderr.indexOf("  xplainer daemon install\n")).toBeGreaterThan(
+      stderr.indexOf("  xplainer setup\n"),
+    );
+    // Nothing ran: no child at all, no summary, and the marker the old daemon reads is untouched.
+    expect(existsSync(sentinel)).toBe(false);
+    expect(stdout).toBe("");
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+  });
+
+  it("under --check, reports the same fact as a line and changes nothing", async () => {
+    const { stdout, stderr, code } = await runUpdate(["update", "--check"]);
+
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain("registry unreachable");
+    expect(stdout).toMatch(
+      /daemon: +installed from the other side of ADR 0031's cut, so `xplainer update` would stop/,
+    );
+    expect(stdout).toContain(
+      "xplainer daemon uninstall, then xplainer setup, then xplainer daemon install",
+    );
+    expect(existsSync(sentinel)).toBe(false);
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+  });
+});
+
+class Exited extends Error {}

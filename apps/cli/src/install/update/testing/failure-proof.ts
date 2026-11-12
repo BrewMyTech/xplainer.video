@@ -270,7 +270,6 @@ try {
       from: beta.outDir,
       environment,
       run: probe,
-      workspaceRoot,
       healthTimeoutMs: DOOMED_READY_MS,
       log: (line) => {
         say(`  ${line}`);
@@ -365,7 +364,7 @@ try {
   const slotsBefore = readDirectorySorted(stagedRuntimeRoot(stateDir));
   const runBeforeRefusal = runIdOf(stateDir);
   const refused = await refusalFrom(() =>
-    updateDaemon({ stateDir, from: beta.outDir, environment, run: probe, workspaceRoot }),
+    updateDaemon({ stateDir, from: beta.outDir, environment, run: probe }),
   );
   require(refused.exitCode ===
     DOCUMENTED_EXIT_CODES.preconditionUnmet, `the refusal carries ADR 0020 §6's code ${String(DOCUMENTED_EXIT_CODES.preconditionUnmet)} for a precondition that is not met`);
@@ -400,7 +399,7 @@ try {
   require(!verifyWorkspacePayload(workspaceRoot, templatePinsOf(install.runtimeDir, "installed"))
     .ok, "and it no longer satisfies the rollback target, which is what the third clause catches");
   const stillRefused = await refusalFrom(() =>
-    updateDaemon({ stateDir, from: beta.outDir, environment, run: probe, workspaceRoot }),
+    updateDaemon({ stateDir, from: beta.outDir, environment, run: probe }),
   );
   require(stillRefused.exitCode ===
     DOCUMENTED_EXIT_CODES.preconditionUnmet, "it refuses with §6's exit 3 even though the incoming runtime and the workspace agree");

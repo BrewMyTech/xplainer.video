@@ -67,7 +67,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0002](0002-language-split-python-control-plane-ts-media-plane.md) | Language split: Python hosted control plane, TypeScript media plane and local runtime | accepted — **hosted half relocated (0023)** |
 | [0003](0003-tier-boundary-and-open-later-plan.md) | Tier boundary: `hosted` may import `open-later`, never the reverse — machine-checked from the first commit, with the open-source extraction checklist | accepted — note 2026-09-06 |
 | [0004](0004-electron-over-tauri.md) | Electron over Tauri for the desktop client, and the two `.npmrc` settings electron-builder requires | accepted |
-| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10, 2026-09-11, 2026-11-11 |
+| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10, 2026-09-11, 2026-11-11, 2026-11-12 |
 | [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — notes 2026-09-10, 2026-11-11 |
 | [0007](0007-mcp-tool-contract-and-put-source.md) | Eight MCP tools with `put_source`, and JSON Schema in `packages/protocol` as the single source of truth for both languages | accepted |
 | [0008](0008-async-job-model-poll-and-progress-no-agent-webhooks.md) | Async job model: return `job_id`, agent polls `explainer_job`, servers emit MCP progress — no webhooks to agents | accepted |
@@ -239,6 +239,13 @@ the page-network and signing questions the owner has now answered. A record corr
 by note has a precedent in ADR 0025's note of 2026-09-07. ADR 0005, ADR 0027 and ADR 0022 each gain
 a note of their own in the Phase 2 step that changes what their 2026-11-11 note describes, and their
 rows above take the date when it lands.
+
+**ADR 0005 gained the first of those, dated 2026-11-12**, with `toolchain.json`'s version 2: the
+marker records the browser, speech and — optionally — ffmpeg, and no longer the workspace; its
+2026-11-11 note's "Chrome for Testing publishes none" for linux-arm64 is corrected, and its
+description of the `PATH` and Homebrew ffmpeg fallbacks is marked as the order D6 retires; and
+crossing the marker's version is a reinstall that `setup`, `update` and `daemon update` each refuse
+to perform by accident.
 
 ## Licence
 

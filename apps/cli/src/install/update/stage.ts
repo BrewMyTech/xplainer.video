@@ -28,30 +28,29 @@
  * machine until `package-manager` was admitted beside it. Both are staged payload-1 runtimes,
  * content-addressed in the same place; `explicit` and `sea-binary` are not, and are still refused.
  *
- * ## The precondition is three-way, and refusal-only
+ * ## The precondition is three clauses, and refusal-only
  *
- * Payload 2 — the Remotion workspace — survives updates by design, because it is resolved for a
- * platform and costs an `npm ci` of a 268-package tree. So an update to a runtime whose
- * `template/package.json` pins a **newer** Remotion would report success, keep `/healthz` green and
- * break the next render: the daemon answers and cannot render, which is exactly the failure class
- * the plan's principle P2 exists for.
- *
- * The check is therefore:
- *
- * 1. the installed runtime's template pins and the incoming runtime's template pins are
- *    **identical** — pins, never the template package's own `version`, which is `1.0.0` and need
- *    not change when a pin does; **and**
- * 2. the installed workspace verifies against **A**'s pins; **and**
- * 3. the installed workspace verifies against **B**'s pins.
- *
- * **Why clause 2 as well as clause 3**, which is the change the Architect made the condition of
- * approving this design: comparing the incoming runtime against the workspace alone passes in the
- * one case that matters most. A user who has already run `setup --workspace` has a workspace
- * matching **B**, so B-against-workspace succeeds — and the rollback target **A** is precisely the
- * runtime that workspace no longer satisfies. The update would proceed, fail readiness, roll back,
- * and land on a daemon that cannot render. Requiring A's and B's pins to be identical is what makes
- * the workspace satisfy both **by construction**, and it is what makes T16's render-after-rollback
- * assertion true rather than hopeful.
+ * 1. **The installed and incoming runtimes read the same `toolchain.json` format.** ADR 0031's cut
+ *    (§Note, 2026-11-12, D2 (a)) moved the marker from format 1 — which records a workspace — to
+ *    format 2, which records an `ffmpeg` and no workspace. A daemon on one side of it reads the
+ *    other side's marker as a missing toolchain, and a rollback across it would land on exactly
+ *    that daemon, so crossing the cut in either direction is a reinstall. A payload built before
+ *    the cut declares no format and reads as format 1, and so does an installed runtime whose
+ *    manifest this build cannot read.
+ * 2. **The two runtimes' template pins are identical** — pins, never the template package's own
+ *    `version`, which is `1.0.0` and need not change when a pin does. ADR 0027's decision A, and it
+ *    leaves with payload 2: the workspace those pins resolve survives updates by design, so an
+ *    update that changed them would report success and break the next render.
+ * 3. **The marker satisfies the incoming runtime's own `toolchain` requirements**, as
+ *    `setup/toolchain.ts`'s `checkToolchain` judges them — its `ffmpeg` recorded, present, the size
+ *    `setup` recorded, and at or above the libavcodec floor that runtime encodes with. This takes
+ *    the place of the two clauses that re-hashed the installed workspace against both runtimes'
+ *    pins: no render reads the workspace any more, and update readiness is only a `200` while a
+ *    degraded `/healthz` is a `200` as well — so an update to a runtime the marker cannot serve
+ *    would report success over a daemon that answers and cannot render, the failure class the
+ *    plan's principle P2 exists for. Only the incoming runtime's requirements are asked, because it
+ *    is the one that reads the marker next; clause 1 is what keeps the rollback target reading the
+ *    same format of the same file.
  *
  * **There is no paired path (D9).** Staging a matching payload 2 beside the new runtime does not
  * let the update proceed. That route made the workspace part of an update without making it part of
@@ -60,11 +59,12 @@
  * and cannot render with every rollback assertion passing. Refusal keeps one payload transactional,
  * and the paired stage-and-switch is recorded as the successor's work.
  *
- * **The refusal names the reinstall path, and the program to run it from.** `xplainer` in
+ * **Every refusal names the command that ends it.** Across the cut that is the reinstall —
+ * `xplainer daemon uninstall`, `xplainer setup`, `xplainer daemon install` — and nothing here runs
+ * it. A pin change names the new runtime's own interpreter and entry, because `xplainer` in
  * `<state>/bin` is the stable launcher and it `exec`s the **installed** runtime, which carries A's
- * template — so `setup --workspace` through the launcher re-resolves the old pins and the update
- * refuses again. The message therefore names the new runtime's own interpreter and entry, and says
- * plainly that a pin-changing upgrade is a reinstall this phase.
+ * template. A marker the incoming runtime cannot use names `xplainer setup`, which is what writes
+ * one.
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -74,10 +74,16 @@ import { PRECONDITION_UNMET_EXIT_CODE } from "../../daemon/exit-codes.js";
 import { assembleRuntime } from "../../runtime/assemble.js";
 import {
   PAYLOAD_LIB_DIR,
+  PRE_CUT_TOOLCHAIN_FORMAT,
   type RuntimeManifest,
-  WORKSPACE_MANIFEST_FILE,
+  readRuntimeManifest,
+  runtimeToolchainFormat,
 } from "../../runtime/manifest.js";
-import { verifyWorkspacePayload } from "../../runtime/verify.js";
+import {
+  checkToolchain,
+  REINSTALL_ACROSS_THE_CUT,
+  toolchainMarkerPath,
+} from "../../setup/toolchain.js";
 import { type StageOutcome, stageRuntime } from "../stage.js";
 
 /** The package whose `template/` directory declares the workspace's pins. */
@@ -89,9 +95,9 @@ export const TEMPLATE_MANIFEST = "template/package.json";
 /** Why the precondition refused. One value per distinguishable condition, never a catch-all. */
 export type PreconditionReason =
   | "template-unreadable"
+  | "format-differs"
   | "pins-differ"
-  | "workspace-absent"
-  | "workspace-unsatisfied";
+  | "toolchain-unsatisfied";
 
 /**
  * A precondition of updating was not met, and nothing has been staged or drained.
@@ -222,8 +228,8 @@ export type CompatibilityRequest = {
   installedRuntimeDir: string;
   /** The payload-1 directory the update would switch to — B. */
   incomingRuntimeDir: string;
-  /** The installed workspace's root, as `resolveWorkspaceRoot()` answers it. */
-  workspaceRoot: string;
+  /** The daemon's state directory, whose `toolchain.json` both runtimes read. */
+  stateDir: string;
   /** The incoming payload's manifest, when the caller has already read it. */
   incomingManifest?: RuntimeManifest | null | undefined;
   /** The installed payload's manifest, when the caller has already read it. */
@@ -237,72 +243,107 @@ export type CompatibilityRequest = {
   incomingProgram: string;
 };
 
-/** The three clauses, and the pins they agreed on. */
+/** The three clauses, and what they agreed on. */
 export type CompatibilityVerdict = {
   /** The pins both runtimes declare, which are identical by the time this is returned. */
   pins: Record<string, string>;
-  /** How many files of the workspace were re-hashed, as evidence rather than a claim. */
-  workspaceFilesChecked: number;
+  /** The `toolchain.json` format both runtimes read, which is one by the time this is returned. */
+  format: number;
 };
 
+/** A runtime's manifest as the caller passed it, read here when it did not, `null` if unreadable. */
+function manifestOf(
+  runtimeDir: string,
+  given: RuntimeManifest | null | undefined,
+): RuntimeManifest | null {
+  if (given !== null && given !== undefined) {
+    return given;
+  }
+  try {
+    return readRuntimeManifest(runtimeDir);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The three-way pre-drain check. Returns, or refuses with exit `3` having touched nothing.
+ * The marker format a runtime reads: its manifest's `toolchain.format`, or format 1.
+ *
+ * Format 1 for a payload built before the cut, which declares none, **and** for one whose manifest
+ * cannot be read here: such a runtime cannot have said which format it reads, and every runtime
+ * that cannot say is one from before the cut. Treating it as current is the one answer that lets an
+ * update cross the cut unnoticed.
+ */
+function formatOf(manifest: RuntimeManifest | null): number {
+  return manifest === null ? PRE_CUT_TOOLCHAIN_FORMAT : runtimeToolchainFormat(manifest);
+}
+
+/**
+ * The three-clause pre-drain check. Returns, or refuses with exit `3` having touched nothing.
  *
  * @throws {UpdatePrecondition}
  */
 export function requireCompatibleUpdate(request: CompatibilityRequest): CompatibilityVerdict {
-  const installed = templatePinsOf(
-    request.installedRuntimeDir,
-    "installed",
-    request.installedManifest ?? null,
-  );
-  const incoming = templatePinsOf(
-    request.incomingRuntimeDir,
-    "incoming",
-    request.incomingManifest ?? null,
-  );
+  const installedManifest = manifestOf(request.installedRuntimeDir, request.installedManifest);
+  const incomingManifest = manifestOf(request.incomingRuntimeDir, request.incomingManifest);
+  const installedFormat = formatOf(installedManifest);
+  const incomingFormat = formatOf(incomingManifest);
+  if (installedFormat !== incomingFormat) {
+    throw new UpdatePrecondition(
+      "format-differs",
+      formatDiffersMessage(installedFormat, incomingFormat, request),
+    );
+  }
+
+  const installed = templatePinsOf(request.installedRuntimeDir, "installed", installedManifest);
+  const incoming = templatePinsOf(request.incomingRuntimeDir, "incoming", incomingManifest);
 
   const differences = pinDifferences(installed, incoming);
   if (differences.length > 0) {
     throw new UpdatePrecondition("pins-differ", pinsDifferMessage(differences, request));
   }
 
-  const manifestFile = join(request.workspaceRoot, WORKSPACE_MANIFEST_FILE);
-  if (!existsSync(manifestFile)) {
+  // The incoming runtime's own requirements, because it is the one that will read the marker
+  // next — and, by clause 1, the rollback target reads the same format of the same file. A runtime
+  // that declares no `toolchain` block is from before the cut and asks for no `ffmpeg`.
+  const requirement = incomingManifest?.toolchain;
+  const status = checkToolchain({
+    stateDir: request.stateDir,
+    requireFfmpeg: requirement !== undefined,
+    ffmpegMinLibavcodec: requirement?.ffmpeg_min_libavcodec,
+  });
+  if (!status.ok) {
     throw new UpdatePrecondition(
-      "workspace-absent",
-      `${manifestFile} does not exist, so this machine has no verified workspace and an update ` +
-        `cannot establish that the runtime it would install — or the one it would roll back to — ` +
-        `can render. Nothing was staged and nothing was drained. Install the workspace first:\n\n` +
-        `  xplainer setup --workspace\n`,
+      "toolchain-unsatisfied",
+      `the toolchain recorded in ${toolchainMarkerPath(request.stateDir)} does not satisfy the ` +
+        `incoming runtime (${status.reason}): ${status.detail} An update's readiness check is a ` +
+        `200, and a daemon reporting a degraded toolchain answers 200 as well, so an update to a ` +
+        `runtime this marker cannot serve would report success over a daemon that cannot render. ` +
+        `Nothing was staged and nothing was drained. Record the toolchain first, then update:\n\n` +
+        `  xplainer setup\n`,
     );
   }
 
-  // Both runtimes, and in that order, because A is the rollback target and B is the one being
-  // installed: a workspace that satisfies only B leaves the rollback landing on a daemon that
-  // answers /healthz and cannot render, which is the case §12.1a's ruling exists for.
-  let checked = 0;
-  for (const [side, pins] of [
-    ["installed", installed],
-    ["incoming", incoming],
-  ] as const) {
-    const report = verifyWorkspacePayload(request.workspaceRoot, pins);
-    if (!report.ok) {
-      throw new UpdatePrecondition(
-        "workspace-unsatisfied",
-        `the workspace at ${request.workspaceRoot} does not satisfy the ${side} runtime: ` +
-          `${report.failure.reason} at ${report.failure.name} — ${report.failure.detail} ` +
-          `An update is allowed only when the installed workspace satisfies both the runtime it ` +
-          `installs and the runtime it would roll back to, because a rollback that lands on a ` +
-          `daemon which answers /healthz and cannot render is the failure this check exists for. ` +
-          `Nothing was staged and nothing was drained. Reinstall the workspace with ` +
-          `\`xplainer setup --workspace\`.`,
-      );
-    }
-    checked = report.checked;
-  }
+  return { pins: installed, format: incomingFormat };
+}
 
-  return { pins: installed, workspaceFilesChecked: checked };
+/** D2 (a)'s refusal: crossing the cut is a reinstall, in either direction. */
+function formatDiffersMessage(
+  installed: number,
+  incoming: number,
+  request: CompatibilityRequest,
+): string {
+  const direction = incoming > installed ? "forwards" : "backwards";
+  return (
+    `the installed runtime at ${request.installedRuntimeDir} reads toolchain.json format ` +
+    `${String(installed)} and the incoming runtime at ${request.incomingRuntimeDir} reads format ` +
+    `${String(incoming)}. That is ADR 0031's cut, crossed ${direction}, and it is one-way for an ` +
+    `update: each side reads the other's marker as a missing toolchain, so neither the runtime ` +
+    `this would install nor the one it would roll back to could render from the marker on this ` +
+    `machine. Crossing it is a reinstall rather than an update. Nothing was staged and nothing ` +
+    `was drained. Reinstall the daemon with the xplainer you mean it to run:\n\n` +
+    `${REINSTALL_ACROSS_THE_CUT.map((line) => `  ${line}`).join("\n")}\n`
+  );
 }
 
 /** D9's refusal, in the words §1.3d decision A settles. */
