@@ -15,5 +15,7 @@ files and asks the binary again instead of downloading it.
 
 `setup --ffmpeg-path <file>` records an ffmpeg you name instead: the same questions are asked of it,
 its digest is recorded rather than expected, and the marker says it was named rather than acquired.
-`setup --skip-ffmpeg` leaves ffmpeg out of the run; the two together are a usage error, exit `1`. On
-a platform the manifest has no FFmpeg for, `setup` says so, skips it and still exits `0`.
+`setup --skip-ffmpeg` leaves ffmpeg out of the run; the two together are a usage error, exit `1`.
+Where the manifest records this platform's FFmpeg as unavailable, `setup` says so and why, skips it,
+names `--ffmpeg-path`, and still exits `0`; a platform the manifest has no FFmpeg row for at all is
+refused with exit `3`, like any other artefact it has no reviewed digest for.

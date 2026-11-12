@@ -67,7 +67,7 @@ and the **AGENTS.md** link target — against `pnpm-workspace.yaml`'s globs, eac
 | `packages/mcp-server` | `@xplainer/mcp-server` | open-later | yes | yes | yes | TypeScript | Backend-agnostic registration of the eight tools onto an MCP server, across a `RenderBackend` seam. | [AGENTS.md](../packages/mcp-server/AGENTS.md) |
 | `packages/motion` | `@xplainer/motion` | open-later | yes | yes | yes | TypeScript | The authoring API scenes import — frame hooks, `interpolate`, `Easing`, `spring`, `Sequence` — and the page-side harness the renderer drives one frame at a time. | [AGENTS.md](../packages/motion/AGENTS.md) |
 | `packages/protocol` | `@xplainer/protocol` | open-later | yes | yes | yes | TypeScript + Python | The contract: JSON Schema source of truth plus generated TypeScript types and pydantic models. | [AGENTS.md](../packages/protocol/AGENTS.md) |
-| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | Remotion template, the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, the grapheme-to-phoneme port every speech engine reads through, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
+| `packages/render-core` | `@xplainer/render-core` | open-later | yes | yes | yes | TypeScript | The workspace template (`tailwind.css` and `tsconfig.json`), the ownership-aware video scaffold generator, the narration port that measures scene durations from speech, the grapheme-to-phoneme port every speech engine reads through, and the render preflight. | [AGENTS.md](../packages/render-core/AGENTS.md) |
 | `packages/skill` | `@xplainer/skill` | open-later | yes | no | no | TypeScript | The agent skill, packaged as a Claude Code plugin bundle and a Codex plugin bundle. | [AGENTS.md](../packages/skill/AGENTS.md) |
 | `packages/tts-client` | `@xplainer/tts-client` | open-later | yes | yes | yes | TypeScript | Kokoro-FastAPI and ElevenLabs request and response shaping: the endpoints, the payload flags and the alignment conversion narration depends on. | [AGENTS.md](../packages/tts-client/AGENTS.md) |
 | `services/tts-sidecar` | `@xplainer/tts-sidecar` | open-later | no | n/a | no | Python | The pinned Kokoro-FastAPI image and the connection contract. The one Python-only member. | [AGENTS.md](../services/tts-sidecar/AGENTS.md) |
@@ -216,8 +216,9 @@ Narration runs in `workers/narrate.ts`; a still or a render runs in `workers/ren
 **xplainer's own renderer** ([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)):
 an esbuild-wasm bundle of the video against `@xplainer/motion` and the CLI's own React, the headless
 shell `toolchain.json` records driven one frame at a time over a `--remote-debugging-pipe` CDP
-client, and every PNG piped into a spawned ffmpeg found through `XPLAINER_FFMPEG`, `PATH` and the
-two Homebrew directories. Nothing in the render path reads the workspace's `node_modules/`.
+client, and every PNG piped into a spawned ffmpeg — `XPLAINER_FFMPEG` when it is set, else the one
+`toolchain.json` records, and never one found on `PATH`. The workspace holds sources and outputs,
+and nothing in it is installed.
 `xplainer connect claude` and `xplainer connect codex` put the `xplainer mcp --attach` command line
 into an agent's own configuration — through that agent's own writer, `claude mcp add` or
 `codex mcp add`, wherever it is on `PATH`, and otherwise into `~/.claude.json` or into
@@ -230,11 +231,12 @@ into an agent's own configuration — through that agent's own writer, `claude m
 the one path no agent configuration may hold. `--spawn` writes the other entry — `xplainer mcp`
 without `--attach`, the tools inside the agent's own session — and it is the only form that
 **bypasses** the daemon check, because it is the remediation ADR 0020 prints when there is no daemon
-to check for. `xplainer setup` acquires the toolchain — a browser, a speech route and, with
-`--workspace`, the workspace payload resolved from the template's pins by `npm ci`, which no render
-reads any more and which ADR 0031's Phase 2 removes — and records
-what arrived in `toolchain.json` (a checked schema in `packages/protocol`); `xplainer runtime
-build` assembles the relocatable payloads that `install` and `update` then move around; and the
+to check for. `xplainer setup` acquires the toolchain — the Chrome for Testing headless shell, a
+pinned FFmpeg or one named with `--ffmpeg-path`, and a speech route, the first two from the
+format-2 toolchain manifest and only from publishers a code allowlist names — and records what
+arrived in `toolchain.json` at `format_version` 2 (a checked schema in `packages/protocol`);
+`xplainer runtime build` assembles the relocatable payload that `install` and `update` then move
+around; and the
 `daemon` group is nine implemented verbs — `install`, `uninstall`, `update`, `recover`, `start`,
 `stop`, `restart`, `status`, `logs`. `daemon install`'s **read-only preflight** runs before any of
 them writes: the setup marker and whether its recorded paths still exist, the supervisor and
@@ -254,11 +256,12 @@ Scheduler's `<Exec>` action has no per-action environment map, and writes all th
 authenticated `GET /healthz`, in prose or, with `--json`, as one object carrying a stable condition
 code from a closed set (`ready`, `stalled`, `unauthorized`, `token_absent`, `unhealthy`,
 `unreachable`, `absent`). The workspace itself lives at `XPLAINER_VIDEOS_DIR`, or
-`<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the four
-files copied from `packages/render-core/template/`; its `node_modules/` is **not** installed by any
-tool call and is never read by a render. A machine whose toolchain is incomplete — no recorded
-browser, no speech route, or, until that payload is retired, no installed workspace — refuses a
-still or a render at the call, naming `xplainer setup`, rather than failing inside the worker.
+`<state dir>/workspace`, and holds `videos/<slug>/`, `public/<slug>/`, `out/<slug>/` and the two
+files copied from `packages/render-core/template/`, `tailwind.css` and `tsconfig.json`; nothing is
+installed in it. A machine whose toolchain is incomplete for the job — no recorded browser or speech
+route for either kind, and for a render no FFmpeg, neither `XPLAINER_FFMPEG` nor a recorded one —
+refuses it at the call, naming `xplainer setup`, rather than failing inside the worker; `/healthz`
+and `daemon status` report `degraded` exactly when a render would be refused.
 **There is now a supervisor**, on all three platforms, and the paragraph below is what it is;
 `docs/daemon.md` is the file for a host that has none.
 
@@ -327,7 +330,7 @@ owns it, never invented at the call site.
 | `0` | Clean shutdown, or a deliberate stall | ADR 0020 | **built** |
 | `1` | Usage error: a flag or argument this command will not act on, with nothing written (`USAGE_EXIT_CODE`) | `commander`, recorded in `apps/cli/src/daemon/exit-codes.ts` | **built** (`serve --bind`, `status --url`, `connect --scope`, and `config set` for an unknown setting, an inadmissible value or a secret given on the command line) |
 | `2` | Command exists but does nothing yet (`NOT_IMPLEMENTED_EXIT_CODE`) | `apps/cli/src/not-implemented.ts` | **built**. Every registered command is now implemented, so the code survives in one place: `install/program.ts`'s one remaining deferred **program source**, `sea-binary`, which is phase-4 packaging and refuses with the route that does work today. `package-manager` was the second until 2026-09-11 and is now implemented: `commands/daemon.ts` builds a payload out of an installed package and `install/materialise.ts` is the write |
-| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`; `xplainer token rotate` with no token file to rotate; the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed; and `daemon update`'s two pre-drain refusals — template pins that differ, and a workspace that does not satisfy **both** the incoming runtime and the rollback target — each taken before anything is staged or drained) |
+| `3` | Precondition unmet, with nothing written | ADR 0020 | **built** (`xplainer connect`; `xplainer token rotate` with no token file to rotate; the install preflight: no `toolchain.json`, its recorded paths gone, or a resolved program that cannot be executed; `xplainer setup` with no reachable manifest, no reviewed digest for this machine, an FFmpeg that fails its checks or no speech route at all; `daemon update`'s two pre-drain refusals — the installed and incoming runtimes reading different `toolchain.json` formats, and a marker that does not meet the incoming runtime's own requirements — each taken before anything is staged or drained; and the **cut** itself: `xplainer setup` and `xplainer update` under an installed daemon whose runtime reads the earlier format, which change nothing and print `xplainer daemon uninstall`, `xplainer setup`, `xplainer daemon install` without running them — ADR 0031 §Note, 2026-11-12, D2) |
 | `4` | Installed but not healthy | ADR 0020 | **built** (`xplainer status`, `mcp --attach`) |
 | `5` | Administrator privileges required: the supervisor is here and refuses *this* user the right the daemon needs — Windows `SCHED_S_BATCH_LOGON_PROBLEM`, or `--at-boot` (`ADMIN_REQUIRED_EXIT_CODE`) | ADR 0020 | **built** in `daemon install`'s writing phase, where both of its conditions live because both can only be established by *attempting* the thing: lingering is asked for first and checked by `test -e /var/lib/systemd/linger/$USER` rather than by `loginctl`'s status, and the missing batch-logon right is read off `LastTaskResult` after the health check has already failed, named as a candidate and never as a diagnosis |
 | `6` | No supported supervisor on this machine, so there is nothing to install into — the remediation is the one that needs none, `xplainer connect claude --spawn` (`NO_SUPERVISOR_EXIT_CODE`) | ADR 0020 | **built** in the install preflight, in two conditions: no user service manager (`/run/systemd/system` absent, or `systemctl --user` reaching none), and a Task Scheduler that refuses a query. `--spawn` is built, so the remediation is runnable — except in the one case where it is not the leading one: systemd booted the machine and the manager is absent *because* `/var/lib/systemd/linger/$USER` is, where the message leads with `sudo loginctl enable-linger` |

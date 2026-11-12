@@ -518,9 +518,9 @@ describe("committing an artefact", () => {
     expect(() =>
       assertZipArtefact("https://cdn.xplainer.video/toolchain/v1/speech.tar.gz"),
     ).toThrow(/is not a \.zip, and this artefact is read as a zip archive/);
-    // remotion.media's own URLs carry a query string, which is not part of the format.
+    // A query string is not part of the format.
     expect(() =>
-      assertZipArtefact("https://remotion.media/chromium-headless-shell-linux-x64-1.zip?clear"),
+      assertZipArtefact("https://cdn.xplainer.video/toolchain/v1/browser.zip?download=1"),
     ).not.toThrow();
   });
 });

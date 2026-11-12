@@ -1,20 +1,20 @@
 /**
- * T16's rollback cases, rerun where a browser and a real workspace exist: **the recovered daemon
+ * T16's rollback cases, rerun where a browser and a real toolchain exist: **the recovered daemon
  * renders**.
  *
  * B5 proves the transaction — the operation lock, the durable journal, the boundaries, the
  * commanded recovery — and it ends every rollback case with five assertions plus one that is only
- * half of the sixth: *the installed workspace satisfies the pins of the runtime that came back*.
+ * half of the sixth: *the marker on disk satisfies the requirements of the runtime that came back*.
  * That is readiness, not a render. A daemon that answers `/healthz` and cannot produce a picture is
  * the exact failure class principle P2 exists for, and the plan splits the remaining half here on
- * purpose: the PNG needs a headless shell and a payload-2 workspace, which are `xplainer setup`'s
- * to acquire and therefore B6's to have (§12.3, "B5 proves recovery; B6 reruns every rollback case
- * after T19 has supplied the browser and the workspace").
+ * purpose: the PNG needs a headless shell, which is `xplainer setup`'s to acquire and therefore
+ * B6's to have (§12.3, "B5 proves recovery; B6 reruns every rollback case after T19 has supplied
+ * the browser").
  *
  * So this is that rerun, and it is `scripts/e2e/toolchain.mjs`'s last phase rather than a unit
  * suite, because everything it needs is what that gate has already built: an artefact assembled by
- * the shipped assembler, a workspace `setup` materialised, a browser `setup` acquired, and one
- * video whose narration has been measured. It is handed those four things and nothing else.
+ * the shipped assembler, the toolchain `setup` acquired and recorded, a workspace, and one video in
+ * it whose narration has been measured. It is handed those four things and nothing else.
  *
  * **Six cases, which is every case that ends in a rollback.** The five durable boundaries an
  * updater can be killed at ({@link UPDATE_TRANSITIONS}), each driven by the same child entry B5
@@ -28,9 +28,8 @@
  * A from this checkout, and B is A with its own version and an entry that binds nothing, rescanned
  * by the shipped scanner. So the daemon that comes back after each rollback is a real
  * `xplainer serve` out of a real payload 1, reading the real `toolchain.json` `setup` wrote and
- * gated on the real workspace `setup` materialised — and the still it is then asked for spawns the
- * payload's own render worker through the interpreter D1 resolves, against the browser `setup`
- * acquired.
+ * gated on it — and the still it is then asked for spawns the payload's own render worker under
+ * the payload's own interpreter, against the browser `setup` acquired.
  *
  * **What stays a seam, and why that is not a weakening.** The supervisor: `updateHarness()`'s `run`
  * is what `launchctl`, `systemctl` and Task Scheduler would be, and it really does start and stop
@@ -164,7 +163,7 @@ function required(name: string): string {
   return value;
 }
 
-/** The materialised workspace every case renders out of — one tree, shared, never copied. */
+/** The workspace every case renders out of — one tree, shared, never copied. */
 const workspaceRoot = required("XPLAINER_ROLLBACK_WORKSPACE");
 
 /** The marker `xplainer setup` wrote, whose recorded paths are on this machine. */

@@ -42,9 +42,11 @@
  *      arguments the payload spawns. `daemon/workers.ts` has a TypeScript fallback for the
  *      narration worker that exists for Vitest; a payload that reached it would be a payload that
  *      cannot narrate once published, and it would do so silently. The rule names `dist/` rather
- *      than every `.ts` because `render-core`'s `template/remotion.config.ts` is shipped on
- *      purpose — it is copied into a user's workspace, whose own toolchain compiles it — so it is
- *      reported as data rather than asserted away.
+ *      than every `.ts` because, when this spike was written, `render-core`'s `template/` shipped
+ *      a TypeScript config file on purpose — copied into a user's workspace, whose own toolchain
+ *      compiled it — so it was reported as data rather than asserted away. That file left with
+ *      payload 2 (ADR 0031's note of 2026-11-12, D7); `template/` now carries only `tailwind.css`
+ *      and `tsconfig.json`, and the rule is kept as it was measured.
  *   4. The artefact answers `--version` with no `node` on `PATH` and — separately — with no
  *      environment at all, which is the whole premise of shipping an interpreter.
  *
@@ -590,9 +592,11 @@ function under(path, root) {
  * The distinction the `.ts` expectation turns on. `dist/` is what `tsc` wrote and what the payload
  * executes, so a `.ts` there is source that was meant to be compiled and was not — the shape of
  * `daemon/workers.ts`'s Vitest fallback, which resolves `dist/workers/narrate.ts` and a `.ts`
- * loader hook when the compiled worker is missing. `template/` is the opposite: `remotion.config.ts`
- * is data this payload copies into a user's Remotion workspace, where that workspace's own
- * toolchain compiles it, and it is shipped on purpose by `render-core`'s `files` allowlist.
+ * loader hook when the compiled worker is missing. `template/` is the opposite: what it carries is
+ * data this payload copies into a user's workspace, shipped on purpose by `render-core`'s `files`
+ * allowlist — when this spike was written a TypeScript config file the workspace's own toolchain
+ * compiled, and since payload 2 left (ADR 0031's note of 2026-11-12, D7) only `tailwind.css` and
+ * `tsconfig.json`.
  */
 function isCompiledOutput(relativePath) {
   const path = relativePath.split(sep).join("/");

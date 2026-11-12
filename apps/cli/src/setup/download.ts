@@ -30,9 +30,10 @@
  * Authentication Required` never reaches a `fetch` caller at all — undici turns it into a network
  * error whose `cause` is an empty `Error` with no `code`, so the one status a corporate proxy is
  * most likely to answer with would arrive indistinguishable from a dropped connection, and the
- * branch naming it would be dead code. The artefact URLs also **redirect**: the arm64 Linux build
- * the pinned Remotion line selects is a `307` to another host. Holding the status line, the headers
- * and the redirect chain is what makes both of those sayable.
+ * branch naming it would be dead code. The artefact URLs also **redirect**: measured 2026-11-12, a
+ * GitHub release download — how every Linux and Windows FFmpeg pin is fetched — answers `302` to
+ * GitHub's asset host. Holding the status line, the headers and the redirect chain is what makes
+ * both of those sayable.
  *
  * **What "atomic commit" means here.** The archive is verified, unpacked into a **staging
  * directory beside the destination**, and only then `rename`d onto it — the same argument
@@ -867,8 +868,8 @@ export async function acquireFile(options: AcquireFileOptions): Promise<AcquireF
 /**
  * Refuse an artefact this build cannot unpack, by extension and before it is fetched.
  *
- * The query string is ignored on purpose: `remotion.media`'s URLs end `…zip?clear`, and a check
- * against the whole URL would refuse the artefact the pinned Remotion line actually selects.
+ * The query string is ignored on purpose: it is not part of the format, so an artefact URL that
+ * carries one (`…zip?download=1`) is judged by its path alone.
  */
 export function assertZipArtefact(url: string): void {
   const pathname = new URL(url).pathname;

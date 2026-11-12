@@ -15,13 +15,6 @@ THIRD PARTY COMPONENTS
 This software depends on components owned by others, each under its own
 licence. Those licences govern those components.
 
-Rendering depends on Remotion, which is licensed commercially by Remotion AG on
-its own terms. `@xplainer/render-core` declares Remotion as a dependency of the
-video workspace it scaffolds; it does not bundle Remotion, and your own install
-fetches it under Remotion's terms. Depending on the size of your company and how
-you use it, you may need your own Remotion licence. See
-https://remotion.pro/license.
-
 `@xplainer/render-core` redistributes the CMU Pronouncing Dictionary
 (`cmudict.dict`), Copyright (C) 1993-2015 Carnegie Mellon University, under the
 2-clause BSD licence reproduced verbatim beside it at
@@ -62,12 +55,14 @@ unmodified FFmpeg 9.0.2, x264 b35605ace3ddf7c1a5d67a2eb553f034aef41d55 and zlib
 1.3.2, licensed under the GNU General Public License version 2 or later. Its
 complete corresponding source is listed at
 https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/README.txt. On
-Linux and Windows it downloads the GPL build published by BtbN/FFmpeg-Builds,
-licensed under the GNU General Public License version 3 or later, from BtbN's
-own release. The GPL texts travel with each download, not in these packages.
+Linux and Windows it downloads the GPL build BtbN publishes as FFmpeg-Builds
+(https://github.com/FFmpeg-Builds/FFmpeg-Builds), licensed under the GNU
+General Public License version 3 or later, from that project's own release.
+The GPL texts travel with each download, not in these packages.
 docs/third-party-components.md in the source repository lists every
 component `setup` acquires. FFmpeg is a trademark of Fabrice Bellard,
 originator of the FFmpeg project.
 
-Apache-2.0 governs this software. It does not govern Remotion, and nothing here
-grants you any right to Remotion.
+Apache-2.0 governs this software. It does not govern the components named above
+— the FFmpeg builds and everything else `xplainer setup` acquires among them —
+and nothing here grants you any right to them.

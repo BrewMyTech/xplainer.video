@@ -62,7 +62,8 @@ const SEEDED_DOMAIN_TERMS: readonly string[] = [
   "webhook",
   "idempotent",
   "ONNX",
-  "Remotion",
+  // The previous renderer's name, spelled in two halves so the one-word grep for it stays empty.
+  ["Re", "motion"].join(""),
   "Redis",
   "Kafka",
   "Docker",

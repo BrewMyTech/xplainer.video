@@ -15,9 +15,8 @@ acquired is the one that draws. The page is served from `127.0.0.1` on a port th
 never opened from `file://`, and a scene's imports must stay inside the workspace, so a scene cannot
 draw or embed a file from elsewhere on the machine.
 
-**A render now needs ffmpeg with libx264 on the machine.** It is found through `XPLAINER_FFMPEG`,
-then `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin` (a launchd daemon's `PATH` has neither);
-`xplainer setup` does not acquire it.
+**A render now needs ffmpeg with libx264.** `xplainer setup` acquires one, or records one you name
+with `--ffmpeg-path`, and `XPLAINER_FFMPEG` overrides both; nothing is looked up on `PATH`.
 
 A failed still or render still ends `render_failed`, and its log now ends in one named line:
 `BUNDLE_FAILED`, `CHROME_LAUNCH_FAILED`, `READINESS_TIMEOUT`, `PAGE_ERROR`,

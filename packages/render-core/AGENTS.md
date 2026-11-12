@@ -12,11 +12,10 @@ scaffold generator** under `src/scaffold/`, the **narration port** under `src/na
 
 **Nothing here renders.** The renderer is `@xplainer/cli`'s (`apps/cli/src/render/`): it bundles
 the files this package scaffolds against its own `@xplainer/motion` and React, and never reads the
-workspace's `node_modules`. The scaffold templates import `@xplainer/motion` and nothing else by
-package name. The template is still an npm workspace whose `package.json` and `package-lock.json`
-pin the previous renderer's packages, because `xplainer setup --workspace` and the update
-transaction still install it; retiring that payload is phase 2's, and until then nothing in the
-render path depends on it.
+workspace for anything installed. The scaffold templates import `@xplainer/motion` and nothing else
+by package name. The template is no longer an npm workspace: since payload 2 was retired
+(ADR 0031's note of 2026-11-12, D7) it is two source files, `tailwind.css` and `tsconfig.json`, with no `package.json`,
+no lockfile and nothing for a package manager to install.
 
 `src/workspace.ts` is the map: `videoPaths(root, slug)` is the only place `videos/<slug>` and
 `public/<slug>` are paired, and `materialiseWorkspace()` copies the template files in without ever
@@ -153,16 +152,15 @@ Then the root procedure: `pnpm verify`.
   renderer serves both from the public directory `videoPaths()` names; the source directory holds
   neither. `videoPaths()` is the one place the pair is built, which is what keeps them from
   drifting apart.
-- **`materialiseWorkspace()` never overwrites, and never installs.** `package.json` is what a
-  package manager recorded `node_modules/` against, so rewriting it from the template on every
-  `explainer_create` would un-pin a workspace someone had already installed; and installing is a
-  visible step a user takes ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)),
-  never something a tool call does.
-- **`package-lock.json` is a member of `WORKSPACE_FILES`, and that is what makes the install
-  possible.** `npm ci` — the command both ends of the pinned resolution run, the staged payload at
-  build time and `xplainer setup --workspace` on a user's machine — exits `EUSAGE` in a directory
-  with no lockfile. So the two files travel together, placed by the one function that places the
-  template, rather than by whichever installer happens to run next. Adding a file here changes
+- **`materialiseWorkspace()` never overwrites, and never installs.** `tailwind.css` and
+  `tsconfig.json` are the user's once they are placed — an edited stylesheet or compiler setting is
+  theirs, and rewriting either from the template on every `explainer_create` would silently undo
+  it; and installing is a visible step a user takes
+  ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)), never
+  something a tool call does.
+- **`WORKSPACE_FILES` is exactly the template's files, `tailwind.css` and `tsconfig.json`.** The
+  one function that places the template places every file in that list and nothing else, so a file
+  added under `template/` without being added here never reaches a workspace. Adding one changes
   `WORKSPACE_FILES`, which is exported, so it changes this package's API report as well.
 
 - **Nothing the G2P emits may fall outside Kokoro's 115-symbol vocabulary.** The model has no

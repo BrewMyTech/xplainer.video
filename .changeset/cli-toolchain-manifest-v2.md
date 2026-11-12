@@ -14,7 +14,7 @@ nothing is fetched from `remotion.media` any more. The Linux builds need glibc 2
 
 The manifest now has a row per platform for the browser and, for the first time, for ffmpeg: our
 own FFmpeg 9.0.2 build for macOS, and BtbN's FFmpeg-Builds 9.0.2 for Linux and Windows (on arm64
-too). This release records those rows; acquiring ffmpeg with `setup` is the next change. Every
+too), and `setup` acquires ffmpeg from them. Every
 download URL in either block must come from a publisher the CLI names in its own code — Google's
 Chrome for Testing bucket, BtbN's FFmpeg-Builds releases, or this project's CDN — and a manifest
 naming anything else is refused when it is read, before anything is fetched.

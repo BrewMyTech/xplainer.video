@@ -1025,6 +1025,21 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `EINVAL` defect in `providers/workspace.ts` for every release from B6 onward. Reaching the third
     component is the point of it now, and the Windows resolve route no longer rests on
     `pnpm e2e:speech` alone.
+  - *Amended 2026-11-12 ([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s
+    Phase 2): **three components again, and a different third.*** `xplainer setup` acquires the
+    browser, **FFmpeg** and speech, in that order. The render workspace stopped being an artefact
+    when payload 2 left: `setup --workspace` is an unknown option, the template's `package.json` and
+    lockfile are deleted, and `setup` removes the tree an older `setup --workspace` installed when it
+    is provably that tree. The browser is Chrome for Testing 157.0.8103.50 on every platform key,
+    admitted on the expected digest its row carries; FFmpeg is our own 9.0.2 build on macOS and
+    BtbN's on Linux and Windows, checked against two digests and probed before it is kept. This
+    build reads the **version-2** manifest at `toolchain/v2/manifest.json`, committed and **not yet
+    uploaded**: the upload is the owner's step before the first release that reads it. So the
+    amendments above that name the workspace — T19's third artefact, T20's and P2-3's *"first-run
+    rendering needs a network"* for `npm` — describe a payload that is gone: a first run still needs
+    a network, for the three downloads and for nothing else, and the `windows-setup-from-a-checkout`
+    job's third component is now FFmpeg. That half is not yet proven on a Linux or a Windows runner;
+    the row stays met on the evidence above for the components it named then.
 - **P2-5** A non-localhost daemon rejects an unauthenticated request and accepts a valid
   bearer token.
   - *Amended 2026-09-08 (T30): **met locally; the runner half has never run.*** `pnpm e2e:remote`
@@ -1533,9 +1548,11 @@ Phase 1" below is not Phase 1 above. The eight tools, their schemas, the job env
 `timings.json` and `captions.json` contracts do not change in any of them.
 
 **The hard condition comes first.** A tree that contains renderer Phase 1 and not renderer Phase 2
-is **not shippable**, and nothing is released between the two (the owner's hard cut): until Phase 2
-deletes it, `xplainer setup --workspace` still npm-installs the Remotion workspace onto the user's
-machine, and nothing acquires the ffmpeg every render now needs.
+is **not shippable**, and nothing is released between the two (the owner's hard cut). It was stated
+for two reasons — `xplainer setup --workspace` npm-installed the Remotion workspace onto the user's
+machine, and nothing acquired the ffmpeg every render needs — and *as of 2026-11-12 both are gone
+from the tree*: that command and its payload are deleted, and `setup` acquires FFmpeg. What still
+stands between the tree and a release is the open half of the Phase 2 list below.
 
 **Renderer Phase 0 — the spike. Done; verdict go.** Measured on macOS arm64 and in the `infra/e2e`
 image on linux/arm64: libx264 at CRF 18 encodes 491 captured 1080p frames far faster than they can be
@@ -1561,8 +1578,9 @@ ADR 0031 carries the numbers, the options measured and not chosen, and the licen
   authoring API from `@xplainer/motion` alone; `remotion.config.ts` is gone. For one release the bundler still maps
   `remotion`, `@remotion/media` and `@remotion/captions` onto `@xplainer/motion` and logs a
   deprecation line per file, so last release's videos keep rendering.
-- **ffmpeg is found, not acquired**: `XPLAINER_FFMPEG`, then `PATH`, then `/opt/homebrew/bin` and
-  `/usr/local/bin`, otherwise `FFMPEG_NOT_FOUND`. The toolchain schema is unchanged.
+- **In Phase 1, ffmpeg was found, not acquired**: `XPLAINER_FFMPEG`, then `PATH`, then
+  `/opt/homebrew/bin` and `/usr/local/bin`, otherwise `FFMPEG_NOT_FOUND`, with the toolchain schema
+  unchanged. Phase 2 replaced both (item 1 below).
 - **Evidence in the tree:** `render.test.ts`, `capture.test.ts` and `shutdown.test.ts` drive a real
   Chrome and a real ffmpeg — two Chrome processes give byte-identical PNGs, a `SIGTERM` mid-render
   leaves no browser, no MP4 and no partial — and `render.test.ts` checks the audio stream's own
@@ -1573,44 +1591,64 @@ ADR 0031 carries the numbers, the options measured and not chosen, and the licen
   Safari app and VLC; any frame identity across operating systems, which is not promised (frames are
   reproducible per host and toolchain).
 
-**Renderer Phase 2 — what it owes before anything is released:**
+**Renderer Phase 2 — what it owes before anything is released.** ADR 0031's note of 2026-11-12
+records its twelve decisions (D1–D12); the status of each item is as of that date.
 
-1. **FFmpeg acquisition**, per the owner's decision of 2026-11-11: our own CI-built static FFmpeg
-   9.0.2 for macOS on `cdn.xplainer.video` with its source bundle beside it, and the pinned BtbN build
-   fetched from upstream on Linux and Windows. That means an optional `ffmpeg` component in
-   `toolchain.json` at `format_version` 1, in front of today's lookup order; manifest rows selected by
-   platform key behind a URL-prefix allowlist; an xz decoder, because both Linux pins ship only as
-   `.tar.xz`; the notice, provenance and re-pin rules for the fetch and the source, build-info and
-   signing rules for our own build; a patent decision on the default macOS encoder before the first
-   macOS release; and a pinned build, which is what makes MP4 bytes reproducible. Counsel's open
-   questions are listed in ADR 0031.
-2. **Payload 2 leaves.** The template's Remotion pins and lockfile, `setup --workspace`, the
+1. **FFmpeg acquisition — built.** `xplainer setup` acquires a pinned FFmpeg per platform: our own
+   CI-built static FFmpeg 9.0.2 on macOS, published on `cdn.xplainer.video` with its source bundle
+   beside it (`ffmpeg-macos` run `43133391215`), and BtbN's `gpl` build of `n9.0.2-39` fetched from
+   that project's own GitHub release on Linux and Windows. The manifest rows are selected by
+   platform key behind a URL-prefix allowlist in code (D3); both Linux pins are `.tar.xz`, decoded by
+   `xz-decompress@0.2.3` (D5); the publisher-and-licence sentence comes before the download, and
+   `LICENSE`, `PROVENANCE.txt` and, for our build, `SOURCE.txt` and `BUILDINFO.txt` land beside the
+   binary, which is checked against two digests and probed before it is kept. `toolchain.json`
+   records it as an optional `ffmpeg` component at **`format_version` 2**, not 1 (D1), and a render
+   resolves **`XPLAINER_FFMPEG`, then the recorded ffmpeg**, and nothing else — the `PATH` and
+   Homebrew lookups are deleted rather than kept behind it, and a binary of your own is named with
+   `setup --ffmpeg-path` (D6). A still needs no ffmpeg; a render without one is refused at the call
+   (D12). **Still open:** the patent decision on the default macOS encoder before the first macOS
+   release; a real `setup` download and render on a Linux and a Windows runner
+   (`e2e-toolchain.yml`, which reads the published manifest and so waits on item 6's upload); the
+   re-pin snapshot of the distribution analysis's Checklist A7; and counsel's questions, listed in
+   ADR 0031.
+2. **Payload 2 leaves — built.** The template's Remotion pins and lockfile, `setup --workspace`, the
    workspace payload in `runtime build` and `runtime verify`, the manifest's `remotion_entry`, the
-   toolchain gate's workspace check, the update transaction's template-pin refusals, and the proofs
-   that assert them — then the Remotion sentences in `README.md`, `LICENSE`, `NOTICE` and the two
-   package READMEs that still carry them because `setup` still installs that tree.
-3. **The Chrome manifest becomes ours in name** — the `remotion` provider token and the
-   `remotion.media` URLs — and linux-arm64 gets a source, because Chrome for Testing publishes no
-   build for it.
+   toolchain gate's workspace check and the update transaction's template-pin refusals are deleted
+   (D7), and npm left payload 1 with them (D11). `setup` removes what an older `setup --workspace`
+   installed, only when the tree is provably that one, and never a video. The Remotion sentences
+   are gone from `README.md`, `LICENSE`, `NOTICE` and the package READMEs. Crossing the marker's
+   format is a reinstall that `setup`, `xplainer update` and `daemon update` each refuse to perform
+   by accident (D2). **Still open:** the end-to-end proofs under `scripts/e2e/` and their workflows,
+   which still drive the payload that is gone.
+3. **The Chrome manifest is ours — built.** Chrome for Testing 157.0.8103.50 on all five render
+   platforms, from Google's own storage with `LICENSE.headless_shell` in every archive; the
+   `remotion` provider token is `manifest` and no `remotion.media` URL remains (D3, D4). linux-arm64
+   did not need a second source after all: Chrome for Testing has published it since 153.0.8001.0.
+   **Still open:** the idle-machine throughput gate re-run on 157 by the shipped worker, or D4's
+   fallback to 149 plus Playwright's linux-arm64 build.
 4. **Windows `--remote-debugging-pipe`** proved end to end on a hosted runner, and the Linux
-   container's 12 fps gate re-run on the shipped worker.
-5. **From the final design review (ADR 0031, Follow-up 8):** a decision on the page's network —
-   deny by default, which would refuse CDN web fonts, or a recorded reason not to; the toolchain
-   marker's shape across the cut, decided in a dated note before the code (`workspace` is required
-   and describes the payload being deleted); ffmpeg judged in `assertToolchainReady` rather than in
-   the worker; and a check that fails a publish while `template/package.json` still pins `remotion`.
+   container's 12 fps gate re-run on the shipped worker. **Open.**
+5. **From the final design review (ADR 0031, Follow-up 8):** the page's network is **decided** —
+   allowed by default, as it was before, by the owner on 2026-11-12; the toolchain marker's shape
+   across the cut is **decided and built** (D1, D2); ffmpeg is **judged at the gate**, by job kind
+   (D12), and `daemon status` now takes its verdict from the same check `/healthz` does (D10). The
+   check that fails a publish while the hard condition is unmet, and a committed grep gate for the
+   previous renderer's name, are **open** (D8, D9).
 6. **The release**, only after 1–5 have landed on `main`, with a changeset that names the alias's
-   removal in the release after it.
+   removal in the release after it — and after the owner uploads the committed version-2 manifest
+   to `toolchain/v2/manifest.json` and purges its URL, which nothing yet enforces
+   (`infra/README.md` §*The delivery position*). **Open.**
 
-**Booked, not scheduled:** a ticket for `daemon status` judging the toolchain by file existence while
-`/healthz` may say `toolchain_stale` (read in the code, never observed); from the Phase 1 code
-review, `chrome.kill()` waiting its full grace on a zombie helper where orphans are not reaped (a
-container whose PID 1 is not an init), and no ageing-out of `xplainer-chrome-*` profiles a
-`SIGKILL`ed worker leaves in the temporary directory; WebGL, whose working flag
-set ADR 0031 records; video assets, which need a frame-accurate decoder in the page; sound effects
-beyond the narration; and the design's later capture work — page-side dedup, a second capture tab,
-and `HeadlessExperimental.beginFrame` on Linux only, behind a probe. musl/Alpine has no FFmpeg
-download candidate and win32-arm64 has no Chrome, so neither will render after Phase 2 either.
+**Booked, not scheduled:** from the Phase 1 code review, `chrome.kill()` waiting its full grace on a
+zombie helper where orphans are not reaped (a container whose PID 1 is not an init), and no ageing-out
+of `xplainer-chrome-*` profiles a `SIGKILL`ed worker leaves in the temporary directory; WebGL, whose
+working flag set ADR 0031 records; video assets, which need a frame-accurate decoder in the page;
+sound effects beyond the narration; and the design's later capture work — page-side dedup, a second
+capture tab, and `HeadlessExperimental.beginFrame` on Linux only, behind a probe. The ticket for
+`daemon status` judging the toolchain by file existence while `/healthz` could say `toolchain_stale`
+is closed by D10. musl/Alpine has no browser that runs there — every Chrome for Testing Linux build
+is glibc — so it cannot render even with an FFmpeg named by `--ffmpeg-path`; win32-arm64 has an
+FFmpeg row and no Chrome, so it cannot render either.
 
 ---
 

@@ -1,12 +1,12 @@
 /**
- * Reading the one archive format the toolchain artefacts arrive in, and unpacking it into staging.
+ * Reading the zip archives the toolchain artefacts mostly arrive in, and unpacking them into staging.
  *
- * Every artefact `setup` fetches is a **zip**: Chrome for Testing publishes
- * `chrome-headless-shell-<platform>.zip`, `remotion.media` publishes
- * `chromium-headless-shell-<platform>-<version>.zip`, and the speech bundles are named the same
- * way. So the reader here is a zip reader, an archive whose extension says anything else is a
- * named refusal rather than a branch that guesses, and nothing in this package shells out to
- * `unzip` — a Debian slim image has no `unzip`, and GNU `tar` cannot read a zip at all.
+ * Chrome for Testing publishes `chrome-headless-shell-<platform>.zip`, the macOS and Windows FFmpeg
+ * pins are zips, and the speech bundles are named the same way. The tarballs — the Linux FFmpeg
+ * pins' `.tar.xz` and `onnxruntime-node`'s `.tgz` — are `tar.ts`'s, so an archive whose extension
+ * names neither is a named refusal rather than a branch that guesses, and nothing in this package
+ * shells out to `unzip` — a Debian slim image has no `unzip`, and GNU `tar` cannot read a zip at
+ * all.
  *
  * **Why this is written rather than depended on.** `@xplainer/cli` is the one published
  * application and its production dependency list is copied wholesale into payload 1 by
@@ -24,10 +24,9 @@
  * on disk. A method other than stored or deflate is refused by number.
  *
  * **Modes and symlinks are preserved**, because Chrome's own archives need both: the shell is
- * `0755` and its macOS framework carries symlinks. The rules are the ones `@remotion/renderer`'s
- * own extractor applies to the same archives — mode from the high half of
- * `externalFileAttributes`, `0644`/`0755` where a zip carries none, `__MACOSX/` skipped — so an
- * artefact unpacked here and one unpacked by Remotion are the same tree.
+ * `0755` and its macOS framework carries symlinks. The mode comes from the high half of
+ * `externalFileAttributes`, `0644`/`0755` stand in where a zip carries none, and `__MACOSX/` is
+ * skipped — the rules the previous renderer's extractor applied to the same kind of archive.
  */
 
 import { createHash } from "node:crypto";
@@ -118,7 +117,7 @@ const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
 
-/** The default modes a zip with no unix attributes gets, matching Remotion's own extractor. */
+/** The default modes a zip with no unix attributes gets. */
 const DEFAULT_FILE_MODE = 0o644;
 const DEFAULT_DIRECTORY_MODE = 0o755;
 

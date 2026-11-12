@@ -84,7 +84,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0019](0019-sequencing-local-cli-before-hosted.md) | Sequencing: the local CLI tier ships before the hosted tier — an external review's hosted-first recommendation is recorded and rejected, not dismissed | accepted — note 2026-09-06 |
 | [0020](0020-always-running-local-daemon.md) | The local runtime is an installed, supervised, per-user daemon — `systemd --user`, a LaunchAgent, a Scheduled Task; never root, and an always-on loopback listener means the token is a requirement, not a later nicety | accepted — dated notes, latest 2026-11-11 |
 | [0021](0021-proprietary-licence-free-to-use.md) | The published packages are proprietary and free to use — `SEE LICENSE IN LICENSE-BINARY`, not open source | **superseded by 0022** |
-| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — notes 2026-09-06, 2026-11-11 |
+| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — notes 2026-09-06, 2026-11-11, 2026-11-12 |
 | [0023](0023-split-the-repository.md) | Split the repository: the local tier is public and open source here, the hosted tier is relocated to a private repository — deferred pending a vendor answer, not cancelled | accepted |
 | [0024](0024-durable-jobs-and-boot-reconciliation.md) | Render jobs are durable records under the daemon's state directory, reconciled at boot by the process that exclusively owns it — a job whose owner is gone ends `error` with an `error_code`, never a stuck `running` or a `404` | accepted — dated notes, latest 2026-09-08 |
 | [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted — dated notes, latest 2026-09-08 |
@@ -110,8 +110,10 @@ detail** leaves. Applied to each:
   describes nothing this repository contains.
 - **0015** — headcount-band cost analysis and per-video margin, on a record still `proposed`
   against unresolved legal exposure. Its one user-facing obligation — a company above three
-  people needs its own Remotion licence — is discharged by the disclosure sentence ADR 0022
-  requires, on surfaces a user reads before installing.
+  people needs its own Remotion licence — was discharged by the disclosure sentence ADR 0022
+  required, on surfaces a user reads before installing, until 2026-11-12, when nothing this
+  repository ships installed Remotion any more and the obligation lost its object (ADR 0022's note
+  of that date).
 - **0017** — a full vendor cost model with projected volumes, plus the quota-ledger and outbox
   design.
 
@@ -255,18 +257,28 @@ template-pin refusal gone because no template pins anything. Decision A's paired
 closed rather than delivered, and `setup` removes what an older `setup --workspace` installed, only
 when that tree is provably its own.
 
+**ADR 0022 gained the third, dated 2026-11-12**, with the same removal: nothing in this repository
+installs Remotion any more, so the four READMEs that still carried the disclosure — the three its
+2026-11-11 note counted and `packages/alias/README.md` — and `LICENSE` and `NOTICE` in all nine
+copies drop it; item 2 has no object, the "binding **today**" paragraph is history, item 1 is
+untouched, and what a user is told now is about the FFmpeg `setup` acquires, in `NOTICE`,
+`docs/third-party-components.md` and the root `README.md`.
+
 ## Licence
 
-The six packages published to npm under the `@xplainer/` scope — `apps/cli`,
-`packages/{mcp-server,protocol,render-core,skill,tts-client}` — are **Apache-2.0**
+The eight packages published to npm — seven under the `@xplainer/` scope, `apps/cli` and
+`packages/{mcp-server,motion,protocol,render-core,skill,tts-client}`, and the unscoped `xplainer`
+in `packages/alias` — are **Apache-2.0**
 ([ADR 0022](0022-open-source-the-published-packages.md)). The full text is
 [`LICENSE-APACHE-2.0`](../../LICENSE-APACHE-2.0) at the repository root, a copy travels inside
 each published tarball, and [`NOTICE`](../../NOTICE) is the attribution notice Apache-2.0
 §4(d) propagates.
 
-**Everything else in this repository is proprietary today.** [`LICENSE`](../../LICENSE) Part
-Two covers `apps/desktop`, `packages/config`, `services/tts-sidecar`, `infra/`, `scripts/`,
-`docs/` and every other root file. Those three members are `open-later` — on the path to being
+**Everything else in this repository is proprietary today, except the macOS FFmpeg build
+scripts.** [`LICENSE`](../../LICENSE) Part Two covers `apps/desktop`, `packages/config`,
+`services/tts-sidecar`, `infra/`, `scripts/`, `docs/` and every other root file; Part Three
+licenses `infra/ffmpeg/` (but not its `keys/`) and `.github/workflows/ffmpeg-macos.yml` under MIT,
+because they are published beside every build as its corresponding source. Those three members are `open-later` — on the path to being
 opened, not opened. Making the repository *public* did not relicense them, and
 [ADR 0023](0023-split-the-repository.md) says so in as many words; doing it is a separate
 decision that has not been taken.

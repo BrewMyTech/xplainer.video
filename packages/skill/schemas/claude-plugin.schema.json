@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.xplainer.video/claude-plugin.schema.json",
-  "$comment": "Vendored, deliberately stricter than the published manifest schema. Anthropic's own schema at https://json.schemastore.org/claude-code-plugin-manifest.json requires only `name` and allows any additional key, so validating against it would pass almost any document and prove nothing. This copy pins the shape a real, installable bundle needs — every field the Remotion plugin manifest at ~/.claude/plugins/marketplaces/remotion/.claude-plugin/plugin.json ships, and no field the published schema does not define. That manifest validates against this schema unchanged, which is the check that keeps the extra strictness honest. Widen it deliberately; do not widen it to make a failing build green.",
+  "$comment": "Vendored, deliberately stricter than the published manifest schema. Anthropic's own schema at https://json.schemastore.org/claude-code-plugin-manifest.json requires only `name` and allows any additional key, so validating against it would pass almost any document and prove nothing. This copy pins the shape a real, installable bundle needs — every field a real plugin manifest installed from a public Claude Code marketplace ships, and no field the published schema does not define. That manifest validated against this schema unchanged when the schema was written, which is the check that keeps the extra strictness honest. Widen it deliberately; do not widen it to make a failing build green.",
   "title": "Claude Code plugin manifest",
   "type": "object",
   "additionalProperties": false,

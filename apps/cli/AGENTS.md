@@ -67,8 +67,10 @@ token.previous      DURABLE while a rotation's grace window is open: the retired
                     instant it stops being accepted, at the same 0600 and behind the same Windows
                     entry. Written by `xplainer token rotate`, ignored once expired, removed by the
                     next start, by the next rotation and by `daemon uninstall`
-toolchain.json      DURABLE. what `setup` acquired: the Chrome and speech versions, resolved paths,
-                    sha256 and provider, and the workspace payload's platform and version. A
+toolchain.json      DURABLE. what `setup` acquired, at format_version 2: the browser, speech and an
+                    optional ffmpeg — each one's version, resolved paths, sha256 and provider, and
+                    for ffmpeg its licence, libavcodec and probe output. A version-1 marker (which
+                    recorded a workspace instead of ffmpeg) is still read. A
                     checked contract (`packages/protocol/schemas/toolchain.json`), because `setup`
                     writes it and the install preflight and `daemon update` both read it
 config.json         DURABLE. the owner's speech settings — tts.provider, tts.elevenlabs.voice,
@@ -347,8 +349,7 @@ and the preflight all live there, and nothing about a video's shape is decided h
 
 ```
 <XPLAINER_VIDEOS_DIR, or <state dir>/workspace>/
-  package.json package-lock.json tailwind.css tsconfig.json   copied from render-core/template/
-  node_modules/         NOT installed by any tool call, and never read by the renderer
+  tailwind.css tsconfig.json   copied from render-core/template/; nothing here is installed
   videos/<slug>/        the engine-owned shell and the agent's Scenes.tsx
   public/<slug>/        timings.json, captions.json, narration.wav, narration.json, media/
   out/<slug>/           explainer.mp4 and frame-<n>.png
@@ -475,25 +476,26 @@ archive reader between them.
 | `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
 | `providers/speech-onnx.ts` | The in-process route: the Kokoro model, one voice and this platform's ONNX Runtime, each pinned by digest and each from its own upstream home |
 | `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
-| `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
+| `previous-renderer.ts` | What an older `setup --workspace` left in the workspace — `node_modules/`, `package.json`, `package-lock.json`, `workspace.manifest.json` — recognised only by a `workspace.manifest.json` recording the previous renderer's entry **and** a `package.json` whose name and pins equal `LAST_TEMPLATE`, removed evidence-last, and every removal printed; never `videos/`, `public/`, `out/`, `requests/` or `locks/` |
 | `toolchain.ts` | `toolchain.json` — the writer, the validating reader, the gate the daemon applies by job kind (a still needs no ffmpeg, a render does), and the summary `status` and `daemon status` print as their `toolchain:` block |
 | `toolchain.manifest.json` | The reviewed document itself — format 2, one `browser` and one `ffmpeg` row per platform and the `speech` map, every expected digest captured at manifest-build time |
 | `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, `fake-ffmpeg.ts` (a scripted ffmpeg for each way a binary is wrong), and a real marker for the suites downstream, whose ffmpeg is a copy of the one a test-only lookup finds (`XPLAINER_FFMPEG`, `PATH`, Homebrew) |
 
-**`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
-run to themselves; `--skip-*` flags trim the default; both together give the union. So
-`setup --workspace` is the workspace and nothing else — the form the D8 proof runs under a scrubbed
-`PATH`, which must not drag a browser download or a Docker pull in behind it — while
-`setup --skip-speech` is the browser, ffmpeg and the workspace, which is the form a machine takes
-when the speech acquisition is not wanted in this run. The components are ordered browser, ffmpeg,
-speech, workspace. `--ffmpeg-path <file>` records a binary the user names instead of acquiring the
-pin, and is a usage error beside `--skip-ffmpeg`. A platform whose `ffmpeg` row is `unavailable`
-prints a skip and still exits `0`, with no `ffmpeg` in the marker: stills work there, and every
-render is refused until one is recorded. A partial run **exits `0`** and names what is still to
-acquire: `toolchain.json` records all three components or it is not a valid document, so an
-incomplete run merges into what the last one recorded and writes nothing until the set is complete.
+**`setup` acquires three components, and each `--skip-*` flag leaves one out.** A bare `setup` is
+the browser, ffmpeg and speech, in that order; `--skip-browser`, `--skip-ffmpeg` and `--skip-speech`
+each trim one from this run, and there is no positive component flag since `--workspace` left with
+payload 2 — it is an unknown option, exit `1`. `--ffmpeg-path <file>` records a binary the user
+names instead of acquiring the pin, and is a usage error beside `--skip-ffmpeg`. A platform whose
+`ffmpeg` row is `unavailable` prints a skip and still exits `0`, with no `ffmpeg` in the marker:
+stills work there, and every render is refused until one is recorded; a platform with **no** row is
+a refusal like any other component's. A partial run **exits `0`** and names what is still to
+acquire: `toolchain.json` records the browser and speech or it is not a valid document, so a run
+that acquired only one of them merges into what the last run recorded and writes nothing until both
+are there. Before any of it, `setup` refuses with `3` under an installed daemon whose runtime reads
+marker format 1 (ADR 0031 §Note, 2026-11-12, D2 (c)), and only after that refusal has passed does
+`previous-renderer.ts` remove what an older `setup --workspace` installed.
 
-**`--speech <route>` is not part of that union**: it selects *which* speech route rather than whether
+**`--speech <route>` is not a component flag**: it selects *which* speech route rather than whether
 speech is acquired, over the two routes that acquire something (`onnx`, `docker`). It exists because
 of the migration rule below — the precedence deliberately will not move a machine that already
 records a working `docker` route onto the in-process engine, so `--speech onnx` is how a user asks
@@ -529,49 +531,15 @@ it in one line — *"This adds a route; it retires none"* — and `docs/ROADMAP.
 carries the argument. Anything here that touches `providers/speech-docker.ts`,
 `services/tts-sidecar` or the pinned `linux/amd64` image is touching Intel-Mac speech.
 
-**`<runtime>/bin` goes on the install subprocess's `PATH` and on nothing else (D8), composed with
-`path.delimiter`.** npm runs lifecycle scripts through `sh -c` and third-party scripts call bare
-`node` — `esbuild`'s `postinstall`, reached through the Remotion tree's 268 packages — so an install
-from a payload under a scrubbed `PATH` exits `127` and leaves no workspace at all. This does **not**
-reopen D1: D1 refused `PATH` injection for *render workers* because it leaks an interpreter onto the
-`PATH` of everything they spawn, Chrome and ffmpeg included, and the installer spawns neither.
-`npm ci`, never `npm install`, and never `--ignore-scripts` — which also exits `0` today and makes
-the workspace's completeness depend on no package in that tree ever needing its install script.
-
-**npm is spawned as a *script* under an explicit *interpreter*, on both routes and on all three
-platforms — never as a launcher, and never with `shell: true`.** The payload route always did:
-`<runtime>/bin/node[.exe]` plus `lib/node_modules/npm/bin/npm-cli.js`. The resolve route did not —
-it returned `npm` or `npm.cmd` by platform — and so **`setup` had never once worked on Windows
-without a staged payload 1**, from the day `providers/workspace.ts` was written until 2026-09-10.
-Since the CVE-2024-27980 fix (Node ≥18.20.2/20.12.2/21.7.3) libuv's `uv_spawn` refuses a
-`.bat`/`.cmd` application outright unless `UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS` is set, and Node
-sets that only for `shell: true` or `windowsVerbatimArguments: true`. The refusal is libuv's rather
-than JS's, so it arrived as `spawnSync npm.cmd EINVAL` with **no `status` and no `signal`** — no
-process was created — and `WorkspaceRefusal("install-failed")` mapped it to exit **70**, the
-unexpected-throw bucket, which is itself the tell that nobody expected this branch to run.
-`shell: true` is not the alternative: it hands the argv to `cmd.exe` to re-parse, which is the
-quoting hazard the CVE fix exists for and which any workspace path holding a space walks into. So
-`locateNpmCli()` finds an `npm-cli.js` — beside `process.execPath` first, because the route now
-supplies the interpreter and that is the pair which shipped together, then beside any `npm` on
-`PATH`, following a POSIX `npm` symlink onto the script and rejecting a launcher that is not one —
-and **refuses by name** (`no-package-manager`, exit `3`) rather than falling back to a launcher one
-platform cannot spawn.
-
-**Nothing anywhere had run that branch on Windows, which is why it survived.**
-`e2e-toolchain.yml`'s Windows leg is green and its D8 phase does run `setup --workspace`, but out of
-a **relocated payload 1**, so `hostRuntimeDir()` answers and it takes the interpreter-plus-script
-form; its phase 4 sets `XPLAINER_WORKSPACE_PAYLOAD` and takes the `copy` route, which spawns
-nothing. That workflow's third job did run the CLI from the checkout, but while it was
-`windows-delivery-position` it refused at the **browser** — `setup`'s order is browser, speech,
-workspace — and never reached the provider. The unit test asserted the launcher rather than
-questioning it. `pnpm e2e:speech` is the first thing in this repository to run the resolve route on
-Windows, and it is what found this. Since 2026-09-11 that job is
-`windows-setup-from-a-checkout` and reaching the third component is its whole point, so this
-particular blind spot is **closed** rather than merely described: nothing in this repository now
-depends on `e2e:speech` alone to exercise the resolve route on Windows.
-`InstallHost` — `platform`, `execPath` and `path` as arguments, the same seam
-`install/supervisors/`'s three renderers take — is what makes the `win32` argv assertable from a
-suite on the other two platforms, since this package mocks nothing.
+**Nothing in `setup` spawns a package manager any more.** The workspace provider that ran `npm ci`
+left with payload 2 (ADR 0031 §Note, 2026-11-12, D7) and npm left payload 1 with it (D11), so the
+install subprocess's scoped `PATH` (ADR 0027's D8) and `locateNpmCli()` went too. One lesson they
+paid for applies to anything this package spawns on Windows: since the CVE-2024-27980 fix (Node
+≥18.20.2/20.12.2/21.7.3) libuv's `uv_spawn` refuses a `.bat`/`.cmd` application outright unless
+`shell: true` or `windowsVerbatimArguments: true` is set — it arrived as `spawnSync npm.cmd EINVAL`
+with **no `status` and no `signal`**, because no process was created — and `shell: true` hands the
+argv to `cmd.exe` to re-parse, which is the quoting hazard the fix exists for. So a script is spawned
+under an explicit interpreter, never through a `.cmd` launcher, which is D1's rule as well.
 
 **The daemon never starts a speech container.** `setup` pulls the pinned image, the user or the
 supervisor runs it, and the daemon reports its absence with the command that starts it
@@ -590,19 +558,20 @@ owning one. That gate **names the route it wants** — `setup --speech docker` �
 it from the precedence, which is what let `onnx` move above `docker`: phase 5 of the gate opens
 `marker.speech.path` *as the docker receipt*, so a bare `setup` there would have it `JSON.parse` a
 92 MB model graph. Where no such provider exists the render half still runs — from
-`XPLAINER_TTS_FIXTURE`, after the browser-and-workspace-only `setup --skip-speech --workspace` — so
-the skip is a skip and never a pass. **That skip no longer means the platform has no speech**: the
-`onnx` route runs on all three, and this gate declines it because ~204 MB from three upstream hosts
-does not belong in a proof about the browser, the workspace and the rollback rerun. `pnpm e2e:speech`
+`XPLAINER_TTS_FIXTURE`, after a `setup --skip-speech` — so the skip is a skip and never a pass.
+**That skip no longer means the platform has no speech**: the `onnx` route runs on all three, and
+this gate declines it because ~204 MB from three upstream hosts does not belong in a proof about the
+browser, ffmpeg and the rollback rerun. `pnpm e2e:speech`
 is the proof that owns it.
 
 **`setup/testing/rollback-render.ts` is T16's sixth assertion, and it lives here because only this
 batch has a browser.** B5's boundary suite and its failure proof end every rollback with *readiness*
-— the installed workspace satisfies the pins of the runtime that came back — and a daemon that
-answers `/healthz` and cannot render is the failure class the precondition exists for. So this entry
-reruns every case that ends in a rollback (the five durable boundaries and the replacement that never
-becomes ready), against a payload the shipped assembler produced, the workspace `setup` materialised
-and the browser it acquired, and asserts a **PNG** out of the daemon each recovery put back. It is
+— the marker satisfies the requirements of the runtime that came back — and a daemon that answers
+`/healthz` and cannot render is the failure class the precondition exists for. So this entry reruns
+every case that ends in a rollback (the five durable boundaries and the replacement that never
+becomes ready), against a payload the shipped assembler produced, the toolchain `setup` acquired and
+a workspace holding one narrated video, and asserts a **PNG** out of the daemon each recovery put
+back. It is
 `pnpm e2e:toolchain`'s last phase and is spawned by it; it is never part of `pnpm verify`.
 
 **The manifest is fetched from `cdn.<zone_name>` and never from `r2.dev`.** `infra/terraform`
@@ -629,21 +598,27 @@ Measured 2026-09-11: `https://cdn.xplainer.video/toolchain/v1/manifest.json` ans
 `toolchain.manifest.json` **until 2026-11-12, when format 2 replaced the committed copy**. The
 version-1 document stays on the CDN untouched, because released CLIs read it — 0.0.9 requires its
 old Chrome block and refuses a newer format — and this build reads format 2 at
-`toolchain/v2/manifest.json`, which is where a release uploads the committed copy and what the
-release check compares with it byte for byte
-([ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
-2026-11-12, D3 and D8). Until that upload nothing run from a checkout should request the version-2
-URL: every local `setup` passes `--manifest` naming the committed copy.
+`toolchain/v2/manifest.json`, which is where a release uploads the committed copy and which the
+release check
+[ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
+2026-11-12 specifies (D3 and D8) is to compare with it byte for byte. **The version-2 document is
+committed and not yet uploaded**, and until that upload nothing run from a checkout should request
+its URL: every local `setup` passes `--manifest` naming the committed copy.
 All three pieces of infrastructure behind it are now declared (`cloudflare_r2_bucket.artifacts`,
 `cloudflare_r2_custom_domain.cdn`, `cloudflare_ruleset.cdn_cache`), so **connecting the domain and
 adding its Cache Rule have stopped being manual steps**; `infra/README.md` §*The delivery position*
 records the infrastructure half, and the section above it carries the measurement against the real
 zone that retired the claim those two were not Terraform's to own — R2 creates the DNS record itself,
 which is why the hand-rolled `cloudflare_dns_record` is gone. What is still manual is the **upload**:
-no command in this repository puts a file in
-that bucket and no workflow is scheduled to, so re-publishing after a change to
-`toolchain.manifest.json` is something a release owner has to remember, and forgetting it leaves
-`setup` handing users an expected digest for an artefact the served document no longer describes.
+no command in this repository puts a manifest in that bucket and no workflow is scheduled to — the
+one workflow that uploads anything, `ffmpeg-macos.yml`, publishes the macOS FFmpeg under its own
+immutable version keys — so re-publishing after a change to `toolchain.manifest.json` is something a
+release owner has to remember, and forgetting it leaves `setup` handing users an expected digest for
+an artefact the served document no longer describes. **Publishing a manifest is an upload and then
+a purge**: once the declared Cache Rule is applied, the edge keeps a `manifest.json` for five
+minutes, so the upload is followed by a purge of that one URL or by a five-minute wait. The command,
+and the state of the rule itself — declared, and on 2026-11-12 never yet applied, which is the
+owner's `terraform apply` — are in `infra/README.md` §*The cache rule, and publishing a manifest*.
 **Publishing it was not a convenience.** `source.ts` keeps the committed copy out of the published
 tarball, so an installed `xplainer` has exactly two manifest sources — `--manifest` and the network —
 and while the address answered nothing, `setup` could not acquire a browser for any user without a
@@ -672,19 +647,15 @@ fails, so no flag reaches that branch. The message is therefore asserted per-pla
 `manifest.test.ts` by calling `deliveryPosition()` directly, `win32-x64` included — a unit test in
 `pnpm verify`, where the old assertion was a `workflow_dispatch` job nothing saw first.
 
-**What the job asserts now is strictly more, and it closes the gap the `npm-cli.js` paragraph above
-is about.** It is `windows-setup-from-a-checkout`, and it is still the one place in this repository
-that runs `xplainer setup` from a **checkout** on Windows — no staged payload 1, so
-`hostRuntimeDir()` answers `null` and the workspace provider takes its **resolve** route, which is
-precisely the configuration that could not work at all until 2026-09-10 (see the `npm-cli.js`
-paragraph above). While it asserted a refusal it stopped at the **browser**, and `setup`'s component
-order is browser, then speech, then workspace: it never reached the second component, let alone the
-third, so it was one gate away from catching a shipped Windows defect from B6 onward and it caught
-nothing. It now asserts `setup` **exits `0`** and acquires all three — the manifest line naming the
-published URL, so the document came over the network rather than from a copy no published build
-carries; `speech: took the onnx route`; the workspace; and `toolchain.json` parsing with
-`speech.provider === "onnx"`. It is still `workflow_dispatch` only and still registers from the
-default branch, so what changed is what a dispatch means, not when one happens.
+**`windows-setup-from-a-checkout` is still the one place in this repository that runs
+`xplainer setup` from a checkout on Windows.** No staged payload 1, so `hostRuntimeDir()` answers
+`null` — the configuration in which the old workspace provider's `npm.cmd` spawn could not work at
+all until 2026-09-10, a defect the job's earlier form never reached because, asserting a refusal, it
+stopped at the browser. What it asserts is that `setup` **exits `0`** with the manifest read over
+the network from the published URL, every component acquired, and `toolchain.json` parsing with
+`speech.provider === "onnx"`. Because it reads the published manifest, a dispatch of it proves
+something about this build only once the version-2 document is uploaded. It is still
+`workflow_dispatch` only and still registers from the default branch.
 
 **The expected digest is selected by `<platform>-<arch>`, and the URL is admitted by code.**
 Until format 2 the browser's row was looked up by the URL a mirror of the previous renderer's own
@@ -710,6 +681,26 @@ refused as an unsupported platform for the browser and cannot render.
 from the bytes that arrived — `sha256` is a required input to the download. A digest recorded on
 first acquisition cannot reject an incorrect-but-intact archive; it only detects later drift.
 
+**Every pin is re-pinned on a cadence, and by reading the bytes yourself.** The manifest's rows are
+not a cache of upstream; each is a reviewed choice that expires
+([ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) sets the
+checklists). **Chrome for Testing** is pinned at 157.0.8103.50, and the idle-machine throughput
+gate ADR 0031 describes has not yet been re-run on it (`docs/ROADMAP.md` books that). A re-pin
+reads the version out of Google's `known-good-versions-with-downloads.json`, downloads all five
+headless-shell zips, hashes each one here rather than trusting a published digest, confirms that
+each still carries `LICENSE.headless_shell`, takes the Linux rows' `min_glibc` from the
+publisher's own `deb.deps`, and re-runs the render suites and that throughput gate before the rows change. **BtbN** keeps
+the last autobuild of each month for two years, so the `autobuild-2026-10-31-12-59` pin is expected
+to disappear around 2028-10, and the fetch checklist asks for a re-pin at least every 20 months: take
+a last-of-month release, check each archive against that release's `checksums.sha256`, then hash the
+kept member yourself for `member_sha256`. Between re-pins the archive digest is what notices a
+replaced asset — it fails as `checksum-mismatch`, never as a render that behaves differently. **Our
+macOS build's published keys are immutable**: any change to its inputs is a new version key
+(`9.0.2-2`, then `9.0.2-3`), built and uploaded by `ffmpeg-macos.yml` dispatched from `main`, and the
+rows then point at the new key. Whichever pin moved, the order after the row edit is the same:
+`pnpm verify`, then `pnpm e2e:toolchain` against the committed manifest, then the manifest's upload
+and purge.
+
 **Verify, then extract, then commit — in that order.** The archive is checked against its expected
 digest, unpacked into a staging directory **beside** the destination, and committed with one
 `rename`, the same argument `install/stage.ts` makes for a payload. A digest checked after unpacking
@@ -726,7 +717,8 @@ fails later with a missing-binary error."
 **It speaks `node:http`, and that is a measurement rather than a preference.** On Node 24 a `407`
 never reaches a `fetch` caller — undici turns it into a network error whose `cause` is an empty
 `Error` with no `code` — so the proxy branch would be unreachable code. The artefact URLs also
-redirect (the arm64 Linux build's CDN answers `307`), and the redirect policy is a pure function so
+redirect (measured 2026-11-12: a GitHub release download, which is how every Linux and Windows
+FFmpeg pin is fetched, answers `302` to GitHub's asset host), and the redirect policy is a pure function so
 the https-downgrade refusal is asserted rather than assumed.
 
 **Both archive *parsers* are written here, and of the three decompressors behind them one is a
@@ -877,17 +869,16 @@ pnpm e2e:update
 pnpm e2e:identity
 
 # `setup` on a machine that behaves as though it has no Node, and then a picture. The artefact is
-# moved out of the checkout, `setup --workspace` proves D8 under `env -i PATH=/usr/bin:/bin`, the
-# marker is written over the offline copy route, `/healthz` is shown degrading, and then
-# narrate → still → render out of the **materialised** workspace with the MP4 read back by
+# moved out of the checkout, `setup` acquires the browser and ffmpeg against the committed manifest,
+# `/healthz` is shown degrading, and then narrate → still → render with the MP4 read back by
 # `ffprobe` — followed by T16's rollback cases, rerun until each recovered daemon produces a PNG.
-# Not part of `pnpm verify` and it must not become part of it: ~147 MB of payload, a ~234 MB
-# workspace install, a ~100 MB browser, a render, and two more payloads staged six times over.
+# Not part of `pnpm verify` and it must not become part of it: a full payload, a ~130 MB browser,
+# an ffmpeg, a render, and two more payloads staged six times over.
 pnpm e2e:toolchain
 XPLAINER_TTS_URL=http://127.0.0.1:8880 pnpm e2e:toolchain   # reuse a server you already run
 
-# The `[runner]` halves. The artefact gate — narration, then payload 2 and its D1/D2/D3
-# assertions — on ubuntu, macos and windows; the two platform spikes on the machines a
+# The `[runner]` halves. The artefact gate — narration out of a relocated payload 1 — on ubuntu,
+# macos and windows; the two platform spikes on the machines a
 # developer has none of, including the Task Scheduler half that runs nowhere else; and the update
 # transaction against real service managers; and the loaded-configuration row read from a real Task
 # Scheduler, which has never been asked anywhere. Every workflow is registered from the default branch,
@@ -973,17 +964,17 @@ Then the root procedure: `pnpm verify`.
   keeper closes the job and takes the tree with it. `taskkill /T` is the fallback where no keeper
   could start, and it is weaker on purpose rather than by oversight: it walks the parent chain at
   kill time, so a grandchild whose parent has already gone is out of its reach.
-- **Nothing installs the workspace's `node_modules`, and nothing renders from it.**
-  `materialiseWorkspace()` copies four files and creates three directories; it never runs a package
-  manager, because installing hundreds of megabytes is a visible step a user takes and never
-  something a tool call does behind an agent's back
+- **Nothing installs anything into the workspace, and nothing renders from an install there.**
+  `materialiseWorkspace()` copies two files and creates three directories; it never runs a package
+  manager, because installing is a visible step a user takes and never something a tool call does
+  behind an agent's back
   ([ADR 0005](../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)). The
-  render worker bundles every video against this package's own React and `@xplainer/motion` and
-  never reads that directory. `explainer_still` and `explainer_render` refuse a machine whose
-  toolchain is incomplete — `checkToolchain`: the recorded browser and speech route, and, until
-  phase 2 retires that payload, the workspace `setup --workspace` installed, which the gate still
-  asks about although no render reads it — by name and with the command that fixes it: a refusal at
-  the call, never a job that fails later inside `spawn`.
+  render worker bundles every video against this package's own React and `@xplainer/motion`.
+  `explainer_still` and `explainer_render` refuse a machine whose toolchain is incomplete for that
+  kind of job — `checkJobToolchain`: the recorded browser and speech route for both, and for a
+  render an ffmpeg too, `XPLAINER_FFMPEG` or one the marker records — by name and with the command
+  that fixes it: a refusal at the call, never a job that fails later inside `spawn`. The refusal's
+  code stays `WORKSPACE_NOT_INSTALLED`, because the code is published API.
 - **A tool's arguments reach its worker on disk, not in the record.** ADR 0008 dropped the
   reference implementation's `command` field, so a job record carries no arguments; `job-request.ts`
   writes one document per job under `<workspace>/requests/` and `daemon/workers.ts` reads it back.
