@@ -1016,3 +1016,30 @@ fail the job** on a miss. `linux-12fps-run` closes by review of that run, with i
 virtual machine whose load the spike records and cannot control, so a run under 12 is a
 measurement to read, not yet a verdict. What follows a miss, optimisation or an amended bar, is a
 later decision and a later note.
+
+## Note, 2026-11-12, the last of the day: the Linux 12 fps bar, measured
+
+Added as a dated note. Nothing above is edited, including the three notes before this one. It
+records the measurement the previous note left to a run: P0-6's Linux bar on the venue that note
+fixed.
+
+### The Linux 12 fps bar, measured
+
+**It passes, by 0.01 fps on the slowest run.** Run `43227178970` of `e2e-toolchain.yml` on `main`
+`3188f53`, with `-f fps=true`, on the hosted `ubuntu-latest` runner: 4 logical CPUs, linux-x64.
+The browser was Chrome for Testing 157.0.8103.50 and the FFmpeg BtbN's n9.0.2-39 (GPL-3.0-or-later),
+both from a fresh `setup` against the committed manifest. The method is
+§The idle-machine throughput gate's: the 491-frame animated scene at 1080p, on the shipped worker.
+
+| run | loop fps (capture + encode) | total fps (with launch and bundle) | one-minute load |
+| --- | --- | --- | --- |
+| 1 | **12.01** | 11.20 | 2.08 → 3.92 |
+| 2 | **12.34** | 11.48 | 3.92 → 2.97 |
+| 3 | **12.41** | 11.53 | 2.97 → 2.61 |
+
+The loop fps is the quantity P0-6 bounds, so `linux-12fps-run` is closed with this run. **The
+margin is the thinnest of any bar this record measures.** The macOS gate cleared 20 by 1.5 fps; this
+one clears 12 by 0.01 on its first run and by 0.34 at best. So a slower runner image, a heavier default scene, or any per-frame
+cost added to the worker can put it under. The total fps, which a user waiting for a render
+actually feels, is under 12 on all three runs. Nothing here changes the bar. A regression under it
+is a reason to re-measure with this input, not a reason to re-word the bar.
