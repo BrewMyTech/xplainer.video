@@ -32,7 +32,9 @@ is kept rather than deleted because each item says what was wrong and each amend
 answered it — a deleted gate is a gate nobody can audit. What is written below survives as the
 record; the status line under each item is the current truth. The remaining gate for the **first
 npm publish** is no longer on this list at all: it is `pnpm changeset publish` itself, which is
-close to irreversible and is a decision rather than a task.
+close to irreversible and is a decision rather than a task. (*2026-11-12:* that command is now
+`pnpm release:publish`, which builds first; a bare publish is refused — `AGENTS.md`
+§Publishing a release.)
 
 1. **The private repository's name still ships inside published packages.** It appears in the
    `description` strings of twelve JSON Schema files under `packages/protocol/schemas/`, and in
@@ -274,7 +276,8 @@ proof is a rendered MP4 produced by an agent, not by a human running commands by
     phase-1 changesets move these, which is why the numbers are dated and not a promise). The
     copy was thrown away; nothing here was versioned or committed. **One command is left and it
     is the owner's: `pnpm changeset version && pnpm changeset publish`.** Nothing in this
-    repository runs it, and nothing should — a publish cannot be taken back.
+    repository runs it, and nothing should — a publish cannot be taken back. (*2026-11-12:* the
+    publish half is now `pnpm release:publish`; `AGENTS.md` §Publishing a release.)
 - **The tarball hygiene rules that go with that publish, and their exemption list.** Source
   maps are produced and archived as CI artefacts keyed by version, and excluded from the
   tarball; `declarationMap` is off; comments are stripped from emitted `.js`. The rules are

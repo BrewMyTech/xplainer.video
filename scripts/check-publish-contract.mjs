@@ -658,6 +658,14 @@ const PRESENCE_RULES = [
  */
 const ENTRY_FIELDS = ["main", "module", "types", "typings"];
 
+/** Whether a manifest's `files` ships a `dist/`: `dist`, `./dist`, or anything under either. */
+function filesDeclareDist(files) {
+  return (
+    Array.isArray(files) &&
+    files.some((entry) => typeof entry === "string" && /^(\.\/)?dist(\/|$)/.test(entry))
+  );
+}
+
 /** `./dist/x.js` and `dist/x.js` name the same tarball path. */
 function tarballPathOf(target) {
   return target.replace(/^\.\//, "");
@@ -736,10 +744,7 @@ const ENTRY_RULES = [
   {
     id: "dist-in-tarball",
     check: ({ manifest, shipped }) => {
-      const declaresDist = (manifest.files ?? []).some(
-        (entry) => entry === "dist" || entry.startsWith("dist/"),
-      );
-      if (!declaresDist || [...shipped].some((path) => path.startsWith("dist/"))) {
+      if (!filesDeclareDist(manifest.files) || [...shipped].some((p) => p.startsWith("dist/"))) {
         return null;
       }
       return (
@@ -1268,6 +1273,42 @@ const SELF_TESTS = [
         exports: { "./templates/*": "./dist/templates/*.txt", "./package.json": "./package.json" },
       },
       shipped: ["dist/templates/Root.tsx.txt", "package.json"],
+    },
+  },
+  {
+    rule: "entry-points-in-tarball",
+    // A null condition hides a subpath and names no file; a `*` may stand for a nested path.
+    violating: {
+      manifest: { exports: { "./internal/*": null, "./data/*": "./dist/data/*" } },
+      shipped: ["dist/index.js", "package.json"],
+    },
+    clean: {
+      manifest: { exports: { "./internal/*": null, "./data/*": "./dist/data/*" } },
+      shipped: ["dist/data/voices/af_heart.json", "package.json"],
+    },
+  },
+  {
+    rule: "dist-in-tarball",
+    // `distribution` is not `dist`: a package that never declared dist/ owes none.
+    violating: {
+      manifest: { files: ["dist", "distribution"] },
+      shipped: ["distribution/index.js", "package.json"],
+    },
+    clean: {
+      manifest: { files: ["distribution"] },
+      shipped: ["distribution/index.js", "package.json"],
+    },
+  },
+  {
+    rule: "dist-in-tarball",
+    // `./dist` is the same declaration as `dist`.
+    violating: {
+      manifest: { files: ["./dist", "LICENSE"] },
+      shipped: ["LICENSE", "package.json"],
+    },
+    clean: {
+      manifest: { files: ["./dist", "LICENSE"] },
+      shipped: ["LICENSE", "dist/index.js", "package.json"],
     },
   },
   {
@@ -1856,10 +1897,7 @@ function checkBuilt(root) {
   const missing = [];
   for (const member of PUBLISHABLE_MEMBERS) {
     const manifest = readManifest(root, member.dir);
-    const declaresDist = (manifest.files ?? []).some(
-      (entry) => entry === "dist" || entry.startsWith("dist/"),
-    );
-    if (declaresDist && !existsSync(join(root, member.dir, "dist"))) {
+    if (filesDeclareDist(manifest.files) && !existsSync(join(root, member.dir, "dist"))) {
       missing.push(member.dir);
     }
   }

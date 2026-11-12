@@ -128,14 +128,26 @@ git commit && git push          # the repository records what is about to ship, 
 
 pnpm install --config.nodeLinker=isolated     # ONLY for the publish; do not commit a lockfile from it
 pnpm release:publish                          # add --otp <code> for a classic authenticator
-pnpm install                                  # restore the committed hoisted layout
+find . -name node_modules -type d -prune -exec rm -rf {} +
+pnpm install --frozen-lockfile                # restore the committed hoisted layout
 ```
 
-`pnpm release:publish` builds first — `TURBO_FORCE=true pnpm turbo build`, never a cache hit —
-then runs `check-publish-contract` on that fresh output, then the release check —
-`scripts/check-release-ready.mjs`: no `package.json` in the render template and no trace of the
-previous renderer under it, every render platform's browser and ffmpeg row `recorded`, every entry
-of `docs/release-blockers.json` closed with its evidence — then requires the manifest served at
+The restore deletes first because pnpm never prunes the other linker's files: after the isolated
+install, a plain `pnpm install`, and `pnpm install --force` too, reports the tree hoisted and leaves
+every member's isolated `node_modules` in place (measured with pnpm 11.25.0, 2026-11-12) — which is
+the symlinked tree `hoisted` exists to keep away from electron-builder.
+
+`pnpm release:publish` first refuses a tree that is not the commit: anything `git status` reports
+under `apps/`, `packages/`, `services/`, the root `LICENSE` and `NOTICE` or `pnpm-workspace.yaml`;
+any gitignored file under a published member's `src/` or its other non-`dist` `files` roots,
+which `git status` never shows and the build and `npm pack` both take (`out/`, `release/` and
+`dist/` are ignored at any depth); and a HEAD that is not on `origin/main`. It checks again just
+before publishing, so a build or a pack that changed the tree publishes nothing. It runs the release
+check — `scripts/check-release-ready.mjs`: no `package.json` in the render template and no trace
+of the previous renderer under it, every render platform's browser and ffmpeg row `recorded`,
+every entry of `docs/release-blockers.json` closed with its evidence. It deletes every published
+member's `dist/`, builds with `TURBO_FORCE=true pnpm turbo build`, never a cache hit, and runs
+`check-publish-contract` on that fresh output. Then it requires the manifest served at
 `https://cdn.xplainer.video/toolchain/v2/manifest.json` to be byte-identical to the committed
 `apps/cli/src/setup/toolchain.manifest.json`, and only then runs
 `pnpm publish -r --no-git-checks --access public` with your arguments appended (ADR 0031's note of
@@ -153,9 +165,13 @@ two of them would leave half a release on the registry.
 disk and builds nothing. 0.1.0 was published on 2026-11-12 from a clone whose `dist/` predated the
 release commit, and six of its eight tarballs differed from a fresh build: `@xplainer/cli` lacked
 16 files, and `@xplainer/motion` shipped no `dist/` at all, so every import of it failed on a
-user's machine and nowhere in the workspace. 0.1.1 republishes them. `check-publish-contract` also
-fails a tarball that lacks a file its `main`, `module`, `types`, `typings`, `bin` or `exports`
-names, or that declares `dist` in `files` and carries nothing under it.
+user's machine and nowhere in the workspace. 0.1.1 republishes them. A build alone would not
+have been enough: `tsc` never removes what it emitted for a deleted source, so a forced build of
+the release commit still left four orphaned files in the CLI's `dist/`, and they would have
+shipped — hence the delete. `check-publish-contract` also fails a tarball that lacks a file its
+`main`, `module`, `types`, `typings`, `bin` or `exports` names, or that declares `dist` in `files`
+and carries nothing under it. The hook stops an accident, not a determined publisher:
+`--ignore-scripts` skips it.
 
 **Verify from the registry rather than from the tarball**, because the tarball is what you already
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
