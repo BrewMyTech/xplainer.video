@@ -767,9 +767,13 @@ function main(argv) {
         "--prepublish; rule (c), which needs the network, is `pnpm release:publish`'s.",
     );
   }
-  if (prepublish && prepublishVerdict(process.env.npm_command) === "skip") {
+  // pnpm and npm export the command that started a lifecycle script as `npm_command`. It is
+  // declared in turbo.json's `globalPassThroughEnv`, which is what Biome's `noUndeclaredEnvVars`
+  // reads; it changes no task hash.
+  const npmCommand = process.env.npm_command;
+  if (prepublish && prepublishVerdict(npmCommand) === "skip") {
     process.stdout.write(
-      `check-release-ready: not run — this prepublishOnly was started by \`${process.env.npm_command}\`, ` +
+      `check-release-ready: not run — this prepublishOnly was started by \`${npmCommand}\`, ` +
         "not a publish (pnpm runs the hook for injected workspace members on install). A " +
         "publish runs it with npm_command=publish and is checked.\n",
     );
