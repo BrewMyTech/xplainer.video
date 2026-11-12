@@ -4,10 +4,11 @@
  *
  * `scripts/e2e/runtime.mjs` proves payload 1 can create and narrate out of a relocated artefact and
  * deliberately stops there — its own transcript says `explainer_still` and `explainer_render` "need
- * payload 2 and the toolchain, which are T33 in B6". This is T33: that the one command in the
- * product which downloads can acquire a browser, record a speech route and materialise the render
- * workspace on a machine that behaves as though it has no Node, that what it wrote is what the
- * daemon then reads, and that **a picture comes out the other end**.
+ * the toolchain setup acquires, which is T33 in B6". This is T33: that the one command in the
+ * product which downloads can acquire a browser and an FFmpeg and record a speech route on a
+ * machine that behaves as though it has no Node, that what it wrote is what the daemon then reads,
+ * and that **a picture comes out the other end** — encoded by the ffmpeg `setup` acquired, with no
+ * `XPLAINER_FFMPEG` and nothing found on `PATH` (ADR 0031 §Note, 2026-11-12, D6 and D12).
  *
  * Seven phases, and each one is a decision the plan took rather than a step in a script.
  *
@@ -15,13 +16,10 @@
  * moves it out, exactly as the runtime gate does. Everything after this point runs the artefact's
  * own interpreter and its own entry, under an environment built from nothing.
  *
- * **2 — D8, end to end.** `node` is asserted not to resolve for the parent process; then
- * `setup --workspace` is run under that scrubbed environment and must exit `0`. It cannot, unless
- * `<runtime>/bin` reaches the install subprocess's `PATH`: npm runs lifecycle scripts through
- * `sh -c` and `esbuild`'s `postinstall` calls bare `node`, which was measured at exit **127**
- * (§7.19). Then `<runtime>/bin/node <workspace>/<remotion entry> versions` — the call D1 is about —
- * must exit `0` under the same environment, which is what says the tree that arrived is one Remotion
- * itself accepts.
+ * **2 — the machine.** `node` is asserted not to resolve on the scrubbed `PATH` every child below
+ * is given, and so is `ffmpeg` wherever the platform makes that provable — `/usr/bin:/bin` on macOS
+ * and `System32` on Windows hold none. On Linux `/usr/bin` holds the distribution's ffmpeg this
+ * script reads the MP4 back with, so there the render's own log line is the evidence instead (6).
  *
  * **3 — the speech provider, and who owns its lifetime.** Round 4 left that unowned:
  * `render.mjs`'s `requireKokoro()` only *waits for* a server, and T19 decides the daemon never
@@ -38,30 +36,39 @@
  *   3. **Otherwise the narration leg is skipped with its reason.** On **Windows** that is always the
  *      case this phase (§2.5, P2-4), and the skip is printed as a skip — never as a pass.
  *
- * **4 — the marker, over the copy route.** The workspace phase 2 resolved is staged as a payload 2
- * and `setup` is run again against it, so the *other* route D3 requires is exercised on the same
- * machine: no network, `node_modules` replaced whole, symlinks kept. The browser is acquired for
- * real, against the **expected** digest the committed manifest carries for this configuration, and
- * every path `toolchain.json` records is then asserted to exist. Where there is no live provider the
- * browser-and-workspace-only form runs first — `setup --skip-speech --workspace`, which is what a
+ * **4 — setup, against the committed manifest, and the marker it wrote.** Every `setup` here names
+ * `apps/cli/src/setup/toolchain.manifest.json` with `--manifest`, never the published address: the
+ * version-2 document is uploaded as a release step, and a request for it before then is a `404`
+ * nobody should have asked for. The run that downloads is read for the FFmpeg half of ADR 0031's
+ * plan (AC-A11): the publisher-and-licence sentence is printed **before** the line naming the URL
+ * it is about to fetch, and names the publisher the code allowlist maps that URL to and the licence
+ * the row declares; the marker records `ffmpeg` with provider `manifest`, the row's archive digest,
+ * the row's `member_sha256` and `member_size` for the executable — re-hashed here from the file on
+ * disk — and a non-empty `probe.license`; and `LICENSE*` and `PROVENANCE.txt` sit beside the
+ * binary. The browser's digest is checked against **this host's** row. Where there is no live
+ * provider the browser-and-ffmpeg-only form runs first — `setup --skip-speech`, which is what a
  * Windows user has — and the marker is then completed with `--tts-url`, because `toolchain.json`
- * records all three components or it is not a valid document.
+ * records the browser and speech or it is not a valid document; that second run meets a populated
+ * cache and must re-verify it rather than fetch again.
  *
  * **5 — the wiring.** A real `serve` out of the artefact, against that state directory:
- * `/healthz` answers `ok`; one recorded path is moved aside and it answers
- * `{"status":"degraded","reason":"toolchain_missing"}`; the path is put back and it answers `ok`
- * again. That is ADR 0020 §Degraded paths made observable.
+ * `/healthz` answers `ok`; the browser and then the ffmpeg are each moved aside and it answers
+ * `{"status":"degraded","reason":"toolchain_missing"}`; each is put back and it answers `ok`
+ * again. That is ADR 0020 §Degraded paths made observable, and D12's "renders are unavailable"
+ * reaching `/healthz`.
  *
- * **6 — narrate, still, render, and the MP4 read back with `ffprobe`.** Against the **materialised**
- * workspace: `scripts/e2e/render.mjs:658` symlinks the checkout's own `node_modules` into its
- * workspace with its reasoning written out, and that proof keeps doing so — this one deliberately
- * does not, because the thing under test is whether `setup` produced a workspace a render can use.
- * The assertions are `workers/render.test.ts`'s, because a render that "succeeded" and produced a
- * silent, mistimed or 300-frame placeholder file looks like success from inside Node: the video
- * stream's size, rate and codec, an **AAC** stream beside it, the duration within 100 ms of
- * `timings.json`, and a frame count that equals `timings.durationInFrames` exactly and is not the
- * `Root.tsx` placeholder's 300. Nothing is written through `explainer_put_source`, so `Video.tsx`
- * draws its `MissingScene` marker per segment and the boundary frames are readable in the picture.
+ * **6 — narrate, still, render, and the MP4 read back with `ffprobe`.** The daemon and the shim
+ * run with the scrubbed `PATH` and **no `XPLAINER_FFMPEG`**, and the render job's own log has to
+ * name the ffmpeg `toolchain.json` recorded. The assertions are `workers/render.test.ts`'s, because a
+ * render that "succeeded" and produced a silent, mistimed or 300-frame placeholder file looks like
+ * success from inside Node: the video stream's size, rate and codec, an **AAC** stream beside it,
+ * the duration within 100 ms of `timings.json`, and a frame count that equals
+ * `timings.durationInFrames` exactly and is not the `Root.tsx` placeholder's 300. Nothing is written
+ * through `explainer_put_source`, so `Video.tsx` draws its `MissingScene` marker per segment and the
+ * boundary frames are readable in the picture. **`ffprobe` and the frame reads are this script's
+ * own tools, from the system** (`XPLAINER_FFPROBE`/`XPLAINER_FFMPEG`, else `PATH`, else Homebrew),
+ * and they never reach the daemon: our macOS build ships no `ffprobe`, and a check read back with
+ * the binary under test would be asking the encoder to grade itself.
  *
  * **7 — T16's rollback cases, rerun.** B5 ends every rollback with readiness rather than a render,
  * and the plan splits the remaining half here (§12.3). `apps/cli/src/setup/testing/rollback-render.ts`
@@ -69,9 +76,10 @@
  * rollback — the five durable boundaries and the replacement that never becomes ready — asserting a
  * PNG out of the daemon that came back.
  *
- * **It is not part of `pnpm verify` and must not become part of it.** It copies ~147 MB of payload,
- * installs ~234 MB of workspace from the registry, downloads a ~100 MB browser, renders a video and
- * then stages two more payloads six times over.
+ * **It is not part of `pnpm verify` and must not become part of it.** It copies a whole payload,
+ * downloads a ~100–130 MB browser and an ffmpeg (2 MB from our CDN on macOS, 150–200 MB from
+ * BtbN's releases on Linux and Windows), renders a video and then stages two more payloads six
+ * times over.
  *
  * ```bash
  * pnpm e2e:toolchain
@@ -80,15 +88,18 @@
  */
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { get } from "node:http";
@@ -98,7 +109,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE, workspaceShim } from "./spawn.mjs";
+import { transcript } from "./spawn.mjs";
 
 /** The repository root, two levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -106,8 +117,27 @@ const REPO = fileURLToPath(new URL("../../", import.meta.url));
 /** The built CLI that assembles the artefact. `pnpm turbo build` below makes it this commit's. */
 const CLI = join(REPO, "apps", "cli", "dist", "bin.js");
 
-/** The reviewed manifest this checkout commits, which is what `--manifest` names. */
+/**
+ * The reviewed manifest this checkout commits, which is what every `setup --manifest` here names.
+ *
+ * An absolute path, and never left to the default: the version-2 document is not on the CDN until a
+ * release uploads it, and a `setup` with no `--manifest` would ask the published address first.
+ */
 const MANIFEST = join(REPO, "apps", "cli", "src", "setup", "toolchain.manifest.json");
+
+/**
+ * Who publishes what is under each URL prefix a `browser` or `ffmpeg` row may name.
+ *
+ * `apps/cli/src/setup/manifest.ts`'s `ARTEFACT_ALLOWLIST`, spelled here rather than imported: these
+ * scripts run outside the CLI's module graph on purpose, so the publisher the sentence names is
+ * checked against a second copy, and a change to the code's table that did not reach this one is a
+ * failure this gate should report.
+ */
+const PUBLISHERS = {
+  "https://storage.googleapis.com/chrome-for-testing-public/": "Google (Chrome for Testing)",
+  "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/": "BtbN FFmpeg-Builds",
+  "https://cdn.xplainer.video/toolchain/v1/ffmpeg/": "xplainer.video",
+};
 
 /** The rollback rerun, spawned through the source hook exactly as the daemon suites spawn a child. */
 const ROLLBACK_PROOF = join(REPO, "apps", "cli", "src", "setup", "testing", "rollback-render.ts");
@@ -148,13 +178,16 @@ const KOKORO_PORT = 8880;
 /** The name the container this gate starts is given, so it is never somebody else's to stop. */
 const KOKORO_CONTAINER = `xplainer-t33-kokoro-${process.pid}`;
 
-/** How long the two long acquisitions may take. `npm ci` of 268 packages, and a ~100 MB browser. */
+/**
+ * How long one `setup` may take: a ~100–130 MB browser and an ffmpeg of up to ~195 MB, the largest
+ * of which (BtbN's Windows zip) is held in memory and inflated before its member is checked.
+ */
 const SETUP_TIMEOUT_MS = 900_000;
 
 /** How long the daemon has to print its ready line. */
 const READY_TIMEOUT_MS = 60_000;
 
-/** How long a job may take. The first render of a run also downloads a headless shell. */
+/** How long a job may take. Nothing is downloaded during one: the browser is the one `setup` kept. */
 const JOB_TIMEOUT_MS = 1_800_000;
 
 /** How long a provider gets to answer with a non-empty voice list, per route. */
@@ -185,7 +218,7 @@ const STILL_SCALE = 0.5;
 const SEGMENTS = [
   {
     id: "hook",
-    text: "Setup acquired a browser, a speech route and a render workspace.",
+    text: "Setup acquired a browser, an encoder and a speech route.",
     seconds: 1.6,
     frequency: 440,
   },
@@ -316,19 +349,18 @@ function nodeOnPath(pathValue) {
 }
 
 /**
- * The `PATH` D8 is proved against: a shell, and no interpreter.
+ * The `PATH` every child of this gate is given: the system's own tools, and no interpreter.
  *
  * `/usr/bin:/bin` on POSIX, which is the plan's own form (§T19) and is **not** the empty directory
- * `scripts/e2e/runtime.mjs` uses. That difference is a measurement rather than a preference. D8 is
- * about `node`, and the mechanism it fixes is npm running lifecycle scripts **through `sh -c`** —
- * so a `PATH` with no `sh` on it fails one step earlier, at `spawn sh ENOENT`, and would report a
- * missing shell as though it were the missing interpreter. Measured here on 2026-09-08: with a
- * `PATH` naming one empty directory, `npm ci` exits **254** with `npm error syscall spawn sh`, and
- * the D8 assertion would have passed for the wrong reason. `/usr/bin:/bin` resolves `sh` and
- * resolves no `node`, which is exactly the machine the whole runtime artefact exists for.
+ * `scripts/e2e/runtime.mjs` uses. It was chosen when `setup` still ran `npm ci`, whose lifecycle
+ * scripts go through `sh -c`, so a `PATH` with no `sh` failed at `spawn sh ENOENT` and reported a
+ * missing shell as the missing interpreter. That install left with payload 2, and the form stays
+ * for what the daemon still spawns by name: `ps` for a worker's start token on macOS, and `docker`
+ * for the speech route below, which `/usr/bin` holds on a Linux runner. It resolves no `node`,
+ * which is exactly the machine the whole runtime artefact exists for, and on macOS no `ffmpeg`.
  *
- * On Windows there is no `/usr/bin`, so the shell directory is `%SystemRoot%\System32` — where
- * `cmd.exe` lives and no `node.exe` does.
+ * On Windows there is no `/usr/bin`, so the directory is `%SystemRoot%\System32` — where
+ * `cmd.exe` and `powershell.exe` live and no `node.exe` or `ffmpeg.exe` does.
  */
 function shellPath() {
   if (process.platform === "win32") {
@@ -342,8 +374,8 @@ function shellPath() {
  * The whole environment the artefact is allowed to see, built from nothing rather than filtered.
  *
  * A filter is a list of the variables someone remembered. What is left is {@link shellPath}, the
- * platform minimum a process needs to start at all, and the coordinates this run is about. `npm`
- * needs a writable home for its cache, which is why `HOME` points inside the scratch.
+ * platform minimum a process needs to start at all, and the coordinates this run is about. `HOME`
+ * points inside the scratch, so nothing this run starts can read or write the real one.
  */
 function scrubbedEnvironment(paths, extra = {}) {
   const base = {
@@ -376,11 +408,23 @@ function payloadEntry(runtime) {
   };
 }
 
-/** The first of `candidates` that exists, or the bare name for whatever is on `PATH`. */
+/**
+ * One of this script's own reading tools: the override, else this process's `PATH`, else Homebrew.
+ *
+ * **For the assertions only, and never handed to the daemon**: the product's ffmpeg is the one
+ * `setup` records, and phase 6 proves the render used it. The two are kept apart because our macOS
+ * build ships no `ffprobe`, and because an MP4 read back by the binary that wrote it would have the
+ * encoder grading itself. `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` are read here and nowhere else —
+ * the environment every child gets is built from nothing, so neither can reach one.
+ */
 function resolveTool(name, override) {
   const configured = (override ?? "").trim();
   if (configured !== "") {
     return configured;
+  }
+  const found = onPath(process.env.PATH ?? "", name);
+  if (found !== null) {
+    return found;
   }
   const homebrew = `/opt/homebrew/bin/${name}`;
   return existsSync(homebrew) ? homebrew : name;
@@ -583,8 +627,8 @@ function dockerAnswers(pathValue) {
  * route landed the difference matters.** Every platform has a working speech route now; what this
  * function looks for is a *provider* — a server somebody else runs, or a container this gate can
  * start on a free port and stop in a `finally`. The in-process synthesiser is neither, and taking it
- * here would add ~204 MB from three upstream hosts to a gate whose subject is the browser, the
- * workspace, the degraded `/healthz` and the rollback rerun. `pnpm e2e:speech` is the proof that
+ * here would add ~204 MB from three upstream hosts to a gate whose subject is the browser, ffmpeg,
+ * the degraded `/healthz` and the rollback rerun. `pnpm e2e:speech` is the proof that
  * owns that route, and `--speech docker` is what this gate passes so that `setup` records the
  * provider this file is about rather than the first one the precedence offers.
  *
@@ -654,7 +698,7 @@ function speechPlan() {
       `PATH${client === null ? "" : `, or with ${dirname(client)} added to it`}, so there is no ` +
       "provider on this machine whose lifetime this gate can own. The in-process onnx route is " +
       "available here and is not taken: it would add ~204 MB from three upstream hosts to a gate " +
-      "whose subject is the browser, the workspace and the rollback rerun, and `pnpm e2e:speech` " +
+      "whose subject is the browser, ffmpeg and the rollback rerun, and `pnpm e2e:speech` " +
       "is the proof that owns it",
   };
 }
@@ -958,7 +1002,6 @@ async function main() {
     videos: join(scratch, "videos"),
     home: join(scratch, "home"),
     temp: join(scratch, "temp"),
-    payload2: join(scratch, "payload2"),
     fixtures: join(scratch, "fixtures"),
   };
   for (const directory of [paths.home, paths.temp]) {
@@ -971,7 +1014,7 @@ async function main() {
   );
   say(`  ..  moved by ${how}`);
 
-  section("2 — D8: setup --workspace under a scrubbed PATH");
+  section("2 — the machine: no node, and no ffmpeg it could fall back to");
   check(nodeOnPath(shellPath()) === null, `no node resolves on the scrubbed PATH (${shellPath()})`);
   if (process.platform !== "win32") {
     const noNode = spawnLogged("command -v node", "/bin/sh", ["-c", "command -v node"], {
@@ -981,75 +1024,24 @@ async function main() {
       noNode.status !== 0,
       `\`env -i PATH=${shellPath()} sh -c 'command -v node'\` fails: the parent has no interpreter`,
     );
-    const hasShell = spawnLogged("command -v sh", "/bin/sh", ["-c", "command -v sh"], {
-      env: { PATH: shellPath() },
-    });
+  }
+  // The render resolves ffmpeg from `XPLAINER_FFMPEG`, then the marker, and never from `PATH`
+  // (D6), so an ffmpeg on this `PATH` could not be what the render below used. Where the platform
+  // makes its absence provable it is asserted as well; on Linux `/usr/bin` holds the distribution's
+  // ffmpeg this script reads the MP4 back with, and phase 6's job log is the evidence instead.
+  const ffmpegOnShellPath = onPath(shellPath(), "ffmpeg");
+  if (process.platform === "linux") {
+    say(
+      `  ..  the scrubbed PATH resolves ${ffmpegOnShellPath ?? "no ffmpeg"}; the render below ` +
+        "must name the one toolchain.json records, and phase 6 asserts that it does",
+    );
+  } else {
     check(
-      hasShell.status === 0,
-      "`sh` does resolve there, so what the next step measures is the missing node and not a " +
-        "missing shell (measured: an empty PATH makes npm exit 254 at `spawn sh ENOENT`)",
+      ffmpegOnShellPath === null,
+      `no ffmpeg resolves on the scrubbed PATH either, so a render can only use the one setup records`,
     );
   }
-
   const { interpreter, entry } = payloadEntry(paths.runtime);
-  const workspaceRun = spawnLogged(
-    "setup --workspace",
-    interpreter,
-    [entry, "setup", "--workspace"],
-    { env: scrubbedEnvironment(paths), timeout: SETUP_TIMEOUT_MS },
-  );
-  check(
-    workspaceRun.status === 0,
-    `\`setup --workspace\` exited 0 under the scrubbed environment (D8; it exits 127 without the ` +
-      `runtime bin on the install subprocess's PATH)`,
-  );
-
-  const manifestFile = join(paths.videos, WORKSPACE_MANIFEST_FILE);
-  check(existsSync(manifestFile), `${manifestFile} describes what the resolve route installed`);
-  const resolved = JSON.parse(readFileSync(manifestFile, "utf8"));
-  check(
-    resolved.installer === "npm ci",
-    `the installer recorded is \`npm ci\`, never \`npm install\``,
-  );
-  check(
-    resolved.platform === process.platform && resolved.arch === process.arch,
-    `the workspace records this machine (${resolved.platform}-${resolved.arch})`,
-  );
-  const pinSkew = Object.entries(resolved.pins).find(
-    ([name, range]) => resolved.resolved[name] !== range,
-  );
-  check(pinSkew === undefined, "every version the tree resolved matches the pins it was asked for");
-
-  // And those pins are the checkout's, not merely the payload's own copy of them. The payload
-  // carries `@xplainer/render-core`'s `template/` because the `files` allowlist ships it, so a
-  // comparison against the payload alone would agree with itself; this is the loop closed.
-  const template = JSON.parse(
-    readFileSync(join(REPO, "packages", "render-core", "template", "package.json"), "utf8"),
-  );
-  const templatePins = { ...template.dependencies, ...template.devDependencies };
-  const templateSkew = Object.entries(templatePins).find(
-    ([name, range]) => resolved.resolved[name] !== range,
-  );
-  check(
-    templateSkew === undefined,
-    "and they are this checkout's own template/package.json pins, package for package",
-  );
-
-  const shim = workspaceShim(paths.videos, "remotion");
-  check(existsSync(shim), `${shim} resolves, which is what says npm linked the CLI`);
-
-  // The shim is what says npm *linked* the CLI; the entry the manifest names is what is spawnable
-  // on all three platforms, under an explicit interpreter. `scripts/e2e/spawn.mjs` spells both.
-  const versions = spawnLogged(
-    "remotion versions",
-    interpreter,
-    [remotionEntry(paths.videos, resolved), "versions"],
-    { cwd: paths.videos, env: scrubbedEnvironment(paths), timeout: 120_000 },
-  );
-  check(
-    versions.status === 0,
-    "`<runtime>/bin/node <workspace>/<remotion entry> versions` exits 0 under the same environment",
-  );
 
   section("3 — the speech provider, and who owns its lifetime");
   const plan = speechPlan();
@@ -1059,54 +1051,52 @@ async function main() {
     `the PATH the acquisition runs under still resolves no node (${plan.path})`,
   );
 
-  section("4 — the marker, over the copy route");
-  mkdirSync(paths.payload2, { recursive: true });
-  for (const name of [
-    "node_modules",
-    "package.json",
-    "package-lock.json",
-    WORKSPACE_MANIFEST_FILE,
-  ]) {
-    cpSync(join(paths.videos, name), join(paths.payload2, name), {
-      recursive: true,
-      verbatimSymlinks: true,
-    });
-  }
-  say(`  ..  the resolved workspace is staged as a payload 2 at ${paths.payload2}`);
-  rmSync(paths.videos, { recursive: true, force: true });
+  section("4 — setup against the committed manifest, and the marker it wrote");
+  const expected = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  const hostKey = `${process.platform}-${process.arch}`;
+  const browserRow = expected.browser.expected[hostKey];
+  const ffmpegRow = expected.ffmpeg.expected[hostKey];
+  check(
+    browserRow?.status === "recorded" && ffmpegRow?.status === "recorded",
+    `the committed manifest records a browser row and an ffmpeg row for ${hostKey}, so this ` +
+      "host takes the download route for both",
+  );
+  const ffmpegPublisher = Object.entries(PUBLISHERS).find(([prefix]) =>
+    ffmpegRow.url.startsWith(prefix),
+  )?.[1];
+  check(
+    ffmpegPublisher !== undefined,
+    `the ffmpeg row's URL is under a prefix the allowlist maps to a publisher (${ffmpegPublisher})`,
+  );
 
   // `plan.path` rather than `shellPath()`: the speech acquisition is the one step that may need a
   // container client, and phase 3 has already measured that adding its directory resolves no node.
-  const copyEnvironment = scrubbedEnvironment(paths, {
-    XPLAINER_WORKSPACE_PAYLOAD: paths.payload2,
-    PATH: plan.path,
-  });
+  const setupEnvironment = scrubbedEnvironment(paths, { PATH: plan.path });
+  const setupArgv = [entry, "setup", "--manifest", MANIFEST];
+  let download = null;
   if (plan.kind === "none") {
-    // The browser-and-workspace-only form: `--skip-speech` is what a user runs who does not want a
+    // The browser-and-ffmpeg-only form: `--skip-speech` is what a user runs who does not want a
     // speech acquisition in this run at all, and it is the form this gate needs, because the route
     // it could otherwise take here is the ~204 MB in-process one it deliberately does not exercise.
-    const partial = spawnLogged(
-      "setup --skip-speech --workspace",
-      interpreter,
-      [entry, "setup", "--skip-speech", "--workspace", "--manifest", MANIFEST],
-      { env: copyEnvironment, timeout: SETUP_TIMEOUT_MS },
-    );
+    download = spawnLogged("setup --skip-speech", interpreter, [...setupArgv, "--skip-speech"], {
+      env: setupEnvironment,
+      timeout: SETUP_TIMEOUT_MS,
+    });
     check(
-      partial.status === 0,
-      "`setup --skip-speech --workspace` exited 0, having acquired the browser and the workspace " +
-        "without acquiring any speech route",
+      download.status === 0,
+      "`setup --skip-speech` exited 0, having acquired the browser and ffmpeg without acquiring " +
+        "any speech route",
     );
     check(
       !existsSync(join(paths.state, TOOLCHAIN_MARKER_FILE)),
-      "and it wrote no toolchain.json: the marker records all three components or it is not a " +
+      "and it wrote no toolchain.json: the marker records the browser and speech or it is not a " +
         "valid document, which is why the run below completes it with --tts-url",
     );
   }
 
-  const setupArgv = [entry, "setup", "--manifest", MANIFEST];
   if (plan.kind === "docker") {
     // `--speech docker` NAMES THE ROUTE THIS GATE IS PROVING, and it is required rather than
-    // tidy. Phase 5 below opens `marker.speech.path` **as the docker receipt** to read
+    // tidy. Phase 6 below opens `marker.speech.path` **as the docker receipt** to read
     // `receipt.image`, and since 2026-09-10 `onnx` sits *above* `docker` in `setup`'s precedence
     // (`setup/providers/speech.ts`) — so a bare `setup` on this machine would acquire the model
     // graph, record it at that path, and this gate would `JSON.parse` 92 MB of ONNX. Pinning is
@@ -1121,60 +1111,97 @@ async function main() {
     );
   }
   const full = spawnLogged("setup", interpreter, setupArgv, {
-    env: copyEnvironment,
+    env: setupEnvironment,
     timeout: SETUP_TIMEOUT_MS,
   });
-  check(full.status === 0, "`setup` exited 0, having acquired all three components");
+  check(full.status === 0, "`setup` exited 0, having recorded the browser, ffmpeg and speech");
+  const fetched = download ?? full;
+  const fetchedLines = fetched.stdout.split("\n");
+  const sentence =
+    `ffmpeg: FFmpeg ${ffmpegRow.version} for ${hostKey} is built and published by ` +
+    `${ffmpegPublisher} under ${ffmpegRow.licence}.`;
+  const sentenceAt = fetchedLines.findIndex((line) => line.includes(sentence));
+  const requestAt = fetchedLines.findIndex((line) => line.endsWith(`ffmpeg: ${ffmpegRow.url}`));
   check(
-    full.stdout.includes("workspace: copy route"),
-    "the workspace came from the staged payload, which is D3's offline route",
+    sentenceAt !== -1,
+    `the run that downloaded printed the publisher-and-licence sentence: "${sentence} It runs as ` +
+      'a separate program …"',
   );
-  check(existsSync(shim), "the copied workspace's .bin/remotion resolves too");
+  check(
+    requestAt !== -1 && sentenceAt < requestAt,
+    `and printed it before the line naming the URL it then fetched (line ${sentenceAt + 1} < ` +
+      `line ${requestAt + 1}), so a user reads who built it and under what licence first`,
+  );
+  if (download !== null) {
+    check(
+      full.stdout.includes("ffmpeg: already acquired and verified at"),
+      "the second run found the committed ffmpeg and re-verified it rather than fetching it again",
+    );
+  }
 
   const markerFile = join(paths.state, TOOLCHAIN_MARKER_FILE);
   check(existsSync(markerFile), `${markerFile} was written`);
   const marker = JSON.parse(readFileSync(markerFile, "utf8"));
-  for (const component of ["chrome", "speech"]) {
+  check(
+    marker.format_version === 2 && marker.workspace === undefined,
+    "the marker is format_version 2 and records no workspace (ADR 0031 §Note, 2026-11-12, D1)",
+  );
+  for (const component of ["chrome", "ffmpeg", "speech"]) {
     check(
-      existsSync(marker[component].path),
-      `the recorded ${component} path exists: ${marker[component].path}`,
+      existsSync(marker[component]?.path ?? ""),
+      `the recorded ${component} path exists: ${marker[component]?.path}`,
     );
   }
   check(
-    marker.chrome.provider === "remotion",
-    "the browser was acquired through the pinned Remotion line",
+    marker.chrome.provider === "manifest" && marker.chrome.sha256 === browserRow.sha256,
+    `the browser was acquired from this host's own row (${hostKey}, Chrome for Testing ` +
+      `${browserRow.version}) at its expected digest, not a digest taken from the bytes`,
   );
-  // The digest has to be **this host's** row, not any row. `chrome.expected`'s keys are
-  // `<platform>-<arch>` with an optional distribution or libc suffix — `darwin-arm64`,
-  // `linux-x64-glibc235`, `win32-x64` — so the rows this machine could legitimately have used are
-  // the ones under its own `<platform>-<arch>` prefix. Accepting any row, which is what stood here
-  // until 2026-09-08, would have passed a digest correct for `linux-x64` on a darwin-arm64 machine:
-  // the assertion would then be "the manifest has some digest in it" rather than "setup admitted
-  // the artefact this host's reviewed row names".
-  const expected = JSON.parse(readFileSync(MANIFEST, "utf8"));
-  const hostPrefix = `${process.platform}-${process.arch}`;
-  const hostRows = Object.entries(expected.chrome.expected).filter(
-    ([key]) => key === hostPrefix || key.startsWith(`${hostPrefix}-`),
+
+  // FFmpeg, as AC-A11 reads it: the row's archive digest, the row's executable digest — hashed
+  // again here, from the file the daemon will spawn — a licence the binary itself states, and the
+  // obligation that travels with it.
+  const ffmpegFile = marker.ffmpeg.files?.[0];
+  check(
+    marker.ffmpeg.provider === "manifest" && marker.ffmpeg.sha256 === ffmpegRow.sha256,
+    `ffmpeg was acquired by the manifest route at the row's archive digest ${ffmpegRow.sha256}`,
   );
   check(
-    hostRows.length > 0,
-    `the reviewed manifest carries at least one ${hostPrefix} row to check against ` +
-      `(${hostRows.map(([key]) => key).join(", ") || "none"})`,
+    ffmpegFile?.path === marker.ffmpeg.path &&
+      ffmpegFile.sha256 === ffmpegRow.member_sha256 &&
+      ffmpegFile.bytes === ffmpegRow.member_size,
+    `the executable it records is the row's member, ${ffmpegRow.member_size} bytes at ` +
+      `${ffmpegRow.member_sha256}`,
   );
-  const matchedRow = hostRows.find(
-    ([, row]) => row.status === "recorded" && row.sha256 === marker.chrome.sha256,
+  const onDisk = createHash("sha256").update(readFileSync(marker.ffmpeg.path)).digest("hex");
+  check(
+    onDisk === ffmpegRow.member_sha256 &&
+      statSync(marker.ffmpeg.path).size === ffmpegRow.member_size,
+    "and the file on disk hashes to it, read here rather than taken from the marker",
   );
   check(
-    matchedRow !== undefined,
-    matchedRow === undefined
-      ? `no ${hostPrefix} row in the reviewed manifest carries ${marker.chrome.sha256}, so the ` +
-          "digest recorded came from somewhere other than this host's own row"
-      : `the digest recorded is the one this host's own row carries (${matchedRow[0]}), not a ` +
-          "digest taken from the bytes and not another platform's",
+    marker.ffmpeg.licence === ffmpegRow.licence && marker.ffmpeg.publisher === ffmpegPublisher,
+    `the marker records the row's licence (${marker.ffmpeg.licence}) and the allowlist's ` +
+      `publisher (${marker.ffmpeg.publisher})`,
   );
   check(
-    marker.workspace.platform === `${process.platform}-${process.arch}`,
-    `the workspace recorded is this machine's (${marker.workspace.platform})`,
+    Array.isArray(marker.ffmpeg.probe?.license) &&
+      marker.ffmpeg.probe.license.some((line) => line.trim() !== ""),
+    `and the binary's own \`-L\` statement, recorded in probe.license: ` +
+      `"${(marker.ffmpeg.probe?.license ?? []).find((line) => line.trim() !== "")?.trim() ?? ""}"`,
+  );
+  const beside = readdirSync(dirname(marker.ffmpeg.path));
+  say(`  ..  beside the binary: ${beside.join(", ")}`);
+  check(
+    beside.some((name) => name.startsWith("LICENSE")) && beside.includes("PROVENANCE.txt"),
+    "the licence text and PROVENANCE.txt sit beside the binary, so the obligation travels with it",
+  );
+  const provenance = readFileSync(join(dirname(marker.ffmpeg.path), "PROVENANCE.txt"), "utf8");
+  check(
+    provenance.includes(ffmpegRow.url) &&
+      provenance.includes(ffmpegRow.sha256) &&
+      provenance.includes(ffmpegRow.member_sha256),
+    "PROVENANCE.txt names the URL, the archive digest and the executable's digest",
   );
 
   section("5 — the wiring: /healthz degrades when a recorded path goes");
@@ -1187,21 +1214,29 @@ async function main() {
       `/healthz answers ok while the toolchain is whole: ${healthy.body}`,
     );
 
-    const moved = `${marker.chrome.path}.moved-aside`;
-    renameSync(marker.chrome.path, moved);
-    const degraded = await healthz(wiring.ready.port, token);
-    const body = JSON.parse(degraded.body);
-    check(
-      degraded.status === 200 && body.status === "degraded" && body.reason === "toolchain_missing",
-      `/healthz answers {"status":"degraded","reason":"toolchain_missing"}: ${degraded.body}`,
-    );
+    // The browser, which every job needs, and then ffmpeg, which only a render does — and a daemon
+    // that cannot render is degraded all the same (D12), because a still-only daemon is not the
+    // product a user installed.
+    for (const component of ["chrome", "ffmpeg"]) {
+      const moved = `${marker[component].path}.moved-aside`;
+      renameSync(marker[component].path, moved);
+      const degraded = await healthz(wiring.ready.port, token);
+      const body = JSON.parse(degraded.body);
+      check(
+        degraded.status === 200 &&
+          body.status === "degraded" &&
+          body.reason === "toolchain_missing",
+        `with the recorded ${component} moved aside, /healthz answers ` +
+          `{"status":"degraded","reason":"toolchain_missing"}: ${degraded.body}`,
+      );
 
-    renameSync(moved, marker.chrome.path);
-    const restored = await healthz(wiring.ready.port, token);
-    check(
-      JSON.parse(restored.body).status === "ok",
-      "/healthz answers ok again once the recorded path is back, so the check is asked per request",
-    );
+      renameSync(moved, marker[component].path);
+      const restored = await healthz(wiring.ready.port, token);
+      check(
+        JSON.parse(restored.body).status === "ok",
+        `/healthz answers ok again once the ${component} is back, so the check is asked per request`,
+      );
+    }
   } finally {
     const stopped = await stopDaemon(wiring.child);
     say(`  ..  the daemon exited ${stopped.code ?? stopped.signal}`);
@@ -1224,19 +1259,15 @@ async function main() {
       narrationEnv = { XPLAINER_TTS_URL: provider.url };
     }
 
-    // The render worker's encoder, handed over as a file, as `speech.mjs` does: the scrubbed `PATH`
-    // holds no ffmpeg on Windows, and the worker's Homebrew fallback is macOS's alone.
-    // `XPLAINER_FFMPEG` is the first place the worker looks, and the parent's own ffmpeg means the
-    // frames the daemon encodes and the frames this script decodes go through the same build.
-    const childFfmpeg = isAbsolute(ffmpeg) ? ffmpeg : onPath(process.env.PATH ?? "", ffmpeg);
+    // No encoder is handed over. The daemon's environment is built from nothing, so it carries no
+    // `XPLAINER_FFMPEG`, and the render has to find the ffmpeg `setup` recorded — which is the
+    // whole of D6's resolution once the override is absent.
+    const daemonEnvironment = scrubbedEnvironment(paths, narrationEnv);
     check(
-      childFfmpeg !== null && existsSync(childFfmpeg),
-      `the ffmpeg this run uses is a file the daemon can be handed (${childFfmpeg ?? `no ${ffmpeg} on PATH`})`,
+      daemonEnvironment.XPLAINER_FFMPEG === undefined,
+      `the daemon and the shim run with no XPLAINER_FFMPEG and PATH=${daemonEnvironment.PATH}`,
     );
-    const daemon = await startDaemon(paths.runtime, paths, {
-      ...narrationEnv,
-      XPLAINER_FFMPEG: childFfmpeg,
-    });
+    const daemon = await startDaemon(paths.runtime, paths, narrationEnv);
     const transport = new StdioClientTransport({
       command: interpreter,
       args: [entry, "mcp", "--attach"],
@@ -1309,9 +1340,16 @@ async function main() {
       check(probeStream(png, "v:0", "width") === "960", "the still is 960 wide at scale 0.5");
       check(probeStream(png, "v:0", "height") === "540", "the still is 540 high at scale 0.5");
 
-      await runJob(client, "explainer_render", { slug: SLUG });
+      const rendered = await runJob(client, "explainer_render", { slug: SLUG });
       const mp4 = join(paths.videos, "out", SLUG, "explainer.mp4");
       check(existsSync(mp4), `explainer_render wrote ${mp4}`);
+      // The worker names the encoder it resolved and where it came from, before a frame is taken.
+      const encoderLine = `${marker.ffmpeg.path} (toolchain.json)`;
+      check(
+        rendered.output.lines.some((line) => line.includes(encoderLine)),
+        `the render job's log names the encoder it used: ${encoderLine} — the ffmpeg setup ` +
+          "acquired, reached through the marker and not through PATH or XPLAINER_FFMPEG",
+      );
 
       check(probeStream(mp4, "v:0", "width") === "1920", "the MP4 is 1920 wide");
       check(probeStream(mp4, "v:0", "height") === "1080", "the MP4 is 1080 high");

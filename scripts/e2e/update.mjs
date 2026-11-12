@@ -4,10 +4,10 @@
  *
  * T15 built the transaction — an operation lock, a durable journal, a commanded recovery — and T16
  * is the failure injection over it: the updater is killed **between every pair of durable
- * transitions**, the two refusals that must disturb nothing are asserted on their message as well
- * as their exit code, and every rollback ends with six assertions rather than a green `/healthz`.
- * This script is how all of that is run in one command, and it has two steps because the evidence
- * has two halves that no single process can produce.
+ * transitions**, the refusals that must disturb nothing are asserted on their message as well as
+ * their exit code, and every rollback ends with six assertions rather than a green `/healthz`.
+ * This script is how all of that is run in one command, in three steps: the evidence has two halves
+ * that no single process can produce, and ADR 0031's cut added a third question of its own.
  *
  * **Step 1 — the boundaries, in `apps/cli/src/install/update/transaction.test.ts`.** Five cases, one
  * per transition the journal records, each spawning a real updater, letting it reach that boundary
@@ -17,40 +17,49 @@
  * be **down**, because past the drain the daemon exited `0` and `0` is the portable "do not
  * restart" signal on both. Then, after the named command, the previous runtime is answering, the
  * newer version's state is intact, exactly one process is running out of the state directory,
- * nothing that looks like Chrome or ffmpeg survives, and the rolled-back runtime's own template
- * pins are satisfied by the installed workspace. The payload there is a fixture and the supervisor
- * is a seam, which is what makes all three platforms checkable from one machine.
+ * nothing that looks like Chrome or ffmpeg survives, and the marker on disk satisfies the
+ * requirements the rolled-back runtime states in its own manifest. The payload there is a fixture
+ * and the supervisor is a seam, which is what makes all three platforms checkable from one machine.
  *
  * **Step 2 — the real machine, in `install/update/testing/failure-proof.ts`.** Two payloads
  * assembled by the shipped assembler, installed under this machine's own service manager, and a
  * replacement that starts and never becomes ready. It is what step 1 cannot be: the daemon that
  * comes back is a real `xplainer serve` that takes the real `owner.lock`, so "exactly one process
  * holds it" is asked of the lock itself; `launchd` (or `systemd`) is asked to accept the rewritten
- * artefact in the rollback direction; and the two refusals are run against real payload directories
- * whose own programs the message has to name.
+ * artefact in the rollback direction; and the refusal that must disturb nothing — a marker that
+ * records no ffmpeg, judged against a runtime that requires one (ADR 0031 §Note, 2026-11-12,
+ * D2 (a)) — is run against real payload directories, and the daemon is asked afterwards.
+ *
+ * **Step 3 — the cut, in `install/update/testing/cut-proof.ts`.** A daemon installed from before
+ * ADR 0031's cut reads `toolchain.json` format 1, and three commands of this build would otherwise
+ * put format 2 under it. Installed for real from a pre-cut payload — this build's payload under a
+ * manifest of the shape every earlier release wrote — it is met by this build's `xplainer update`,
+ * which must exit `3` **before** it runs `setup` (D2 (b)); by `xplainer setup`, which must exit `3`
+ * (D2 (c)); and by `daemon update` to this build's payload, which must refuse in its precondition
+ * (D2 (a)). After each: the marker's bytes, the state directory's entries, the staged runtimes and
+ * the recorded run are as they were, and **the old daemon still answers `ok`**.
  *
  * **What is deferred, and to where.** The sixth assertion is "the rolled-back daemon RENDERS", and
- * a PNG needs the Chrome headless shell and the real payload-2 workspace that T19 and T33 install.
- * Both halves here prove the readiness that makes the still possible — the installed workspace
- * satisfies the pins of the runtime that came back, re-hashed by the shipped verifier — and **B6's
- * `scripts/e2e/toolchain.mjs` reruns every rollback case and renders the still itself**. That split
- * is the plan's, and it is what keeps B5 runnable in its own batch.
+ * a PNG needs the Chrome headless shell `setup` acquires. The halves here prove the readiness that
+ * makes the still possible — the marker satisfies the requirements of the runtime that came back —
+ * and **B6's `scripts/e2e/toolchain.mjs` reruns every rollback case and renders the still itself**.
+ * That split is the plan's, and it is what keeps B5 runnable in its own batch.
  *
  * ```bash
  * pnpm e2e:update
  * ```
  *
- * It is **not** part of `pnpm verify` and must not become part of it: step 2 assembles two ~160 MB
- * payloads and registers a service with this machine's own supervisor. On macOS that registration
- * is a throwaway label booted out in a `finally`; on Linux systemd reads only the account's own
- * config directory, so that leg installs the real unit there and removes it — run it on a runner or
- * in `infra/e2e/Dockerfile.systemd` rather than on a machine somebody is using.
+ * It is **not** part of `pnpm verify` and must not become part of it: steps 2 and 3 each assemble
+ * two payloads and register a service with this machine's own supervisor. On macOS each
+ * registration is a throwaway label booted out in a `finally`; on Linux systemd reads only the
+ * account's own config directory, so those legs install the real unit there and remove it — run it
+ * on a runner or in `infra/e2e/Dockerfile.systemd` rather than on a machine somebody is using.
  *
  * Environment it reads: `COLLIE_ARTIFACTS_DIR` (default `<repo>/.session/artifacts`). Everything it
  * prints is also written to `<artifacts>/e2e-update.log`, line by line, so a run that dies halfway
  * still leaves its transcript behind.
  *
- * Exit codes: `0` both steps passed; `1` one of them did not, with the step named on the last line.
+ * Exit codes: `0` every step passed; `1` one of them did not, with the step named on the last line.
  */
 
 import { spawnSync } from "node:child_process";
@@ -191,6 +200,21 @@ if (failed.length === 0) {
   ) {
     failed.push("step 2, the failure-injection proof");
   }
+
+  section("step 3 — a daemon from before ADR 0031's cut, met by this build");
+  if (
+    step("the cut proof", {
+      command: process.execPath,
+      args: [
+        "--import",
+        TS_SOURCE_HOOK,
+        join(REPO, "apps", "cli", "src", "install", "update", "testing", "cut-proof.ts"),
+      ],
+      shell: false,
+    }) !== 0
+  ) {
+    failed.push("step 3, the cut proof");
+  }
 }
 
 section("verdict");
@@ -199,9 +223,12 @@ if (failed.length > 0) {
   say("the render half of the sixth assertion is B6's rerun and was not attempted here");
   process.exitCode = 1;
 } else {
-  say("PASSED: every boundary reported and recovered, both refusals disturbed nothing");
   say(
-    "the rolled-back runtime's pins are satisfied by the installed workspace; the still itself is " +
-      "B6's rerun through scripts/e2e/toolchain.mjs, after T19 supplies the browser and payload 2",
+    "PASSED: every boundary reported and recovered, the toolchain refusal disturbed nothing, and " +
+      "a daemon from before the cut was refused by update, setup and daemon update and still answers ok",
+  );
+  say(
+    "the marker satisfies the rolled-back runtime's own requirements; the still itself is B6's " +
+      "rerun through scripts/e2e/toolchain.mjs, against the browser setup acquires",
   );
 }

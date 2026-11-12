@@ -21,7 +21,7 @@
  * ## What is real, and the two things that are not
  *
  * Real: both payloads, assembled by the shipped `assembleRuntime()` from this checkout, each
- * carrying a copy of this machine's interpreter, npm and the whole `@xplainer/cli` closure; the
+ * carrying a copy of this machine's interpreter and the whole `@xplainer/cli` closure; the
  * staged copies; the plist bytes; `launchctl bootout`, `enable`, `bootstrap` and `kickstart`; the
  * daemon, which is the real `xplainer serve` taking real ownership, reconciling and binding both
  * listeners; the drain, which travels over that daemon's own unix socket; and `/healthz`, which is

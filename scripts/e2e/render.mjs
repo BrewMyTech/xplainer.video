@@ -4,9 +4,9 @@
  * This is roadmap **P1-1**, and the only place in the repository where every phase-1 piece is
  * exercised at once and against nothing fake:
  *
- * - a real `xplainer setup` in a scratch state directory — the headless shell from the reviewed
- *   manifest this checkout commits, the Kokoro server recorded as the `--tts-url` speech route, and
- *   the render workspace resolved from `template/package.json` with `npm ci`;
+ * - a real `xplainer setup` in a scratch state directory — the headless shell and the pinned ffmpeg
+ *   from the reviewed manifest this checkout commits, and the Kokoro server recorded as the
+ *   `--tts-url` speech route;
  * - a real `xplainer serve` in that same state directory, reached the way an agent reaches it —
  *   `xplainer mcp --attach` over the daemon's unix socket, carrying no URL and no token;
  * - a real `@modelcontextprotocol/sdk` client driving `explainer_create → explainer_put_source →
@@ -19,27 +19,30 @@
  * **Why it pays for a whole `setup` on every run.** Batch 6 put a gate in front of
  * `explainer_still` and `explainer_render`: the daemon reads `<state>/toolchain.json` at the moment
  * a job leaves the queue and refuses by name when what `setup` recorded is not on the machine
- * (`apps/cli/src/setup/toolchain.ts`). Until 2026-09-09 this script symlinked the checkout's own
- * `node_modules` into the scratch workspace — a tree that renders perfectly well, and a machine the
- * daemon now declines to render on, because the workspace half of that gate is judged from
- * `workspace.manifest.json` and only `setup`'s own workspace route writes one. There is no honest
- * shortcut past it: `recordTestToolchain` in `apps/cli/src/setup/testing/` is excluded from the
- * build on purpose and must never ship, and writing a marker from here would be this gate asserting
- * its own precondition. So the proof runs the command the product tells a user to run, and pays
- * what a user pays. Measured on macOS arm64, 2026-09-09: **14.3 s**, all of it the 98 MB browser
- * and `npm ci` resolving 247 packages.
+ * (`apps/cli/src/setup/toolchain.ts`) — the browser and speech for both, and for a render an
+ * ffmpeg as well (ADR 0031 §Note, 2026-11-12, D12). There is no honest shortcut past it:
+ * `recordTestToolchain` in `apps/cli/src/setup/testing/` is excluded from the build on purpose and
+ * must never ship, and writing a marker from here would be this gate asserting its own
+ * precondition. So the proof runs the command the product tells a user to run, and pays what a
+ * user pays: a ~100–130 MB browser and the platform's ffmpeg — 2 MB from our CDN on macOS, a
+ * 153 MB BtbN `.tar.xz` on Linux. Until 2026-11-12 it also paid for the render workspace's
+ * `npm ci`, which left with the previous renderer's payload 2.
  *
  * **The browser `setup` acquires is the browser the render uses.** The render worker launches
  * `toolchain.json`'s `chrome.path` and nothing else, so one headless shell serves the still, the
  * render and the control, and nothing is downloaded during a render. Until 2026-11-11 the previous
  * renderer fetched a second copy of the same build into a cache of its own, which this script
  * borrowed from the checkout to keep the download out of the measurement; the second copy and the
- * borrowing went together. The MP4 is encoded by the ffmpeg the worker finds — `XPLAINER_FFMPEG`,
- * then `PATH`, then Homebrew's two directories — and needs libx264.
+ * borrowing went together. **The ffmpeg `setup` acquires is the ffmpeg that encodes**: the worker
+ * takes `XPLAINER_FFMPEG` when it is set and the marker's `ffmpeg.path` otherwise, and never looks
+ * on `PATH` (D6), so this script removes `XPLAINER_FFMPEG` from everything it starts and asserts
+ * that the render's own log names the recorded path.
  *
- * **Nothing in it is specific to *either POSIX platform*.** It resolves `ffmpeg` and `ffprobe` from
- * `PATH` and takes every other coordinate from the environment: P1-1 is judged on macOS **and** on
- * headless Linux, and one script settles both. The Linux half runs this same file inside the
+ * **Nothing in it is specific to *either POSIX platform*.** It resolves its own `ffmpeg` and
+ * `ffprobe` — the tools it reads the MP4 back with, never handed to the daemon, and from the
+ * system because our macOS build ships no `ffprobe` — from `PATH`, and takes every other
+ * coordinate from the environment: P1-1 is judged on macOS **and** on headless Linux, and one
+ * script settles both. The Linux half runs this same file inside the
  * container `infra/e2e/Dockerfile` builds — see `scripts/e2e/linux.mjs`, which is
  * `pnpm e2e:render:linux`.
  *
@@ -78,7 +81,8 @@
  * Environment it reads: `XPLAINER_TTS_URL` (default `http://127.0.0.1:8880`),
  * `XPLAINER_TTS_WAIT_MS` (default `120000`), `COLLIE_ARTIFACTS_DIR` (default
  * `<repo>/.session/artifacts`), `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` (default: whatever is on
- * `PATH`).
+ * `PATH`) for this script's own reads — and `XPLAINER_FFMPEG` only for that: it is removed from
+ * the environment `setup`, the daemon and the shim are given.
  *
  * Everything it prints is also written to `<artifacts>/e2e-render.log`, line by line as it happens,
  * so a run that dies mid-render still leaves its transcript behind.
@@ -103,7 +107,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { transcript, WORKSPACE_MANIFEST_FILE, workerStill } from "./spawn.mjs";
+import { transcript, workerStill } from "./spawn.mjs";
 
 /** The repository root, three levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -114,18 +118,20 @@ const CLI = join(REPO, "apps", "cli", "dist", "bin.js");
 /**
  * The reviewed manifest this checkout commits, which is what `setup --manifest` names.
  *
- * Named rather than left to the default, because in this phase nothing is published to the address
- * `setup` would otherwise read (`docs/ROADMAP.md` §2.5), so a run without it refuses at the
- * manifest instead of acquiring a browser. `scripts/e2e/toolchain.mjs` names the same file.
+ * Named rather than left to the default, because the version-2 document this build reads is
+ * uploaded to `cdn.xplainer.video/toolchain/v2/manifest.json` as a release step, and until then a
+ * run without it would ask that address for a document that is not there. A proof also has no
+ * business checking a published copy instead of the one under review. `scripts/e2e/toolchain.mjs`
+ * names the same file.
  */
 const MANIFEST = join(REPO, "apps", "cli", "src", "setup", "toolchain.manifest.json");
 
 /**
  * How long `setup` may take.
  *
- * Generous by two orders of magnitude on purpose: the 14.3 s measured here is a warm npm cache and
- * a fast link, and the same command on a cold CI runner is a ~100 MB browser download plus a
- * 247-package `npm ci` from the registry. What this bound is for is a hung download, not a slow one.
+ * Generous by two orders of magnitude on purpose: on a fast link the browser and ffmpeg arrive in
+ * seconds, and on a cold CI runner they are a ~130 MB browser and a 153 MB `.tar.xz` decoded in
+ * process. What this bound is for is a hung download, not a slow one.
  */
 const SETUP_TIMEOUT_MS = 1_800_000;
 
@@ -696,7 +702,14 @@ async function main() {
   // The provider level (ADR 0030) is removed rather than inherited: a shell left at
   // `XPLAINER_TTS_PROVIDER=elevenlabs` would send this proof's script to a paid service, and this
   // proof is about Kokoro speech at TTS_URL.
-  const { XPLAINER_TTS_PROVIDER: _provider, ELEVENLABS_API_KEY: _key, ...inherited } = process.env;
+  // `XPLAINER_FFMPEG` goes too: it is this script's own reading tool, and in the daemon it would be
+  // the override that wins over the ffmpeg `setup` records — the one this proof renders with.
+  const {
+    XPLAINER_TTS_PROVIDER: _provider,
+    ELEVENLABS_API_KEY: _key,
+    XPLAINER_FFMPEG: _encoder,
+    ...inherited
+  } = process.env;
   const env = {
     ...inherited,
     XPLAINER_STATE_DIR: stateDir,
@@ -705,9 +718,9 @@ async function main() {
   };
 
   // The product's own command, with the product's own flags: the reviewed manifest this checkout
-  // commits (nothing is published to the address `setup` would otherwise fetch it from, §2.5), and
-  // the Kokoro this proof already needs recorded as the `--tts-url` speech route — which is route 1
-  // of three, acquires nothing, and is the route `e2e-linux.yml`'s `services:` block gives a runner.
+  // commits (the version-2 document is not uploaded until a release), and the Kokoro this proof
+  // already needs recorded as the `--tts-url` speech route — which acquires nothing, and is the
+  // route `e2e-linux.yml`'s `services:` block gives a runner.
   const setupStarted = Date.now();
   const setupOutput = runLogged(
     "setup",
@@ -719,11 +732,6 @@ async function main() {
   for (const line of setupOutput.trim().split("\n")) {
     say(`  ${line}`);
   }
-  check(
-    setupOutput.includes("workspace: resolve route"),
-    "the workspace came from `npm ci` over the template's own pins, which is the route a machine " +
-      "with no staged payload 2 takes",
-  );
 
   const markerPath = join(stateDir, "toolchain.json");
   check(existsSync(markerPath), `setup recorded ${markerPath}`);
@@ -737,9 +745,9 @@ async function main() {
     `the speech route it recorded is the external server, receipted at ${marker.speech.path}`,
   );
   check(
-    existsSync(join(workspace, WORKSPACE_MANIFEST_FILE)),
-    "the workspace describes what it resolved, which is the half of the gate a borrowed " +
-      "node_modules can never satisfy",
+    marker.ffmpeg?.provider === "manifest" && existsSync(marker.ffmpeg.path),
+    `the ffmpeg it recorded is this platform's pinned build (${marker.ffmpeg?.version}, ` +
+      `${marker.ffmpeg?.licence}), on this machine at ${marker.ffmpeg?.path}`,
   );
 
   section("daemon");
@@ -835,9 +843,14 @@ async function main() {
   check(probeStream(stillPath, "v:0", "height") === "540", "the still is 540 high at scale 0.5");
 
   section("render");
-  await runJob(client, "explainer_render", { slug: SLUG });
+  const rendered = await runJob(client, "explainer_render", { slug: SLUG });
   const mp4 = join(workspace, "out", SLUG, "explainer.mp4");
   check(existsSync(mp4), `explainer_render wrote ${mp4}`);
+  const encoderLine = `${marker.ffmpeg.path} (toolchain.json)`;
+  check(
+    rendered.output.lines.some((line) => line.includes(encoderLine)),
+    `the render job's log names the encoder it used: ${encoderLine}`,
+  );
 
   const listed = await callTool(client, "explainer_list", {});
   const summary = listed.videos.find((video) => video.slug === SLUG);

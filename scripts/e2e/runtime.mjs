@@ -11,33 +11,30 @@
  * directory, and every payload site the round-3 review found is on that path:
  *
  * - `explainer_create` reads **both** of `render-core`'s template directories — `template/` for the
- *   workspace files and `dist/scaffold/templates/*.txt` for the six scaffold files — through two
+ *   two workspace files and `dist/scaffold/templates/*.txt` for the six scaffold files — through two
  *   `import.meta.url` sites no bundler could have rewritten. This script compares the bytes it
  *   got against the artefact's own copies, so "it ran" and "it read them from the payload" are two
- *   different assertions rather than one hopeful one.
+ *   different assertions rather than one hopeful one. And it asserts what is **not** written: no
+ *   `package.json` and no lockfile, because nothing installs anything into the workspace since the
+ *   previous renderer's payload 2 left (ADR 0031 §Note, 2026-11-12, D7).
  * - `explainer_narrate` spawns `dist/workers/narrate.js` with the artefact's own interpreter
- *   (`daemon/workers.ts`), which is the pattern D1 generalises to Remotion in T4.
+ *   (`daemon/workers.ts`), the same pattern the render worker is spawned by.
  * - the process would not have started at all without `protocol/schemas/manifest.json`, and the
  *   expected scaffold list below is read out of the artefact's copy of exactly that file.
  *
- * **Then payload 2, and the three assertions §1.3b turns on.** Narration is the last step that
- * needs nothing but the artefact — the three decisions round 4 took about the *render* workspace
- * need one more payload, so the gate builds it here rather than leaving them proven on a
- * developer's machine only. **D3** runs the payload's own `npm-cli.js --version` through the
- * payload's own interpreter; then `runtime build --workspace --from-runtime` performs a real
- * `npm ci` of `render-core`'s template **through that same interpreter and that same npm**, which
- * is the route `setup --workspace` takes on a machine with no Node; then **D1** spawns
- * `<runtime>/bin/node <workspace>/<remotion entry> versions` with `cwd` at the workspace under the
- * same scrubbed environment — the call that exits `127` when the `#!/usr/bin/env node` shim is
- * spawned instead (§7.13) — and **D2** runs `runtime verify --workspace`, which compares every
- * resolved version against the pins in the payload's own copy of `template/package.json`. Each of
- * the three would have caught a round-3 defect. **This is the one step that needs a network**:
- * `npm ci` resolves the template's pins from the registry.
+ * **What the payload says about the cut.** ADR 0031's note of 2026-11-12 changed two things about
+ * payload 1 itself, and both are read off the moved artefact rather than off the checkout that
+ * built it: its manifest declares the `toolchain.json` format it reads — `toolchain.format` 2 and
+ * the libavcodec floor a render's ffmpeg is held to (D2), which is what `daemon update`, `update`
+ * and `setup` compare before they cross the cut — and it carries **no npm** (D11): no
+ * `launch.npm_cli`, no `npm_version`, and no `lib/node_modules/npm`. The three round-4 assertions
+ * this gate used to end with — D1's `versions` call into the previous renderer's CLI, D2's
+ * `runtime verify --workspace` and D3's `npm-cli.js --version` — were about the render workspace's
+ * install, and left with it.
  *
- * **What it deliberately does not do.** `explainer_still` and `explainer_render` need a Chrome
- * headless shell as well as that workspace — the toolchain `setup` downloads, and a bundle and a
- * browser after it. They are **T33**, in B6, and putting them here is what made round 2's gate
- * unrunnable.
+ * **What it deliberately does not do.** `explainer_still` and `explainer_render` need the toolchain
+ * `setup` acquires — a Chrome headless shell, and for a render an ffmpeg. They are **T33**, in B6
+ * (`scripts/e2e/toolchain.mjs`), and putting them here is what made round 2's gate unrunnable.
  *
  * **Speech comes from `XPLAINER_TTS_FIXTURE`**, a directory this script records on the spot: one
  * real 16-bit PCM WAV and one set of word spans per segment, exactly the envelope Kokoro returns.
@@ -52,9 +49,9 @@
  * `env -i PATH=<empty> /bin/sh -c 'command -v node'` is run and required to fail, which is the
  * literal form of the check D1 was written against.
  *
- * **It is not part of `pnpm verify` and must not become part of it.** It copies ~147 MB of
- * interpreter, npm and packages per run and then installs payload 2 beside it from the registry —
- * 234 MB and 13,016 more files, measured on macOS arm64 on 2026-09-08.
+ * **It is not part of `pnpm verify` and must not become part of it.** It copies the interpreter and
+ * the whole package closure per run — 167 MB and 4,245 files on darwin-arm64, measured 2026-11-12
+ * — and hashes every file of it twice. It needs no network: nothing in it is fetched.
  * The suites under `apps/cli` cover the assembler, the manifest and the verifier against small
  * fixtures and are what CI runs on every push; this script is the periodic proof that a real
  * payload, moved somewhere else, still does the job.
@@ -94,7 +91,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { remotionEntry, transcript, WORKSPACE_MANIFEST_FILE } from "./spawn.mjs";
+import { transcript } from "./spawn.mjs";
 
 /** The repository root, three levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -191,7 +188,7 @@ const SEGMENTS = [
  *
  * One component per narration segment id plus one shared component under `scenes/`, which is the
  * ownership boundary the tool enforces: `Scenes.tsx` is the agent's, the five engine files are
- * refused, and a nested path is allowed. Nothing here is rendered — no Remotion runs in this gate —
+ * refused, and a nested path is allowed. Nothing here is rendered — no browser runs in this gate —
  * so what is asserted is that the writes landed where the tool said they would.
  */
 const SOURCE_FILES = [
@@ -208,7 +205,7 @@ export const scenes: SceneMap = { hook: Hook, answer: Answer };
   },
   {
     path: "scenes/Panel.tsx",
-    content: `import { AbsoluteFill } from "remotion";
+    content: `import { AbsoluteFill } from "@xplainer/motion";
 
 export const Panel: React.FC<{ accent: string; title: string }> = ({ accent, title }) => (
   <AbsoluteFill style={{ backgroundColor: "#0A0C10", justifyContent: "center", padding: 160 }}>
@@ -261,14 +258,11 @@ function run(command, args, options = {}) {
 /**
  * Both streams into the transcript, and a child that never started named as such.
  *
- * `spawnLogged` returns the whole result rather than enforcing the exit code, for the one caller
- * whose assertion *is* the exit code: a third-party CLI that answers on whichever stream it
- * prefers, where "it exited 0 and said this" has to be one `check` line rather than an exception
- * with no `ok` beside it. `runLogged` is the same spawn for the commands of ours whose non-zero
- * exit is simply the end of the run. Both live in `scripts/e2e/spawn.mjs` now, because four private
- * copies of this helper had three different behaviours and its docblock is that argument.
+ * `runLogged` is the spawn for the commands of ours whose non-zero exit is simply the end of the
+ * run. It lives in `scripts/e2e/spawn.mjs`, because four private copies of this helper had three
+ * different behaviours and that module's docblock is that argument.
  */
-const { spawnLogged, runLogged } = transcript(LOG_PATH);
+const { runLogged } = transcript(LOG_PATH);
 
 /** Whether `path` is outside the checkout, which is what "moved out of it" has to mean. */
 function outsideCheckout(path) {
@@ -548,6 +542,11 @@ async function runJob(client, name, args) {
   return finished.job;
 }
 
+/** What the payload weighs, from its own manifest: every file's recorded size, summed. */
+function payloadBytes(manifest) {
+  return manifest.files.reduce((total, file) => total + file.bytes, 0);
+}
+
 /** The two files that make up the launch contract, as absolute paths under the moved artefact. */
 function launchPaths(runtimeDir) {
   const manifest = JSON.parse(readFileSync(join(runtimeDir, "runtime.manifest.json"), "utf8"));
@@ -617,10 +616,29 @@ async function main() {
   say(`  entry:       ${launch.entry}`);
   say(
     `  payload:     ${launch.manifest.packages.length} packages, ${launch.manifest.files.length} files, ` +
-      `node ${launch.manifest.node_version}, npm ${launch.manifest.npm_version}`,
+      `${(payloadBytes(launch.manifest) / 1e6).toFixed(1)} MB, node ${launch.manifest.node_version}`,
   );
   check(existsSync(launch.interpreter), "the launch contract's interpreter exists after the move");
   check(existsSync(launch.entry), "the launch contract's entry exists after the move");
+
+  // ADR 0031's cut, read off the moved payload. The block is what `daemon update`, `xplainer
+  // update` and `xplainer setup` ask an installed runtime before they write a marker it would have
+  // to read (D2); npm's absence is D11, and a payload that still carried it would be one built from
+  // a checkout before the cut.
+  const declared = launch.manifest.toolchain;
+  say(`  toolchain:   ${JSON.stringify(declared ?? null)}`);
+  check(
+    declared?.format === 2 && Number.isInteger(declared?.ffmpeg_min_libavcodec),
+    "the manifest declares the toolchain.json format this runtime reads (2) and the libavcodec " +
+      `floor a render's ffmpeg is held to (${declared?.ffmpeg_min_libavcodec}), D2`,
+  );
+  check(
+    launch.manifest.launch.npm_cli === undefined &&
+      launch.manifest.npm_version === undefined &&
+      !existsSync(join(runtimeDir, "lib", "node_modules", "npm")),
+    "and the payload carries no npm — no launch.npm_cli, no npm_version, no lib/node_modules/npm — " +
+      "because its one caller was the workspace install that left with payload 2 (D11)",
+  );
 
   section("a machine with no node");
   const paths = {
@@ -722,7 +740,7 @@ async function main() {
   check(
     names.includes("explainer_still") && names.includes("explainer_render"),
     "explainer_still and explainer_render are offered and are deliberately not called here: they " +
-      "need payload 2 and the toolchain, which are T33 in B6",
+      "need the toolchain setup acquires, which is T33 in B6",
   );
 
   section("create");
@@ -744,7 +762,7 @@ async function main() {
   );
 
   // Both `import.meta.url` payload sites, compared byte for byte against the artefact's copies:
-  // `dist/scaffold/templates/*.txt` for the six scaffold files, `template/` for the workspace
+  // `dist/scaffold/templates/*.txt` for the six scaffold files, `template/` for the two workspace
   // files named below. This is what makes "it read them from inside the payload" an assertion.
   const scaffoldTemplates = join(
     runtimeDir,
@@ -759,16 +777,21 @@ async function main() {
       `${name} is byte-identical to the artefact's dist/scaffold/templates/${name}.txt`,
     );
   }
-  // All four of render-core's WORKSPACE_FILES, `package-lock.json` included: the lockfile joined
-  // that list after this loop was first written, and a payload that shipped the manifest without
-  // it would still pass a shorter comparison while `npm ci` in the workspace failed later. The
-  // fifth, the previous renderer's config file, left the template on 2026-11-11.
-  for (const name of ["package.json", "package-lock.json", "tailwind.css", "tsconfig.json"]) {
+  // Both of render-core's WORKSPACE_FILES. The template carried a `package.json` and its lockfile
+  // until the previous renderer's payload 2 left (ADR 0031 §Note, 2026-11-12, D7): the workspace
+  // holds sources and nothing installs anything into it, so neither may appear there.
+  for (const name of ["tailwind.css", "tsconfig.json"]) {
     const wrote = readFileSync(join(paths.videos, name));
     const template = readFileSync(join(workspaceTemplates, name));
     check(
       Buffer.compare(wrote, template) === 0,
       `the workspace's ${name} is byte-identical to the artefact's template/${name}`,
+    );
+  }
+  for (const name of ["package.json", "package-lock.json", "node_modules"]) {
+    check(
+      !existsSync(join(paths.videos, name)) && !existsSync(join(workspaceTemplates, name)),
+      `there is no ${name} in the workspace or in the artefact's template/: nothing is installed there`,
     );
   }
 
@@ -887,137 +910,6 @@ async function main() {
   await client.close();
   say("  the artefact's MCP server is shut down; nothing below speaks to it");
 
-  // ─────────────────────────────────────────────────────────────────────────────────────────────
-  // Payload 2 and §1.3b's three assertions. Everything above needed one payload; the render
-  // workspace is the second, and D1, D2 and D3 are what round 4 decided about it. They run in the
-  // order the failures nest in: npm has to run before it can install, the install has to produce a
-  // tree before Remotion can read it, and the tree has to exist before its manifest can be
-  // compared against the pins.
-  // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-  section("D3 — npm travelled, and runs out of the payload");
-  const npmCli = join(runtimeDir, ...launch.manifest.launch.npm_cli.split("/"));
-  check(
-    existsSync(npmCli),
-    `the payload carries npm's own entry at ${launch.manifest.launch.npm_cli}`,
-  );
-  const npmVersion = runLogged("npm", launch.interpreter, [npmCli, "--version"], {
-    cwd: paths.home,
-    env,
-  }).trim();
-  check(
-    npmVersion === launch.manifest.npm_version,
-    `<runtime>/bin/node ${launch.manifest.launch.npm_cli} --version prints ${npmVersion}, the ` +
-      "version the manifest records — a machine with no Node has a package manager, which is what " +
-      "makes `setup --workspace`'s stated fallback more than a sentence (D3)",
-  );
-
-  section("payload 2 — a real `npm ci` of the template, run by that npm");
-  const workspace = join(scratch, "workspace");
-  // `--from-runtime` is the point of running it here at all: the install is performed by the moved
-  // payload's interpreter and the npm just proved above, which is the route `setup --workspace`
-  // takes on a machine that has neither. The *inherited* environment is what this one child gets —
-  // `assembleWorkspace` prepends `<runtime>/bin` to it and changes nothing else — because npm runs
-  // third-party lifecycle scripts through a shell, and a scrubbed `PATH` here would measure
-  // `sh: node: command not found` rather than anything about the payload.
-  const installed = runLogged(
-    "workspace",
-    process.execPath,
-    [CLI, "runtime", "build", "--workspace", "--out", workspace, "--from-runtime", runtimeDir],
-    { cwd: REPO },
-  );
-  for (const line of installed.trim().split("\n")) {
-    say(`  ${line}`);
-  }
-  const workspaceManifest = JSON.parse(
-    readFileSync(join(workspace, WORKSPACE_MANIFEST_FILE), "utf8"),
-  );
-  const pinnedRemotion = workspaceManifest.pins.remotion;
-  say(
-    `  workspace:   ${workspace} — ${Object.keys(workspaceManifest.resolved).length} packages ` +
-      `resolved on ${workspaceManifest.platform}/${workspaceManifest.arch} by ` +
-      `${workspaceManifest.installer}, npm ${workspaceManifest.npm_version}`,
-  );
-  say(`  remotion:    ${workspaceManifest.remotion_entry} (template pin ${pinnedRemotion})`);
-  check(
-    typeof pinnedRemotion === "string" && pinnedRemotion !== "",
-    `the workspace manifest records the template's own remotion pin (${pinnedRemotion}), which is ` +
-      "what D1's assertion below is compared against rather than a version restated here",
-  );
-  check(
-    outsideCheckout(workspace),
-    `payload 2 was installed outside the checkout too, at ${workspace}`,
-  );
-  check(
-    workspaceManifest.installer === "npm ci",
-    "the workspace was produced by `npm ci` against the lockfile committed beside the template, " +
-      "never by `npm install`, which may rewrite that lockfile and defeat the determinism (D11)",
-  );
-  check(
-    workspaceManifest.npm_version === launch.manifest.npm_version,
-    `the npm that installed it is the ${workspaceManifest.npm_version} payload 1 carries, so what ` +
-      "ran here is D3's route rather than the build machine's own package manager",
-  );
-
-  section("D1 — Remotion runs through the payload's interpreter, on a PATH with no node");
-  const remotionCli = remotionEntry(workspace, workspaceManifest);
-  check(existsSync(remotionCli), `@remotion/cli's own bin field names ${remotionCli}`);
-  // `versions`, not `--version`: `--version` is not a Remotion subcommand, falls through to the
-  // help listing and exits 1 on a tree where D1 and D2 both hold (§7.20). `versions` is the
-  // documented dependency check and exits 0 only when the resolved tree is the pinned one, so this
-  // one call proves the entry ran at all under a scrubbed `PATH` and that what it read is right.
-  // `cwd` is the workspace because that is the tree the command reports on.
-  const versions = spawnLogged("remotion", launch.interpreter, [remotionCli, "versions"], {
-    cwd: workspace,
-    env,
-  });
-  const versionsSaid = `${versions.stdout ?? ""}${versions.stderr ?? ""}`;
-  // Head and verdict rather than the last dozen lines: `versions` opens with the interpreter it is
-  // running on and the version it resolved — the two facts this assertion is about — and closes
-  // with its own verdict, and between them is a list of package names the transcript already has
-  // in full a few lines above.
-  const versionLines = versionsSaid
-    .trim()
-    .split("\n")
-    .filter((line) => line.trim() !== "");
-  for (const line of versionLines.slice(0, 2)) {
-    say(`    | ${line}`);
-  }
-  if (versionLines.length > 3) {
-    say(`    | … ${versionLines.length - 3} more lines, all of them in the transcript`);
-  }
-  say(`    | ${versionLines[versionLines.length - 1]}`);
-  check(
-    versions.status === 0,
-    `<runtime>/bin/node <workspace>/${workspaceManifest.remotion_entry} versions, with cwd at the ` +
-      `workspace, exited ${versions.status ?? versions.signal ?? versions.error?.message}: the ` +
-      "entry file is resolved from the package's own bin field and spawned through the payload's " +
-      "own interpreter, which is the call that exits 127 when the `#!/usr/bin/env node` shim is " +
-      "spawned instead (D1, §7.13)",
-  );
-  check(
-    versionsSaid.includes(pinnedRemotion),
-    `and it names ${pinnedRemotion}: \`versions\` exits 0 only when every resolved package is the ` +
-      "one the tree pins, so this call proves D1 and D2 at once (§7.20 — `--version` is not a " +
-      "Remotion subcommand and exits 1 on a tree where both hold)",
-  );
-
-  section("D2 — the workspace manifest against the template's own pins");
-  const workspaceVerified = runLogged(
-    "verify",
-    launch.interpreter,
-    [launch.entry, "runtime", "verify", "--workspace", workspace],
-    { cwd: paths.home, env },
-  );
-  say(`  ${workspaceVerified.trim()}`);
-  check(
-    workspaceVerified.includes("matches its manifest"),
-    "`runtime verify --workspace` re-hashed payload 2 and compared every resolved version against " +
-      "the pins in the payload's own copy of template/package.json: a tree resolved from the " +
-      "hoisted one passes its own hashes and still fails `remotion versions`, and this is where " +
-      "that becomes a named refusal instead (D2)",
-  );
-
   section("the payload, afterwards");
   const reverified = runLogged(
     "verify",
@@ -1028,8 +920,8 @@ async function main() {
   say(`  ${reverified.trim()}`);
   check(
     reverified.includes("matches its manifest"),
-    "the artefact still matches its manifest afterwards: neither the three tools nor the `npm ci` " +
-      "this payload's own npm ran wrote anything into the payload",
+    "the artefact still matches its manifest afterwards: nothing the four tools did wrote " +
+      "anything into the payload",
   );
 
   say("");

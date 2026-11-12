@@ -39,12 +39,15 @@
  * proof already establishes, and would say nothing about the picture — which is the only thing this
  * rerun exists to add.
  *
- * **The marker is put back after every kill.** `interrupt-update.ts` writes the committed
- * `install/__fixtures__/toolchain.json` into the state directory, because an install refuses a
- * machine with no setup marker and B5 has no real one. Its stand-in chrome path is not a browser,
- * so this proof copies the **real** marker over it once the updater is dead and before the recovery
- * runs — which is also the honest ordering: what a user would have on that machine is what `setup`
- * left there.
+ * **The marker is put back after every kill.** `interrupt-update.ts` writes the committed fixture
+ * marker (`install/testing/toolchain.ts`, from `install/__fixtures__/toolchain.json`) into the
+ * state directory, because an install refuses a machine with no setup marker and B5 has no real
+ * one. Its stand-in chrome is not a browser and its stand-in ffmpeg is not an encoder, so this
+ * proof copies the **real** marker — the browser, the ffmpeg and the speech route `setup` recorded —
+ * over it once the updater is dead and before the recovery runs, which is also the honest ordering:
+ * what a user would have on that machine is what `setup` left there. A still needs no ffmpeg, but
+ * the recovered daemon's `/healthz` and the update's own precondition both judge the whole marker,
+ * so it has to be the real one.
  *
  * It prints one `ok:` line per assertion and exits non-zero on the first that fails. Nothing here
  * ships: `tsconfig.build.json` excludes `src/**\/testing/**`.
@@ -113,7 +116,7 @@ const DOOMED_HEALTH_MS = 1_500;
 /** How long one case's install, update, kill and recovery may take. */
 const CASE_TIMEOUT_MS = 180_000;
 
-/** How long one still may take. The first render of a run downloads a headless shell. */
+/** How long one still may take. Nothing is downloaded: the browser is the one `setup` recorded. */
 const STILL_TIMEOUT_MS = 900_000;
 
 /** The case that needs no kill: a replacement that starts and never becomes ready. */
@@ -423,8 +426,9 @@ try {
   say(`  A: ${alpha.outDir}, @xplainer/cli ${alphaVersion}`);
 
   // B is A's bytes with its own version and an entry that binds nothing. A copy rather than a
-  // second assembly, because the two payloads have to be the same tree for the pins on both sides
-  // of the switch to be identical — which is what §1.3d A bounds a supported update to.
+  // second assembly, because the two payloads have to be the same tree for both sides of the switch
+  // to read the same `toolchain.json` format and state the same requirements of it — which is what
+  // `daemon update`'s precondition bounds a supported update to (ADR 0031 §Note, 2026-11-12, D2).
   say("copying A into payload B, and making it a replacement that never becomes ready");
   const betaDir = join(root, "payload-b");
   // `COPYFILE_FICLONE`: on a copy-on-write filesystem this is a clone rather than 150 MB of

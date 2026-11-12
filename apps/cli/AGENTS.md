@@ -856,8 +856,9 @@ HOME=$FAKE_HOME node apps/cli/dist/bin.js connect codex --config "$FAKE_HOME/dir
 HOME=$FAKE_HOME XPLAINER_STATE_DIR=$(mktemp -d) node apps/cli/dist/bin.js connect claude --spawn
 
 # The update transaction under injected failure: the boundary suite — a real updater killed at
-# every durable transition, twice-asserted per boundary — and then a real payload assembled,
-# installed under this machine's own supervisor and rolled back. Not part of `pnpm verify`; on
+# every durable transition, twice-asserted per boundary — then a real payload assembled,
+# installed under this machine's own supervisor and rolled back, and last a daemon from before
+# ADR 0031's cut refused by `update`, `setup` and `daemon update`. Not part of `pnpm verify`; on
 # macOS it registers a throwaway label and boots it out, and on Linux it installs the real unit in
 # this account's own config directory because that is the only place systemd looks.
 pnpm e2e:update
