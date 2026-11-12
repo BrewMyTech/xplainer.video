@@ -1,5 +1,13 @@
 # @xplainer/mcp-server
 
+## 0.0.5
+
+### Patch Changes
+
+- e403bf2: 0.0.4 shipped declarations from before the release, so one doc comment still described scene files as Remotion source. 0.0.5 is 0.0.4's source, built from the release commit.
+- Updated dependencies [e403bf2]
+  - @xplainer/protocol@0.1.1
+
 ## 0.0.4
 
 ### Patch Changes
