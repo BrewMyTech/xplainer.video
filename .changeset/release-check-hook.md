@@ -11,5 +11,6 @@
 
 No behaviour change for anyone who installs the package. Its `package.json` gains a
 `prepublishOnly` script, which runs this repository's release check before the package is
-published and refuses the publish while anything listed as blocking a release is still open. npm
-and pnpm run it only on a publish, never on an install.
+published and refuses the publish while anything listed as blocking a release is still open. An
+install from the registry never runs it. Inside this repository, where pnpm also runs it when it
+installs the workspace, the check stands aside unless a publish started it.
