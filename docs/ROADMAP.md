@@ -780,7 +780,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `desktop-progress.png`, `desktop-progress-done.png`, `desktop-settings.png`,
     `desktop-connect.png`, and `desktop-playback.json`, which records a 1920×1080 video played to
     7.93 s of its 16.41 s. **One consequence of this row belongs beside it**: the render path is
-    reachable on a clean machine because payload 1 carries npm and `setup --workspace` resolves the
+    reachable on a clean machine because payload 1 carries npm and `setup --workspace` (removed
+    2026-11-12) resolves the
     template's pins, so a **first run needs a network** — stated here rather than discovered.
   - *Amended 2026-09-11: **the grep step is green on `main`; the `human` half is the packaged
     window's playback and is one of the two things left in this phase.*** *apps/desktop holds no
@@ -797,7 +798,7 @@ owner's, and it is what turns those lines from pending into met or into defects.
   - *Amended 2026-09-08 (T19): three artefacts, not two, and the delivery position is stated rather
     than assumed.* `setup` acquires the browser, a speech route and the **render workspace** — the
     third is payload 2, which survives daemon updates and is materialised by
-    `xplainer setup --workspace`, the visible user step
+    `xplainer setup --workspace` (removed 2026-11-12), the visible user step
     [ADR 0005](adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md) defines. The browser
     is admitted on the **expected** digest the toolchain manifest carries for the exact URL the
     pinned Remotion line resolves, never on a digest taken from the bytes that arrived. Speech has
@@ -806,7 +807,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `cdn.xplainer.video` in this phase**, so a `bundle` acquisition cannot succeed anywhere and
     **Windows has no working speech route at all**; that half of this row stays *pending*, and T20
     is where the message a user meets says so. `pnpm e2e:toolchain` is the proof, and the run of
-    **2026-09-08** on macOS arm64 passed every leg: `setup --workspace` exits `0` under
+    **2026-09-08** on macOS arm64 passed every leg: `setup --workspace` (removed 2026-11-12) exits
+    `0` under
     `env -i PATH=/usr/bin:/bin` with no `node` resolvable for the parent, the resolved tree matches
     the template's pins, `remotion versions` exits `0` against it, every path `toolchain.json`
     records exists, and `/healthz` answers
@@ -832,7 +834,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `infra/README.md` §*The delivery position, phase 2* records it. One consequence belongs here too:
     because the installer carries the interpreter payload and not the render workspace, and nothing
     is published for it to download, **first-run rendering needs a network** — the first
-    `xplainer setup --workspace` resolves the template's pins with the shipped npm from the public
+    `xplainer setup --workspace` (removed 2026-11-12) resolves the template's pins with the shipped
+    npm from the public
     registry, which is [ADR 0005](adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)'s
     contract for the other two artefacts applied to the third.
   - *Amended 2026-09-08 (T33): what `setup` installed is now asserted by rendering with it, and the
@@ -855,7 +858,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `ghcr.io/remsky/kokoro-fastapi-cpu@sha256:28d6f0b6…` on a port the OS chose, answering with 68
     voices on attempt 11 and gone afterwards); else the leg is **skipped with its reason** — which
     is what Windows gets this phase, where the render half still runs from T3's fixture audio after
-    `setup --skip-speech --workspace`. The `docker` question is asked with the **scrubbed** `PATH`
+    `setup --skip-speech --workspace` (removed 2026-11-12). The `docker` question is asked with the
+    **scrubbed** `PATH`
     the artefact is run under, because a probe from the gate's own `PATH` promises a route `setup`
     then cannot take. Transcript: `.session/artifacts/e2e-toolchain.log`.
   - *Amended 2026-09-08 (T30): the status of this row, in one line, so it cannot be read as a
@@ -1443,7 +1447,8 @@ owner's, and it is what turns those lines from pending into met or into defects.
     `node_modules/`, `package.json` and `package-lock.json`. So the three template files
     `materialiseWorkspace()` copies in (`remotion.config.ts`, `tailwind.css`, `tsconfig.json`) fail
     it **before any tool call**, and Remotion's own `node_modules/.cache/webpack/` fails it after
-    the first render: `xplainer daemon update` exits `3` on every machine `setup --workspace` has
+    the first render: `xplainer daemon update` exits `3` on every machine `setup --workspace`
+    (removed 2026-11-12) has
     run on. `apps/cli/src/setup/toolchain.ts` states the rule the call breaks — a live workspace is
     checked from its own manifest and never re-hashed, because `videos/`, `public/` and `out/` are
     files the manifest has never described and never should. **The gate asserts the precondition
@@ -1549,7 +1554,8 @@ Phase 1" below is not Phase 1 above. The eight tools, their schemas, the job env
 
 **The hard condition comes first.** A tree that contains renderer Phase 1 and not renderer Phase 2
 is **not shippable**, and nothing is released between the two (the owner's hard cut). It was stated
-for two reasons — `xplainer setup --workspace` npm-installed the Remotion workspace onto the user's
+for two reasons — `xplainer setup --workspace` (removed 2026-11-12) npm-installed the Remotion
+workspace onto the user's
 machine, and nothing acquired the ffmpeg every render needs — and *as of 2026-11-12 both are gone
 from the tree*: that command and its payload are deleted, and `setup` acquires FFmpeg. What still
 stands between the tree and a release is the open half of the Phase 2 list below.
