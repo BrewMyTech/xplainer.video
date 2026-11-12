@@ -151,6 +151,24 @@ ruleset (one made in the dashboard), that ruleset has to be deleted or imported 
 with the cold-and-warm `curl` pair above, once on an artefact (`MISS` then `HIT`) and once on a key
 that does not exist (`cf-cache-status` never `HIT`).
 
+**Applied on 2026-11-12, through the Cloudflare dashboard rather than terraform** (owner ask
+`26f863fe`). The two rules match `main.tf`'s `cloudflare_ruleset.cdn_cache` as described above,
+with the manifest rule placed last. Read back that day:
+
+- an artefact answers `HIT` twice;
+- `toolchain/v2/manifest.json` carries `cache-control: max-age=300`;
+- a key that does not exist answers `404` with `BYPASS` twice, so it is never cached.
+
+**The live ruleset is not in terraform state**: that state was never on the machine that applied
+it. So it is now exactly the dashboard-made entry-point ruleset the previous paragraph warns about:
+a `terraform apply` from a fresh state will have its create refused. Importing it is a later owner
+step, and `plan` must then show no change:
+
+```sh
+TF_VAR_cloudflare_api_token=<token> terraform import cloudflare_ruleset.cdn_cache zones/<zone_id>/<ruleset_id>
+TF_VAR_cloudflare_api_token=<token> terraform plan
+```
+
 **Publishing a manifest** is an upload to its key followed by either a purge of that one URL (a
 token with `Zone:Cache Purge`) or a five-minute wait:
 
@@ -198,8 +216,16 @@ published build has **exactly two** manifest sources — `--manifest` and the ne
 **What else is published, and by what.** The macOS FFmpeg 9.0.2 archives and their source bundle,
 under `toolchain/v1/ffmpeg/9.0.2/`, uploaded by `.github/workflows/ffmpeg-macos.yml` from `main`
 ([`ffmpeg/README.md`](ffmpeg/README.md)); a published version key is never rewritten. No other
-command or workflow in this repository uploads anything, the manifest included. The
-**per-platform speech bundles** remain unpublished and their four manifest entries still say
+command or workflow in this repository uploads anything to the CDN, the manifest included. One
+other workflow uploads to a bucket that is **not** behind it: `.github/workflows/pin-snapshot.yml`
+keeps the BtbN pins (the distribution analysis's Checklist A item 7) in `xplainer-pins`. That is a
+private R2 bucket, made in the dashboard on 2026-11-12 and not declared here. It has no public
+access, so a snapshot is never served. The workflow's token can read and write that bucket and
+nothing else. Both upload workflows' environments, `toolchain-cdn` and `pin-snapshot`, are
+limited to the `main` branch by a deployment-branch policy, set on 2026-11-12. That matters
+because a dispatch with `--ref <branch>` runs that branch's copy of a workflow with the
+environment's secrets. A bucket lock on `btbn/` would also make the snapshot's keys immutable
+on the server, and is deferred to the owner. The **per-platform speech bundles** remain unpublished and their four manifest entries still say
 `"status": "unavailable"`; that is phase 4, and it is genuinely deferred rather than broken,
 because the `onnx` route acquires speech from its components' own upstream homes and needs no
 manifest at all.
@@ -210,7 +236,7 @@ that is reading it.
 
 | Platform | Browser | FFmpeg | Speech | Roadmap **P2-4** |
 | --- | --- | --- | --- | --- |
-| macOS arm64, Linux, Windows | Chrome for Testing 157.0.8103.50, from Google's storage, on the **expected** digest the manifest carries | ours from this CDN on macOS; BtbN's FFmpeg-Builds release on Linux and Windows; each on two expected digests | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | met for the browser and speech; FFmpeg on a Linux or Windows runner is still to be proved |
+| macOS arm64, Linux, Windows | Chrome for Testing 157.0.8103.50, from Google's storage, on the **expected** digest the manifest carries | ours from this CDN on macOS; BtbN's FFmpeg-Builds release on Linux and Windows; each on two expected digests | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | met: a Linux and a Windows runner acquired FFmpeg and rendered with it on 2026-11-12 (run `43227178970`) |
 | macOS x64 (Intel) | the same | ours, from this CDN | `onnx` is structurally unavailable — `onnxruntime-node` ships no `darwin/x64` binding — so `docker`'s pinned image, or `--tts-url` | the same |
 
 **The browser's and FFmpeg's bytes never come from a host the manifest picks.** Each row names its

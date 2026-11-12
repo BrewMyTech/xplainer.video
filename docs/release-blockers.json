@@ -4,16 +4,35 @@
     {
       "id": "linux-12fps-run",
       "title": "The Linux 12 fps throughput bar, on the shipped render worker",
-      "status": "open",
+      "status": "closed",
       "closes_when": "A Linux run of the throughput gate — capture plus encode of 1080p on the shipped render worker and Chrome for Testing 157 — clears 12 fps (ADR 0031's Decision Drivers, P0-6), and its run id is recorded here. ADR 0031 Follow-up 8 makes it part of the release gate; it has never been run, because the Docker engine did not answer on the day the macOS gate was measured.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "run",
+          "id": "43227178970",
+          "what": "The fps step on that run's ubuntu-latest leg (4 vCPU). apps/cli/spikes/p1-render-fps.mjs, three runs of the 491-frame animated scene at 1080p on the shipped worker, with Chrome for Testing 157 and BtbN's FFmpeg from a fresh setup. Loop fps (capture plus encode) 12.01, 12.34 and 12.41, so PASS against 12. Total fps with Chrome's launch and the bundle was 11.20 to 11.53, and the one-minute load was 2.08 to 3.92. The slowest run clears the bar by 0.01 fps."
+        },
+        {
+          "kind": "adr-note",
+          "adr": "0031",
+          "date": "2026-11-12",
+          "section": "The Linux 12 fps bar, measured",
+          "what": "The dated note recording those numbers and how thin the margin is."
+        }
+      ]
     },
     {
       "id": "windows-remote-debugging-pipe",
       "title": "Windows --remote-debugging-pipe, proved end to end on a hosted runner",
-      "status": "open",
+      "status": "closed",
       "closes_when": "A windows-latest run in which the render worker drives a real Chrome for Testing over --remote-debugging-pipe through a still and a render, with its run id recorded here (ADR 0031 Follow-ups 6 and 8). Until then the CDP client has run against Chrome on macOS and Linux only.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "run",
+          "id": "43227178970",
+          "what": "The windows-latest leg of that run. The shipped render worker, which speaks only --remote-debugging-pipe (apps/cli/src/render/cdp.ts), drove Chrome for Testing 157.0.8103.50 through explainer_still (frame-30.png) and explainer_render (explainer.mp4, encoded by the BtbN FFmpeg setup recorded), then through a still on each of the six rolled-back daemons."
+        }
+      ]
     },
     {
       "id": "page-network-decision",
@@ -58,9 +77,15 @@
     {
       "id": "checklist-a7-pin-snapshot",
       "title": "The re-pin snapshot the distribution analysis's Checklist A7 asks for",
-      "status": "open",
+      "status": "closed",
       "closes_when": "The snapshot of the pinned upstream FFmpeg artefacts that Checklist A7 asks for before a release is taken and recorded — BtbN keeps an autobuild for about two years, so the autobuild-2026-10-31-12-59 pins can move or disappear — and the commit on main or run that records it is added here.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "run",
+          "id": "43227183723",
+          "what": "pin-snapshot.yml dispatched on main 3188f53 on 2026-11-12. It checked the four BtbN pins of autobuild-2026-10-31-12-59 (linux-x64, linux-arm64, win32-x64, win32-arm64) against the manifest's sha256 and size and against that release's checksums.sha256. It kept the FFmpeg-Builds scripts at 5031c6f1082414e53688d39e521849905071070d, and put all seven objects, SNAPSHOT.json last, under btbn/autobuild-2026-10-31-12-59/ in the private bucket xplainer-pins, each confirmed by its ETag."
+        }
+      ]
     },
     {
       "id": "v2-manifest-upload",
@@ -78,16 +103,28 @@
     {
       "id": "cdn-cache-rule-applied",
       "title": "The CDN cache rule applied to the live zone",
-      "status": "open",
+      "status": "closed",
       "closes_when": "The owner applies infra/terraform's cloudflare_ruleset.cdn_cache as committed in 6802d60 — no response in the 400–599 range is ever cached, and a manifest.json is cached for five minutes — with terraform plan showing one change to that ruleset (a create if it was never applied, otherwise an in-place update) and nothing else (infra/README.md). Until then the CDN caches nothing at all: cf-cache-status read DYNAMIC on 2026-11-12, so the apply also turns caching on for the first time. The owner ask or run of the apply is the evidence.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "owner-ask",
+          "id": "26f863fe",
+          "what": "The owner applied the two rules through the Cloudflare dashboard on 2026-11-12, not through terraform, matching main.tf's cloudflare_ruleset.cdn_cache. Rule 1, (http.host eq \"cdn.xplainer.video\"): 30 days at the edge, an hour in the browser, 400–599 no-store. Rule 2, ends_with(http.request.uri.path, \"/manifest.json\"): five minutes at the edge and in the browser, 400–599 no-store, placed last. Read back the same day: an artefact HIT twice, the v2 manifest with max-age=300, and a missing key's 404 BYPASS twice. The ruleset is not in terraform state; importing it is a later owner step (infra/README.md)."
+        }
+      ]
     },
     {
       "id": "linux-windows-setup-proof",
       "title": "A real xplainer setup download and render on a Linux and a Windows runner",
-      "status": "open",
+      "status": "closed",
       "closes_when": "A dispatch of e2e-toolchain.yml with linux=true and windows=true passes — the gate's setup, reading the committed manifest, downloads the BtbN FFmpeg and Chrome for Testing from their publishers and a render comes out — and its run id is recorded here. Those legs read no published manifest and can run once the branch is on GitHub; only the separate windows_setup leg (a bare setup) waits on v2-manifest-upload.",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "run",
+          "id": "43227178970",
+          "what": "e2e-toolchain.yml dispatched on main 3188f53 on 2026-11-12 with linux, windows, windows_setup and fps all true. On ubuntu-latest and on windows-latest the gate's setup read the committed manifest and downloaded Chrome for Testing 157.0.8103.50 and BtbN's n9.0.2-39 FFmpeg (GPL-3.0-or-later, its publisher-and-licence sentence printed first) from their publishers. Each leg ended TOOLCHAIN GATE PASSED: narrate (live Kokoro on Linux, the fixture on Windows), a still and a render read back with ffprobe, then six rollback cases each ending in a PNG. In the same run the bare-setup Windows job read the published toolchain/v2/manifest.json and recorded all three components. The Linux leg had also passed alone in run 43222264364."
+        }
+      ]
     },
     {
       "id": "chrome-157-throughput",

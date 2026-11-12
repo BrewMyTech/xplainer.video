@@ -1613,11 +1613,11 @@ records its twelve decisions (D1–D12); the status of each item is as of that d
    Homebrew lookups are deleted rather than kept behind it, and a binary of your own is named with
    `setup --ffmpeg-path` (D6). A still needs no ffmpeg; a render without one is refused at the call
    (D12). The default macOS encoder stays **libx264** (the owner's decision of 2026-11-12, ADR 0031's
-   note of that date, "after the merge"). **Still open:** a real `setup` download and render on a
-   Linux and a Windows runner (`e2e-toolchain.yml`'s `linux` and `windows` legs, which read the
-   committed manifest; only its bare-`setup` Windows job reads the published one); the re-pin
-   snapshot of the distribution analysis's Checklist A7; and counsel's questions, listed in ADR 0031,
-   the H.264 distributor question among them.
+   note of that date, "after the merge"). A real `setup` download and render passed on a Linux and a Windows
+   runner, with the bare-`setup` Windows job against the published v2 manifest and the Linux 12 fps
+   bar measured at 12.01–12.41 (run `43227178970`). The Checklist A7 re-pin snapshot is in the
+   private bucket (run `43227183723`). **Still open:** counsel's questions, listed in ADR 0031, the
+   H.264 distributor question among them.
 2. **Payload 2 leaves — built.** The template's Remotion pins and lockfile, `setup --workspace`, the
    workspace payload in `runtime build` and `runtime verify`, the manifest's `remotion_entry`, the
    toolchain gate's workspace check and the update transaction's template-pin refusals are deleted
