@@ -135,10 +135,11 @@ export function recordTestFfmpeg(stateDir: string): ToolchainFfmpeg {
   mkdirSync(dirname(path), { recursive: true });
   if (found !== null && probed !== null) {
     copyFileSync(found, path);
-    chmodSync(path, 0o755);
   } else {
     writeStandIn(path);
   }
+  // Executable either way, as everything setup records as an ffmpeg is: the gate stats the bit.
+  chmodSync(path, 0o755);
   const sha256 = hashFile(path);
   const probe = probed?.probe ?? {
     version: ["ffmpeg version stand-in", "libavcodec     62. 11.100 / 62. 11.100"],

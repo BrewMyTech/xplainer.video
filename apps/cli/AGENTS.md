@@ -1179,7 +1179,7 @@ Then the root procedure: `pnpm verify`.
   `stalled`, `unauthorized`, `token_absent`, `unhealthy`, `unreachable`, `absent`
   (`STATUS_CONDITIONS`). `daemon status --json` answers from a superset — the same members plus
   `disabled` (a supervisor query saw the service switched off) and `degraded` (it answered `200`
-  and the recorded toolchain is not on this machine) — classified in the same order, so a consumer
+  and its `/healthz` said `degraded`: a render would be refused there) — classified in the same order, so a consumer
   that handles one handles the other by adding two cases. It is what `apps/desktop`'s discovery shells out to instead of
   reimplementing state-directory resolution, so a new member is added here and to that mapping
   together. Two things are deliberately **not** conditions: contract compatibility, which is a

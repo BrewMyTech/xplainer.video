@@ -9,7 +9,16 @@
  * whose real size is what the gate stats.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -18,13 +27,16 @@ import { afterEach, describe, expect, it } from "vitest";
 import { hashFile } from "../runtime/manifest.js";
 import { recordTestToolchain } from "./testing/toolchain.js";
 import {
+  checkJobToolchain,
   checkToolchain,
   FFMPEG_MIN_LIBAVCODEC,
   hostPlatformKey,
   readToolchainMarker,
+  summariseToolchain,
   TOOLCHAIN_FORMAT_VERSION,
   TOOLCHAIN_MISSING,
   TOOLCHAIN_STALE,
+  toolchainLines,
   toolchainMarkerPath,
   writeToolchainMarker,
 } from "./toolchain.js";
@@ -51,7 +63,7 @@ function machine(): { stateDir: string } {
 function recordedFfmpeg(stateDir: string, libavcodec = "62.11.100"): ToolchainFfmpeg {
   const path = join(stateDir, "toolchain", "ffmpeg-9.0.2", "ffmpeg");
   mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, "a stand-in for the ffmpeg setup acquired\n");
+  writeFileSync(path, "a stand-in for the ffmpeg setup acquired\n", { mode: 0o755 });
   const sha256 = hashFile(path);
   return {
     version: "9.0.2",
@@ -358,6 +370,158 @@ describe("checkToolchain", () => {
     expect(status.reason).toBe(TOOLCHAIN_STALE);
     expect(status.detail).toContain("rollback signal");
     expect(readToolchainMarker(where.stateDir)?.format_version).toBe(TOOLCHAIN_FORMAT_VERSION + 7);
+  });
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D12, as the gate applies it per job: a still needs no ffmpeg, and a
+ * render needs an override that names an executable by its absolute path **or** a valid recorded
+ * ffmpeg — either one, never both.
+ */
+describe("checkJobToolchain", () => {
+  /** A machine where setup has run, its ffmpeg broken in one of the ways a user's can be. */
+  function brokenFfmpeg(how: "replaced" | "removed" | "too old"): { stateDir: string } {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir, how === "too old" ? "59.37.100" : "62.11.100");
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg });
+    if (how === "replaced") {
+      appendFileSync(ffmpeg.path, "and a `brew upgrade` later, a different binary\n");
+    }
+    if (how === "removed") {
+      rmSync(ffmpeg.path);
+    }
+    return where;
+  }
+
+  it("admits a still whatever has become of the recorded ffmpeg, and refuses the render", () => {
+    for (const how of ["replaced", "removed", "too old"] as const) {
+      const where = brokenFfmpeg(how);
+
+      const still = checkJobToolchain({ ...where, job: "still", env: {} });
+      const render = checkJobToolchain({ ...where, job: "render", env: {} });
+
+      expect(still, how).toMatchObject({ ok: true, reason: null });
+      expect(render.ok, how).toBe(false);
+    }
+  });
+
+  it("admits a render on an executable XPLAINER_FFMPEG, whatever has become of the recorded one", () => {
+    const named = join(machine().stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const how of ["replaced", "removed", "too old"] as const) {
+      const where = brokenFfmpeg(how);
+
+      const render = checkJobToolchain({
+        ...where,
+        job: "render",
+        env: { XPLAINER_FFMPEG: named },
+      });
+
+      expect(render, how).toMatchObject({ ok: true, reason: null });
+    }
+  });
+
+  /**
+   * The gate stats an override in the daemon's working directory and the worker spawns it from the
+   * workspace root, so a relative one is judged in one place and run in another — and `ffmpeg` alone
+   * is a `PATH` lookup by another name.
+   */
+  it("refuses a relative or bare XPLAINER_FFMPEG for a render, even where one exists there", () => {
+    const where = machine();
+    recordTestToolchain(where);
+    const cwd = process.cwd();
+    const directory = machine().stateDir;
+    mkdirSync(join(directory, "bin"));
+    writeFileSync(join(directory, "bin", "ffmpeg"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.chdir(directory);
+    try {
+      for (const named of [join("bin", "ffmpeg"), "ffmpeg"]) {
+        const render = checkJobToolchain({
+          ...where,
+          job: "render",
+          env: { XPLAINER_FFMPEG: named },
+        });
+
+        expect(render.reason, named).toBe(TOOLCHAIN_MISSING);
+        expect(render.detail, named).toContain(
+          `XPLAINER_FFMPEG names ${named}, which is not an absolute path`,
+        );
+      }
+      // A still never spawns an encoder, so the variable is nothing to it.
+      expect(
+        checkJobToolchain({ ...where, job: "still", env: { XPLAINER_FFMPEG: "ffmpeg" } }).ok,
+      ).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  /** The worker's `isExecutableFile`, asked at the gate: Windows has no execute bit to lose. */
+  it("refuses a render whose recorded ffmpeg has lost its execute bit, as stale", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    chmodSync(marker.ffmpeg?.path ?? "", 0o644);
+
+    const render = checkJobToolchain({ ...where, job: "render", env: {} });
+
+    if (process.platform === "win32") {
+      expect(render.ok).toBe(true);
+    } else {
+      expect(render.reason).toBe(TOOLCHAIN_STALE);
+      expect(render.detail).toContain("is not an executable file any more");
+      expect(render.detail).toContain("xplainer setup");
+    }
+    expect(checkJobToolchain({ ...where, job: "still", env: {} }).ok).toBe(true);
+  });
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D10, as the status commands print it: the verdict is the marker's
+ * alone, and an `XPLAINER_FFMPEG` in the shell asking is a fact reported beside it — never folded
+ * in, because the daemon that renders is not started from that shell.
+ */
+describe("summariseToolchain", () => {
+  it("judges the marker alone, and reports the shell's override as a fact of its own", () => {
+    const where = machine();
+    recordTestToolchain({ ...where, ffmpeg: false });
+    const named = join(where.stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const summary = summariseToolchain(where.stateDir, { XPLAINER_FFMPEG: named });
+    const lines = toolchainLines(summary).join("\n");
+
+    expect(summary).toMatchObject({ ok: false, reason: TOOLCHAIN_MISSING, ffmpeg: null });
+    expect(summary.override).toEqual({ path: named, refusal: null });
+    expect(lines).not.toContain("ready to render");
+    expect(lines).toContain(`toolchain:       ${TOOLCHAIN_MISSING} — `);
+    expect(lines).toContain("ffmpeg:        not recorded");
+    expect(lines).toContain(`XPLAINER_FFMPEG: ${named} — set in this shell`);
+    expect(lines).toContain("a supervised daemon never inherits it");
+  });
+
+  it("says nothing about an override where none is set, and names the one it would refuse", () => {
+    const where = machine();
+    recordTestToolchain(where);
+
+    const unset = summariseToolchain(where.stateDir, {});
+    const refused = summariseToolchain(where.stateDir, { XPLAINER_FFMPEG: "ffmpeg" });
+
+    expect(unset).toMatchObject({ ok: true, override: null });
+    expect(toolchainLines(unset).join("\n")).not.toContain("XPLAINER_FFMPEG");
+    expect(refused.ok).toBe(true);
+    expect(refused.override?.refusal).toContain("not an absolute path");
+    expect(toolchainLines(refused).join("\n")).toContain("refuses every render");
+  });
+
+  it("says the block is this machine's when the status command probed a URL it was given", () => {
+    const where = machine();
+    recordTestToolchain(where);
+
+    const [first] = toolchainLines(summariseToolchain(where.stateDir, {}), "http://10.0.0.2:8787");
+
+    expect(first).toContain("ready to render (read from this machine's toolchain.json");
+    expect(first).toContain("the daemon at http://10.0.0.2:8787 judges its own");
   });
 });
 

@@ -657,4 +657,36 @@ describe("xplainer status — the toolchain", () => {
     expect(degradedProse.stdout).toContain("running, degraded (toolchain_missing)");
     expect(degradedProse.stdout).not.toContain("running and healthy");
   }, 30_000);
+
+  /**
+   * The shell running `status` is not the daemon's: a supervised daemon inherits no shell's
+   * `XPLAINER_FFMPEG`. So the block judges the marker alone — it used to print `ready to render`
+   * beside `ffmpeg: not recorded` whenever the shell exported one — and reports the variable as a
+   * line of its own. With `--url` the block still describes this machine, and says so.
+   */
+  it("judges the marker alone, reports this shell's XPLAINER_FFMPEG beside it, and says whose it is", async () => {
+    const stateDir = stateDirectory();
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const prose = await status(stateDir, [], { XPLAINER_FFMPEG: named });
+    const { report } = await statusJson(stateDir, [], { XPLAINER_FFMPEG: named });
+    const remote = await status(stateDir, ["--url", "http://127.0.0.1:9"], {
+      XPLAINER_FFMPEG: undefined,
+    });
+
+    expect(prose.stdout).not.toContain("ready to render");
+    expect(prose.stdout).toContain(`toolchain:       ${TOOLCHAIN_MISSING} — `);
+    expect(prose.stdout).toContain("ffmpeg:        not recorded");
+    expect(prose.stdout).toContain(`XPLAINER_FFMPEG: ${named} — set in this shell`);
+    expect(report.toolchain).toMatchObject({
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      override: { path: named, refusal: null },
+    });
+    expect(remote.stdout).toContain(
+      "(read from this machine's toolchain.json; the daemon at http://127.0.0.1:9 judges its own",
+    );
+  }, 30_000);
 });

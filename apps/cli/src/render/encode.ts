@@ -26,7 +26,7 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import process from "node:process";
 import { RenderError } from "./render-error.js";
 
@@ -66,6 +66,45 @@ export function isExecutableFile(path: string): boolean {
   }
 }
 
+/** `XPLAINER_FFMPEG` as `env` sets it, or `null` where it is unset or empty. */
+export function readFfmpegOverride(
+  env: Readonly<Record<string, string | undefined>>,
+): string | null {
+  const named = env[FFMPEG_ENV]?.trim();
+  return named === undefined || named === "" ? null : named;
+}
+
+/**
+ * Why `named` — the value of `XPLAINER_FFMPEG` — cannot be the ffmpeg a render spawns, or `null`
+ * when it can. Asked by the render gate and by the worker, so the two refuse the same overrides
+ * with the same sentence.
+ *
+ * **Only an absolute path is an override.** The gate stats it in the daemon's working directory and
+ * the worker spawns it from the workspace root, so a relative path is judged in one directory and
+ * run in another — and a bare `ffmpeg` is a `PATH` lookup by another name, which ADR 0031 §Note,
+ * 2026-11-12, D6 deleted.
+ */
+export function ffmpegOverrideRefusal(
+  named: string,
+  isExecutable: (path: string) => boolean = isExecutableFile,
+): string | null {
+  if (!isAbsolute(named)) {
+    return (
+      `${FFMPEG_ENV} names ${named}, which is not an absolute path: a render resolves it in ` +
+      "another working directory than the one it was checked in, and a bare name would be a PATH " +
+      "lookup. Point it at the absolute path of an ffmpeg binary, or unset it to use the one " +
+      "`xplainer setup` recorded."
+    );
+  }
+  if (!isExecutable(named)) {
+    return (
+      `${FFMPEG_ENV} names ${named}, which is not an executable file. Point it at an ffmpeg ` +
+      "binary, or unset it to use the one `xplainer setup` recorded."
+    );
+  }
+  return null;
+}
+
 /**
  * The ffmpeg this render will use: `XPLAINER_FFMPEG`, else the one `toolchain.json` records — or
  * `FFMPEG_NOT_FOUND` saying how to get one.
@@ -75,21 +114,18 @@ export function isExecutableFile(path: string): boolean {
  * have; the pinned build is what makes MP4 bytes reproducible, and `setup --ffmpeg-path` is how a
  * system ffmpeg is used now — by name, probed once, and recorded.
  *
- * `XPLAINER_FFMPEG` naming something that is not there is a refusal rather than a fall-through:
- * whoever set it meant that file, and quietly using a different ffmpeg would make the variable
- * mean nothing.
+ * `XPLAINER_FFMPEG` naming something that is not there, or naming it by a relative path, is a
+ * refusal rather than a fall-through ({@link ffmpegOverrideRefusal}): whoever set it meant that
+ * file, and quietly using a different ffmpeg would make the variable mean nothing.
  */
 export function resolveFfmpeg(lookup: FfmpegLookup): ResolvedFfmpeg {
-  const named = lookup.env[FFMPEG_ENV]?.trim();
-  if (named !== undefined && named !== "") {
-    if (lookup.isExecutable(named)) {
+  const named = readFfmpegOverride(lookup.env);
+  if (named !== null) {
+    const refusal = ffmpegOverrideRefusal(named, lookup.isExecutable);
+    if (refusal === null) {
       return { path: named, source: "override" };
     }
-    throw new RenderError(
-      "FFMPEG_NOT_FOUND",
-      `${FFMPEG_ENV} names ${named}, which is not an executable file. Point it at an ffmpeg ` +
-        "binary, or unset it to use the one `xplainer setup` recorded.",
-    );
+    throw new RenderError("FFMPEG_NOT_FOUND", refusal);
   }
   if (lookup.recorded !== null) {
     if (lookup.isExecutable(lookup.recorded)) {

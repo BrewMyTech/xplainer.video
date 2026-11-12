@@ -583,7 +583,8 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
 
   /**
    * State three, against a daemon that is up and answering. The marker is the real one and the file
-   * it names is really removed, which is the condition `xplainer setup` re-acquires. It exits `0`:
+   * it names is really removed, which is the condition `xplainer setup` re-acquires — and the
+   * daemon's `/healthz` says `degraded` for it, which is where the condition is taken from. It exits `0`:
    * the daemon is running, and a script that gates on "is it up" must not fail over a missing
    * Chrome — the sentence and `toolchain.missing` are how a reader finds out.
    */
@@ -617,7 +618,7 @@ describe("the four sentences ADR 0020's `daemon status` paragraph names", () => 
 
       expect(report.condition).toBe("degraded");
       expect(report.exit_code).toBe(0);
-      expect(report.health?.status).toBe("ok");
+      expect(report.health).toMatchObject({ status: "degraded", reason: "toolchain_missing" });
       expect(report.toolchain.missing).toHaveLength(1);
       const [, , degraded] = adrSentences();
       expect(report.sentences).toContainEqual({ state: "degraded-toolchain", text: degraded });

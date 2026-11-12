@@ -128,12 +128,16 @@ why an agent's configuration holds no URL and no secret.
 `degraded` with a `reason`: `toolchain_missing` when what `setup` recorded is not here — no marker,
 a recorded path gone, or no FFmpeg for a render — and `toolchain_stale` when it is here and is no
 longer the right thing, such as an FFmpeg replaced since `setup` probed it or one older than
-libavcodec 60. `daemon status` takes its verdict from the same check, at the same stat depth, so
-the two cannot disagree, and says "running, degraded: the render toolchain is missing" or "… is not
-the one setup recorded" accordingly. Both `daemon status` and `xplainer status` print a
-`toolchain:` block — the browser's version, FFmpeg's version, licence, publisher and provider, and
-the speech route — and `xplainer status --json` carries it as a `toolchain` object beside
-`health.reason`. The repair is `xplainer setup` in every case.
+libavcodec 60. A still needs no FFmpeg, so it is judged on the browser and speech alone; a render
+needs an `XPLAINER_FFMPEG` naming an executable by its absolute path, or else a valid recorded
+FFmpeg. `daemon status` takes its condition from `/healthz` whenever the daemon answers, so the two
+cannot disagree — the daemon judges with its own environment, and a supervised daemon inherits no
+shell's `XPLAINER_FFMPEG` — and says "running, degraded: the render toolchain is missing" or "… is
+not the one setup recorded" accordingly. Both `daemon status` and `xplainer status` print a
+`toolchain:` block — the same check over this machine's marker alone, the browser's version,
+FFmpeg's version, licence, publisher and provider, the speech route, and on a line of its own any
+`XPLAINER_FFMPEG` the asking shell has set — and `xplainer status --json` carries it as a
+`toolchain` object beside `health.reason`. The repair is `xplainer setup` in every case.
 
 **Drain.** `SIGTERM` stops new jobs, gives in-flight ones at most **20 s** to checkpoint, hard-stops
 Chrome and ffmpeg children, marks anything still `running` or `queued` as `error` with

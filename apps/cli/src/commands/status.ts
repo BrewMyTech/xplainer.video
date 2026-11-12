@@ -508,6 +508,8 @@ export function createStatusCommand(io: CliIo): Command {
       const tokenPath = daemonState.token_file ?? resolveTokenPath(stateDir);
       const token = readTokenQuietly(tokenPath);
       const speech = readSpeech(stateDir);
+      // This machine's marker, judged on its own: what the daemon decides is `/healthz`'s answer,
+      // below, and with `--url` that daemon is not even on this machine.
       const toolchain = summariseToolchain(stateDir);
 
       const lines = [
@@ -521,7 +523,7 @@ export function createStatusCommand(io: CliIo): Command {
         `token file:      ${tokenPath}${token === null ? " (absent or empty)" : ""}`,
         `socket:          ${daemonState.socket_path ?? "unrecorded — no run has bound here yet"}`,
         ...speechLines(speech),
-        ...toolchainLines(toolchain),
+        ...toolchainLines(toolchain, endpoint.source === "configured" ? endpoint.url : null),
         neverBound(endpoint.source, daemonState.port, runtime)
           ? `probing:         nothing — neither file above records a daemon, so ${endpoint.url} would be somebody else's`
           : `probing:         ${endpoint.url}/healthz (port from ${endpoint.source})`,

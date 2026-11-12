@@ -32,7 +32,7 @@
  * names `scripts/check-publish-contract.mjs` refuses in a tarball.
  */
 
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Toolchain, ToolchainFfmpeg } from "@xplainer/protocol";
@@ -98,6 +98,9 @@ export function writeToolchainMarker(
   if (source.ffmpeg !== undefined) {
     const ffmpegPath = join(acquired, basename(source.ffmpeg.path));
     copyFileSync(source.ffmpeg.path, ffmpegPath);
+    // Executable, as every ffmpeg setup records is: the render gate stats the bit, and the
+    // committed stand-in is a plain file in git.
+    chmodSync(ffmpegPath, 0o755);
     ffmpeg = relocatedFfmpeg(source.ffmpeg, ffmpegPath);
   }
 

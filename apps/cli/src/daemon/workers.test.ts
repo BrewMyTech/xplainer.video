@@ -270,6 +270,37 @@ describe("ffmpeg, by job kind", () => {
     });
   });
 
+  /**
+   * D12's two halves together: a still needs no ffmpeg, so whatever has become of the recorded one
+   * does not stop it; and a render needs an override *or* a valid recorded one, so an executable
+   * `XPLAINER_FFMPEG` admits it over a recorded ffmpeg that is gone.
+   */
+  it("builds a still beside a recorded ffmpeg that is gone, and a render on an override beside it", () => {
+    narratedVideo("demo");
+    const marker = recordTestToolchain({ stateDir });
+    rmSync(marker.ffmpeg?.path ?? "");
+    writeJobRequest(root, 1, { job_type: "explainer_still", slug: "demo", frame: 0, scale: 1 });
+    writeJobRequest(root, 2, { job_type: "explainer_render", slug: "demo" });
+    const registry = createWorkerRegistry({ root, stateDir });
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n");
+    chmodSync(named, 0o755);
+
+    withFfmpegOverride(undefined, () => {
+      const still = registry.explainer_still?.(record(1, "explainer_still", "demo"));
+      expect(still?.command).toBe(process.execPath);
+      still?.release?.();
+      expect(() => registry.explainer_render?.(record(2, "explainer_render", "demo"))).toThrow(
+        /no longer on this machine/,
+      );
+    });
+    withFfmpegOverride(named, () => {
+      const render = registry.explainer_render?.(record(2, "explainer_render", "demo"));
+      expect(render?.command).toBe(process.execPath);
+      render?.release?.();
+    });
+  });
+
   it("refuses a render whose recorded ffmpeg has been replaced, as stale", () => {
     narratedVideo("demo");
     const marker = recordTestToolchain({ stateDir });

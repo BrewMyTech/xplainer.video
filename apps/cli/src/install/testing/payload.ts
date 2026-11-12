@@ -27,7 +27,11 @@
  * order: it mints the bearer token at `--token-file` if the file is absent (`0600`, `O_EXCL`), it
  * binds `--port`, it writes `runtime.json` and merges the port, the token path and the socket into
  * `daemon.json` — merges, so the installer's own fields survive — and only then prints its ready
- * line. `/healthz` answers `401` without that token. What it deliberately does **not** have is the
+ * line. `/healthz` answers `401` without that token, and with it says `degraded` and
+ * `toolchain_missing` where `toolchain.json` is absent or names a path that is gone — the real
+ * gate's first two questions, without its ffmpeg ones — because `daemon status` takes its condition
+ * from that answer, and a fixture that always said `ok` would be a daemon that never degrades.
+ * What it deliberately does **not** have is the
  * job store, the ownership lock, the reconciler, the MCP endpoint or the real guard's `Host` and
  * `Origin` layers: those are `daemon/`'s and are proved in `daemon/`'s own suites against the real
  * `serve`. The end-to-end case — the real `serve`, out of a real `runtime build` payload, under a
@@ -259,6 +263,24 @@ if (stateDir === undefined) {
 const record = join(stateDir, "fake-daemon.json");
 const identity = { runtime: RUNTIME, marker: MARKER, pid: process.pid };
 
+/**
+ * Whether \`toolchain.json\` is absent, unreadable, or names a path that is no longer there —
+ * asked per request, as the real \`/healthz\` asks it, so a file removed under a running daemon
+ * degrades it.
+ */
+const toolchainMissing = () => {
+  let marker;
+  try {
+    marker = JSON.parse(readFileSync(join(stateDir, "toolchain.json"), "utf8"));
+  } catch {
+    return true;
+  }
+  const paths = [marker.chrome, marker.speech, marker.ffmpeg]
+    .filter((component) => typeof component === "object" && component !== null)
+    .flatMap((component) => [component.path, ...(component.files ?? []).map((file) => file.path)]);
+  return paths.length < 2 || paths.some((path) => typeof path !== "string" || !existsSync(path));
+};
+
 /** Merge into a JSON file, keeping every key already in it. */
 const mergeJson = (path, changes) => {
   let held = {};
@@ -321,7 +343,13 @@ if (verb === "serve") {
         return;
       }
       response.end(
-        JSON.stringify({ status: "ok", version: MARKER, contract_version: "1" }),
+        JSON.stringify({
+          ...(toolchainMissing()
+            ? { status: "degraded", reason: "toolchain_missing" }
+            : { status: "ok", reason: null }),
+          version: MARKER,
+          contract_version: "1",
+        }),
       );
       return;
     }

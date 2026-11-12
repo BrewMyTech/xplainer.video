@@ -1266,11 +1266,13 @@ describe("POST /api/daemon/drain over the socket", () => {
 });
 
 /**
- * ADR 0031 §Note, 2026-11-12, D10: `daemon status` takes its verdict from the gate `/healthz`
- * answers with, so the two agree on the same machine. Before, `daemon status` judged by existence
- * alone and called a replaced ffmpeg, or a marker with none, `ready` beside a `/healthz` that said
- * `degraded`. One real daemon, and the marker changed under it four ways: as setup left it, an
- * ffmpeg replaced since it was probed, a marker that records no ffmpeg, and no marker at all.
+ * ADR 0031 §Note, 2026-11-12, D10: `daemon status` and `/healthz` agree on the same machine. Before,
+ * `daemon status` judged by existence alone and called a replaced ffmpeg, or a marker with none,
+ * `ready` beside a `/healthz` that said `degraded`. One real daemon, and the marker changed under it
+ * four ways: as setup left it, an ffmpeg replaced since it was probed, a marker that records no
+ * ffmpeg, and no marker at all — and an `XPLAINER_FFMPEG` set on one side and not the other, which
+ * is every supervised daemon asked from a shell that exports one: the condition is what the daemon
+ * answered, and the shell's override is reported beside it.
  */
 describe("the toolchain verdict, from /healthz and from `daemon status`", () => {
   /** No supervisor query is the subject here: every one is answered "not here". */
@@ -1286,7 +1288,9 @@ describe("the toolchain verdict, from /healthz and from `daemon status`", () => 
     // An override in the developer's shell would make both surfaces judge it rather than the marker.
     const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir, { XPLAINER_FFMPEG: "" });
     const env = { ...process.env, XPLAINER_FFMPEG: "" };
-    const ask = async (): Promise<{
+    const ask = async (
+      shell: Record<string, string | undefined> = env,
+    ): Promise<{
       health: { status: string; reason: string | null };
       report: DaemonStatusReport;
     }> => {
@@ -1295,7 +1299,7 @@ describe("the toolchain verdict, from /healthz and from `daemon status`", () => 
         { host: `127.0.0.1:${ready.port}`, authorization: `Bearer ${token}` },
       );
       expect(answer.status).toBe(200);
-      const report = await daemonStatus({ stateDir, env, run: noSupervisor });
+      const report = await daemonStatus({ stateDir, env: shell, run: noSupervisor });
       // The `--json` document is the report as written; a round trip is what a consumer reads.
       return {
         health: JSON.parse(answer.body) as { status: string; reason: string | null },
@@ -1335,7 +1339,56 @@ describe("the toolchain verdict, from /healthz and from `daemon status`", () => 
     expect(noFfmpeg.report.toolchain.ffmpeg).toBeNull();
     expect(noFfmpeg.report.toolchain.browser).not.toBeNull();
 
+    // The shell asking exports an executable `XPLAINER_FFMPEG`; the daemon has none. `/healthz`
+    // still says `degraded`, and so must `daemon status` — the override is a fact about the shell.
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const shellOverride = await ask({ ...env, XPLAINER_FFMPEG: named });
+    agree(shellOverride, TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+    expect(shellOverride.report.toolchain.override).toEqual({ path: named, refusal: null });
+
     rmSync(toolchainMarkerPath(stateDir));
     agree(await ask(), TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+  }, 60_000);
+
+  /**
+   * The other side of the same disagreement: a daemon started with an executable `XPLAINER_FFMPEG`
+   * renders on it, whatever the marker says about ffmpeg, so `/healthz` answers `ok` — and
+   * `daemon status`, asked from a shell without one, reports the daemon's answer as the condition
+   * and the marker's own verdict beside it.
+   */
+  it("is the daemon's own where only the daemon has an XPLAINER_FFMPEG", async () => {
+    const stateDir = stateDirectory();
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir, {
+      XPLAINER_FFMPEG: named,
+    });
+    const marker = readToolchainMarker(stateDir);
+    if (marker !== null) {
+      const { format_version, created_at, chrome, speech } = marker;
+      writeToolchainMarker(stateDir, { format_version, created_at, chrome, speech });
+    }
+
+    const answer = await getHealthz(
+      { port: ready.port },
+      { host: `127.0.0.1:${ready.port}`, authorization: `Bearer ${token}` },
+    );
+    const report = await daemonStatus({
+      stateDir,
+      env: { ...process.env, XPLAINER_FFMPEG: "" },
+      run: noSupervisor,
+    });
+
+    expect(JSON.parse(answer.body)).toMatchObject({ status: "ok", reason: null });
+    expect(report.condition).toBe("ready");
+    expect(report.health).toMatchObject({ status: "ok", reason: null });
+    expect(report.sentences.find((s) => s.state === "degraded-toolchain")).toBeUndefined();
+    // The marker on its own would not render, and the report says so where it describes the marker.
+    expect(report.toolchain).toMatchObject({
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      override: null,
+    });
   }, 60_000);
 });

@@ -87,6 +87,7 @@ import { type AclVerdict, aclQuery, readAclVerdict } from "../daemon/windows-acl
 import { DEFAULT_PORT, DRAIN_PATH } from "../server.js";
 import {
   summariseToolchain,
+  TOOLCHAIN_MISSING,
   TOOLCHAIN_STALE,
   type ToolchainReason,
   type ToolchainSummary,
@@ -355,13 +356,17 @@ export type HealthBody = {
 };
 
 /**
- * The setup marker's answer: the render gate's verdict, the same one `/healthz` gives, and what the
+ * The setup marker's answer: the render gate's verdict on this machine's marker, and what the
  * marker records.
  *
- * `complete` and `reason` are `checkJobToolchain` for a render, at stat depth (ADR 0031 §Note,
- * 2026-11-12, D10) — not the existence check this report used to make on its own, which called a
- * replaced ffmpeg, or a marker with none, complete while `/healthz` called the same machine
- * degraded. `missing` is still the install preflight's list of recorded paths that are gone.
+ * `complete` and `reason` are `checkJobToolchain` for a render, at stat depth and with no
+ * `XPLAINER_FFMPEG` (ADR 0031 §Note, 2026-11-12, D10) — not the existence check this report used
+ * to make on its own, which called a replaced ffmpeg, or a marker with none, complete while
+ * `/healthz` called the same machine degraded. They describe the **marker**: the report's
+ * `condition` is `/healthz`'s own verdict whenever the daemon answered, because the daemon judges
+ * with its own environment and this command runs in somebody's shell. `override` is that shell's
+ * `XPLAINER_FFMPEG`, reported as a fact of its own. `missing` is still the install preflight's list
+ * of recorded paths that are gone.
  */
 export type ToolchainFact = ToolchainSummary & {
   /** Whether a render's toolchain is usable — `ok`, under the name this report has always used. */
@@ -764,14 +769,21 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
   const hold: PortHold | null = preflight.port.held
     ? { port: preflight.port.port, pid: preflight.port.holder, detail: preflight.port.holderDetail }
     : null;
-  // The render gate's verdict, the one `/healthz` gives the same machine: a report that judged by
-  // existence alone said `ready` beside a `/healthz` saying `degraded` for a replaced ffmpeg.
+  // The render gate's verdict on the marker: a report that judged by existence alone said `ready`
+  // beside a `/healthz` saying `degraded` for a replaced ffmpeg.
   const summary = summariseToolchain(request.stateDir, env);
   const toolchain: ToolchainFact = {
     ...summary,
     complete: summary.ok,
     missing: preflight.toolchain.missing,
   };
+  // **What the daemon decided, when it said.** `/healthz` judges with the daemon's environment and
+  // this command with the shell's, and the two differ exactly where an `XPLAINER_FFMPEG` is set in
+  // one of them — a supervised daemon is started by launchd, systemd or Task Scheduler and inherits
+  // no shell's. Judging again here said `ready` beside a `/healthz` saying `degraded` whenever the
+  // shell carried an override the daemon did not, so an answering daemon is classified by its own
+  // `status` and `reason`, and the marker's verdict is reported beside it rather than over it.
+  const verdict = answer.kind === "ok" ? healthVerdict(answer.body) : toolchainVerdict(toolchain);
   const boot = bootPersistence(kind, preflight, daemon);
   const tokenAcl = askTokenAcl(tokenPath, platform, run);
 
@@ -780,7 +792,7 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
     token,
     stalled: daemon.stalled !== null,
     switchedOff: switchFact.state === "off",
-    toolchainComplete: toolchain.complete,
+    toolchainComplete: verdict.complete,
     recordedPort: daemon.port,
     runtimePresent: runtime !== null,
   });
@@ -799,8 +811,8 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
       failedStarts,
       hold,
       switchedOff: switchFact.state === "off",
-      toolchainComplete: toolchain.complete,
-      toolchainReason: toolchain.reason,
+      toolchainComplete: verdict.complete,
+      toolchainReason: verdict.reason,
       bootPersistent: boot.persistent,
     }),
     daemon: { ...daemon, token_file: tokenPath },
@@ -1598,6 +1610,28 @@ function askLoadedConfiguration(
         ? `read from ${target.identity}`
         : `the query did not answer: ${firstLine(answer) || "it said nothing"}`,
   };
+}
+
+/** Whether a render's toolchain is usable, and if not which of the two conditions it is. */
+type ToolchainVerdict = { complete: boolean; reason: ToolchainReason | null };
+
+/**
+ * `/healthz`'s own verdict: `degraded` and its `reason`, or usable. A `degraded` body whose reason
+ * this build does not know reads as missing, the condition whose sentence names `xplainer setup`.
+ */
+function healthVerdict(body: HealthBody): ToolchainVerdict {
+  if (body.status !== "degraded") {
+    return { complete: true, reason: null };
+  }
+  return {
+    complete: false,
+    reason: body.reason === TOOLCHAIN_STALE ? TOOLCHAIN_STALE : TOOLCHAIN_MISSING,
+  };
+}
+
+/** The marker's verdict, for a daemon that did not answer and so said nothing of its own. */
+function toolchainVerdict(toolchain: ToolchainFact): ToolchainVerdict {
+  return { complete: toolchain.complete, reason: toolchain.reason };
 }
 
 /** Which condition the facts add up to. Ordered as the classifier tries them. */

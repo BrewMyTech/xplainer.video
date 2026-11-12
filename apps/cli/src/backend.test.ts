@@ -409,6 +409,35 @@ describe("explainer_still and explainer_render", () => {
     expect(marker.ffmpeg).toBeUndefined();
   });
 
+  /**
+   * D12 at the call: a still needs no ffmpeg, so a recorded one replaced since setup probed it —
+   * a `brew upgrade` under `--ffmpeg-path` — does not refuse it; a render is refused for it, unless
+   * an executable `XPLAINER_FFMPEG` names the encoder instead.
+   */
+  it("queue a still beside a replaced recorded ffmpeg, and a render only on an override", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    const marker = recordTestToolchain({ stateDir });
+    writeFileSync(marker.ffmpeg?.path ?? "", "a different binary, put here after setup\n");
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n");
+    chmodSync(named, 0o755);
+
+    await withFfmpegOverride(undefined, async () => {
+      await expect(backend.explainer_still({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+      await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
+        /replaced since setup checked it/,
+      );
+    });
+    await withFfmpegOverride(named, async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
+  });
+
   it("record the still's frame and scale, defaulted from the schema", async () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");

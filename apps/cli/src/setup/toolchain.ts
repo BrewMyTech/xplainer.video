@@ -19,8 +19,8 @@
  * recorded is not here": no marker at all, a marker that cannot be read, a recorded path that has
  * been cleaned away, an `ffmpeg` a caller requires and the marker does not record.
  * {@link TOOLCHAIN_STALE} is "what setup recorded is here and is the wrong thing": a marker from a
- * newer build, an `ffmpeg` whose size is no longer the size `setup` recorded, or one whose
- * libavcodec is below the floor this build encodes with.
+ * newer build, an `ffmpeg` whose size is no longer the size `setup` recorded, one that has lost its
+ * execute bit, or one whose libavcodec is below the floor this build encodes with.
  *
  * **Both shapes either side of ADR 0031's cut are read, and judged the same way** (§Note,
  * 2026-11-12, D1). A version-1 marker records a workspace and no `ffmpeg`, a version-2 marker the
@@ -29,11 +29,14 @@
  * the schema leaves the component optional, and what a job needs is decided at the gate (D12).
  *
  * **What a job needs is decided by its kind** ({@link checkJobToolchain}, D12). A still draws one
- * frame and encodes nothing, so it needs the browser and speech the marker records; a render also
- * needs an encoder — an executable `XPLAINER_FFMPEG`, or a valid `ffmpeg` in the marker. The call
- * (`backend.ts`), the worker factory (`daemon/workers.ts`), `/healthz` and `daemon status` all ask
+ * frame and encodes nothing, so it needs the browser and speech the marker records and nothing about
+ * ffmpeg — a recorded one that is gone or replaced does not stop it; a render also needs an encoder
+ * — an `XPLAINER_FFMPEG` naming an executable by its absolute path, or else a valid `ffmpeg` in the
+ * marker. The call (`backend.ts`), the worker factory (`daemon/workers.ts`) and `/healthz` all ask
  * that one function, so a tool call cannot be accepted for a job the factory then refuses, and
- * `/healthz` is degraded exactly when a render would be refused.
+ * `/healthz` is degraded exactly when a render would be refused. `daemon status` takes `/healthz`'s
+ * answer when the daemon gives one, because the override is the daemon's environment and not the
+ * shell's that runs the status command.
  *
  * **Every check here is a `stat` or a read, never a hash and never a spawn.** `/healthz` asks it on
  * every request, so a replaced binary is caught by its size and not by re-hashing a hundred
@@ -51,7 +54,12 @@ import {
   TOOLCHAIN_FORMAT_VERSION,
   toolchainMarkerPath,
 } from "../install/preflight.js";
-import { FFMPEG_ENV, isExecutableFile } from "../render/encode.js";
+import {
+  FFMPEG_ENV,
+  ffmpegOverrideRefusal,
+  isExecutableFile,
+  readFfmpegOverride,
+} from "../render/encode.js";
 import {
   PRE_CUT_TOOLCHAIN_FORMAT,
   readRuntimeManifest,
@@ -105,6 +113,13 @@ export type ToolchainCheck = {
    * judging the marker against an incoming runtime that declares a libavcodec floor (D2).
    */
   requireFfmpeg?: boolean | undefined;
+  /**
+   * Leave the recorded `ffmpeg` out of the judgement altogether — its files, its size, its execute
+   * bit and its libavcodec — for a caller that will not spawn it: a still, which encodes nothing,
+   * and a render whose encoder is an `XPLAINER_FFMPEG` override (D12). Wins over
+   * {@link requireFfmpeg}.
+   */
+  ignoreFfmpeg?: boolean | undefined;
   /**
    * The libavcodec major a recorded `ffmpeg` must reach. Defaults to {@link FFMPEG_MIN_LIBAVCODEC};
    * `daemon update` passes the incoming runtime's own, which is the floor that runtime encodes with.
@@ -186,10 +201,11 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     };
   }
 
+  const ffmpeg = check.ignoreFfmpeg === true ? undefined : marker.ffmpeg;
   const recorded: readonly (readonly [string, ToolchainComponent | ToolchainFfmpeg])[] = [
     ["chrome", marker.chrome],
     ["speech", marker.speech],
-    ...(marker.ffmpeg === undefined ? [] : [["ffmpeg", marker.ffmpeg] as const]),
+    ...(ffmpeg === undefined ? [] : [["ffmpeg", ffmpeg] as const]),
   ];
   // Every recorded path, not only `path`. A component made of several files — the ONNX speech
   // route's model, voice and platform runtime — records them all in `files`, and checking only the
@@ -212,12 +228,12 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
     };
   }
 
-  if (marker.ffmpeg !== undefined) {
-    const stale = staleFfmpeg(marker.ffmpeg, check.ffmpegMinLibavcodec ?? FFMPEG_MIN_LIBAVCODEC);
+  if (ffmpeg !== undefined) {
+    const stale = staleFfmpeg(ffmpeg, check.ffmpegMinLibavcodec ?? FFMPEG_MIN_LIBAVCODEC);
     if (stale !== null) {
       return { ok: false, reason: TOOLCHAIN_STALE, marker, detail: stale };
     }
-  } else if (check.requireFfmpeg === true) {
+  } else if (check.requireFfmpeg === true && check.ignoreFfmpeg !== true) {
     return {
       ok: false,
       reason: TOOLCHAIN_MISSING,
@@ -234,7 +250,9 @@ export function checkToolchain(check: ToolchainCheck): ToolchainStatus {
 
 /**
  * Why a recorded FFmpeg is not the one `setup` recorded, or not one this build encodes with — or
- * `null` when it is both. Two reads and no execution, because `/healthz` asks on every request.
+ * `null` when it is both. Two `stat`s and a read, and no execution, because `/healthz` asks on
+ * every request: the execute bit is the worker's own question (`render/encode.ts`), asked here so a
+ * binary that lost it is refused at the call rather than by a worker after the browser started.
  */
 function staleFfmpeg(ffmpeg: ToolchainFfmpeg, floor: number): string | null {
   const [binary] = ffmpeg.files;
@@ -244,6 +262,12 @@ function staleFfmpeg(ffmpeg: ToolchainFfmpeg, floor: number): string | null {
       `the ffmpeg at ${binary.path} is ${String(size)} bytes and setup recorded ` +
       `${String(binary.bytes)}: it has been replaced since setup checked it. Run ` +
       "`xplainer setup`."
+    );
+  }
+  if (!isExecutableFile(ffmpeg.path)) {
+    return (
+      `the ffmpeg at ${ffmpeg.path} is not an executable file any more — it has lost the execute ` +
+      "bit setup found it with — and a render spawns it. Run `xplainer setup`."
     );
   }
   const major = Number(ffmpeg.libavcodec.split(".")[0]);
@@ -274,31 +298,30 @@ export type JobToolchainCheck = {
 /**
  * Judge this machine's toolchain for one kind of job (ADR 0031 §Note, 2026-11-12, D12).
  *
- * A **still** needs what the marker records and nothing more. A **render** needs an encoder too:
- * an `XPLAINER_FFMPEG` that names an executable file, or — with no override — an `ffmpeg` the marker
- * records and that is still the file `setup` probed. An override naming nothing is refused here
- * rather than at the worker, which would refuse it a moment later with the same sentence. A recorded
- * ffmpeg is judged whether or not an override is set, because a component that is gone or replaced
- * is never "ready".
+ * A **still** needs the browser and speech the marker records, and nothing about ffmpeg: it encodes
+ * nothing, so a recorded ffmpeg that is gone, replaced or too old does not stop it. A **render**
+ * needs an encoder too, and either one will do: an `XPLAINER_FFMPEG` naming an executable file by
+ * its absolute path — the worker spawns that and never the recorded one, so the recorded one is not
+ * judged — or, with no override, an `ffmpeg` the marker records and that is still the file `setup`
+ * probed. An override the worker would refuse is refused here instead, with the worker's sentence
+ * ({@link ffmpegOverrideRefusal}), before a browser starts.
  */
 export function checkJobToolchain(check: JobToolchainCheck): ToolchainStatus {
   if (check.job === "still") {
-    return checkToolchain({ stateDir: check.stateDir });
+    return checkToolchain({ stateDir: check.stateDir, ignoreFfmpeg: true });
   }
-  const named = (check.env ?? process.env)[FFMPEG_ENV]?.trim();
-  if (named === undefined || named === "") {
+  const named = readFfmpegOverride(check.env ?? process.env);
+  if (named === null) {
     return checkToolchain({ stateDir: check.stateDir, requireFfmpeg: true });
   }
-  const status = checkToolchain({ stateDir: check.stateDir });
-  if (status.ok && !isExecutableFile(named)) {
+  const status = checkToolchain({ stateDir: check.stateDir, ignoreFfmpeg: true });
+  const refusal = status.ok ? ffmpegOverrideRefusal(named) : null;
+  if (refusal !== null) {
     return {
       ok: false,
       reason: TOOLCHAIN_MISSING,
       marker: status.marker,
-      detail:
-        `${FFMPEG_ENV} names ${named}, which is not an executable file, and a render spawns the ` +
-        `ffmpeg it names. Point it at an ffmpeg binary, or unset it to use the one ` +
-        "`xplainer setup` recorded.",
+      detail: `${refusal} A render spawns the ffmpeg ${FFMPEG_ENV} names.`,
     };
   }
   return status;
@@ -329,14 +352,29 @@ export type ToolchainFfmpegSummary = ToolchainComponentSummary & {
 };
 
 /**
+ * An `XPLAINER_FFMPEG` set where a status command runs: a fact about that shell, reported beside the
+ * marker's verdict and never folded into it.
+ */
+export type ToolchainOverrideSummary = {
+  /** What the variable names. */
+  path: string;
+  /** The sentence a render gate would refuse it with, or `null` where it names an executable. */
+  refusal: string | null;
+};
+
+/**
  * The toolchain as `xplainer status` and `daemon status` report it (ADR 0031 §Note, 2026-11-12,
- * D10): the verdict `/healthz` gives — {@link checkJobToolchain} for a render, at stat depth — and
- * what the marker records, component by component.
+ * D10): the render gate's verdict on **this machine's marker** — {@link checkJobToolchain} for a
+ * render, at stat depth, with no override — what the marker records, component by component, and,
+ * separately, an `XPLAINER_FFMPEG` the shell asking has set.
  */
 export type ToolchainSummary = {
   /** `<state>/toolchain.json`. */
   path: string;
-  /** Whether a render's toolchain is usable, which is exactly when `/healthz` answers `ok`. */
+  /**
+   * Whether the marker alone admits a render — what `/healthz` answers for a daemon that has no
+   * `XPLAINER_FFMPEG`, which is every supervised one.
+   */
   ok: boolean;
   /** `toolchain_missing` or `toolchain_stale` — `/healthz`'s own `reason` — or `null`. */
   reason: ToolchainReason | null;
@@ -345,20 +383,27 @@ export type ToolchainSummary = {
   browser: ToolchainComponentSummary | null;
   ffmpeg: ToolchainFfmpegSummary | null;
   speech: ToolchainComponentSummary | null;
+  /** `XPLAINER_FFMPEG` in the environment the summary was asked with, or `null` where it is unset. */
+  override: ToolchainOverrideSummary | null;
 };
 
 /**
  * Judge and describe the toolchain, for a status report.
  *
- * The verdict is the render gate's, asked with this process's environment: `/healthz` asks the same
- * function with the daemon's, and the two differ only where one of them has an `XPLAINER_FFMPEG`
- * the other has not — which a supervised daemon never has, since no service manager here passes one.
+ * **The verdict is the marker's alone**, never the asking shell's. A status command runs in one
+ * environment and the daemon in another — a supervised daemon is started by launchd, systemd or Task
+ * Scheduler and inherits no shell's `XPLAINER_FFMPEG` — so a verdict that consulted `env` described
+ * a daemon nobody was running: `ready to render` beside `ffmpeg: not recorded`, and a `daemon
+ * status` saying `ready` while `/healthz` said `degraded`. `env` is read only to report a set
+ * override as a fact of its own ({@link ToolchainSummary.override}); what the *daemon* decides is
+ * `/healthz`'s answer, which the status commands report when there is one.
  */
 export function summariseToolchain(
   stateDir: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): ToolchainSummary {
-  const status = checkJobToolchain({ stateDir, job: "render", env });
+  const status = checkJobToolchain({ stateDir, job: "render", env: {} });
+  const named = readFfmpegOverride(env);
   const marker = status.marker;
   const component = (recorded: ToolchainComponent | undefined): ToolchainComponentSummary | null =>
     recorded === undefined
@@ -385,14 +430,27 @@ export function summariseToolchain(
             libavcodec: marker.ffmpeg.libavcodec,
           },
     speech: component(marker?.speech),
+    override: named === null ? null : { path: named, refusal: ffmpegOverrideRefusal(named) },
   };
 }
 
-/** The `toolchain:` block both status commands print, one component to a line. */
-export function toolchainLines(summary: ToolchainSummary): string[] {
-  const { browser, ffmpeg, speech } = summary;
-  return [
-    `toolchain:       ${summary.ok ? "ready to render" : `${String(summary.reason)} — ${summary.detail}`}`,
+/**
+ * The `toolchain:` block both status commands print, one component to a line.
+ *
+ * `probed` is a URL `xplainer status` was told to ask — `--url` or `XPLAINER_DAEMON_URL`, which may
+ * name another machine: the block is read from this machine's state directory whatever was probed,
+ * so it says so rather than reading as that daemon's verdict.
+ */
+export function toolchainLines(summary: ToolchainSummary, probed: string | null = null): string[] {
+  const { browser, ffmpeg, speech, override } = summary;
+  const verdict = summary.ok ? "ready to render" : `${String(summary.reason)} — ${summary.detail}`;
+  const lines = [
+    `toolchain:       ${verdict}${
+      probed === null
+        ? ""
+        : ` (read from this machine's toolchain.json; the daemon at ${probed} judges its own, ` +
+          "on the daemon: line)"
+    }`,
     `  browser:       ${browser === null ? "not recorded" : `${browser.version} (${browser.provider})`}`,
     `  ffmpeg:        ${
       ffmpeg === null
@@ -405,6 +463,17 @@ export function toolchainLines(summary: ToolchainSummary): string[] {
     }`,
     `  speech:        ${speech === null ? "not recorded" : `${speech.provider} (${speech.version})`}`,
   ];
+  if (override !== null) {
+    lines.push(
+      `  ${FFMPEG_ENV}: ${override.path} — set in this shell, so a daemon started from it ` +
+        `${
+          override.refusal === null
+            ? "renders with that file and not the recorded one"
+            : `refuses every render: ${override.refusal}`
+        }; a supervised daemon never inherits it`,
+    );
+  }
+  return lines;
 }
 
 /**

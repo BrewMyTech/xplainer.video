@@ -77,6 +77,25 @@ describe("resolveFfmpeg", () => {
   });
 
   /**
+   * The gate stats an override in the daemon's working directory and this worker resolves it from
+   * the workspace root, so a relative path would be judged in one place and spawned in another, and
+   * a bare `ffmpeg` would be the `PATH` lookup D6 deleted. Here both exist, as relative paths, and
+   * are still refused.
+   */
+  it("refuses an XPLAINER_FFMPEG that is not an absolute path, even one that resolves here", () => {
+    for (const named of ["bin/ffmpeg", "ffmpeg"]) {
+      const lookup = machine(
+        [named, "/state/toolchain/ffmpeg/ffmpeg"],
+        { [FFMPEG_ENV]: named },
+        "/state/toolchain/ffmpeg/ffmpeg",
+      );
+      expect(() => resolveFfmpeg(lookup), named).toThrow(
+        `FFMPEG_NOT_FOUND: XPLAINER_FFMPEG names ${named}, which is not an absolute path`,
+      );
+    }
+  });
+
+  /**
    * ADR 0031 §Note, 2026-11-12, D6: the recorded ffmpeg is the whole of it once the override is
    * unset. Every directory the renderer used to search holds one here, and none is taken.
    */
