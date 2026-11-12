@@ -1,0 +1,276 @@
+# Build the macOS FFmpeg that `xplainer setup` downloads, and publish it with
+# its complete corresponding source on cdn.xplainer.video.
+#
+# WHAT IT BUILDS. infra/ffmpeg/: FFmpeg 9.0.2, x264 at a pinned `stable`
+# commit and zlib, every input pinned by sha256 in infra/ffmpeg/pins.env and
+# FFmpeg's and zlib's signatures verified against committed keys; configured
+# --enable-gpl --enable-libx264 with nothing else enabled that the renderer
+# does not name, so the result is GPL version 2 or later. darwin-arm64 builds
+# natively and darwin-x64 cross-compiles, both on the same arm64 runner with
+# the same pinned Xcode. infra/ffmpeg/README.md is the full account.
+#
+# WHAT EACH JOB PROVES.
+#   source       fetch and verify the inputs and assemble the source bundle,
+#                once, so that every zip's SOURCE.txt names the same MANIFEST
+#                whichever runner image each build job lands on.
+#   build        build from that bundle and nothing else (it is the input
+#                cache, so what is published is provably what was built),
+#                smoke-test (the setup probe, the probe's smoke encode, and
+#                encode.ts's exact argv twice, byte-compared), package. The
+#                x64 binary runs under Rosetta 2 here.
+#   smoke-intel  the x64 zip, as shipped, unpacked and smoke-tested on real
+#                Intel hardware.
+#   assemble     every build's digests in one table (the job summary), the
+#                release directory, and the manifest fragment `setup` pins.
+#   publish      upload to R2 behind cdn.xplainer.video and read every object
+#                back through the CDN. Only when `publish` is ticked, only for
+#                both architectures, only from `main`, only from the
+#                `toolchain-cdn` environment, and only when its R2 credentials
+#                exist; otherwise the release stays a workflow artefact, which
+#                is the whole of what an unpublished run makes.
+#
+# BUILT TWICE ON PURPOSE. With `twice` (the default) each architecture is built
+# by two jobs on two separate runners, and `assemble` reports whether they
+# produced the same bytes. A difference is reported, not fatal: run 1's digest
+# is the pin either way (ffmpeg-distribution-analysis Checklist B item 6).
+#
+# WHY workflow_dispatch AND NOTHING ELSE. A build is wanted when a pin moves —
+# an FFmpeg point release, a CVE, a new x264 — not on every push, and a
+# publish is an owner's decision. The pins are the review; this is the
+# machine that turns them into bytes.
+#
+# HOW TO DISPATCH IT. `workflow_dispatch` registers from the default branch, so
+# this file is dispatchable only once it is on `main`; `--ref` then chooses
+# which branch's scripts run, and a publish runs from `main` only.
+#
+#   gh workflow run ffmpeg-macos.yml --ref main                    # build only
+#   gh workflow run ffmpeg-macos.yml --ref main -f publish=true    # build and publish
+#
+# Every input defaults to the full build that is offered as the release
+# candidate; `-f x64=false -f twice=false` is the one-runner iteration.
+
+name: ffmpeg-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      x64:
+        description: "Build darwin-x64 as well as darwin-arm64, and smoke it on an Intel runner"
+        type: boolean
+        default: true
+      twice:
+        description: "Build each architecture twice, on separate runners, and compare the digests"
+        type: boolean
+        default: true
+      publish:
+        description: "Upload to cdn.xplainer.video (main only, both architectures, toolchain-cdn's R2 credentials)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffmpeg-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+# `bash` named explicitly runs as `bash -eo pipefail`; left implicit it runs
+# without pipefail, and a failing script piped into `tee` would pass.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  source:
+    name: fetch, verify and bundle the source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Refuse a publish that could not complete
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          X64: ${{ inputs.x64 }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$PUBLISH" = true ] && { [ "$X64" != true ] || [ "$REF" != refs/heads/main ]; }; then
+            echo "::error::publish needs x64=true and --ref main: a published version can never be rewritten, so it must carry both architectures and come from main."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Restore the downloaded inputs
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg-inputs
+          key: ffmpeg-inputs-${{ runner.os }}-${{ hashFiles('infra/ffmpeg/pins.env') }}
+
+      - name: Fetch, verify and assemble the source bundle
+        run: |
+          infra/ffmpeg/fetch.sh "$RUNNER_TEMP/ffmpeg-inputs"
+          infra/ffmpeg/source-bundle.sh "$RUNNER_TEMP/ffmpeg-inputs" "$RUNNER_TEMP/ffmpeg-dist"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-source
+          path: |
+            ${{ runner.temp }}/ffmpeg-dist/source.env
+            ${{ runner.temp }}/ffmpeg-dist/source
+          if-no-files-found: error
+
+  build:
+    name: build darwin-${{ matrix.arch }} (run ${{ matrix.run }})
+    needs: source
+    # macos-15 is arm64. Its image carries the pinned Xcode, and Rosetta 2, which
+    # is how the cross-compiled x64 binary is smoke-tested and packaged here.
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.x64 && '["arm64","x64"]' || '["arm64"]') }}
+        run: ${{ fromJSON(inputs.twice && '[1,2]' || '[1]') }}
+    env:
+      ARCH: ${{ matrix.arch }}
+      XP_ROOT: /tmp/xplainer-ffmpeg-build
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - name: Select the pinned Xcode
+        run: |
+          . infra/ffmpeg/pins.env
+          sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
+          xcodebuild -version
+          xcodebuild -version | grep -qx "Build version ${XCODE_BUILD}"
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          # The source bundle is the build's only input: fetch.sh finds every
+          # pinned file there and verifies it, and never needs the network.
+          {
+            echo "DIST=$RUNNER_TEMP/ffmpeg-dist"
+            echo "XP_CACHE=$RUNNER_TEMP/ffmpeg-dist/source"
+            echo "XP_SOURCE_MIRROR="
+          } >>"$GITHUB_ENV"
+
+      - name: Download the source bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-source
+          path: ${{ runner.temp }}/ffmpeg-dist
+
+      - name: Build
+        run: infra/ffmpeg/build.sh "$ARCH"
+
+      - name: Smoke test
+        run: node infra/ffmpeg/smoke.mjs "$XP_ROOT/$ARCH/out/ffmpeg" --json "$DIST/smoke-darwin-$ARCH.json"
+
+      - name: Package
+        run: infra/ffmpeg/package.sh "$ARCH" "$DIST"
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-${{ matrix.arch }}-run${{ matrix.run }}
+          path: |
+            ${{ runner.temp }}/ffmpeg-dist/*.zip
+            ${{ runner.temp }}/ffmpeg-dist/*.json
+            ${{ runner.temp }}/ffmpeg-dist/source.env
+          if-no-files-found: error
+
+  smoke-intel:
+    name: smoke darwin-x64 on Intel
+    needs: build
+    if: inputs.x64
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-x64-run1
+          path: ${{ runner.temp }}/x64
+
+      - name: Unpack the zip as shipped and check it against its manifest row
+        run: |
+          . infra/ffmpeg/pins.env
+          cd "$RUNNER_TEMP/x64"
+          name="ffmpeg-$XP_BUILD_VERSION-darwin-x64"
+          test "$(shasum -a 256 "$name.zip" | cut -d' ' -f1)" = "$(jq -r '.["darwin-x64"].sha256' "$name.json")"
+          unzip -q "$name.zip"
+          test "$(shasum -a 256 "$name/ffmpeg" | cut -d' ' -f1)" = "$(jq -r '.["darwin-x64"].member_sha256' "$name.json")"
+          uname -m
+          echo "FFMPEG=$RUNNER_TEMP/x64/$name/ffmpeg" >>"$GITHUB_ENV"
+
+      - name: Smoke test on Intel
+        run: node infra/ffmpeg/smoke.mjs "$FFMPEG"
+
+  assemble:
+    name: compare digests and assemble the release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ffmpeg-*
+          path: ${{ runner.temp }}/artefacts
+
+      - name: Compare the builds and assemble the release directory
+        run: infra/ffmpeg/assemble.sh "$RUNNER_TEMP/artefacts" "$RUNNER_TEMP/release" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+
+  publish:
+    name: publish to cdn.xplainer.video
+    needs: [assemble, smoke-intel]
+    if: >-
+      !cancelled() && inputs.publish && inputs.x64 &&
+      github.ref == 'refs/heads/main' &&
+      needs.assemble.result == 'success' && needs.smoke-intel.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: toolchain-cdn
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ffmpeg-release
+          path: ${{ runner.temp }}/release
+
+      - name: Upload, then read every object back through the CDN
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ACCOUNT_ID" ]; then
+            echo "::notice title=Not published::The toolchain-cdn environment has no R2 credentials, so nothing was uploaded. The release is the ffmpeg-release artefact of this run."
+            exit 0
+          fi
+          infra/ffmpeg/publish.sh "$RUNNER_TEMP/release" | tee -a "$GITHUB_STEP_SUMMARY"

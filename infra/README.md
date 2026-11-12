@@ -4,7 +4,7 @@ Nothing in here runs a service for anyone. This directory used to describe the
 hosted plane — a VM, a firewall, a five-service Compose stack and the `mcp`
 hostname in front of it. All of that moved to the private repository
 **`BrewMyTech/xplainer-hosted`**, with its history, and none of it is coming
-back. What is left is three things that serve the *local* product, kept for
+back. What is left is four things that serve the *local* product, kept for
 reasons written out below so that none of them is mistaken for a hosted
 leftover.
 
@@ -13,9 +13,10 @@ leftover.
 | `terraform/` | An R2 bucket for release artefacts, the custom domain that delivers them, and the Cache Rule that makes it worth having. | Auto-update, and the first-run downloads `xplainer setup` performs — the **toolchain manifest is published** and the release artefacts are not, which *The delivery position* below states in full. |
 | `docker-compose.tts.yml` | The Kokoro TTS container on `127.0.0.1:8880`, alone. | A developer who has Docker and wants the pinned speech server in one command. |
 | `e2e/` | A Debian image that runs the end-to-end render on Linux, and its build-context filter. | Roadmap **P1-1**, whose second half is "on a headless Linux VM". |
+| `ffmpeg/` | The pinned build of the static macOS FFmpeg `xplainer setup` downloads, its smoke test, and the scripts that package and publish it with its source to `cdn.xplainer.video/toolchain/v1/ffmpeg/`. [`ffmpeg/README.md`](ffmpeg/README.md) is its account. | `setup` on macOS, through `.github/workflows/ffmpeg-macos.yml`. |
 
 They are independent of each other. None of them is required to build, test or
-run the CLI: `pnpm turbo build lint typecheck test` touches all three not at
+run the CLI: `pnpm turbo build lint typecheck test` touches all four not at
 all, and the desktop app builds with `--publish never` today.
 
 ---
