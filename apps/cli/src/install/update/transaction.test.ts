@@ -84,14 +84,7 @@ import {
   windowsFixtureEnvironment,
 } from "./testing/harness.js";
 import { renderersAmong, untilProcessesNaming } from "./testing/survivors.js";
-import { writeFixtureWorkspace } from "./testing/workspace.js";
 import { UpdateRefusal, updateDaemon } from "./transaction.js";
-
-/** The pins both supported runtimes declare. Identical, which is what makes an update legal. */
-const PINS = { remotion: "4.0.495", react: "19.2.3" } as const;
-
-/** The pins a runtime that may not be updated to declares. One package, one different version. */
-const OTHER_PINS = { remotion: "4.0.500", react: "19.2.3" } as const;
 
 /** The budget for a case that stages a payload and starts a real daemon out of it. */
 const SPAWN_TIMEOUT_MS = 90_000;
@@ -153,7 +146,6 @@ function stopCommandWord(platform: NodeJS.Platform): string {
 let suiteScratch = "";
 let alpha: FixturePayload;
 let beta: FixturePayload;
-let gamma: FixturePayload;
 let preCut: FixturePayload;
 const scratch: string[] = [];
 /**
@@ -187,7 +179,6 @@ beforeAll(() => {
     outDir: join(suiteScratch, "alpha"),
     version: "1.2.3-alpha",
     marker: "1.2.3-alpha",
-    templatePins: PINS,
     // `runtime/verify.ts` refuses a payload whose manifest names another platform, so a Windows
     // payload cannot be staged here at all. What *is* checkable everywhere is the artefact, the
     // argv and the command sequence, and those need only a file at the name a `win32` launch
@@ -198,16 +189,7 @@ beforeAll(() => {
     outDir: join(suiteScratch, "beta"),
     version: "2.0.0-beta",
     marker: "2.0.0-beta",
-    templatePins: PINS,
     extraInterpreters: ["node.exe"],
-  });
-  // Never started, so it needs no interpreter: it exists to be refused before anything is staged.
-  gamma = buildFixturePayload({
-    outDir: join(suiteScratch, "gamma"),
-    version: "3.0.0-gamma",
-    marker: "3.0.0-gamma",
-    templatePins: OTHER_PINS,
-    runnable: false,
   });
   // A runtime from before ADR 0031's cut: no `toolchain` block in its manifest, so it reads
   // `toolchain.json` format 1. Runnable, because one case installs it and updates away from it.
@@ -215,7 +197,6 @@ beforeAll(() => {
     outDir: join(suiteScratch, "pre-cut"),
     version: "0.9.0-precut",
     marker: "0.9.0-precut",
-    templatePins: PINS,
     toolchain: null,
   });
 }, 180_000);
@@ -751,73 +732,7 @@ describe("daemon update — which program sources it will move", () => {
   );
 });
 
-describe("daemon update — the pre-drain precondition (D9)", () => {
-  it(
-    "refuses a runtime whose template pins differ, having staged nothing and drained nothing",
-    async () => {
-      const where = machine();
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-      const before = readRuntimeState(where.stateDir);
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: gamma.outDir,
-          environment: where.environment,
-          run: harness.run,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("remotion: installed 4.0.495, incoming 4.0.500");
-      expect(refusal.message).toContain("REINSTALL");
-      // The reinstall path, run from the NEW runtime's own program rather than the launcher.
-      expect(refusal.message).toContain(`${gamma.interpreter} ${gamma.entry} setup --workspace`);
-      expect(refusal.message).toContain(
-        `${gamma.interpreter} ${gamma.entry} daemon install --runtime ${gamma.outDir}`,
-      );
-      expect(refusal.message).not.toContain(launcherPath(where.stateDir));
-
-      // Nothing staged, nothing drained, no journal.
-      const slots = stagedSlots(where.stateDir);
-      expect(slots).toHaveLength(1);
-      expect(slots[0]).toContain("1.2.3-alpha");
-      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
-      expect((await askHealth(where.stateDir))?.version).toBe("1.2.3-alpha");
-      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
-  it(
-    "still refuses when a matching payload 2 is staged beside the new runtime",
-    async () => {
-      const where = machine();
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-      // Round 4's paired path, offered and not taken: a workspace that satisfies the incoming
-      // runtime exactly, staged beside it. D9 dropped that route, so the refusal is unchanged.
-      const paired = join(scratchDirectory(), "payload-2");
-      mkdirSync(paired, { recursive: true });
-      writeFixtureWorkspace({ outDir: paired, pins: OTHER_PINS });
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: gamma.outDir,
-          environment: where.environment,
-          run: harness.run,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("REINSTALL");
-      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
+describe("daemon update — the source of the incoming runtime", () => {
   it(
     "will not take the runtime from PATH: the source is named or there is no update",
     async () => {
@@ -1569,8 +1484,7 @@ describe("daemon update — ADR 0031's cut is a reinstall (§Note, 2026-11-12, D
       expect(outcome.rolledBack).toBe(false);
       expect(outcome.health.version).toBe(INCOMING_VERSION);
       expect(outcome.steps.join("\n")).toContain(
-        "both runtimes read toolchain.json format 2, their template pins are identical " +
-          "(2 packages), and the marker satisfies the incoming runtime",
+        "both runtimes read toolchain.json format 2, and the marker satisfies the incoming runtime",
       );
     },
     SPAWN_TIMEOUT_MS,

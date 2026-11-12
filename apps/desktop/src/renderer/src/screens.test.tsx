@@ -78,7 +78,7 @@ async function daemonWithVideo(slug: string): Promise<{ live: LiveDaemon; bridge
   writeFileSync(join(workspace, "out", slug, "explainer.mp4"), MP4_BYTES);
   writeFileSync(join(workspace, "out", slug, "frame-30.png"), PNG_BYTES);
   writeFileSync(join(workspace, "public", slug, "timings.json"), '{"scenes":[]}\n');
-  recordToolchain(stateDir, workspace);
+  recordToolchain(stateDir);
   return { live, bridge: new DaemonBridge({ url: live.url, tokenFile: live.tokenFile }) };
 }
 

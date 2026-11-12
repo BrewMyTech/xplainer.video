@@ -1,18 +1,12 @@
 /**
- * What a payload is, written down: the shapes `runtime build` produces and `runtime verify` reads.
- *
- * Two artefacts are described here and they are deliberately different documents.
+ * What a payload is, written down: the shape `runtime build` produces and `runtime verify` reads.
  *
  * **Payload 1 — the runtime.** A relocatable directory carrying its own interpreter, the workspace
- * packages as their `files` allowlists publish them, the transitive closure of the five runtime
+ * packages as their `files` allowlists publish them, the transitive closure of the runtime
  * dependencies, and npm. Its manifest is {@link RuntimeManifest}, written as
- * {@link RUNTIME_MANIFEST_FILE}.
- *
- * **Payload 2 — the render workspace.** A real `npm ci` of `@xplainer/render-core`'s
- * `template/package.json` against the lockfile committed beside it. Its manifest is
- * {@link WorkspaceManifest}, written as {@link WORKSPACE_MANIFEST_FILE}, and it records **every
- * resolved version** rather than only the pins, because the whole point of building it is that the
- * repository's hoisted tree is not the tree the template declares.
+ * {@link RUNTIME_MANIFEST_FILE}. It is the only payload: the render workspace the previous renderer
+ * needed — payload 2 — left with ADR 0031's Phase 2 (§Note, 2026-11-12, D7), and what is left of an
+ * old one on a machine is `setup/previous-renderer.ts`'s to remove.
  *
  * Three properties are structural rather than conventional, and each one is a rule some earlier
  * shape of this artefact broke:
@@ -22,19 +16,18 @@
  *    directory would describe a tree that no longer exists. Every path here is payload-relative
  *    with `/` separators on every platform, and {@link isPayloadPath} is the predicate the
  *    assembler and the verifier both apply.
- * 2. **The platform and the interpreter's architecture are recorded.**
- *    `@remotion/compositor-<platform>` is a platform-specific optional dependency, so payload 2 is
- *    only valid on the host it was built on; and `runtime build` copies `process.execPath`, so
- *    payload 1 carries the build host's own architecture. Recording both is what lets `verify`
- *    refuse a wrong-host payload by name instead of leaving a user with a spawn error.
- * 3. **Symlinks are a separate list from files.** npm materialises `node_modules/.bin/remotion` as
- *    a symlink to `@remotion/cli/remotion-cli.js`; it has no contents to hash and its *target* is
- *    the thing that can go wrong. Hashing the file it points at would silently pass a link that had
- *    been repointed, so links carry their target and are compared as targets.
+ * 2. **The platform and the interpreter's architecture are recorded.** `runtime build` copies
+ *    `process.execPath`, so the payload carries the build host's own native interpreter and its
+ *    architecture. Recording both is what lets `verify` refuse a wrong-host payload by name instead
+ *    of leaving a user with a spawn error.
+ * 3. **Symlinks are a separate list from files.** npm's own `bin/npm` shim is a symlink to
+ *    `npm-cli.js`; it has no contents to hash and its *target* is the thing that can go wrong.
+ *    Hashing the file it points at would silently pass a link that had been repointed, so links
+ *    carry their target and are compared as targets.
  *
- * The manifests are read back by {@link readRuntimeManifest} and {@link readWorkspaceManifest},
- * which validate rather than cast: a manifest is data that arrives from disk, and the file being a
- * `.json` says nothing about its shape.
+ * The manifest is read back by {@link readRuntimeManifest}, which validates rather than casts: a
+ * manifest is data that arrives from disk, and the file being a `.json` says nothing about its
+ * shape.
  *
  * **Payload 1 says which `toolchain.json` it reads.** From `manifest_version` 2 a runtime manifest
  * carries {@link RuntimeToolchain}: the marker format the runtime reads and writes, and the oldest
@@ -59,9 +52,6 @@ import process from "node:process";
 
 /** Payload 1's manifest, written at the root of the payload. */
 export const RUNTIME_MANIFEST_FILE = "runtime.manifest.json";
-
-/** Payload 2's manifest, written at the root of the installed workspace. */
-export const WORKSPACE_MANIFEST_FILE = "workspace.manifest.json";
 
 /** Where payload 1 puts the interpreter and npm's shim, payload-relative. */
 export const PAYLOAD_BIN_DIR = "bin";
@@ -199,7 +189,7 @@ export type ManifestPackage = {
 /**
  * How a caller runs this payload — every path payload-relative.
  *
- * This is the contract D1 exists to make explicit: the CLI and the Remotion CLI are both started as
+ * This is the contract D1 exists to make explicit: the CLI is started as
  * `<payload>/<interpreter> <entry>`, never by exec'ing a file whose `#!/usr/bin/env node` shebang
  * needs a `node` on `PATH` that a machine built for this design does not have.
  */
@@ -248,28 +238,6 @@ export type RuntimeManifest = {
   toolchain?: RuntimeToolchain;
   launch: LaunchContract;
   packages: ManifestPackage[];
-  files: ManifestFile[];
-  links: ManifestLink[];
-};
-
-/** Payload 2's manifest. */
-export type WorkspaceManifest = {
-  kind: "workspace";
-  manifest_version: number;
-  created_at: string;
-  /** The platform this tree was installed on. `verify` refuses it anywhere else. */
-  platform: string;
-  arch: string;
-  node_version: string;
-  npm_version: string;
-  /** The command that produced the tree. `npm ci`, never `npm install` (D11). */
-  installer: string;
-  /** The template's declared pins, exactly as `template/package.json` states them. */
-  pins: Record<string, string>;
-  /** Every package the install resolved, by name. This is what a pin skew is detected against. */
-  resolved: Record<string, string>;
-  /** Workspace-relative path of the Remotion CLI entry, resolved through its `bin` field. */
-  remotion_entry: string;
   files: ManifestFile[];
   links: ManifestLink[];
 };
@@ -465,32 +433,6 @@ export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
   };
 }
 
-/** Read and validate payload 2's manifest. */
-export function readWorkspaceManifest(workspaceDir: string): WorkspaceManifest {
-  const document = readManifestDocument(join(workspaceDir, WORKSPACE_MANIFEST_FILE));
-  if (document.kind !== "workspace") {
-    throw new ManifestError(
-      `${join(workspaceDir, WORKSPACE_MANIFEST_FILE)} says kind ` +
-        `${JSON.stringify(document.kind)}, which is not a workspace payload manifest.`,
-    );
-  }
-  return {
-    kind: "workspace",
-    manifest_version: asNumber(document.manifest_version, "manifest_version"),
-    created_at: asString(document.created_at, "created_at"),
-    platform: asString(document.platform, "platform"),
-    arch: asString(document.arch, "arch"),
-    node_version: asString(document.node_version, "node_version"),
-    npm_version: asString(document.npm_version, "npm_version"),
-    installer: asString(document.installer, "installer"),
-    pins: asVersionMap(document.pins, "pins"),
-    resolved: asVersionMap(document.resolved, "resolved"),
-    remotion_entry: asString(document.remotion_entry, "remotion_entry"),
-    files: asFiles(document.files),
-    links: asLinks(document.links),
-  };
-}
-
 /** Read a manifest file into a plain object, or say precisely why it could not be read. */
 function readManifestDocument(file: string): Record<string, unknown> {
   let text: string;
@@ -579,15 +521,6 @@ function asToolchain(value: unknown): { toolchain?: RuntimeToolchain } {
     );
   }
   return { toolchain: { format, ffmpeg_min_libavcodec: floor } };
-}
-
-function asVersionMap(value: unknown, field: string): Record<string, string> {
-  const record = asRecord(value, field);
-  const map: Record<string, string> = {};
-  for (const [name, version] of Object.entries(record)) {
-    map[name] = asString(version, `${field}.${name}`);
-  }
-  return map;
 }
 
 function asFiles(value: unknown): ManifestFile[] {

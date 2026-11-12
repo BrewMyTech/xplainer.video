@@ -373,8 +373,10 @@ describe("the program resolver", () => {
      * **It only became assertable once two names moved.** `RUNTIME_ROOT_PACKAGE` and
      * `templateDirectory` were exported from `runtime/assemble.ts`, and `program.ts` needed the
      * first while `runtime/verify.ts` — which `program.ts` does import — needed the second, so the
-     * assembler was in this closure through two edges that had nothing to do with writing. Both
-     * live in `runtime/manifest.ts` now, whose docblocks record that this test is why.
+     * assembler was in this closure through two edges that had nothing to do with writing. The
+     * first lives in `runtime/manifest.ts` now, whose docblock records that this test is why; the
+     * second moved to a module of its own and was then deleted with the template pins it was read
+     * for, when the previous renderer's payload left.
      */
     it("cannot reach either writer, anywhere in its transitive import graph", () => {
       /**
@@ -385,7 +387,7 @@ describe("the program resolver", () => {
        * literal: `install/supervisors/identity.ts` contains the sentence "which is the pattern
        * `../lifecycle.ts`\'s `readSwitch` follows", and following that as a module took the closure
        * from 24 files to 158 — through `lifecycle.ts` to `server.ts` to the whole `/api` surface to
-       * `setup/providers/workspace.ts`, which legitimately imports the assembler. The guard failed
+       * `setup/providers/workspace.ts`, which legitimately imported the assembler. The guard failed
        * on correct code, which is the right way round for a mistake like this to surface.
        *
        * A character scan rather than a regex, because the two forms nest: `//` inside a string is
@@ -571,7 +573,6 @@ describe("the program resolver", () => {
         "not-implemented.ts",
         "runtime/launch-spec.ts",
         "runtime/manifest.ts",
-        "runtime/template.ts",
         "runtime/verify.ts",
       ]);
 

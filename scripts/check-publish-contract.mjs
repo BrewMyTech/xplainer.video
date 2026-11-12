@@ -644,18 +644,8 @@ const MUST_SHIP_FILES = [
   },
   {
     package: "@xplainer/render-core",
-    path: "template/package.json",
-    why: "Declares the pinned dependency set the user's workspace installs through setup.",
-  },
-  {
-    package: "@xplainer/render-core",
     path: "template/tailwind.css",
     why: "Style entrypoint the scaffolded scenes import.",
-  },
-  {
-    package: "@xplainer/render-core",
-    path: "template/package-lock.json",
-    why: "Pinned dependency resolution consumed by setup through npm ci.",
   },
 
   // --- Scaffold templates the agent reads, writes and then edits -----------
@@ -788,7 +778,7 @@ const MUST_SHIP_TREES = [
     why:
       "The video workspace copied onto the user's machine. A file added here has to ship " +
       "the day it is added or the scaffolded workspace is incomplete on a user's disk — and " +
-      "the four files named individually above could not catch a fifth.",
+      "the two files named individually above could not catch a third.",
   },
 ];
 

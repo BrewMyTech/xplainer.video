@@ -180,8 +180,9 @@ describe("explainer_create", () => {
     expect(readFileSync(join(video.source, "Video.tsx"))).toEqual(
       readScaffoldTemplate("Video.tsx"),
     );
-    // The workspace itself is materialised on the first create, never installed by it.
-    expect(existsSync(join(root, "package.json"))).toBe(true);
+    // The workspace itself is materialised on the first create, as sources and nothing installed.
+    expect(existsSync(join(root, "tailwind.css"))).toBe(true);
+    expect(existsSync(join(root, "package.json"))).toBe(false);
     expect(existsSync(join(root, "node_modules"))).toBe(false);
   });
 

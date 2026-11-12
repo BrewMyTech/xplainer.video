@@ -9,19 +9,16 @@
  * each outcome takes, and that a refusal says which thing went wrong.
  *
  * `build` is exercised only through its refusals. Its success path copies 130 MB of interpreter and
- * is asserted where that cost buys something — once, in `runtime/assemble.test.ts`.
+ * is asserted where that cost buys something — once, in `runtime/assemble.test.ts`. The two flags
+ * that built and verified the previous renderer's workspace are asserted gone, as unknown options.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  DAEMON_INTERNAL_EXIT_CODE,
-  PRECONDITION_UNMET_EXIT_CODE,
-  USAGE_EXIT_CODE,
-} from "../daemon/exit-codes.js";
+import { PRECONDITION_UNMET_EXIT_CODE, USAGE_EXIT_CODE } from "../daemon/exit-codes.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import {
@@ -30,7 +27,6 @@ import {
   type RuntimeManifest,
   scanTree,
 } from "../runtime/manifest.js";
-import { runtimeRefusalExitCode } from "./runtime.js";
 
 /** Thrown in place of `process.exit`, carrying the code the command asked for. */
 class ExitSignal extends Error {
@@ -117,18 +113,19 @@ describe("xplainer runtime verify", () => {
     expect(exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
   });
 
-  it("asks a different document for --workspace, and names it when it is not there", async () => {
+  /**
+   * AC-A9: there is no second payload to verify, so the flag that asked for one is commander's own
+   * unknown option — exit `1`, the table's usage code — rather than a runtime verification a script
+   * that still passes it would mistake for a workspace check.
+   */
+  it("refuses --workspace as an unknown option, with exit 1", async () => {
     writePayload();
 
-    const { stderr, exitCode } = await run(["runtime", "verify", "--workspace", scratch]);
+    const { stdout, stderr, exitCode } = await run(["runtime", "verify", "--workspace", scratch]);
 
-    // The two payload kinds carry differently named manifests on purpose, so pointing the
-    // workspace verifier at a runtime payload is a missing `workspace.manifest.json` rather than a
-    // runtime manifest read as though it described a workspace.
-    expect(stderr).toContain("runtime verify --workspace");
-    expect(stderr).toContain("workspace.manifest.json");
-    expect(stderr).toContain("manifest-unreadable");
-    expect(exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("unknown option '--workspace'");
+    expect(exitCode).toBe(USAGE_EXIT_CODE);
   });
 
   it("is a usage error, not a refusal, when no directory is named", async () => {
@@ -151,51 +148,25 @@ describe("xplainer runtime build", () => {
     expect(exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
   });
 
-  it("refuses a --from-runtime that is not a runtime payload", async () => {
-    const { stderr, exitCode } = await run([
-      "runtime",
-      "build",
-      "--workspace",
-      "--from-runtime",
-      scratch,
-      "--out",
-      join(scratch, "out"),
-    ]);
+  it.each([["--workspace"], ["--from-runtime", "<dir>"]])(
+    "refuses %s as an unknown option, with exit 1 and nothing written",
+    async (...flag) => {
+      const out = join(scratch, "out");
 
-    expect(stderr).toContain("is not a runtime payload");
-    expect(exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-  });
+      const { stdout, stderr, exitCode } = await run(["runtime", "build", ...flag, "--out", out]);
+
+      expect(stdout).toBe("");
+      expect(stderr).toContain(`unknown option '${flag[0]}'`);
+      expect(exitCode).toBe(USAGE_EXIT_CODE);
+      expect(existsSync(out)).toBe(false);
+    },
+  );
 
   it("is a usage error when --out is missing", async () => {
     const { exitCode } = await run(["runtime", "build"]);
 
     expect(exitCode).toBe(USAGE_EXIT_CODE);
   });
-});
-
-describe("runtimeRefusalExitCode", () => {
-  it("gives an npm that ran and failed the same code connect gives a vendor CLI that did", () => {
-    expect(runtimeRefusalExitCode("install-failed")).toBe(DAEMON_INTERNAL_EXIT_CODE);
-  });
-
-  it.each([
-    "host",
-    "output-dir",
-    "no-checkout",
-    "no-npm",
-    "no-allowlist",
-    "unresolved-dependency",
-    "unbuilt-entry",
-    "malformed-manifest",
-    "template",
-    "runtime-payload",
-    "install-incomplete",
-  ] as const)(
-    "treats %s as a precondition that was unmet before anything was written",
-    (reason) => {
-      expect(runtimeRefusalExitCode(reason)).toBe(PRECONDITION_UNMET_EXIT_CODE);
-    },
-  );
 });
 
 /** A three-file payload with a real manifest, so `verify` has something real to answer about. */

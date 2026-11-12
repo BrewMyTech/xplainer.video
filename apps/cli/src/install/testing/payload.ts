@@ -40,7 +40,6 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import {
   MANIFEST_VERSION,
-  type ManifestPackage,
   PAYLOAD_BIN_DIR,
   PAYLOAD_LIB_DIR,
   PAYLOAD_NPM_CLI,
@@ -53,9 +52,6 @@ import { FFMPEG_MIN_LIBAVCODEC, TOOLCHAIN_FORMAT_VERSION } from "../../setup/too
 
 /** The package a payload's launch contract names, and the directory it lives in. */
 export const FIXTURE_PACKAGE = "@xplainer/cli";
-
-/** The package whose `template/package.json` declares the workspace pins a runtime resolves. */
-export const TEMPLATE_FIXTURE_PACKAGE = "@xplainer/render-core";
 
 /** What {@link buildFixturePayload} was asked for. */
 export type FixturePayloadOptions = {
@@ -86,16 +82,6 @@ export type FixturePayloadOptions = {
    * preflight's `X_OK` probe answers about the same bytes it would on Windows.
    */
   extraInterpreters?: readonly string[] | undefined;
-  /**
-   * The workspace pins a `@xplainer/render-core` inside the payload declares, or none.
-   *
-   * A real payload always carries one — `render-core`'s `files` allowlist ships `template/`, so
-   * every runtime states which Remotion line its workspace resolves — and T15's pre-drain check
-   * compares exactly that document between two payloads. It is an option rather than the default
-   * because most suites here are about staging, naming and launching, and a payload with one more
-   * package in it is a payload with a different content digest and therefore a different slot name.
-   */
-  templatePins?: Readonly<Record<string, string>> | undefined;
   /**
    * What the payload's manifest says it requires of `toolchain.json`, or `null` for none at all.
    *
@@ -160,41 +146,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
   );
   writeFileSync(entry, entrySource(options.marker));
 
-  const templatePackages: ManifestPackage[] = [];
-  if (options.templatePins !== undefined) {
-    const templateDir = join(
-      options.outDir,
-      ...PAYLOAD_LIB_DIR.split("/"),
-      ...TEMPLATE_FIXTURE_PACKAGE.split("/"),
-    );
-    mkdirSync(join(templateDir, "template"), { recursive: true });
-    writeFileSync(
-      join(templateDir, "package.json"),
-      `${JSON.stringify({ name: TEMPLATE_FIXTURE_PACKAGE, version: options.version }, null, 2)}\n`,
-    );
-    // The same two fields `runtime/verify.ts` reads out of the real template, and in the same
-    // document: `dependencies` is what a workspace resolves and `devDependencies` travels with it.
-    writeFileSync(
-      join(templateDir, "template", "package.json"),
-      `${JSON.stringify(
-        {
-          name: "@xplainer/render-workspace",
-          version: "1.0.0",
-          private: true,
-          dependencies: { ...options.templatePins },
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    templatePackages.push({
-      path: `${PAYLOAD_LIB_DIR}/${TEMPLATE_FIXTURE_PACKAGE}`,
-      name: TEMPLATE_FIXTURE_PACKAGE,
-      version: options.version,
-      workspace: true,
-    });
-  }
-
   // The manifest names npm's entry, so the payload carries one: a manifest that describes a file
   // the artefact does not have is a manifest `verify` would call a payload with a hole in it.
   const npmCli = join(options.outDir, ...PAYLOAD_NPM_CLI.split("/"));
@@ -235,7 +186,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
         version: options.version,
         workspace: true,
       },
-      ...templatePackages,
     ],
     files: scan.files,
     links: scan.links,

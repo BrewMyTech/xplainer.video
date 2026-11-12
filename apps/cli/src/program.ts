@@ -8,8 +8,8 @@
  * (`commands/connect.ts`); `daemon`, a group of nine verbs — `install`,
  * `uninstall`, `update`, `recover`, `start`, `stop`, `restart`, `status`, `logs`
  * — over the installed supervisor (`commands/daemon.ts`); `runtime`, a group of
- * two verbs — `build` and `verify` — that assemble and re-hash the two
- * relocatable payloads (`commands/runtime.ts`); `token`, a group of one verb —
+ * two verbs — `build` and `verify` — that assemble and re-hash the relocatable
+ * runtime payload (`commands/runtime.ts`); `token`, a group of one verb —
  * `rotate` — which is ADR 0020 §Security R-SEC-8's rotation with its grace
  * window (`commands/token.ts`); `config`, a group of four verbs — `set`, `get`,
  * `unset`, `list` — over the owner's speech settings and the ElevenLabs API key
@@ -17,10 +17,9 @@
  * the machine after an upgrade (`commands/update.ts`).
  *
  * **`runtime` is a build-time command living in the shipped binary on purpose.**
- * `runtime build --workspace` installs the template that ships inside
- * `@xplainer/render-core`, which is exactly the route `setup --workspace` takes
- * on a machine with no Node, so the assembler a runner runs and the assembler a
- * user reaches are one implementation rather than two.
+ * `daemon install` and `daemon update --build` assemble the same payload out of
+ * an installed copy, so the assembler a runner runs and the assembler a user
+ * reaches are one implementation rather than two.
  *
  * AC-14b was written against the first four and asserts an exact list, so every
  * later entry is added here deliberately rather than discovered as a red test,

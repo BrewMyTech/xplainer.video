@@ -50,7 +50,7 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import process from "node:process";
 import { awaitStopped, requestDrain } from "../../daemon/control.js";
 import type { DaemonState, ProgramSource, SupervisorKind } from "../../daemon/daemon-state.js";
@@ -849,11 +849,9 @@ function openTransaction(context: UpdateContext, source: IncomingSource): Update
       incomingRuntimeDir: source.payloadDir,
       incomingManifest,
       stateDir: context.stateDir,
-      incomingProgram: incomingProgramLine(source.payloadDir, incomingManifest),
     });
     context.steps.push(
-      `both runtimes read toolchain.json format ${String(verdict.format)}, their template pins ` +
-        `are identical (${String(Object.keys(verdict.pins).length)} packages), and the marker ` +
+      `both runtimes read toolchain.json format ${String(verdict.format)}, and the marker ` +
         `satisfies the incoming runtime`,
     );
   } catch (error) {
@@ -1005,19 +1003,6 @@ function readIncomingManifest(context: UpdateContext, payloadDir: string): Runti
       context.steps,
     );
   }
-}
-
-/**
- * How the incoming runtime's own program is spelled, for the reinstall path a refusal names.
- *
- * The interpreter **and** the entry, because a payload's `dist/bin.js` begins
- * `#!/usr/bin/env node` and the machine this design exists for has no Node on its `PATH` — which is
- * the same reason `install/program.ts` answers with two fields rather than one argv.
- */
-function incomingProgramLine(payloadDir: string, manifest: RuntimeManifest): string {
-  const interpreter = join(payloadDir, ...manifest.launch.interpreter.split("/"));
-  const entry = join(payloadDir, ...manifest.launch.entry.split("/"));
-  return `${interpreter} ${entry}`;
 }
 
 /**

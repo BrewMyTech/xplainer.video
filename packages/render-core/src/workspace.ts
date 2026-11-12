@@ -5,16 +5,18 @@
  *
  * ```
  * <root>/
- *   node_modules/          what `xplainer setup --workspace` installs from the two files below;
- *                          the renderer never reads it
- *   package.json           the template's pinned dependency set, copied from this package's template/
- *   package-lock.json      the resolution `npm ci` reproduces it from
- *   tailwind.css           the stylesheet a video's `index.ts` imports
- *   tsconfig.json
+ *   tailwind.css           the stylesheet a video's `index.ts` imports, copied from template/
+ *   tsconfig.json          for an editor, copied from template/
  *   videos/<slug>/         the engine-owned shell and the agent's Scenes.tsx
  *   public/<slug>/         narration.wav, captions.json, timings.json and media/
  *   out/<slug>/            the rendered MP4 and the stills
  * ```
+ *
+ * **It is sources and outputs, and nothing installed.** The renderer is `@xplainer/cli`'s, and it
+ * bundles every video against its own React and `@xplainer/motion`, so the workspace carries no
+ * `package.json`, no lockfile and no `node_modules/`. The template's `package.json` and
+ * `package-lock.json` pinned the previous renderer's tree for `xplainer setup --workspace` to
+ * install, and left with it (ADR 0031 §Note, 2026-11-12, D7).
  *
  * **The split between `videos/` and `public/` is load-bearing.** `public/<slug>` is what the
  * renderer serves `staticFile()` from, and `Root.tsx` fetches `timings.json` and `captions.json`
@@ -23,16 +25,7 @@
  * {@link videoPaths} is the only place that pairs them.
  *
  * **Nothing here installs anything.** {@link materialiseWorkspace} copies the template files and
- * creates three directories; it never runs a package manager. Installing is a visible step a user
- * takes — `xplainer setup --workspace` — never something a tool call does behind an agent's back.
- *
- * **`package-lock.json` is one of the copied files, and that is what makes the install possible.**
- * `npm ci` is the command both ends of the pinned resolution run — build time for the staged
- * payload, `setup --workspace` on a user's machine — and `npm ci` in a directory with no lockfile
- * exits `EUSAGE` ("can only install packages when your package.json and package-lock.json ... are
- * in sync"). Copying `package.json` without the lockfile beside it therefore produces a workspace
- * that cannot be installed at all, which is why the two travel together here rather than being
- * placed by whoever happens to run the installer.
+ * creates three directories; it never runs a package manager.
  *
  * This module writes directories and copies files. It spawns nothing and renders nothing: the
  * renderer is `@xplainer/cli`'s.
@@ -76,18 +69,11 @@ export const NARRATION_SPEC_FILE = "narration.json";
 /**
  * The workspace files copied verbatim out of this package's `template/`.
  *
- * `package.json` is the pinned dependency set `xplainer setup --workspace` installs;
- * `package-lock.json` is the resolution `npm ci` reproduces those pins from; `tailwind.css` is what
- * a video's `index.ts` imports and what the renderer builds its stylesheet from; `tsconfig.json` is
- * for the editor. They are copied rather than generated so the shipped template stays the only
- * copy of these bytes.
+ * `tailwind.css` is what a video's `index.ts` imports and what the renderer builds its stylesheet
+ * from; `tsconfig.json` is for the editor. They are copied rather than generated so the shipped
+ * template stays the only copy of these bytes.
  */
-export const WORKSPACE_FILES = [
-  "package.json",
-  "package-lock.json",
-  "tailwind.css",
-  "tsconfig.json",
-] as const;
+export const WORKSPACE_FILES = ["tailwind.css", "tsconfig.json"] as const;
 
 /** One of the workspace-level template files. */
 export type WorkspaceFile = (typeof WORKSPACE_FILES)[number];
@@ -156,9 +142,8 @@ export function stillOutput(paths: VideoPaths, frame: number): string {
 /**
  * Create the workspace root and copy the template files in, never overwriting one.
  *
- * Never overwriting matters more here than it looks: `package.json` is what a package manager
- * recorded `node_modules/` against, so rewriting it from the template on every `explainer_create`
- * would silently un-pin a workspace someone had already installed.
+ * Never overwriting is what lets a user edit `tailwind.css` or `tsconfig.json` once and keep the
+ * edit: `explainer_create` calls this for every video.
  */
 export function materialiseWorkspace(root: string): WorkspaceResult {
   mkdirSync(root, { recursive: true });

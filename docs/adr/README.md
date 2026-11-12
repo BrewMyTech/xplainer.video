@@ -89,7 +89,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0024](0024-durable-jobs-and-boot-reconciliation.md) | Render jobs are durable records under the daemon's state directory, reconciled at boot by the process that exclusively owns it — a job whose owner is gone ends `error` with an `error_code`, never a stuck `running` or a `404` | accepted — dated notes, latest 2026-09-08 |
 | [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted — dated notes, latest 2026-09-08 |
 | [0026](0026-agent-first-repository-contracts.md) | The repository's contracts are machine-checked — ten `tsconfig` flags, `isolatedDeclarations`, seven Biome rules, nine ruff groups, five committed API reports and a checked `docs/ARCHITECTURE.md` — and `AGENTS.md` is the one agent instruction surface | accepted |
-| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-11 |
+| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-12 |
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
 | [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
@@ -246,6 +246,14 @@ marker records the browser, speech and — optionally — ffmpeg, and no longer 
 description of the `PATH` and Homebrew ffmpeg fallbacks is marked as the order D6 retires; and
 crossing the marker's version is a reinstall that `setup`, `update` and `daemon update` each refuse
 to perform by accident.
+
+**ADR 0027 gained the second, dated 2026-11-12**, with payload 2's removal: there is one payload,
+the workspace holds sources and outputs and nothing installed, `runtime build|verify --workspace`
+and `setup --workspace` are unknown options, and `daemon update`'s precondition is two clauses —
+the same marker format on both sides, and a marker the incoming runtime can use — with decision A's
+template-pin refusal gone because no template pins anything. Decision A's paired-path deferral is
+closed rather than delivered, and `setup` removes what an older `setup --workspace` installed, only
+when that tree is provably its own.
 
 ## Licence
 

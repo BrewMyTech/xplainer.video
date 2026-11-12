@@ -155,7 +155,7 @@ describe("discover", () => {
       const resources = payloadResources();
       const stateDir = temporaryDirectory();
       const live = await startDaemon({ resources, stateDir });
-      recordToolchain(stateDir, join(stateDir, "workspace"));
+      recordToolchain(stateDir);
 
       const discovery = await discover({
         resourcesPath: resources,
@@ -205,7 +205,7 @@ describe("discover", () => {
       const resources = payloadResources();
       const stateDir = temporaryDirectory();
       await startDaemon({ resources, stateDir });
-      recordToolchain(stateDir, join(stateDir, "workspace"));
+      recordToolchain(stateDir);
 
       const discovery = await discover({
         resourcesPath: resources,
@@ -375,7 +375,7 @@ describe("discover", () => {
       const resources = payloadResources();
       const remoteState = temporaryDirectory();
       const remote = await startDaemon({ resources, stateDir: remoteState });
-      recordToolchain(remoteState, join(remoteState, "workspace"));
+      recordToolchain(remoteState);
 
       // The token this machine presents is the remote daemon's, because that is what the state
       // directory beside it records: the two are one machine in this test, which is what makes the

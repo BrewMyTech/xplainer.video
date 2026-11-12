@@ -24,11 +24,9 @@ import {
   PRE_CUT_TOOLCHAIN_FORMAT,
   RUNTIME_MANIFEST_FILE,
   readRuntimeManifest,
-  readWorkspaceManifest,
   runtimeToolchainFormat,
   scanTree,
   toPayloadPath,
-  WORKSPACE_MANIFEST_FILE,
 } from "./manifest.js";
 
 /** The published SHA-256 of the empty string and of `abc`, so the hash is checked against a fact. */
@@ -303,12 +301,6 @@ describe("reading a manifest back", () => {
       writeFileSync(join(root, RUNTIME_MANIFEST_FILE), JSON.stringify({ ...document, toolchain }));
       expect(() => readRuntimeManifest(root)).toThrowError(ManifestError);
     }
-  });
-
-  it("refuses a workspace manifest that claims to be a runtime one", () => {
-    writeFileSync(join(root, WORKSPACE_MANIFEST_FILE), JSON.stringify({ kind: "runtime" }));
-
-    expect(() => readWorkspaceManifest(root)).toThrowError(ManifestError);
   });
 
   it("says the file could not be read when there is no manifest at all", () => {

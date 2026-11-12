@@ -99,7 +99,6 @@ import {
   type RuntimeManifest,
   scanTree,
 } from "../../runtime/manifest.js";
-import { readTemplatePins, verifyWorkspacePayload } from "../../runtime/verify.js";
 
 /** The child entry that parks a half-finished transaction so this proof can kill it. */
 const INTERRUPT_UPDATE = fileURLToPath(
@@ -408,34 +407,10 @@ try {
   say(`workspace:           ${workspaceRoot}`);
   say(`marker:              ${realMarker}`);
   say(`video:               ${slug}, frame ${String(frame)}`);
-  require_(existsSync(join(workspaceRoot, "node_modules")), "the workspace has a node_modules");
   require_(existsSync(realMarker), "the marker setup wrote is on this machine");
   require_(
     existsSync(videoPaths(workspaceRoot, slug).timings),
     `${slug} has the measured timings.json a still is rendered against`,
-  );
-
-  // Asked here rather than discovered three minutes into the first case, because it is the one
-  // condition every case below shares and because a refusal is a **finding**: this is the exact
-  // call `openTransaction()` makes (`install/update/transaction.ts:806`) with the pins
-  // `templatePinsOf()` reads, so a workspace it rejects is a machine `xplainer daemon update`
-  // rejects.
-  const updatable = verifyWorkspacePayload(workspaceRoot, readTemplatePins());
-  require_(
-    updatable.ok,
-    "the update precondition accepts the workspace `xplainer setup --workspace` materialised" +
-      (updatable.ok
-        ? ""
-        : ` — it does not: ${updatable.failure.reason} at ${updatable.failure.name}. ` +
-          `${updatable.failure.detail} A workspace is verified in \`described\` mode ` +
-          "(`runtime/verify.ts`, step 5): every file the manifest names must be present with its " +
-          "recorded digest — that is what proves the pins — while the files a live workspace " +
-          "legitimately holds beside them are allowed, because the manifest describes only " +
-          "node_modules/, package.json and package-lock.json and `materialiseWorkspace()` also " +
-          "copies in tailwind.css and tsconfig.json, with videos/, out/, public/ and anything a " +
-          "tool leaves in node_modules/.cache/ arriving after that. So a refusal here is " +
-          "a real one: something the manifest describes has changed, gone, or been shadowed by a " +
-          "nested copy — and `xplainer daemon update` would refuse this machine too."),
   );
 
   say("");

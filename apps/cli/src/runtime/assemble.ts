@@ -1,8 +1,8 @@
 /**
- * The assembler: how the two payloads are built.
+ * The assembler: how the runtime payload is built.
  *
- * **Payload 1 — `assembleRuntime()`.** A relocatable directory, laid out the way npm lays one out
- * so that the npm inside it can read it:
+ * **`assembleRuntime()`.** A relocatable directory, laid out the way npm lays one out so that the
+ * npm inside it can read it:
  *
  * ```
  * <out>/bin/node                                  a copy of process.execPath
@@ -31,36 +31,16 @@
  *    rather than copied into a `bin/node` that would open a window or unpack itself.
  *
  * **npm travels with payload 1 and is never imported.** It is not in the daemon's dependency
- * closure and nothing in `src/` requires it; it exists so that `setup --workspace` has a real
- * package manager on a machine whose whole premise is that it has no Node. That is what makes the
- * documented first-run fallback more than a sentence.
+ * closure and nothing in `src/` requires it. It was there so that `setup --workspace` had a real
+ * package manager on a machine with no Node, and that command is gone; ADR 0031's D11 takes npm
+ * out of the payload as a change of its own.
  *
- * **Payload 2 — `assembleWorkspace()`.** A real `npm ci` of `@xplainer/render-core`'s
- * `template/package.json` against the `package-lock.json` committed beside it, into a staging
- * directory. It does **not** copy the repository's hoisted tree: measured, that yields react 19.2.8
- * against the template's 19.2.3, tailwind 4.2.0 against 4.0.0 and zod 4.5.4 where Remotion requires
- * 4.3.6 — and `remotion versions` exits `1` on the last of those, so the copied tree is one
- * Remotion's own guard rejects.
- *
- * `npm ci`, never `npm install`: `ci` requires the lockfile to be in sync with `package.json` and
- * removes `node_modules` first, while `install` may rewrite the lockfile on a user's machine and
- * silently defeat the determinism the lockfile was committed for.
- *
- * **`<runtime>/bin` goes on the install subprocess's `PATH`, and on nothing else.** npm runs
- * lifecycle scripts through `sh -c` and third-party scripts call bare `node` — `esbuild`'s
- * `postinstall` is `node install.js` — so an install driven by payload 1's npm under a scrubbed
- * `PATH` exits `127` and leaves no workspace at all. The fix is scoped to the one child process:
- * `PATH=<runtime>/bin:<inherited PATH>` for the install, and nothing else changed. It does not
- * contradict D1's refusal to put `<runtime>/bin` on a render worker's `PATH`, whose stated ground
- * was leaking an interpreter onto the `PATH` of Chrome and ffmpeg; the install subprocess spawns
- * neither, and every script it does spawn wants exactly the interpreter it is being given.
- *
- * **Payload 2 is built on the platform it targets.** `@remotion/compositor-<platform>` is a
- * platform-specific optional dependency, so a tree installed on the wrong host produces renders
- * that fail at spawn. The manifest records the platform, and `verify` refuses it elsewhere.
+ * **There is no second payload.** The render workspace the previous renderer needed — payload 2, an
+ * `npm ci` of a pinned template — left with ADR 0031's Phase 2 (§Note, 2026-11-12, D7): the
+ * renderer bundles every video against this payload's own install and reads only sources from the
+ * workspace.
  */
 
-import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   constants,
@@ -97,10 +77,7 @@ import {
   type RuntimeManifest,
   scanTree,
   toPayloadPath,
-  WORKSPACE_MANIFEST_FILE,
-  type WorkspaceManifest,
 } from "./manifest.js";
-import { templateDirectory } from "./template.js";
 
 /** npm ships this whatever a `files` allowlist says, and `version.ts` reads it at startup. */
 const ALWAYS_SHIPPED = new Set(["package.json"]);
@@ -129,10 +106,9 @@ export class AssemblyRefusal extends Error {
 /**
  * The conditions the assembler refuses on.
  *
- * A closed set rather than a message a caller greps, because `commands/runtime.ts` maps them onto
- * the exit-code table: every one of them is a precondition that was knowable before anything was
- * written **except** `install-failed`, which is npm having run and failed for its own reasons — the
- * same shape as `connect`'s vendor-CLI row, and the same exit code.
+ * A closed set rather than a message a caller greps. Every one of them is a precondition that was
+ * knowable before anything was written, which is why `commands/runtime.ts` gives each the table's
+ * `3`.
  */
 export type AssemblyRefusalReason =
   | "host"
@@ -142,11 +118,7 @@ export type AssemblyRefusalReason =
   | "no-allowlist"
   | "unresolved-dependency"
   | "unbuilt-entry"
-  | "malformed-manifest"
-  | "template"
-  | "runtime-payload"
-  | "install-failed"
-  | "install-incomplete";
+  | "malformed-manifest";
 
 /** What {@link assembleRuntime} was asked to build. */
 export type AssembleRuntimeOptions = {
@@ -168,32 +140,6 @@ export type AssembledRuntime = {
   manifestPath: string;
   /** The manifest that was written. */
   manifest: RuntimeManifest;
-};
-
-/** What {@link assembleWorkspace} was asked to build. */
-export type AssembleWorkspaceOptions = {
-  /** The staging directory the install lands in. Created if missing; empty or absent. */
-  outDir: string;
-  /** The template to install. Defaults to the one inside `@xplainer/render-core`. */
-  templateDir?: string | undefined;
-  /**
-   * A payload-1 directory to run the install from.
-   *
-   * Given one, the install uses **that** payload's `bin/node` and its bundled npm, with
-   * `<runtime>/bin` prepended to the child's `PATH` and nothing else changed. Omitted, the install
-   * uses whatever `npm` the build machine has — which is the checkout-or-runner half of the same
-   * decision.
-   */
-  runtimeDir?: string | undefined;
-  /** The environment the install subprocess inherits. Defaults to this process's. */
-  env?: NodeJS.ProcessEnv | undefined;
-};
-
-/** What one {@link assembleWorkspace} call produced. */
-export type AssembledWorkspace = {
-  outDir: string;
-  manifestPath: string;
-  manifest: WorkspaceManifest;
 };
 
 /**
@@ -292,102 +238,6 @@ export function assembleRuntime(options: AssembleRuntimeOptions): AssembledRunti
   return { outDir: options.outDir, manifestPath, manifest };
 }
 
-/**
- * Build payload 2 into `outDir` by running a real `npm ci` of the template, and describe the tree
- * it produced.
- */
-export function assembleWorkspace(options: AssembleWorkspaceOptions): AssembledWorkspace {
-  const templateDir = options.templateDir ?? templateDirectory();
-  const manifestSource = join(templateDir, "package.json");
-  const lockSource = join(templateDir, "package-lock.json");
-  for (const file of [manifestSource, lockSource]) {
-    if (!existsSync(file)) {
-      throw new AssemblyRefusal(
-        "template",
-        `${file} does not exist, and payload 2 is defined as an \`npm ci\` of the template's own ` +
-          `package.json against the lockfile committed beside it.`,
-      );
-    }
-  }
-  requireEmptyDirectory(options.outDir, "runtime build --workspace --out");
-  mkdirSync(options.outDir, { recursive: true });
-  copyFileSync(manifestSource, join(options.outDir, "package.json"));
-  copyFileSync(lockSource, join(options.outDir, "package-lock.json"));
-
-  const install = installCommand(options.runtimeDir);
-  const result = spawnSync(install.command, install.args, {
-    cwd: options.outDir,
-    encoding: "utf8",
-    env: installEnvironment(options.env ?? process.env, options.runtimeDir),
-  });
-  if (result.status !== 0) {
-    const detail = [result.stdout ?? "", result.stderr ?? ""].join("").trim();
-    throw new AssemblyRefusal(
-      "install-failed",
-      `\`npm ci\` in ${options.outDir} exited ${String(result.status ?? result.signal)}:\n${detail}`,
-    );
-  }
-
-  const pins = declaredPins(manifestSource);
-  const resolved = resolvedVersions(join(options.outDir, "node_modules"));
-  const remotionEntry = remotionEntryPath(options.outDir);
-  if (remotionEntry === null) {
-    throw new AssemblyRefusal(
-      "install-incomplete",
-      `the install in ${options.outDir} produced no @remotion/cli entry, so nothing in it could ` +
-        `render. Its \`bin\` field is what names that file, and the package is missing from the tree.`,
-    );
-  }
-
-  const scan = scanTree(options.outDir, { exclude: [WORKSPACE_MANIFEST_FILE] });
-  const manifest: WorkspaceManifest = {
-    kind: "workspace",
-    manifest_version: MANIFEST_VERSION,
-    created_at: new Date().toISOString(),
-    platform: process.platform,
-    arch: process.arch,
-    node_version: process.version,
-    npm_version: npmVersionOf(install, options),
-    installer: "npm ci",
-    pins,
-    resolved,
-    remotion_entry: remotionEntry,
-    files: scan.files,
-    links: scan.links,
-  };
-  const manifestPath = writeManifestFile(options.outDir, WORKSPACE_MANIFEST_FILE, manifest);
-  return { outDir: options.outDir, manifestPath, manifest };
-}
-
-/**
- * The Remotion CLI entry inside an installed workspace, workspace-relative, or `null`.
- *
- * Resolution goes through `@remotion/cli`'s own `bin` field rather than through the `.bin` shim,
- * which is the difference D1 turns on: the shim is a symlink to a file whose first line is
- * `#!/usr/bin/env node`, so exec'ing it needs a `node` on `PATH`. Naming the real file lets a
- * caller spawn `<runtime>/bin/node <entry>` and never depend on the machine having an interpreter.
- */
-export function remotionEntryPath(workspaceRoot: string): string | null {
-  const packageDir = join(workspaceRoot, "node_modules", "@remotion", "cli");
-  const manifestFile = join(packageDir, "package.json");
-  if (!existsSync(manifestFile)) {
-    return null;
-  }
-  const manifest = readJson(manifestFile);
-  const bin = manifest.bin;
-  const target =
-    typeof bin === "string"
-      ? bin
-      : typeof bin === "object" && bin !== null
-        ? (bin as Record<string, unknown>).remotion
-        : undefined;
-  if (typeof target !== "string") {
-    return null;
-  }
-  const entry = join(packageDir, target);
-  return existsSync(entry) ? toPayloadPath(relative(workspaceRoot, entry)) : null;
-}
-
 /** The checkout this process is running inside, found by the marker every worktree has. */
 export function findCheckout(from: string = dirname(fileURLToPath(import.meta.url))): string {
   let directory = from;
@@ -411,9 +261,9 @@ export function findCheckout(from: string = dirname(fileURLToPath(import.meta.ur
 /**
  * The payload-relative entry the root package's `bin` field names.
  *
- * Read off `bin` rather than hard-coded as `dist/bin.js`, for the same reason D1 resolves Remotion
- * through its `bin` field: the manifest is a launch contract, and a contract that guesses the file
- * it launches is a contract that goes stale the first time the entry moves.
+ * Read off `bin` rather than hard-coded as `dist/bin.js`: the manifest is a launch contract, and a
+ * contract that guesses the file it launches is a contract that goes stale the first time the entry
+ * moves.
  */
 function entryFor(repoRoot: string, rootPackage: string, packages: ManifestPackage[]): string {
   const copied = packages.find((entry) => entry.name === rootPackage);
@@ -834,128 +684,8 @@ function listPackageFiles(directory: string, base: string = directory, found: st
   return found;
 }
 
-/** The `npm ci` invocation, from payload 1 where one was given and from the machine otherwise. */
-function installCommand(runtimeDir: string | undefined): { command: string; args: string[] } {
-  const args = ["ci", "--no-audit", "--no-fund"];
-  if (runtimeDir === undefined) {
-    return { command: process.platform === "win32" ? "npm.cmd" : "npm", args };
-  }
-  const interpreter = join(
-    runtimeDir,
-    PAYLOAD_BIN_DIR,
-    process.platform === "win32" ? "node.exe" : "node",
-  );
-  const npmCli = join(runtimeDir, ...PAYLOAD_NPM_CLI.split("/"));
-  for (const file of [interpreter, npmCli]) {
-    if (!existsSync(file)) {
-      throw new AssemblyRefusal(
-        "runtime-payload",
-        `${file} does not exist, so ${runtimeDir} is not a runtime payload this install can be ` +
-          `run from. Build one with \`xplainer runtime build --out <dir>\` first.`,
-      );
-    }
-  }
-  return { command: interpreter, args: [npmCli, ...args] };
-}
-
-/**
- * The install subprocess's environment: the inherited one, with `<runtime>/bin` leading `PATH`.
- *
- * Scoped to this one child on purpose. npm runs lifecycle scripts through `sh -c` and third-party
- * scripts call bare `node`, so an install from a payload under a scrubbed `PATH` exits 127 with
- * `sh: node: command not found` and leaves no workspace at all — on exactly the machine the bundled
- * npm exists for. Nothing else in this process tree gets the interpreter on its `PATH`.
- */
-function installEnvironment(
-  inherited: NodeJS.ProcessEnv,
-  runtimeDir: string | undefined,
-): NodeJS.ProcessEnv {
-  if (runtimeDir === undefined) {
-    return inherited;
-  }
-  const binDir = join(runtimeDir, PAYLOAD_BIN_DIR);
-  const existing = inherited.PATH ?? inherited.Path ?? "";
-  const separator = process.platform === "win32" ? ";" : ":";
-  return { ...inherited, PATH: existing === "" ? binDir : `${binDir}${separator}${existing}` };
-}
-
-/** The npm that ran the install, by version, read from wherever it came from. */
-function npmVersionOf(
-  install: { command: string; args: string[] },
-  options: AssembleWorkspaceOptions,
-): string {
-  if (options.runtimeDir !== undefined) {
-    const manifestFile = join(
-      options.runtimeDir,
-      ...PAYLOAD_LIB_DIR.split("/"),
-      "npm",
-      "package.json",
-    );
-    const version = existsSync(manifestFile) ? readJson(manifestFile).version : undefined;
-    return typeof version === "string" ? version : "unknown";
-  }
-  const probe = spawnSync(install.command, ["--version"], {
-    encoding: "utf8",
-    env: options.env ?? process.env,
-  });
-  return probe.status === 0 ? (probe.stdout ?? "").trim() : "unknown";
-}
-
-/** The template's declared pins — dependencies and devDependencies, in one map. */
-function declaredPins(manifestFile: string): Record<string, string> {
-  const manifest = readJson(manifestFile);
-  return {
-    ...asDependencyMap(manifest.dependencies),
-    ...asDependencyMap(manifest.devDependencies),
-  };
-}
-
-/**
- * Every package the install resolved, by name and version.
- *
- * Read off the tree rather than off the lockfile, because the tree is what will be rendered
- * against: a lockfile records what npm intended and `node_modules` records what arrived, and the
- * only one of those a `remotion versions` call can disagree with is the second.
- */
-function resolvedVersions(nodeModules: string): Record<string, string> {
-  const resolved: Record<string, string> = {};
-  if (!existsSync(nodeModules)) {
-    return resolved;
-  }
-  const visit = (directory: string, scope: string | null): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name === ".bin") {
-        continue;
-      }
-      const full = join(directory, entry.name);
-      if (scope === null && entry.name.startsWith("@")) {
-        visit(full, entry.name);
-        continue;
-      }
-      const manifestFile = join(full, "package.json");
-      if (!existsSync(manifestFile)) {
-        continue;
-      }
-      const manifest = readJson(manifestFile);
-      const name = scope === null ? entry.name : `${scope}/${entry.name}`;
-      const version = manifest.version;
-      resolved[name] = typeof version === "string" ? version : "";
-      const nested = join(full, "node_modules");
-      if (existsSync(nested)) {
-        visit(nested, null);
-      }
-    }
-  };
-  visit(nodeModules, null);
-  return resolved;
-}
-
 /** Write a manifest, pretty-printed with a trailing newline so a diff of two payloads reads. */
-function writeManifestFile(
-  directory: string,
-  name: string,
-  manifest: RuntimeManifest | WorkspaceManifest,
-): string {
+function writeManifestFile(directory: string, name: string, manifest: RuntimeManifest): string {
   const file = join(directory, name);
   writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
   return file;

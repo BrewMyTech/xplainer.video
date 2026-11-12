@@ -2,13 +2,12 @@
  * The workspace layout, asserted against a real temporary directory.
  *
  * Two of these are load-bearing rather than incidental. The `videos/` ↔ `public/` split is what
- * makes the renderer's public directory the narration's rather than the source's, and a workspace
- * whose `package.json` was rewritten from the template would be a workspace whose `node_modules/`
- * no longer matches its manifest — so "never overwrite" is asserted with real bytes on disk, not
- * inferred from the code.
+ * makes the renderer's public directory the narration's rather than the source's, and a template
+ * file a user edited must survive the next `explainer_create` — so "never overwrite" is asserted
+ * with real bytes on disk, not inferred from the code.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,50 +67,41 @@ describe("materialiseWorkspace", () => {
 
     expect(result.created).toEqual([...WORKSPACE_FILES]);
     expect(result.skipped).toEqual([]);
-    const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-      dependencies: Record<string, string>;
-    };
-    expect(Object.keys(manifest.dependencies).length).toBeGreaterThan(0);
-    for (const version of Object.values(manifest.dependencies)) {
-      expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(readFileSync(join(root, "tailwind.css"), "utf8")).toContain('@import "tailwindcss"');
+    for (const directory of ["videos", "public", "out"]) {
+      expect(existsSync(join(root, directory)), directory).toBe(true);
     }
     expect(listVideoSlugs(root)).toEqual([]);
   });
 
   /**
-   * `npm ci` — the command both ends of the pinned resolution run — refuses a directory with no
-   * lockfile: "npm error `npm ci` can only install packages when your package.json and
-   * package-lock.json ... are in sync". A workspace materialised without one is therefore a
-   * workspace `xplainer setup --workspace` cannot install, which is why the file is asserted here
-   * as bytes on disk that parse and name the same package rather than as a member of a list.
+   * The workspace is sources and outputs: the renderer bundles against `@xplainer/cli`'s own
+   * install, so nothing a package manager reads is placed here — not the `package.json` and
+   * lockfile the previous renderer's install needed, and so nothing for `npm` to install against.
    */
-  it("puts the lockfile npm ci needs beside the package.json it locks", () => {
+  it("places nothing a package manager would install from", () => {
     const root = temporaryRoot();
 
     materialiseWorkspace(root);
 
-    expect(WORKSPACE_FILES).toContain("package-lock.json");
-    const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")) as {
-      name: string;
-      lockfileVersion: number;
-    };
-    const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-      name: string;
-    };
-    expect(lock.name).toBe(manifest.name);
-    expect(lock.lockfileVersion).toBeGreaterThanOrEqual(2);
+    expect(WORKSPACE_FILES).toEqual(["tailwind.css", "tsconfig.json"]);
+    for (const name of ["package.json", "package-lock.json", "node_modules"]) {
+      expect(existsSync(join(root, name)), name).toBe(false);
+    }
   });
 
-  it("never overwrites a package.json a package manager has already installed against", () => {
+  it("never overwrites a template file the user has edited", () => {
     const root = temporaryRoot();
     materialiseWorkspace(root);
-    writeFileSync(join(root, "package.json"), '{"name":"installed"}\n');
+    writeFileSync(join(root, "tailwind.css"), '@import "tailwindcss";\n/* mine */\n');
 
     const second = materialiseWorkspace(root);
 
     expect(second.created).toEqual([]);
     expect(second.skipped).toEqual([...WORKSPACE_FILES]);
-    expect(readFileSync(join(root, "package.json"), "utf8")).toBe('{"name":"installed"}\n');
+    expect(readFileSync(join(root, "tailwind.css"), "utf8")).toBe(
+      '@import "tailwindcss";\n/* mine */\n',
+    );
   });
 });
 

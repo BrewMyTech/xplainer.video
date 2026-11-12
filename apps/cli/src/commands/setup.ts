@@ -7,39 +7,32 @@
  * connection". Neither `daemon install` nor the daemon itself ever fetches anything, and the record
  * this command leaves — `<state>/toolchain.json` — is what both of them read instead.
  *
- * **Four components, and each has its own provider module.** The browser
+ * **Three components, and each has its own provider module.** The browser
  * (`setup/providers/chrome.ts`), FFmpeg (`setup/providers/ffmpeg.ts`, the pinned build or one named
- * with `--ffmpeg-path`), speech (`setup/providers/speech.ts`, over four routes) and the render
- * workspace (`setup/providers/workspace.ts`, over two). The command's own job is the order, the
- * selection, the printed report and the marker; every decision about *how* a component is acquired
- * lives with that component.
+ * with `--ffmpeg-path`) and speech (`setup/providers/speech.ts`, over four routes). The command's
+ * own job is the order, the selection, the printed report and the marker; every decision about
+ * *how* a component is acquired lives with that component.
  *
- * **The workspace is acquired and no longer recorded.** The marker is `format_version` 2 since
- * ADR 0031's cut (§Note, 2026-11-12, D1): `chrome`, `speech` and an optional `ffmpeg`, and no
- * `workspace`, because no render reads that workspace and no gate judges it. The provider still runs
- * where it is selected — it is removed with payload 2 itself, in a step of its own — so a run that
- * acquires it changes the tree on disk and leaves `toolchain.json` exactly as the other two
- * components decide.
+ * **The workspace is not one of them.** The marker is `format_version` 2 since ADR 0031's cut
+ * (§Note, 2026-11-12, D1): `chrome`, `speech` and an optional `ffmpeg`, and no `workspace`, because
+ * the renderer bundles every video against this package's own install and reads nothing but the
+ * video's sources from the workspace. `--workspace` is gone with the payload it acquired, and is an
+ * unknown option. What an older `setup --workspace` installed there is removed by this command —
+ * only once it is provably that tree, and only after the refusal below has passed (D7,
+ * `setup/previous-renderer.ts`) — and every removal is printed.
  *
- * **Selection is a union, and that is what makes both spellings mean what they say.** Positive
- * flags name components to acquire; `--skip-*` flags name components to leave out of the default
- * run; giving both asks for the union of the two:
+ * **Selection trims the default.** A bare `setup` acquires all three components; each `--skip-*`
+ * flag leaves one out of this run:
  *
  * ```
- * xplainer setup                        browser, ffmpeg, speech, workspace
- * xplainer setup --workspace            the workspace only
- * xplainer setup --skip-speech          browser, ffmpeg and workspace
- * xplainer setup --skip-speech --workspace   browser, ffmpeg and workspace
- * xplainer setup --tts-url http://…     browser, ffmpeg, workspace, and a recorded external server
- * xplainer setup --ffmpeg-path <file>   browser, the named ffmpeg, speech, workspace
+ * xplainer setup                        browser, ffmpeg, speech
+ * xplainer setup --skip-speech          browser and ffmpeg
+ * xplainer setup --tts-url http://…     browser, ffmpeg, and a recorded external server
+ * xplainer setup --ffmpeg-path <file>   browser, the named ffmpeg, speech
  * ```
- *
- * `--workspace` on its own is the form the D8 proof runs under a scrubbed `PATH`, and it must not
- * drag a browser download or a Docker pull in behind it — which is why a positive flag *restricts*
- * rather than adds when it is the only thing given.
  *
  * **`--speech <route>` selects *which* speech route rather than whether speech is acquired**, so it
- * is not part of the union rule above and does not select the speech component: it is `--tts-url`'s
+ * neither adds nor removes a component: it is `--tts-url`'s
  * counterpart for the two routes that acquire something (`onnx`, `docker`). It exists because the
  * precedence deliberately will not move a machine that already records a working `docker` route
  * onto the in-process engine — `setup/providers/speech.ts`'s migration rule — so `--speech onnx` is
@@ -59,9 +52,8 @@
  * **A partial run is a success that says what is still missing.** `toolchain.json` records the
  * browser and speech or it is not a valid document, so a run that acquired one of them merges into
  * whatever the last run recorded and, where the result is still incomplete, exits `0` naming the
- * components a full `setup` would still fetch. Refusing a partial run would make `--workspace`
- * unusable on exactly the machine it exists for. A version-1 marker the last run left is read as
- * the two components it records and rewritten as version 2 by the next run that writes at all.
+ * components a full `setup` would still fetch. A version-1 marker the last run left is read as the
+ * two components it records and rewritten as version 2 by the next run that writes at all.
  *
  * **It will not write a marker an installed daemon cannot read.** Before anything else — before the
  * toolchain directory exists — it asks the daemon `daemon.json` records which `toolchain.json`
@@ -71,9 +63,9 @@
  *
  * **The exit codes are the table's** (`docs/ARCHITECTURE.md` §6): `1` for commander's usage errors,
  * `3` for a precondition unmet with nothing written — an installed daemon that reads another marker
- * format, no reachable manifest, no reviewed digest for this machine, no speech route at all, a
- * staged payload for another platform — `11` for a `daemon.json` that cannot be read, and `70` for
- * a subprocess that failed for its own reasons.
+ * format, no reachable manifest, no reviewed digest for this machine, no speech route at all —
+ * `11` for a `daemon.json` that cannot be read, and `70` for a subprocess that failed for its own
+ * reasons.
  */
 
 import { mkdirSync } from "node:fs";
@@ -95,6 +87,7 @@ import {
   ToolchainManifestError,
   ToolchainSelectionRefusal,
 } from "../setup/manifest.js";
+import { removePreviousRendererTree } from "../setup/previous-renderer.js";
 import { acquireChrome, ChromeRefusal } from "../setup/providers/chrome.js";
 import {
   type AcquiredFfmpeg,
@@ -108,7 +101,6 @@ import {
   PINNABLE_SPEECH_ROUTES,
   SpeechRefusal,
 } from "../setup/providers/speech.js";
-import { materialiseRenderWorkspace, WorkspaceRefusal } from "../setup/providers/workspace.js";
 import { loadToolchainManifest, ManifestUnreachable } from "../setup/source.js";
 import { offerStar } from "../setup/star.js";
 import {
@@ -121,26 +113,17 @@ import {
 import { seedUserLexicon } from "../speech/user-lexicon.js";
 import { resolveWorkspaceRoot } from "../workspace-root.js";
 
-/** The four things `setup` can acquire. */
-export type SetupComponent = "browser" | "ffmpeg" | "speech" | "workspace";
+/** The three things `setup` can acquire. */
+export type SetupComponent = "browser" | "ffmpeg" | "speech";
 
-/**
- * All four, in acquisition order: the browser and ffmpeg, the two the manifest pins, then speech,
- * then the install last.
- */
-export const SETUP_COMPONENTS: readonly SetupComponent[] = [
-  "browser",
-  "ffmpeg",
-  "speech",
-  "workspace",
-];
+/** All three, in acquisition order: the browser and ffmpeg, the two the manifest pins, then speech. */
+export const SETUP_COMPONENTS: readonly SetupComponent[] = ["browser", "ffmpeg", "speech"];
 
 /** Where acquisitions live, under the state directory. */
 export const TOOLCHAIN_DIR_NAME = "toolchain";
 
 /** What `xplainer setup` parses. */
 type SetupOptions = {
-  workspace?: boolean;
   skipSpeech?: boolean;
   skipBrowser?: boolean;
   skipFfmpeg?: boolean;
@@ -153,48 +136,25 @@ type SetupOptions = {
   star?: boolean;
 };
 
-/**
- * Which components this invocation acquires.
- *
- * The union rule, written once: positives on their own restrict the run to themselves; negatives on
- * their own trim the default; both together give the union of "what you named" and "everything but
- * what you excluded".
- */
+/** Which components this invocation acquires: all of them, less each one a `--skip-*` flag names. */
 export function selectedComponents(options: SetupOptions): SetupComponent[] {
-  const positives = new Set<SetupComponent>();
-  if (options.workspace === true) {
-    positives.add("workspace");
-  }
-  const negatives = new Set<SetupComponent>();
-  if (options.skipSpeech === true) {
-    negatives.add("speech");
-  }
+  const skipped = new Set<SetupComponent>();
   if (options.skipBrowser === true) {
-    negatives.add("browser");
+    skipped.add("browser");
   }
   if (options.skipFfmpeg === true) {
-    negatives.add("ffmpeg");
+    skipped.add("ffmpeg");
   }
-
-  if (positives.size === 0 && negatives.size === 0) {
-    return [...SETUP_COMPONENTS];
+  if (options.skipSpeech === true) {
+    skipped.add("speech");
   }
-  const selected = new Set<SetupComponent>(positives);
-  if (negatives.size > 0) {
-    for (const component of SETUP_COMPONENTS) {
-      if (!negatives.has(component)) {
-        selected.add(component);
-      }
-    }
-  }
-  return SETUP_COMPONENTS.filter((component) => selected.has(component));
+  return SETUP_COMPONENTS.filter((component) => !skipped.has(component));
 }
 
 /** Build the `setup` command, wired to `io` for output and exit. */
 export function createSetupCommand(io: CliIo): Command {
   return new Command("setup")
     .description("Acquire the local render and TTS toolchain, and record what arrived")
-    .option("--workspace", "acquire the render workspace only")
     .option("--skip-browser", "leave the browser out of this run")
     .option("--skip-ffmpeg", "leave ffmpeg out of this run")
     .option("--skip-speech", "leave speech out of this run")
@@ -261,7 +221,8 @@ export function createSetupCommand(io: CliIo): Command {
 
       mkdirSync(toolchainDir, { recursive: true });
       log(`state directory ${stateDir}`);
-      log(`acquiring: ${components.join(", ")}`);
+      log(`acquiring: ${components.length === 0 ? "nothing" : components.join(", ")}`);
+      reportPreviousRendererTree(workspaceRoot, log);
 
       const previous = readToolchainMarker(stateDir);
       let chrome: ToolchainComponent | null = previous?.chrome ?? null;
@@ -335,19 +296,14 @@ export function createSetupCommand(io: CliIo): Command {
             log(`speech: ${acquired.provider} was chosen over ${skipped} — ${reason}`);
           }
         }
-
-        if (components.includes("workspace")) {
-          const materialised = materialiseRenderWorkspace({ workspaceRoot, log });
-          log(`workspace: ${materialised.remotionShim}`);
-        }
       } catch (error) {
         io.writeErr(`xplainer setup: ${describe(error)}\n`);
         io.exit(exitCodeFor(error));
       }
 
       // **Seeded before the completeness check, not after it.** Placing this after the marker was
-      // written meant a partial run — `setup --workspace`, or any run whose browser or speech
-      // acquisition is still outstanding — returned below without ever creating the file, so the
+      // written meant a partial run — any run whose browser or speech acquisition is still
+      // outstanding — returned below without ever creating the file, so the
       // machines most likely to be mid-setup were the ones that never got it. Nothing about a
       // pronunciation list depends on the toolchain being complete.
       //
@@ -429,6 +385,44 @@ async function acquireFfmpegOrSkip(
 }
 
 /**
+ * Remove what an older `setup --workspace` installed in the workspace, and say what happened.
+ *
+ * Silent when there is nothing of it there, which is every machine set up since the cut and every
+ * user's own project. Never fatal: a tree that could not be removed costs disk, not a render, and
+ * the run that met it still has the toolchain to acquire — so a failure is a printed line, and the
+ * next run, which recognises the tree by the two documents removed last, tries again.
+ */
+function reportPreviousRendererTree(workspaceRoot: string, log: (line: string) => void): void {
+  const outcome = removePreviousRendererTree(workspaceRoot);
+  const named = (entries: readonly string[]): string =>
+    entries.map((entry) => (entry === "node_modules" ? "node_modules/" : entry)).join(", ");
+  switch (outcome.kind) {
+    case "absent":
+      return;
+    case "removed":
+      log(
+        `removed the previous renderer's install from ${workspaceRoot}: ${named(outcome.removed)}. ` +
+          "Nothing renders from it any more; videos/, public/ and out/ are untouched.",
+      );
+      return;
+    case "kept":
+      log(
+        `left the previous renderer's install in ${workspaceRoot} as it is: ${outcome.reason}, so ` +
+          "it is not provably the tree an earlier setup wrote. Nothing renders from it; its " +
+          "node_modules/ can be deleted by hand.",
+      );
+      return;
+    case "failed":
+      log(
+        `could not remove ${outcome.entry} from ${workspaceRoot} (${outcome.error})` +
+          `${outcome.removed.length === 0 ? "" : ` after removing ${named(outcome.removed)}`}. ` +
+          "The next `xplainer setup` tries again.",
+      );
+      return;
+  }
+}
+
+/**
  * Load the manifest for a speech run that had no other reason to.
  *
  * Reached only when the `bundle` route is actually tried — every earlier route needs no manifest,
@@ -470,9 +464,6 @@ function exitCodeFor(error: unknown): number {
     error instanceof SpeechRefusal
   ) {
     return PRECONDITION_UNMET_EXIT_CODE;
-  }
-  if (error instanceof WorkspaceRefusal) {
-    return error.exitCode;
   }
   return DAEMON_INTERNAL_EXIT_CODE;
 }
