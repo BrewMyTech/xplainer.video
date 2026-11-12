@@ -60,9 +60,11 @@
 # `windows-setup-from-a-checkout` job runs a **bare** `setup`, because asking
 # the published address is what it exists to prove. Dispatched before the
 # upload, that job fails on a 404 — and the CDN can keep serving that cached
-# 404 for up to 30 days, to every user, after the upload. So `windows=true`
-# is not dispatched until the v2 manifest is published; a Linux or macOS
-# dispatch never runs that job and may go first.
+# 404 for up to 30 days, to every user, after the upload. So that job has an
+# input of its own, `windows_setup`, which defaults to `false` and is NOT
+# implied by `windows=true`: every OS selection, `windows=true` included, is
+# safe to dispatch before the upload, and `-f windows_setup=true` is the one
+# that waits until the v2 manifest is published.
 #
 # HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
 # branch**: until this file is on `main` the API answers a dispatch of it with
@@ -75,10 +77,11 @@
 #
 # The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
 # a bare dispatch allocates the 1x Linux runner and nothing else, and the line
-# above adds the Windows leg — once the v2 manifest is up, per the precondition
-# above. Pass `-f macos=true` (10x) or `-f windows=true` (2x) for the leg a
-# given question needs, and all three for the run that is offered as full
-# platform coverage.
+# above adds the Windows leg of the gate. Pass `-f macos=true` (10x) or
+# `-f windows=true` (2x) for the leg a given question needs, and all three for
+# the run that is offered as full platform coverage. `-f windows_setup=true`
+# adds the bare Windows `setup` job — once the v2 manifest is up, per the
+# precondition above.
 
 name: e2e-toolchain
 
@@ -104,6 +107,12 @@ on:
         description: Run the Windows legs (windows-latest, bills at 2x).
         type: boolean
         default: false
+      # Not an operating system, and not implied by `windows`: the one job that
+      # reads the published manifest, so it waits for the v2 upload (header).
+      windows_setup:
+        description: Also run windows-setup-from-a-checkout, a bare setup against the published v2 manifest (only once it is uploaded).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -112,7 +121,7 @@ concurrency:
   # A dispatch supersedes an in-flight dispatch of the same ref and the same
   # selection — a re-run of the same request — and leaves one that asked for
   # different operating systems running.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}-${{ inputs.windows_setup }}
   cancel-in-progress: true
 
 defaults:
@@ -274,7 +283,9 @@ jobs:
 
   windows-setup-from-a-checkout:
     name: setup completes on windows from a checkout (T20 criterion 3)
-    if: ${{ inputs.windows }}
+    # Its own input, not `windows`: this job reads the published manifest, so
+    # it is dispatched only after the v2 upload (the header's precondition).
+    if: ${{ inputs.windows_setup }}
     runs-on: windows-latest
     # A real acquisition: a ~127 MB browser, a ~195 MB BtbN ffmpeg archive, and
     # ~204 MB of speech artefacts from three hosts.

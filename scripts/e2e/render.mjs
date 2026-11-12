@@ -36,7 +36,7 @@
  * borrowing went together. **The ffmpeg `setup` acquires is the ffmpeg that encodes**: the worker
  * takes `XPLAINER_FFMPEG` when it is set and the marker's `ffmpeg.path` otherwise, and never looks
  * on `PATH` (D6), so this script removes `XPLAINER_FFMPEG` from everything it starts and asserts
- * that the render's own log names the recorded path.
+ * that the render's `done` event — the last line of its log — names the recorded path.
  *
  * **Nothing in it is specific to *either POSIX platform*.** It resolves its own `ffmpeg` and
  * `ffprobe` — the tools it reads the MP4 back with, never handed to the daemon, and from the
@@ -645,6 +645,18 @@ async function pollJob(client, jobId, jobType) {
 }
 
 /**
+ * The worker's final `{"event":"done",…}` line, parsed, or `null` when the job's log has none.
+ *
+ * Read from the end, because the job keeps a sixty-line tail: a long render's progress lines push
+ * the worker's start line — the one that names the encoder in prose — out of it, and the `done`
+ * event, which names it as `ffmpeg: { path, source }`, is the last line the worker prints.
+ */
+function doneEvent(job) {
+  const line = job.output.lines.findLast((entry) => entry.startsWith('{"event":"done"'));
+  return line === undefined ? null : JSON.parse(line);
+}
+
+/**
  * Enqueue one job, then poll it, asserting the sequence P1-5 requires.
  *
  * The first `queued` is the enqueueing tool's own answer — the schema requires it to report that
@@ -846,10 +858,11 @@ async function main() {
   const rendered = await runJob(client, "explainer_render", { slug: SLUG });
   const mp4 = join(workspace, "out", SLUG, "explainer.mp4");
   check(existsSync(mp4), `explainer_render wrote ${mp4}`);
-  const encoderLine = `${marker.ffmpeg.path} (toolchain.json)`;
+  const encodedWith = doneEvent(rendered)?.ffmpeg;
   check(
-    rendered.output.lines.some((line) => line.includes(encoderLine)),
-    `the render job's log names the encoder it used: ${encoderLine}`,
+    encodedWith?.path === marker.ffmpeg.path && encodedWith?.source === "toolchain.json",
+    `the render's done event names the encoder it used: ${marker.ffmpeg.path} (toolchain.json) — ` +
+      `it said ${JSON.stringify(encodedWith ?? null)}`,
   );
 
   const listed = await callTool(client, "explainer_list", {});

@@ -19,7 +19,7 @@
  * **2 — the machine.** `node` is asserted not to resolve on the scrubbed `PATH` every child below
  * is given, and so is `ffmpeg` wherever the platform makes that provable — `/usr/bin:/bin` on macOS
  * and `System32` on Windows hold none. On Linux `/usr/bin` holds the distribution's ffmpeg this
- * script reads the MP4 back with, so there the render's own log line is the evidence instead (6).
+ * script reads the MP4 back with, so there the render's `done` event is the evidence instead (6).
  *
  * **3 — the speech provider, and who owns its lifetime.** Round 4 left that unowned:
  * `render.mjs`'s `requireKokoro()` only *waits for* a server, and T19 decides the daemon never
@@ -58,8 +58,9 @@
  * reaching `/healthz`.
  *
  * **6 — narrate, still, render, and the MP4 read back with `ffprobe`.** The daemon and the shim
- * run with the scrubbed `PATH` and **no `XPLAINER_FFMPEG`**, and the render job's own log has to
- * name the ffmpeg `toolchain.json` recorded. The assertions are `workers/render.test.ts`'s, because a
+ * run with the scrubbed `PATH` and **no `XPLAINER_FFMPEG`**, and the render's `done` event has to
+ * name the ffmpeg `toolchain.json` recorded — the last line of the job's log, because a long
+ * render's progress lines push the start line that says it in prose out of the sixty-line tail. The assertions are `workers/render.test.ts`'s, because a
  * render that "succeeded" and produced a silent, mistimed or 300-frame placeholder file looks like
  * success from inside Node: the video stream's size, rate and codec, an **AAC** stream beside it,
  * the duration within 100 ms of `timings.json`, and a frame count that equals
@@ -936,6 +937,18 @@ async function callTool(client, name, args) {
   }
 }
 
+/**
+ * The worker's final `{"event":"done",…}` line, parsed, or `null` when the job's log has none.
+ *
+ * Read from the end, because the job keeps a sixty-line tail: a long render's progress lines push
+ * the worker's start line — the one that names the encoder in prose — out of it, and the `done`
+ * event, which names it as `ffmpeg: { path, source }`, is the last line the worker prints.
+ */
+function doneEvent(job) {
+  const line = job.output.lines.findLast((entry) => entry.startsWith('{"event":"done"'));
+  return line === undefined ? null : JSON.parse(line);
+}
+
 /** Enqueue one job and poll `explainer_job` to a conclusion, asserting P1-5's sequence. */
 async function runJob(client, name, args) {
   const queued = await callTool(client, name, args);
@@ -1343,12 +1356,13 @@ async function main() {
       const rendered = await runJob(client, "explainer_render", { slug: SLUG });
       const mp4 = join(paths.videos, "out", SLUG, "explainer.mp4");
       check(existsSync(mp4), `explainer_render wrote ${mp4}`);
-      // The worker names the encoder it resolved and where it came from, before a frame is taken.
-      const encoderLine = `${marker.ffmpeg.path} (toolchain.json)`;
+      // The worker names the encoder it resolved and where it came from in its `done` event.
+      const encodedWith = doneEvent(rendered)?.ffmpeg;
       check(
-        rendered.output.lines.some((line) => line.includes(encoderLine)),
-        `the render job's log names the encoder it used: ${encoderLine} — the ffmpeg setup ` +
-          "acquired, reached through the marker and not through PATH or XPLAINER_FFMPEG",
+        encodedWith?.path === marker.ffmpeg.path && encodedWith?.source === "toolchain.json",
+        `the render's done event names the encoder it used: ${marker.ffmpeg.path} ` +
+          "(toolchain.json) — the ffmpeg setup acquired, reached through the marker and not " +
+          `through PATH or XPLAINER_FFMPEG; it said ${JSON.stringify(encodedWith ?? null)}`,
       );
 
       check(probeStream(mp4, "v:0", "width") === "1920", "the MP4 is 1920 wide");

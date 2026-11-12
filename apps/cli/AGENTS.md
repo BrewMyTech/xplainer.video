@@ -659,8 +659,10 @@ all until 2026-09-10, a defect the job's earlier form never reached because, ass
 stopped at the browser. What it asserts is that `setup` **exits `0`** with the manifest read over
 the network from the published URL, every component acquired, and `toolchain.json` parsing with
 `speech.provider === "onnx"`. Because it reads the published manifest, a dispatch of it proves
-something about this build only once the version-2 document is uploaded. It is still
-`workflow_dispatch` only and still registers from the default branch.
+something about this build only once the version-2 document is uploaded — which is why it runs
+only on its own input, `-f windows_setup=true` (default `false`), and never because `windows=true`
+was ticked for the gate. It is still `workflow_dispatch` only and still registers from the default
+branch.
 
 **The expected digest is selected by `<platform>-<arch>`, and the URL is admitted by code.**
 Until format 2 the browser's row was looked up by the URL a mirror of the previous renderer's own

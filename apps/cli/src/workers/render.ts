@@ -23,7 +23,11 @@
  * **What it prints is the job's log.** stdout carries a start line, a progress line at least every
  * fifteen frames — `{"event":"progress","frame":n,"of":N,"captureFps":x}` — and a final
  * `{"event":"done",…}`; a failure is one `<CODE>: <sentence>` on stderr and a non-zero exit, which
- * the runner records as `render_failed`.
+ * the runner records as `render_failed`. **The `done` event names the encoder**: `ffmpeg` is
+ * `{"path","source"}`, `source` being `XPLAINER_FFMPEG` or `toolchain.json`, and `null` for a
+ * still. The start line says the same, but the job keeps a bounded tail of sixty lines and a long
+ * render's progress lines push it out; the last line is the one that tail always keeps, so it is
+ * where a caller — `scripts/e2e/` among them — reads which ffmpeg encoded the MP4.
  *
  * **The page is served, never opened from `file://`.** The worker starts `render/bundle.ts`'s
  * `servePage()` on `127.0.0.1` before it bundles — the bundle's `staticFile()` base is that
@@ -268,10 +272,17 @@ async function main(): Promise<void> {
   if (ffmpeg?.source === "override") {
     await assertLibx264(ffmpeg.path);
   }
+  const encodedWith =
+    ffmpeg === null
+      ? null
+      : {
+          path: ffmpeg.path,
+          source: ffmpeg.source === "override" ? "XPLAINER_FFMPEG" : "toolchain.json",
+        };
   say(
     `[xplainer] ${still === null ? "rendering" : `still of frame ${still.frame} at scale ${still.scale} for`} ` +
       `${request.slug} (job ${jobId}) with ${executable}` +
-      `${ffmpeg === null ? "" : ` and ${ffmpeg.path} (${ffmpeg.source === "override" ? "XPLAINER_FFMPEG" : "toolchain.json"})`}`,
+      `${encodedWith === null ? "" : ` and ${encodedWith.path} (${encodedWith.source})`}`,
   );
 
   mkdirSync(video.out, { recursive: true });
@@ -394,6 +405,7 @@ async function main(): Promise<void> {
     output,
     bytes: statSync(output).size,
     durationMs: Math.round(performance.now() - started),
+    ffmpeg: encodedWith,
   });
 }
 

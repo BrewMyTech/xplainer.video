@@ -137,7 +137,7 @@
  * render worker pipes every frame into `XPLAINER_FFMPEG` when it is set and into the marker's
  * `ffmpeg.path` otherwise, and never looks on `PATH` (ADR 0031 §Note, 2026-11-12, D6). So
  * `XPLAINER_FFMPEG` is scrubbed like the speech variables, the marker is required to record this
- * platform's pinned build, and the render job's own log has to name that path. Until 2026-11-12 the
+ * platform's pinned build, and the render's `done` event has to name that path. Until 2026-11-12 the
  * parent's ffmpeg was handed over through the variable, because nothing acquired one.
  *
  * **It is not part of `pnpm verify`, and it must not become part of it.** One run downloads ~204 MB
@@ -1252,6 +1252,18 @@ async function pollJob(client, jobId, jobType) {
 }
 
 /**
+ * The worker's final `{"event":"done",…}` line, parsed, or `null` when the job's log has none.
+ *
+ * Read from the end, because the job keeps a sixty-line tail: a long render's progress lines push
+ * the worker's start line — the one that names the encoder in prose — out of it, and the `done`
+ * event, which names it as `ffmpeg: { path, source }`, is the last line the worker prints.
+ */
+function doneEvent(job) {
+  const line = job.output.lines.findLast((entry) => entry.startsWith('{"event":"done"'));
+  return line === undefined ? null : JSON.parse(line);
+}
+
+/**
  * Enqueue one job, then poll it, asserting the sequence P1-5 requires and the exit code the
  * teardown-abort watch is about.
  *
@@ -1724,10 +1736,11 @@ async function main() {
   const rendered = await runJob(client, "explainer_render", { slug: SLUG });
   const mp4 = join(workspace, "out", SLUG, "explainer.mp4");
   check(existsSync(mp4), `explainer_render wrote ${mp4}`);
-  const encoderLine = `${marker.ffmpeg.path} (toolchain.json)`;
+  const encodedWith = doneEvent(rendered)?.ffmpeg;
   check(
-    rendered.output.lines.some((line) => line.includes(encoderLine)),
-    `the render job's log names the encoder it used: ${encoderLine}, with XPLAINER_FFMPEG scrubbed`,
+    encodedWith?.path === marker.ffmpeg.path && encodedWith?.source === "toolchain.json",
+    `the render's done event names the encoder it used: ${marker.ffmpeg.path} (toolchain.json), ` +
+      `with XPLAINER_FFMPEG scrubbed — it said ${JSON.stringify(encodedWith ?? null)}`,
   );
 
   const listed = await callTool(client, "explainer_list", {});

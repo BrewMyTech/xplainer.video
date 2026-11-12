@@ -357,7 +357,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
    * Also AC-A6's resolution half (ADR 0031 §Note, 2026-11-12, D6): with no `XPLAINER_FFMPEG` and a
    * `PATH` holding no ffmpeg at all — one empty directory, inherited by the worker as everything is
    * — the render spawns the ffmpeg `toolchain.json` records, which is a copy inside this suite's
-   * state directory and on no `PATH`, and the worker's log line names it.
+   * state directory and on no `PATH`, and the worker's log line and its `done` event name it.
    */
   it("renders a 1920x1080, 30 fps, h264 MP4 with AAC audio as long as timings.json says", async () => {
     const recordedFfmpeg = recorded.ffmpeg?.path ?? "";
@@ -379,6 +379,13 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     expect(finished.status, finished.output.lines.join("\n")).toBe("done");
     expect(finished.exit_code).toBe(0);
     expect(finished.output.lines.join("\n")).toContain(`and ${recordedFfmpeg} (toolchain.json)`);
+    // And in the last line, which is the one a long render's bounded log tail is sure to keep.
+    const done = JSON.parse(finished.output.lines.at(-1) ?? "null") as {
+      event?: string;
+      ffmpeg?: unknown;
+    };
+    expect(done.event).toBe("done");
+    expect(done.ffmpeg).toEqual({ path: recordedFfmpeg, source: "toolchain.json" });
 
     const mp4 = videoPaths(root, "demo").mp4;
     expect(existsSync(mp4)).toBe(true);
