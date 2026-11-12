@@ -54,7 +54,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RenderBackend } from "@xplainer/mcp-server";
-import type { ExplainerJobOutput, Timings } from "@xplainer/protocol";
+import type { ExplainerJobOutput, Timings, Toolchain } from "@xplainer/protocol";
 import { stillOutput, videoPaths } from "@xplainer/render-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocalBackend } from "../backend.js";
@@ -168,6 +168,8 @@ let backend: RenderBackend;
 let timings: Timings;
 let ffmpeg = "";
 let ffprobe = "";
+/** The marker the gate and the worker read, whose `ffmpeg.path` is what a render must spawn. */
+let recorded: Toolchain;
 
 function temporaryDirectory(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix));
@@ -303,7 +305,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     // `xplainer setup` has run. The browser it records is a real headless shell, because the
     // render worker launches whatever `toolchain.json` names; the speech half stays a stand-in,
     // since the fixture above is what narrates. The acquisition itself is `setup`'s own tests'.
-    recordTestToolchain({
+    recorded = recordTestToolchain({
       stateDir,
       overrides: {
         chrome: {
@@ -351,12 +353,32 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("a real render", 
     expect(probeStream(png, "v:0", "height")).toBe("540");
   }, 900_000);
 
+  /**
+   * Also AC-A6's resolution half (ADR 0031 §Note, 2026-11-12, D6): with no `XPLAINER_FFMPEG` and a
+   * `PATH` holding no ffmpeg at all — one empty directory, inherited by the worker as everything is
+   * — the render spawns the ffmpeg `toolchain.json` records, which is a copy inside this suite's
+   * state directory and on no `PATH`, and the worker's log line names it.
+   */
   it("renders a 1920x1080, 30 fps, h264 MP4 with AAC audio as long as timings.json says", async () => {
-    const queued = await backend.explainer_render({ slug: "demo" });
-    const finished = await waitForJob(queued.job_id, 900_000);
+    const recordedFfmpeg = recorded.ffmpeg?.path ?? "";
+    expect(recordedFfmpeg.startsWith(stateDir)).toBe(true);
+    const before = { path: process.env.PATH, override: process.env.XPLAINER_FFMPEG };
+    process.env.PATH = temporaryDirectory("xplainer-render-empty-path-");
+    delete process.env.XPLAINER_FFMPEG;
+    let finished: ExplainerJobOutput;
+    try {
+      const queued = await backend.explainer_render({ slug: "demo" });
+      finished = await waitForJob(queued.job_id, 900_000);
+    } finally {
+      process.env.PATH = before.path;
+      if (before.override !== undefined) {
+        process.env.XPLAINER_FFMPEG = before.override;
+      }
+    }
 
     expect(finished.status, finished.output.lines.join("\n")).toBe("done");
     expect(finished.exit_code).toBe(0);
+    expect(finished.output.lines.join("\n")).toContain(`and ${recordedFfmpeg} (toolchain.json)`);
 
     const mp4 = videoPaths(root, "demo").mp4;
     expect(existsSync(mp4)).toBe(true);

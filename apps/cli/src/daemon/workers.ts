@@ -35,9 +35,10 @@
  * nor `daemon install` ever downloads (ADR 0005). So `explainer_still` and `explainer_render` read
  * it before they build a `WorkerSpec`, and a missing or stale toolchain is a **named refusal** on
  * the job record rather than an `ENOENT` in a worker whose log tail is the only evidence anybody
- * gets. `setup/toolchain.ts` owns the judgement; this file owns the moment it is asked. The render
- * worker then reads the same marker for the browser's path, from the state directory this registry
- * hands it in `XPLAINER_STATE_DIR`.
+ * gets. `setup/toolchain.ts` owns the judgement, by the job's kind — a render also needs an ffmpeg
+ * and a still does not — and this file owns the moment it is asked. The render worker then reads
+ * the same marker for the browser's path and ffmpeg's, from the state directory this registry hands
+ * it in `XPLAINER_STATE_DIR`.
  *
  * **And it is where the video's write lock is taken** (`video-lock.ts`), last, once every refusal
  * above has had its chance — so a job that is going to be refused never takes a lock, and a job
@@ -53,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import type { JobType } from "@xplainer/protocol";
 import { assertRenderable, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { readJobRequest } from "../job-request.js";
-import { assertToolchainReady } from "../setup/toolchain.js";
+import { assertJobToolchainReady } from "../setup/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import type { WorkerRegistry, WorkerSpec } from "./runner.js";
 import { STATE_DIR_ENV } from "./state-dir.js";
@@ -201,7 +202,9 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_still");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
-      assertToolchainReady({ stateDir });
+      // A still encodes nothing, so a machine with no ffmpeg draws one (ADR 0031 §Note,
+      // 2026-11-12, D12).
+      assertJobToolchainReady({ stateDir, job: "still" });
       assertReadyToRender(video.source, video.publicDir);
       const { command, args } = renderWorkerCommand();
       return {
@@ -219,7 +222,10 @@ export function createWorkerRegistry(options: CreateWorkerRegistryOptions): Work
       const request = readJobRequest(root, record.job_id, "explainer_render");
       const slug = agreedSlug(record, request.slug);
       const video = videoPaths(root, slug);
-      assertToolchainReady({ stateDir });
+      // A render pipes every frame into ffmpeg: an executable `XPLAINER_FFMPEG` — this daemon's
+      // own environment, which the worker inherits — or a valid `ffmpeg` in the marker, refused
+      // here before Chrome starts rather than by the worker after it has (D12).
+      assertJobToolchainReady({ stateDir, job: "render" });
       assertReadyToRender(video.source, video.publicDir);
       const { command, args } = renderWorkerCommand();
       return {

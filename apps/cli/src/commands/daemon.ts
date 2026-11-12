@@ -97,6 +97,7 @@ import {
   updateDaemon,
 } from "../install/update/transaction.js";
 import type { CliIo } from "../io.js";
+import { toolchainLines } from "../setup/toolchain.js";
 
 /** The largest port number a `--port` may name. */
 const MAX_PORT = 65_535;
@@ -837,7 +838,9 @@ export function describeStatus(report: DaemonStatusReport, update: UpdateStatus)
     lines.push(`  port holder:   ${report.probe.holder_detail}`);
   }
   lines.push(
-    `toolchain:       ${report.toolchain.detail}`,
+    // The render gate's verdict — the one `/healthz` gives — and what the marker records: the
+    // browser's version, ffmpeg's version, licence, publisher and provider, and the speech route.
+    ...toolchainLines(report.toolchain),
     // R-SEC-5's second half, and it is a *warning* when it fires: the token file is what the guard
     // rests on, and an entry that has been widened underneath a running daemon changes nothing that
     // any other line here would show.

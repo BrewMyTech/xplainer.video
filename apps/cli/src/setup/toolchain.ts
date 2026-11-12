@@ -28,6 +28,13 @@
  * `ffmpeg` stops anything is the **caller's** question, through {@link ToolchainCheck.requireFfmpeg}:
  * the schema leaves the component optional, and what a job needs is decided at the gate (D12).
  *
+ * **What a job needs is decided by its kind** ({@link checkJobToolchain}, D12). A still draws one
+ * frame and encodes nothing, so it needs the browser and speech the marker records; a render also
+ * needs an encoder — an executable `XPLAINER_FFMPEG`, or a valid `ffmpeg` in the marker. The call
+ * (`backend.ts`), the worker factory (`daemon/workers.ts`), `/healthz` and `daemon status` all ask
+ * that one function, so a tool call cannot be accepted for a job the factory then refuses, and
+ * `/healthz` is degraded exactly when a render would be refused.
+ *
  * **Every check here is a `stat` or a read, never a hash and never a spawn.** `/healthz` asks it on
  * every request, so a replaced binary is caught by its size and not by re-hashing a hundred
  * megabytes, and a recorded libavcodec is compared without running the executable it describes.
@@ -44,6 +51,7 @@ import {
   TOOLCHAIN_FORMAT_VERSION,
   toolchainMarkerPath,
 } from "../install/preflight.js";
+import { FFMPEG_ENV, isExecutableFile } from "../render/encode.js";
 import {
   PRE_CUT_TOOLCHAIN_FORMAT,
   readRuntimeManifest,
@@ -247,6 +255,156 @@ function staleFfmpeg(ffmpeg: ToolchainFfmpeg, floor: number): string | null {
     );
   }
   return null;
+}
+
+/** Which of the two kinds of job a toolchain is judged for: a still encodes nothing (D12). */
+export type ToolchainJob = "still" | "render";
+
+/** Where the job-kind gate looks, and for which kind of job. */
+export type JobToolchainCheck = {
+  stateDir: string;
+  job: ToolchainJob;
+  /**
+   * The environment `XPLAINER_FFMPEG` is read from — the daemon's own, which is what its render
+   * workers inherit. Defaults to this process's.
+   */
+  env?: Readonly<Record<string, string | undefined>> | undefined;
+};
+
+/**
+ * Judge this machine's toolchain for one kind of job (ADR 0031 §Note, 2026-11-12, D12).
+ *
+ * A **still** needs what the marker records and nothing more. A **render** needs an encoder too:
+ * an `XPLAINER_FFMPEG` that names an executable file, or — with no override — an `ffmpeg` the marker
+ * records and that is still the file `setup` probed. An override naming nothing is refused here
+ * rather than at the worker, which would refuse it a moment later with the same sentence. A recorded
+ * ffmpeg is judged whether or not an override is set, because a component that is gone or replaced
+ * is never "ready".
+ */
+export function checkJobToolchain(check: JobToolchainCheck): ToolchainStatus {
+  if (check.job === "still") {
+    return checkToolchain({ stateDir: check.stateDir });
+  }
+  const named = (check.env ?? process.env)[FFMPEG_ENV]?.trim();
+  if (named === undefined || named === "") {
+    return checkToolchain({ stateDir: check.stateDir, requireFfmpeg: true });
+  }
+  const status = checkToolchain({ stateDir: check.stateDir });
+  if (status.ok && !isExecutableFile(named)) {
+    return {
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      marker: status.marker,
+      detail:
+        `${FFMPEG_ENV} names ${named}, which is not an executable file, and a render spawns the ` +
+        `ffmpeg it names. Point it at an ffmpeg binary, or unset it to use the one ` +
+        "`xplainer setup` recorded.",
+    };
+  }
+  return status;
+}
+
+/** {@link checkJobToolchain} as a refusal: the marker when the job can run, a sentence when not. */
+export function assertJobToolchainReady(check: JobToolchainCheck): Toolchain {
+  const status = checkJobToolchain(check);
+  if (!status.ok) {
+    throw new Error(status.detail);
+  }
+  return status.marker;
+}
+
+/** One recorded component, as the two status commands print it. */
+export type ToolchainComponentSummary = {
+  version: string;
+  provider: string;
+  path: string;
+};
+
+/** The recorded ffmpeg, as the two status commands print it: what it is and whose it is. */
+export type ToolchainFfmpegSummary = ToolchainComponentSummary & {
+  licence: string;
+  /** Who published it, or `null` for one named with `setup --ffmpeg-path`, which nobody vouches for. */
+  publisher: string | null;
+  libavcodec: string;
+};
+
+/**
+ * The toolchain as `xplainer status` and `daemon status` report it (ADR 0031 §Note, 2026-11-12,
+ * D10): the verdict `/healthz` gives — {@link checkJobToolchain} for a render, at stat depth — and
+ * what the marker records, component by component.
+ */
+export type ToolchainSummary = {
+  /** `<state>/toolchain.json`. */
+  path: string;
+  /** Whether a render's toolchain is usable, which is exactly when `/healthz` answers `ok`. */
+  ok: boolean;
+  /** `toolchain_missing` or `toolchain_stale` — `/healthz`'s own `reason` — or `null`. */
+  reason: ToolchainReason | null;
+  /** The gate's sentence when it refuses; what was checked when it does not. */
+  detail: string;
+  browser: ToolchainComponentSummary | null;
+  ffmpeg: ToolchainFfmpegSummary | null;
+  speech: ToolchainComponentSummary | null;
+};
+
+/**
+ * Judge and describe the toolchain, for a status report.
+ *
+ * The verdict is the render gate's, asked with this process's environment: `/healthz` asks the same
+ * function with the daemon's, and the two differ only where one of them has an `XPLAINER_FFMPEG`
+ * the other has not — which a supervised daemon never has, since no service manager here passes one.
+ */
+export function summariseToolchain(
+  stateDir: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ToolchainSummary {
+  const status = checkJobToolchain({ stateDir, job: "render", env });
+  const marker = status.marker;
+  const component = (recorded: ToolchainComponent | undefined): ToolchainComponentSummary | null =>
+    recorded === undefined
+      ? null
+      : { version: recorded.version, provider: recorded.provider, path: recorded.path };
+  return {
+    path: toolchainMarkerPath(stateDir),
+    ok: status.ok,
+    reason: status.reason,
+    detail: status.ok
+      ? `${toolchainMarkerPath(stateDir)} records a browser, speech and an ffmpeg, every file it ` +
+        "names is still there, and the ffmpeg is still the one setup probed"
+      : status.detail,
+    browser: component(marker?.chrome),
+    ffmpeg:
+      marker?.ffmpeg === undefined
+        ? null
+        : {
+            version: marker.ffmpeg.version,
+            provider: marker.ffmpeg.provider,
+            path: marker.ffmpeg.path,
+            licence: marker.ffmpeg.licence,
+            publisher: marker.ffmpeg.publisher ?? null,
+            libavcodec: marker.ffmpeg.libavcodec,
+          },
+    speech: component(marker?.speech),
+  };
+}
+
+/** The `toolchain:` block both status commands print, one component to a line. */
+export function toolchainLines(summary: ToolchainSummary): string[] {
+  const { browser, ffmpeg, speech } = summary;
+  return [
+    `toolchain:       ${summary.ok ? "ready to render" : `${String(summary.reason)} — ${summary.detail}`}`,
+    `  browser:       ${browser === null ? "not recorded" : `${browser.version} (${browser.provider})`}`,
+    `  ffmpeg:        ${
+      ffmpeg === null
+        ? "not recorded — stills only, every render is refused; run `xplainer setup`"
+        : `${ffmpeg.version}, ${ffmpeg.licence}, ${
+            ffmpeg.publisher === null
+              ? "no publisher (named with --ffmpeg-path)"
+              : `published by ${ffmpeg.publisher}`
+          }, provider ${ffmpeg.provider}`
+    }`,
+    `  speech:        ${speech === null ? "not recorded" : `${speech.provider} (${speech.version})`}`,
+  ];
 }
 
 /**

@@ -85,6 +85,12 @@ import { DAEMON_UNHEALTHY_EXIT_CODE, PRECONDITION_UNMET_EXIT_CODE } from "../dae
 import { resolveTokenPath } from "../daemon/token.js";
 import { type AclVerdict, aclQuery, readAclVerdict } from "../daemon/windows-acl.js";
 import { DEFAULT_PORT, DRAIN_PATH } from "../server.js";
+import {
+  summariseToolchain,
+  TOOLCHAIN_STALE,
+  type ToolchainReason,
+  type ToolchainSummary,
+} from "../setup/toolchain.js";
 import { awaitHealthy, HealthTimeout, loopbackGet } from "./health.js";
 import {
   currentSupervisorEnvironment,
@@ -268,6 +274,15 @@ export const SWITCHED_OFF_SENTENCES: Readonly<Record<SupervisorKind, string>> = 
 export const DEGRADED_TOOLCHAIN_SENTENCE = "running, degraded: the render toolchain is missing";
 
 /**
+ * The third sentence's second form, for `toolchain_stale` (ADR 0031 §Note, 2026-11-12, D10): what
+ * `setup` recorded is on this machine and is no longer the right thing — an ffmpeg replaced since it
+ * was probed, one below the libavcodec floor, or a marker a newer build wrote. The repair is the
+ * same command; the claim is different, so the words are.
+ */
+export const DEGRADED_STALE_TOOLCHAIN_SENTENCE =
+  "running, degraded: the render toolchain is not the one setup recorded";
+
+/**
  * ADR 0020's fourth sentence, per supervisor.
  *
  * systemd's is the ADR's own: lingering is what makes a user unit survive a reboot with nobody
@@ -329,6 +344,8 @@ export type StatusProbe =
 /** The fields of `/healthz`'s body this command reports. */
 export type HealthBody = {
   status?: unknown;
+  /** `toolchain_missing` or `toolchain_stale` beside a `degraded` status, else `null`. */
+  reason?: unknown;
   version?: unknown;
   contract_version?: unknown;
   /** The answering run's ownership nonce (T17's row 3). */
@@ -337,15 +354,20 @@ export type HealthBody = {
   runtime_digest?: unknown;
 };
 
-/** The setup marker's answer, reduced to what the degraded sentence needs. */
-export type ToolchainFact = {
-  /** `<state>/toolchain.json`. */
-  path: string;
-  /** Whether the marker is there, readable, and every file it names still exists. */
+/**
+ * The setup marker's answer: the render gate's verdict, the same one `/healthz` gives, and what the
+ * marker records.
+ *
+ * `complete` and `reason` are `checkJobToolchain` for a render, at stat depth (ADR 0031 §Note,
+ * 2026-11-12, D10) — not the existence check this report used to make on its own, which called a
+ * replaced ffmpeg, or a marker with none, complete while `/healthz` called the same machine
+ * degraded. `missing` is still the install preflight's list of recorded paths that are gone.
+ */
+export type ToolchainFact = ToolchainSummary & {
+  /** Whether a render's toolchain is usable — `ok`, under the name this report has always used. */
   complete: boolean;
   /** The recorded paths that are gone, in the order the marker names them. */
   missing: readonly string[];
-  detail: string;
 };
 
 /** Whether this daemon comes back without a human, and by what mechanism. */
@@ -396,6 +418,8 @@ export type DaemonStatusReport = {
   };
   health: {
     status: string | null;
+    /** Why `status` is `degraded` — `toolchain_missing` or `toolchain_stale` — else `null`. */
+    reason: string | null;
     version: string | null;
     contract_version: string | null;
     /** The answering run's ownership nonce, or `null` from a daemon that advertises none. */
@@ -740,11 +764,13 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
   const hold: PortHold | null = preflight.port.held
     ? { port: preflight.port.port, pid: preflight.port.holder, detail: preflight.port.holderDetail }
     : null;
+  // The render gate's verdict, the one `/healthz` gives the same machine: a report that judged by
+  // existence alone said `ready` beside a `/healthz` saying `degraded` for a replaced ffmpeg.
+  const summary = summariseToolchain(request.stateDir, env);
   const toolchain: ToolchainFact = {
-    path: preflight.toolchain.path,
-    complete: preflight.toolchain.marker !== null && preflight.toolchain.missing.length === 0,
+    ...summary,
+    complete: summary.ok,
     missing: preflight.toolchain.missing,
-    detail: describeToolchain(preflight),
   };
   const boot = bootPersistence(kind, preflight, daemon);
   const tokenAcl = askTokenAcl(tokenPath, platform, run);
@@ -774,6 +800,7 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
       hold,
       switchedOff: switchFact.state === "off",
       toolchainComplete: toolchain.complete,
+      toolchainReason: toolchain.reason,
       bootPersistent: boot.persistent,
     }),
     daemon: { ...daemon, token_file: tokenPath },
@@ -800,6 +827,7 @@ export async function daemonStatus(request: DaemonStatusRequest): Promise<Daemon
       answer.kind === "ok"
         ? {
             status: reportedString(answer.body.status),
+            reason: reportedString(answer.body.reason),
             version: reportedString(answer.body.version),
             contract_version: reportedString(answer.body.contract_version),
             run_id: reportedString(answer.body.run_id),
@@ -876,6 +904,8 @@ export function statusSentences(facts: {
   hold: PortHold | null;
   switchedOff: boolean;
   toolchainComplete: boolean;
+  /** Which of the two toolchain conditions it is, where it is not complete. Missing by default. */
+  toolchainReason?: ToolchainReason | null | undefined;
   bootPersistent: boolean | null;
 }): readonly StatusSentence[] {
   const sentences: StatusSentence[] = [];
@@ -895,7 +925,13 @@ export function statusSentences(facts: {
     sentences.push({ state: "switched-off", text: SWITCHED_OFF_SENTENCES[facts.kind] });
   }
   if (facts.answering && !facts.toolchainComplete) {
-    sentences.push({ state: "degraded-toolchain", text: DEGRADED_TOOLCHAIN_SENTENCE });
+    sentences.push({
+      state: "degraded-toolchain",
+      text:
+        facts.toolchainReason === TOOLCHAIN_STALE
+          ? DEGRADED_STALE_TOOLCHAIN_SENTENCE
+          : DEGRADED_TOOLCHAIN_SENTENCE,
+    });
   }
   if (facts.answering && facts.bootPersistent === false && facts.kind !== null) {
     sentences.push({
@@ -1638,21 +1674,6 @@ function bootPersistence(
       "the task runs when this user logs on; a boot trigger needs an administrator, which is why " +
       "the shipped registration does not ask for one",
   };
-}
-
-/** The setup marker, in the words the degraded sentence is short for. */
-function describeToolchain(preflight: InstallPreflight): string {
-  if (preflight.toolchain.marker === null) {
-    return `${preflight.toolchain.path} is missing or unreadable — \`xplainer setup\` writes it`;
-  }
-  if (preflight.toolchain.missing.length === 0) {
-    return `${preflight.toolchain.path} is complete and every path it records still exists`;
-  }
-  return (
-    `${preflight.toolchain.path} records ${String(preflight.toolchain.missing.length)} path(s) ` +
-    `that are no longer there: ${preflight.toolchain.missing.join(", ")} — \`xplainer setup\` ` +
-    "acquires them again"
-  );
 }
 
 /** How many starts in a row failed before the daemon was ready, counting back from the newest. */

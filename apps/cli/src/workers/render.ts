@@ -4,7 +4,9 @@
  * Spawned by `daemon/workers.ts` with two arguments — the workspace root and the job id — and the
  * daemon's state directory in `XPLAINER_STATE_DIR`. Everything else is read back from disk: the
  * request document says which video, which kind of job, and for a still which frame at which
- * scale; `toolchain.json` says which browser `xplainer setup` acquired.
+ * scale; `toolchain.json` says which browser `xplainer setup` acquired and, for a render, which
+ * ffmpeg — unless `XPLAINER_FFMPEG` names one, which wins and is then asked for libx264 here,
+ * because nothing else has probed it.
  *
  * The pipeline is four steps, each failing by name:
  *
@@ -57,14 +59,20 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
-import type { Timings } from "@xplainer/protocol";
+import type { Timings, Toolchain } from "@xplainer/protocol";
 import { stillOutput, videoPaths } from "@xplainer/render-core";
 import { STATE_DIR_ENV } from "../daemon/state-dir.js";
 import { type JobRequest, jobRequestPath, readJobRequest } from "../job-request.js";
 import { bundleVideo, type PageServer, servePage } from "../render/bundle.js";
 import { openVideoPage } from "../render/capture.js";
 import { type Chrome, launchChrome } from "../render/cdp.js";
-import { assertLibx264, type Encoder, findFfmpeg, startEncoder } from "../render/encode.js";
+import {
+  assertLibx264,
+  type Encoder,
+  findFfmpeg,
+  type ResolvedFfmpeg,
+  startEncoder,
+} from "../render/encode.js";
 import { RenderError } from "../render/render-error.js";
 import { readToolchainMarker } from "../setup/toolchain.js";
 
@@ -128,7 +136,8 @@ function requestedJobType(root: string, jobId: number): JobRequest["job_type"] {
   return type;
 }
 
-function chromePath(): string {
+/** The marker `setup` wrote in this daemon's state directory: the browser's path, and ffmpeg's. */
+function recordedToolchain(): Toolchain {
   const stateDir = process.env[STATE_DIR_ENV];
   if (stateDir === undefined || stateDir === "") {
     throw new RenderError(
@@ -143,7 +152,7 @@ function chromePath(): string {
       `${stateDir} has no complete toolchain.json, so no browser is recorded. Run \`xplainer setup\`.`,
     );
   }
-  return marker.chrome.path;
+  return marker;
 }
 
 function readTimings(path: string): Timings {
@@ -247,18 +256,22 @@ async function main(): Promise<void> {
   const request = readJobRequest(root, jobId, jobType);
   const video = videoPaths(root, request.slug);
   sweepLeftovers(video.out);
-  const executable = chromePath();
+  const toolchain = recordedToolchain();
+  const executable = toolchain.chrome.path;
   const still = request.job_type === "explainer_still" ? request : null;
 
   // Refused before anything is bundled or launched: a render that would fail at the encoder should
-  // fail in the first second, not after every frame has been captured.
-  const ffmpeg = still === null ? findFfmpeg() : null;
-  if (ffmpeg !== null) {
-    await assertLibx264(ffmpeg);
+  // fail in the first second, not after every frame has been captured. A still encodes nothing, so
+  // it asks for no ffmpeg at all.
+  const ffmpeg: ResolvedFfmpeg | null =
+    still === null ? findFfmpeg(toolchain.ffmpeg?.path ?? null) : null;
+  if (ffmpeg?.source === "override") {
+    await assertLibx264(ffmpeg.path);
   }
   say(
     `[xplainer] ${still === null ? "rendering" : `still of frame ${still.frame} at scale ${still.scale} for`} ` +
-      `${request.slug} (job ${jobId}) with ${executable}${ffmpeg === null ? "" : ` and ${ffmpeg}`}`,
+      `${request.slug} (job ${jobId}) with ${executable}` +
+      `${ffmpeg === null ? "" : ` and ${ffmpeg.path} (${ffmpeg.source === "override" ? "XPLAINER_FFMPEG" : "toolchain.json"})`}`,
   );
 
   mkdirSync(video.out, { recursive: true });
@@ -325,9 +338,14 @@ async function main(): Promise<void> {
     live.paths.delete(partial);
     live.written = output;
   } else {
+    // Resolved above for every render; the check is here so no bare `ffmpeg` — a `PATH` lookup by
+    // another name — can ever be what is spawned.
+    if (ffmpeg === null) {
+      throw new RenderError("FFMPEG_NOT_FOUND", "a render reached the encoder with no ffmpeg.");
+    }
     const timings = readTimings(video.timings);
     const encoder = startEncoder({
-      ffmpeg: ffmpeg ?? "ffmpeg",
+      ffmpeg: ffmpeg.path,
       fps: metadata.fps,
       audio: join(video.publicDir, timings.audio),
       output: video.mp4,

@@ -65,11 +65,25 @@ import {
 import { ALLOW_HOST_FLAG, TLS_CERT_FLAG, TLS_KEY_FLAG } from "../daemon/tls.js";
 import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
+import {
+  type DaemonStatusReport,
+  DEGRADED_STALE_TOOLCHAIN_SENTENCE,
+  DEGRADED_TOOLCHAIN_SENTENCE,
+  daemonStatus,
+} from "../install/lifecycle.js";
+import type { ProbeRunner } from "../install/preflight.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { DRAIN_PATH } from "../server.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
+import {
+  readToolchainMarker,
+  TOOLCHAIN_MISSING,
+  TOOLCHAIN_STALE,
+  toolchainMarkerPath,
+  writeToolchainMarker,
+} from "../setup/toolchain.js";
 import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
@@ -1249,4 +1263,79 @@ describe("POST /api/daemon/drain over the socket", () => {
     // Still there, and still answering on the listener that is allowed to ask.
     expect((await getHealthz({ socketPath: ready.socket ?? "" })).status).toBe(200);
   }, 30_000);
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D10: `daemon status` takes its verdict from the gate `/healthz`
+ * answers with, so the two agree on the same machine. Before, `daemon status` judged by existence
+ * alone and called a replaced ffmpeg, or a marker with none, `ready` beside a `/healthz` that said
+ * `degraded`. One real daemon, and the marker changed under it four ways: as setup left it, an
+ * ffmpeg replaced since it was probed, a marker that records no ffmpeg, and no marker at all.
+ */
+describe("the toolchain verdict, from /healthz and from `daemon status`", () => {
+  /** No supervisor query is the subject here: every one is answered "not here". */
+  const noSupervisor: ProbeRunner = () => ({
+    started: false,
+    status: null,
+    stdout: "",
+    stderr: "",
+  });
+
+  it("is the same on a stale and on a missing marker, reason and all", async () => {
+    const stateDir = stateDirectory();
+    // An override in the developer's shell would make both surfaces judge it rather than the marker.
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir, { XPLAINER_FFMPEG: "" });
+    const env = { ...process.env, XPLAINER_FFMPEG: "" };
+    const ask = async (): Promise<{
+      health: { status: string; reason: string | null };
+      report: DaemonStatusReport;
+    }> => {
+      const answer = await getHealthz(
+        { port: ready.port },
+        { host: `127.0.0.1:${ready.port}`, authorization: `Bearer ${token}` },
+      );
+      expect(answer.status).toBe(200);
+      const report = await daemonStatus({ stateDir, env, run: noSupervisor });
+      // The `--json` document is the report as written; a round trip is what a consumer reads.
+      return {
+        health: JSON.parse(answer.body) as { status: string; reason: string | null },
+        report: JSON.parse(JSON.stringify(report)) as DaemonStatusReport,
+      };
+    };
+    const agree = (
+      seen: Awaited<ReturnType<typeof ask>>,
+      reason: string | null,
+      sentence: string | null,
+    ): void => {
+      expect(seen.health).toMatchObject({ status: reason === null ? "ok" : "degraded", reason });
+      expect(seen.report.condition).toBe(reason === null ? "ready" : "degraded");
+      expect(seen.report.health).toMatchObject({ status: seen.health.status, reason });
+      expect(seen.report.toolchain.reason).toBe(reason);
+      expect(seen.report.toolchain.complete).toBe(reason === null);
+      expect(
+        seen.report.sentences.find((s) => s.state === "degraded-toolchain")?.text ?? null,
+      ).toBe(sentence);
+    };
+
+    const marker = readToolchainMarker(stateDir);
+    const ffmpeg = marker?.ffmpeg?.path ?? "";
+    agree(await ask(), null, null);
+
+    writeFileSync(ffmpeg, "a different binary, put here after setup probed the first one\n");
+    const stale = await ask();
+    agree(stale, TOOLCHAIN_STALE, DEGRADED_STALE_TOOLCHAIN_SENTENCE);
+    expect(stale.report.toolchain.detail).toContain("replaced since setup checked it");
+
+    if (marker !== null) {
+      const { format_version, created_at, chrome, speech } = marker;
+      writeToolchainMarker(stateDir, { format_version, created_at, chrome, speech });
+    }
+    const noFfmpeg = await ask();
+    agree(noFfmpeg, TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+    expect(noFfmpeg.report.toolchain.ffmpeg).toBeNull();
+    expect(noFfmpeg.report.toolchain.browser).not.toBeNull();
+
+    rmSync(toolchainMarkerPath(stateDir));
+    agree(await ask(), TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+  }, 60_000);
 });

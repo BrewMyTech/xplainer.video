@@ -66,7 +66,7 @@ import {
 import type { JobRunner } from "./daemon/runner.js";
 import { resolveStateDir } from "./daemon/state-dir.js";
 import { type JobRequest, writeJobRequest } from "./job-request.js";
-import { checkToolchain } from "./setup/toolchain.js";
+import { checkJobToolchain, type ToolchainJob } from "./setup/toolchain.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
 
 /**
@@ -336,15 +336,17 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
   /**
    * Refuse a render this machine's toolchain cannot carry out, with the worker factory's own answer.
    *
-   * The call asks `checkToolchain`, the same judgement `daemon/workers.ts` applies a moment later:
-   * two predicates over one condition is how a tool call succeeds and the job it queued then
-   * fails, which is precisely the outcome an agent holding a `job_id` cannot act on. Its sentence
-   * names whichever component is absent and the command that fixes it. The workspace is not asked
-   * about at all: the render worker bundles every video against this program's own install and
-   * reads nothing from it.
+   * The call asks `checkJobToolchain` for the job's own kind, the same judgement
+   * `daemon/workers.ts` applies a moment later: two predicates over one condition is how a tool
+   * call succeeds and the job it queued then fails, which is precisely the outcome an agent holding
+   * a `job_id` cannot act on. A still needs no ffmpeg and a render does (ADR 0031 §Note,
+   * 2026-11-12, D12), so a machine with no encoder still draws stills and refuses renders here,
+   * before a worker or a browser starts. Its sentence names whichever component is absent and the
+   * command that fixes it. The workspace is not asked about at all: the render worker bundles every
+   * video against this program's own install and reads nothing from it.
    */
-  function requireInstalledWorkspace(): void {
-    const toolchain = checkToolchain({ stateDir });
+  function requireInstalledWorkspace(job: ToolchainJob): void {
+    const toolchain = checkJobToolchain({ stateDir, job });
     if (!toolchain.ok) {
       throw new LocalBackendError("WORKSPACE_NOT_INSTALLED", toolchain.detail);
     }
@@ -478,7 +480,7 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
     async explainer_still(input: ExplainerStillInput): Promise<ExplainerStillOutput> {
       const slug = assertSlug(input.slug);
       const video = requireNarrated(slug);
-      requireInstalledWorkspace();
+      requireInstalledWorkspace("still");
 
       const frame = input.frame ?? DEFAULT_STILL_FRAME;
       const scale = input.scale ?? DEFAULT_STILL_SCALE;
@@ -506,7 +508,7 @@ export function createLocalBackend(options: CreateLocalBackendOptions): RenderBa
     async explainer_render(input: ExplainerRenderInput): Promise<ExplainerRenderOutput> {
       const slug = assertSlug(input.slug);
       const video = requireNarrated(slug);
-      requireInstalledWorkspace();
+      requireInstalledWorkspace("render");
 
       mkdirSync(video.out, { recursive: true });
       return enqueue({ job_type: "explainer_render", slug }, video.out, `rendering ${slug} to MP4`);

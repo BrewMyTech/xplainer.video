@@ -126,7 +126,7 @@ runner because they take tens of seconds
 | `render/bundle.ts` | esbuild-wasm over a generated entry — `@xplainer/motion/harness` first, the video second — with React and motion from this package's own install, every import confined to the workspace and that install, Tailwind compiled, and the one alias table for the previous renderer's import names; and `servePage()`, the loopback server the page is opened from |
 | `render/cdp.ts` | A zero-dependency Chrome DevTools Protocol client over `--remote-debugging-pipe` |
 | `render/capture.ts` | The readiness gate, page errors with the frame index, and one screenshot per frame |
-| `render/encode.ts` | ffmpeg from `XPLAINER_FFMPEG`, then `PATH`, then the Homebrew directories; libx264, AAC, BT.709 tags, `+faststart`, and a partial renamed only on success |
+| `render/encode.ts` | ffmpeg from `XPLAINER_FFMPEG`, then the path `toolchain.json` records, then `FFMPEG_NOT_FOUND` — never `PATH` and never a Homebrew directory; libx264, AAC, BT.709 tags, `+faststart`, and a partial renamed only on success |
 | `workers/speech.ts` | Where the speech comes from, in two levels: `XPLAINER_TTS_FIXTURE` first, always; then the **provider** `tts/resolve.ts` resolves; under `elevenlabs`, `tts/elevenlabs.ts` behind `requireWordSpans`, and under `kokoro` the unchanged route chain — a server somebody named, else the engine `toolchain.json` records, else the tts-client's own default |
 
 **The narration worker is told which state directory this daemon is using**, in the one
@@ -476,7 +476,7 @@ archive reader between them.
 | `providers/speech-onnx.ts` | The in-process route: the Kokoro model, one voice and this platform's ONNX Runtime, each pinned by digest and each from its own upstream home |
 | `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
 | `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
-| `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
+| `toolchain.ts` | `toolchain.json` — the writer, the validating reader, the gate the daemon applies by job kind (a still needs no ffmpeg, a render does), and the summary `status` and `daemon status` print as their `toolchain:` block |
 | `toolchain.manifest.json` | The reviewed document itself — format 2, one `browser` and one `ffmpeg` row per platform and the `speech` map, every expected digest captured at manifest-build time |
 | `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, `fake-ffmpeg.ts` (a scripted ffmpeg for each way a binary is wrong), and a real marker for the suites downstream, whose ffmpeg is a copy of the one a test-only lookup finds (`XPLAINER_FFMPEG`, `PATH`, Homebrew) |
 
@@ -488,8 +488,8 @@ run to themselves; `--skip-*` flags trim the default; both together give the uni
 when the speech acquisition is not wanted in this run. The components are ordered browser, ffmpeg,
 speech, workspace. `--ffmpeg-path <file>` records a binary the user names instead of acquiring the
 pin, and is a usage error beside `--skip-ffmpeg`. A platform whose `ffmpeg` row is `unavailable`
-prints a skip and still exits `0`, with no `ffmpeg` in the marker.
-A partial run **exits `0`** and names what is still to
+prints a skip and still exits `0`, with no `ffmpeg` in the marker: stills work there, and every
+render is refused until one is recorded. A partial run **exits `0`** and names what is still to
 acquire: `toolchain.json` records all three components or it is not a valid document, so an
 incomplete run merges into what the last one recorded and writes nothing until the set is complete.
 

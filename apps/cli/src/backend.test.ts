@@ -16,9 +16,10 @@
  *     agree.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { RenderBackend } from "@xplainer/mcp-server";
 import type { Narration } from "@xplainer/protocol";
@@ -84,6 +85,28 @@ afterEach(async () => {
  */
 function pretendInstalled(): void {
   recordTestToolchain({ stateDir });
+}
+
+/** Run `body` with `XPLAINER_FFMPEG` set to `value` — or unset — and put it back afterwards. */
+async function withFfmpegOverride(
+  value: string | undefined,
+  body: () => Promise<void>,
+): Promise<void> {
+  const before = process.env.XPLAINER_FFMPEG;
+  if (value === undefined) {
+    delete process.env.XPLAINER_FFMPEG;
+  } else {
+    process.env.XPLAINER_FFMPEG = value;
+  }
+  try {
+    await body();
+  } finally {
+    if (before === undefined) {
+      delete process.env.XPLAINER_FFMPEG;
+    } else {
+      process.env.XPLAINER_FFMPEG = before;
+    }
+  }
 }
 
 /** A narrated video, without running a narration: what `still` and `render` require on disk. */
@@ -340,6 +363,49 @@ describe("explainer_still and explainer_render", () => {
 
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
     await expect(backend.explainer_still({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
+  });
+
+  /**
+   * AC-A6 (i), ADR 0031 §Note, 2026-11-12, D12: a render needs an encoder and a still does not. On
+   * a machine whose marker records no ffmpeg, with no `XPLAINER_FFMPEG`, the render is refused at
+   * the call — before a job, a worker or a browser exists — and a still is queued as usual.
+   */
+  it("refuse a render at the call where nothing names an ffmpeg, and queue a still", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+
+    await withFfmpegOverride(undefined, async () => {
+      const refusal = backend.explainer_render({ slug: "demo" });
+      await expect(refusal).rejects.toMatchObject({ code: "WORKSPACE_NOT_INSTALLED" });
+      await expect(refusal).rejects.toThrow(/records no ffmpeg/);
+      await expect(backend.explainer_still({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
+    expect(runner.get({ job_id: 1 }).job_type).toBe("explainer_still");
+  });
+
+  /** The override is the other half of "a render needs an encoder": named, and executable. */
+  it("accept an executable XPLAINER_FFMPEG in place of the marker's, and refuse one naming nothing", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    const marker = recordTestToolchain({ stateDir, ffmpeg: false });
+
+    await withFfmpegOverride(join(stateDir, "no-such-ffmpeg"), async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
+        /XPLAINER_FFMPEG names .*no-such-ffmpeg, which is not an executable file/,
+      );
+    });
+    const executable = join(stateDir, "named-ffmpeg");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    await withFfmpegOverride(executable, async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
+    expect(marker.ffmpeg).toBeUndefined();
   });
 
   it("record the still's frame and scale, defaulted from the schema", async () => {

@@ -131,7 +131,7 @@ import {
 } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT, IpcBindError, startServer } from "../server.js";
-import { checkToolchain } from "../setup/toolchain.js";
+import { checkJobToolchain } from "../setup/toolchain.js";
 
 /** The highest port a TCP listener can bind. */
 const MAX_PORT = 65535;
@@ -518,9 +518,11 @@ export function createServeCommand(io: CliIo, seams: ServeSeams = {}): Command {
         api: { library: createWorkspaceLibrary({ root: daemon.workspaceRoot }) },
         // Asked per request rather than once: `xplainer setup` runs in another process, and an
         // acquired file can be removed while this daemon is up, so a snapshot would answer for a
-        // machine that no longer exists.
+        // machine that no longer exists. Judged for a **render**, the job that needs the most: a
+        // daemon that can draw stills and not encode them is degraded (ADR 0031 §Note, 2026-11-12,
+        // D12), and the environment is this daemon's own, which its render workers inherit.
         toolchain: () => {
-          const status = checkToolchain({ stateDir });
+          const status = checkJobToolchain({ stateDir, job: "render" });
           return { ok: status.ok, reason: status.reason };
         },
         // The operator's certificate, or nothing at all. `remoteExposureRefusal()` above is what
