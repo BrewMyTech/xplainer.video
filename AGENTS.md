@@ -131,10 +131,11 @@ pnpm release:publish                          # add --otp <code> for a classic a
 pnpm install                                  # restore the committed hoisted layout
 ```
 
-`pnpm release:publish` runs the release check first — `scripts/check-release-ready.mjs`: no
-`package.json` in the render template and no trace of the previous renderer under it, every render
-platform's browser and ffmpeg row `recorded`, every entry of `docs/release-blockers.json` closed
-with its evidence — then requires the manifest served at
+`pnpm release:publish` builds first — `TURBO_FORCE=true pnpm turbo build`, never a cache hit —
+then runs `check-publish-contract` on that fresh output, then the release check —
+`scripts/check-release-ready.mjs`: no `package.json` in the render template and no trace of the
+previous renderer under it, every render platform's browser and ffmpeg row `recorded`, every entry
+of `docs/release-blockers.json` closed with its evidence — then requires the manifest served at
 `https://cdn.xplainer.video/toolchain/v2/manifest.json` to be byte-identical to the committed
 `apps/cli/src/setup/toolchain.manifest.json`, and only then runs
 `pnpm publish -r --no-git-checks --access public` with your arguments appended (ADR 0031's note of
@@ -142,10 +143,19 @@ with its evidence — then requires the manifest served at
 `check-publish-contract` requires, so a bare `pnpm publish -r` is refused by it too. That hook is
 `check-release-ready.mjs --prepublish`, because pnpm also runs this workspace's `prepublishOnly`
 hooks on **install** (with `npm_command=install`), and the bare check refused every fresh
-`pnpm install` while a blocker was open; with the flag it checks a publish, or a run nobody's
-lifecycle started, and stands aside for everything else. The manifest
+`pnpm install` while a blocker was open; with the flag it stands aside for every command that is
+not a publish, and **refuses** a publish that `pnpm release:publish` did not start: the wrapper sets
+`XPLAINER_RELEASE_PUBLISH=1` for the one it runs, and nothing else does. The manifest
 compare is not in the hook, because pnpm publishes one package at a time and a CDN failing between
 two of them would leave half a release on the registry.
+
+**Why it builds, and why a bare publish is refused.** `pnpm publish` packs whatever `dist/` is on
+disk and builds nothing. 0.1.0 was published on 2026-11-12 from a clone whose `dist/` predated the
+release commit, and six of its eight tarballs differed from a fresh build: `@xplainer/cli` lacked
+16 files, and `@xplainer/motion` shipped no `dist/` at all, so every import of it failed on a
+user's machine and nowhere in the workspace. 0.1.1 republishes them. `check-publish-contract` also
+fails a tarball that lacks a file its `main`, `module`, `types`, `typings`, `bin` or `exports`
+names, or that declares `dist` in `files` and carries nothing under it.
 
 **Verify from the registry rather than from the tarball**, because the tarball is what you already
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four

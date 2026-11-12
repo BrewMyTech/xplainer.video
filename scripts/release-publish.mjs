@@ -3,40 +3,53 @@
  * `pnpm release:publish` — the one command that publishes a release (ADR 0031's note of
  * 2026-11-12, D8).
  *
- * Three steps, each run only when the one before it passed:
+ * Five steps, each run only when the one before it passed:
  *
- *   1. `node scripts/check-release-ready.mjs` — the offline release check: the template carries
+ *   1. `pnpm turbo build`, forced (`TURBO_FORCE=true`): every member is built from the tree that is
+ *      about to be published, never taken from a cache or from whatever `dist/` is on disk.
+ *   2. `node scripts/check-publish-contract.mjs` — the tarball gate, on that fresh build: what
+ *      `npm pack` would put in each tarball, including every file the manifest's `exports`,
+ *      `main`, `types` and `bin` name, and a `dist/` in every package that declares one.
+ *   3. `node scripts/check-release-ready.mjs` — the offline release check: the template carries
  *      no package manifest and no trace of the previous renderer, every render platform's browser
  *      and ffmpeg row is recorded, and every entry of `docs/release-blockers.json` is closed with
  *      its evidence.
- *   2. Rule (c), here: the toolchain manifest the CDN serves at
+ *   4. Rule (c), here: the toolchain manifest the CDN serves at
  *      `https://cdn.xplainer.video/toolchain/v2/manifest.json` is byte-identical to the committed
  *      `apps/cli/src/setup/toolchain.manifest.json`, compared by SHA-256. A release whose
  *      `setup` would read a different document than the one reviewed here is refused.
- *   3. `pnpm publish -r --no-git-checks --access public`, with every argument given to this
- *      script appended — `pnpm release:publish --otp 123456`. A leading `--` is dropped.
+ *   5. `pnpm publish -r --no-git-checks --access public`, with every argument given to this
+ *      script appended — `pnpm release:publish --otp 123456`. A leading `--` is dropped. It runs
+ *      with `XPLAINER_RELEASE_PUBLISH=1`, which every member's `prepublishOnly` requires of a
+ *      publish, so a bare `pnpm publish` that skipped steps 1 and 2 is refused per package.
  *
- * WHY THE NETWORK RULE IS HERE AND NOT IN THE HOOK. Step 1 is also every published member's
- * `prepublishOnly`, so a bare `pnpm publish -r` is refused by the same check; pnpm runs that hook
- * per package, before packing it, and stops the whole run at the first refusal. Step 2 cannot go
- * there: a CDN that answered for the third package and failed for the fourth would leave a release
+ * WHY IT BUILDS. 0.1.0 was published on 2026-11-12 from a clone whose `dist/` directories were
+ * stale or absent, and every gate passed, because none of them built anything. The registry
+ * received `@xplainer/cli` 0.1.0 byte-identical in `dist/` to 0.0.11, an `@xplainer/motion` with
+ * no `dist/` at all, and pre-Phase-1 builds of render-core, skill, protocol and mcp-server. A
+ * checked tree is not a built one; only a build run here makes the tarballs describe the commit.
+ *
+ * WHY THE NETWORK RULE IS HERE AND NOT IN THE HOOK. Step 3 is also every published member's
+ * `prepublishOnly`; pnpm runs that hook per package, before packing it, and stops the whole run at
+ * the first refusal. Step 4 cannot go there: a CDN that answered for the third package and failed for the fourth would leave a release
  * half on the registry. Here it runs once, before the first package is touched.
  *
  * DO NOT RUN THIS BEFORE THE VERSION-2 MANIFEST IS UPLOADED. Step 2 requests its URL, and until the
  * cache rule in `infra/terraform` is applied an error answer can be kept at the edge for 30 days
- * (`docs/release-blockers.json`, `v2-manifest-upload` and `cdn-cache-rule-applied`). Step 1
+ * (`docs/release-blockers.json`, `v2-manifest-upload` and `cdn-cache-rule-applied`). Step 3
  * refuses while either is open, so the request is not made by accident.
  *
- * `--self-test` drives all three steps with an injected `fetch` and an injected process runner —
+ * `--self-test` drives all five steps with an injected `fetch` and an injected process runner —
  * the manifest compare on identical, different, missing and unreachable answers, and the order:
- * nothing is fetched when the check refuses, nothing is published when the compare refuses, and
- * the publish gets the fixed arguments and then the caller's. It requests nothing and spawns
+ * nothing runs after a failed build or a refused tarball, nothing is fetched when the check
+ * refuses, nothing is published when the compare refuses, and the publish gets the fixed
+ * arguments and then the caller's. It requests nothing and spawns
  * nothing, and it is what `pnpm verify` and CI run.
  *
  * Exit codes:
  *   0  published (or every self-test passed)
- *   1  the published manifest differs or could not be read, a self-test failed, or the publish
- *      itself failed with no code of its own
+ *   1  the build failed, a tarball broke the publish contract, the published manifest differs or
+ *      could not be read, a self-test failed, or the publish itself failed with no code of its own
  *   2  an argument this script cannot take, or no workspace root
  *  70  internal error
  *   *  any other code is the release check's or `pnpm publish`'s own, passed through
@@ -50,6 +63,10 @@ import { fileURLToPath } from "node:url";
 
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
 const RELEASE_CHECK = "scripts/check-release-ready.mjs";
+const PUBLISH_CONTRACT = "scripts/check-publish-contract.mjs";
+const BUILD_ARGS = ["turbo", "build"];
+/** Read by every member's `prepublishOnly` (`check-release-ready.mjs --prepublish`). */
+const RELEASE_PUBLISH_ENV = "XPLAINER_RELEASE_PUBLISH";
 const COMMITTED_MANIFEST = "apps/cli/src/setup/toolchain.manifest.json";
 const PUBLISHED_MANIFEST_URL = "https://cdn.xplainer.video/toolchain/v2/manifest.json";
 const PUBLISH_ARGS = ["publish", "-r", "--no-git-checks", "--access", "public"];
@@ -95,12 +112,29 @@ async function checkPublishedManifest(fetchImpl, committed) {
 }
 
 /**
- * The three steps, in order, each behind the last. `steps` supplies every effect: `runCheck()` and
- * `runPublish(args)` return an exit status (`null` for a signal), `readCommitted()` the committed
- * manifest's bytes, `fetch` the network, and `log(line)` where the refusals go.
+ * The five steps, in order, each behind the last. `steps` supplies every effect: `runBuild()`,
+ * `runContract()`, `runCheck()` and `runPublish(args)` return an exit status (`null` for a
+ * signal), `readCommitted()` the committed manifest's bytes, `fetch` the network, and `log(line)`
+ * where the refusals go.
  */
 async function releasePublish(argv, steps) {
   const extra = argv[0] === "--" ? argv.slice(1) : argv;
+  const build = steps.runBuild();
+  if (build !== 0) {
+    steps.log(
+      `release:publish: the build failed (exit ${String(build)}); nothing was checked, fetched ` +
+        "or published.",
+    );
+    return build ?? 1;
+  }
+  const contract = steps.runContract();
+  if (contract !== 0) {
+    steps.log(
+      `release:publish: a tarball breaks the publish contract (exit ${String(contract)}); ` +
+        "nothing was fetched and nothing was published.",
+    );
+    return contract ?? 1;
+  }
   const check = steps.runCheck();
   if (check !== 0) {
     steps.log(
@@ -142,10 +176,18 @@ function fakeFetch(answer) {
 }
 
 /** One `releasePublish` run against fakes; returns what it did. */
-async function rehearse({ argv = [], check = 0, answer, publish = 0 }) {
+async function rehearse({ argv = [], build = 0, contract = 0, check = 0, answer, publish = 0 }) {
   const calls = [];
   const { fetchImpl, urls } = fakeFetch(answer ?? { status: 200, body: COMMITTED_SAMPLE });
   const status = await releasePublish(argv, {
+    runBuild: () => {
+      calls.push("build");
+      return build;
+    },
+    runContract: () => {
+      calls.push("contract");
+      return contract;
+    },
     runCheck: () => {
       calls.push("check");
       return check;
@@ -176,33 +218,55 @@ const MANIFEST_TESTS = [
   { name: "an unreachable CDN is refused", answer: new TypeError("fetch failed"), fires: true },
 ];
 
+const RAN_GATES = ["build", "contract", "check"];
+
 const SEQUENCE_TESTS = [
+  {
+    name: "a failed build checks nothing, fetches nothing and publishes nothing",
+    run: { build: 1 },
+    expect: { status: 1, calls: ["build"], fetched: 0 },
+  },
+  {
+    name: "a build killed by a signal is a failure",
+    run: { build: null },
+    expect: { status: 1, calls: ["build"], fetched: 0 },
+  },
+  {
+    name: "a tarball that breaks the contract fetches nothing and publishes nothing",
+    run: { contract: 1 },
+    expect: { status: 1, calls: ["build", "contract"], fetched: 0 },
+  },
+  {
+    name: "a contract gate that could not run passes its own code through",
+    run: { contract: 2 },
+    expect: { status: 2, calls: ["build", "contract"], fetched: 0 },
+  },
   {
     name: "a refused check fetches nothing and publishes nothing",
     run: { check: 1 },
-    expect: { status: 1, calls: ["check"], fetched: 0 },
+    expect: { status: 1, calls: RAN_GATES, fetched: 0 },
   },
   {
     name: "a check that could not run passes its own code through",
     run: { check: 2 },
-    expect: { status: 2, calls: ["check"], fetched: 0 },
+    expect: { status: 2, calls: RAN_GATES, fetched: 0 },
   },
   {
     name: "a check killed by a signal is a refusal",
     run: { check: null },
-    expect: { status: 1, calls: ["check"], fetched: 0 },
+    expect: { status: 1, calls: RAN_GATES, fetched: 0 },
   },
   {
     name: "a differing manifest publishes nothing",
     run: { answer: { status: 200, body: different } },
-    expect: { status: 1, calls: ["check"], fetched: 1 },
+    expect: { status: 1, calls: RAN_GATES, fetched: 1 },
   },
   {
-    name: "a passing release publishes once, with the caller's arguments last",
+    name: "a passing release builds, checks, then publishes once, with the caller's arguments last",
     run: { argv: ["--otp", "123456"] },
     expect: {
       status: 0,
-      calls: ["check", ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
+      calls: [...RAN_GATES, ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
       fetched: 1,
     },
   },
@@ -211,14 +275,14 @@ const SEQUENCE_TESTS = [
     run: { argv: ["--", "--otp", "123456"] },
     expect: {
       status: 0,
-      calls: ["check", ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
+      calls: [...RAN_GATES, ["publish", ...PUBLISH_ARGS, "--otp", "123456"]],
       fetched: 1,
     },
   },
   {
     name: "a failed publish is a failed release",
     run: { publish: 1 },
-    expect: { status: 1, calls: ["check", ["publish", ...PUBLISH_ARGS]], fetched: 1 },
+    expect: { status: 1, calls: [...RAN_GATES, ["publish", ...PUBLISH_ARGS]], fetched: 1 },
   },
 ];
 
@@ -281,8 +345,9 @@ async function main(argv) {
     }
     process.stdout.write(
       `release:publish: ${String(cases)} self-test case(s) passed with an injected fetch and ` +
-        "runner: rule (c) passes only an identical document, and nothing is fetched after a " +
-        "refused check or published after a refused compare.\n",
+        "runner: rule (c) passes only an identical document, nothing runs after a failed build or " +
+        "a refused tarball, and nothing is fetched after a refused check or published after a " +
+        "refused compare.\n",
     );
     return 0;
   }
@@ -294,18 +359,24 @@ async function main(argv) {
   // On Windows `pnpm` is a .cmd shim, which child_process refuses to spawn without a shell. The
   // fixed arguments are literals and the caller's are the caller's own command line.
   const isWindows = process.platform === "win32";
+  const pnpm = (args, env) =>
+    spawnSync(isWindows ? "pnpm.cmd" : "pnpm", args, {
+      cwd: root,
+      stdio: "inherit",
+      shell: isWindows,
+      env: { ...process.env, ...env },
+    }).status;
   return releasePublish(argv, {
+    runBuild: () => pnpm(BUILD_ARGS, { TURBO_FORCE: "true" }),
+    runContract: () =>
+      spawnSync(process.execPath, [join(root, PUBLISH_CONTRACT)], { cwd: root, stdio: "inherit" })
+        .status,
     runCheck: () =>
       spawnSync(process.execPath, [join(root, RELEASE_CHECK)], { cwd: root, stdio: "inherit" })
         .status,
     readCommitted: () => readFileSync(join(root, COMMITTED_MANIFEST)),
     fetch: globalThis.fetch,
-    runPublish: (args) =>
-      spawnSync(isWindows ? "pnpm.cmd" : "pnpm", args, {
-        cwd: root,
-        stdio: "inherit",
-        shell: isWindows,
-      }).status,
+    runPublish: (args) => pnpm(args, { [RELEASE_PUBLISH_ENV]: "1" }),
     log: (line) => process.stderr.write(`${line}\n`),
   });
 }

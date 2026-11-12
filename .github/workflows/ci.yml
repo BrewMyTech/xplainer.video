@@ -302,7 +302,9 @@ jobs:
       # — that the workspace template, scaffold templates and SKILL.md still
       # ship byte-identical, because those have to be readable to work at all.
       # And every published manifest's prepublishOnly runs the release check,
-      # so no publish goes around it (ADR 0031 D8).
+      # so no publish goes around it (ADR 0031 D8), and every file a manifest's
+      # main, types, bin or exports names is in its tarball (0.1.0's motion
+      # shipped without dist/).
       - name: Published tarballs leak no source, maps or licence
         run: pnpm check:publish-contract
 
