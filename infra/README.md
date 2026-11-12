@@ -182,16 +182,18 @@ published build has **exactly two** manifest sources — `--manifest` and the ne
   reads or re-publishes it.
 - **Format 2**, at `https://cdn.xplainer.video/toolchain/v2/manifest.json` — the address
   `apps/cli/src/setup/manifest.ts` fixes for this build, and the only one it reads over the
-  network — is committed at `apps/cli/src/setup/toolchain.manifest.json` and is **not yet
-  uploaded**. Uploading it verbatim, and purging its URL or waiting out its five-minute TTL
-  (§*The cache rule, and publishing a manifest* above), is the release owner's step, and it has to
-  happen before any release of a CLI that reads it. The release is to be gated on it: ADR 0031's
-  note of 2026-11-12 (D8) specifies a check that compares the published document with the committed
-  copy byte for byte before `pnpm publish -r`. *That check is not in this tree yet; until it lands,
-  the upload is something a release owner has to remember.* Until the upload, nothing run from a
-  checkout should request the format-2 URL, because a premature `404` is exactly what rule 1's
-  `status_code_ttl` exists to keep out of the cache: a local `setup` passes `--manifest` naming the
-  committed copy.
+  network — is committed at `apps/cli/src/setup/toolchain.manifest.json` and **was uploaded on
+  2026-11-12, by the owner, through the R2 dashboard** (owner ask `6c7459ce`). Read back that day,
+  it answered `200` as `application/json` with `cache-control: max-age=300`, and its SHA-256
+  (`a8c93fd5…f380bd`) equalled the committed copy's at `main` `ed88c42`. No command in this
+  repository uploads it. A change to the committed copy is therefore re-uploaded verbatim the same
+  way, and its URL purged or its five-minute TTL waited out (§*The cache rule, and publishing a
+  manifest* above), before any release of a CLI that reads it. `pnpm release:publish`
+  (`scripts/release-publish.mjs`, ADR 0031's note of 2026-11-12, D8) compares the published document
+  with the committed copy byte for byte before `pnpm publish -r`, and refuses on any difference, so
+  a forgotten re-upload stops a release rather than shipping one. A local `setup` still passes
+  `--manifest` naming the committed copy, so a checkout tests the manifest it has rather than the
+  one that is published.
 
 **What else is published, and by what.** The macOS FFmpeg 9.0.2 archives and their source bundle,
 under `toolchain/v1/ffmpeg/9.0.2/`, uploaded by `.github/workflows/ffmpeg-macos.yml` from `main`
