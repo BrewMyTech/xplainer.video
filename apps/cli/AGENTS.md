@@ -462,13 +462,13 @@ archive reader between them.
 
 | Module | What it owns |
 |---|---|
-| `manifest.ts` | The manifest's address, its shape, and the mirror of the pinned Remotion line's own Chrome URL selector |
+| `manifest.ts` | The manifest's address, its format-2 shape, selection by `<platform>-<arch>`, and `ARTEFACT_ALLOWLIST`: the URL prefixes a `browser` or `ffmpeg` row may name, each mapped to its publisher |
 | `source.ts` | Which of the three manifest sources answered — `--manifest`, the published address, this checkout's committed copy |
 | `download.ts` | `HEAD`, `Range` resume, streaming SHA-256, the named refusals, the archive-format seam, the staging-then-`rename` commit, and `acquireFile` for an artefact that is not an archive |
 | `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, every unsafe entry refused, and an optional **selector** so one binary leaves a 195 MB archive without the rest being inflated |
 | `tar.ts` | The tarball reader, gzip or xz: streamed, ustar only, header checksums, a **selector** so a package carrying five platforms lands one, and `stopAfter`, so decoding ends at the last member a caller keeps |
 | `acquired.ts` | The record a committed acquisition carries inside itself, and the check a warm cache passes |
-| `providers/chrome.ts` | The headless shell the pinned selector names, admitted on the manifest's **expected** digest |
+| `providers/chrome.ts` | The Chrome for Testing headless shell this platform's row names, admitted on the manifest's **expected** digest |
 | `providers/speech.ts` | The four speech routes, their precedence, `--speech`, and the refusal that names all four |
 | `speech-locate.ts` | The marker read back as three paths: the locator `resolveSpeech()` defaults to |
 | `providers/speech-docker.ts` | The pinned Kokoro image, pulled by digest and never started; the receipt the marker records |
@@ -476,7 +476,7 @@ archive reader between them.
 | `providers/speech-bundle.ts` | The manifest's own archive for this platform, verified by `sha256` |
 | `providers/workspace.ts` | Payload 2's two routes, and D8's install invocation with `path.delimiter` |
 | `toolchain.ts` | `toolchain.json` — the writer, the validating reader, and the gate the daemon applies |
-| `toolchain.manifest.json` | The reviewed document itself — per-platform expected digests, captured at manifest-build time |
+| `toolchain.manifest.json` | The reviewed document itself — format 2, one `browser` and one `ffmpeg` row per platform and the `speech` map, every expected digest captured at manifest-build time |
 | `testing/` | The loopback artefact server with one route per failure, the writers for archives no archiver produces, the four ONNX artefacts served from loopback, and a real marker for the suites downstream |
 
 **`setup` acquires the components you name, and the rule is a union.** Positive flags restrict the
@@ -608,13 +608,27 @@ bucket's `r2.dev` URL "is explicitly not cached
 by Cloudflare, so serving a ~110 MB CLI binary or a several-hundred-megabyte voice pack from it
 would pay origin egress on every single download". `toolchainManifestUrl()` refuses an `r2.dev`
 zone rather than trusting nobody will type one, and a **speech** entry served from any other host
-is refused when the manifest is parsed. Chrome's host is not checked that way, deliberately: its
-URL is chosen by the selector, not by the document.
+is refused when the manifest is parsed. **The browser's and ffmpeg's hosts are checked too, by a
+wider rule of the same kind**: since format 2 a row names its own URL, so `ARTEFACT_ALLOWLIST` in
+`manifest.ts` maps each URL prefix it admits to a publisher — Chrome for Testing's
+`storage.googleapis.com/chrome-for-testing-public/` to Google,
+`github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/` to BtbN's FFmpeg-Builds, and
+`cdn.<zone_name>/toolchain/v1/ffmpeg/` to this project — and a row under no prefix is refused when
+the manifest is parsed, before anything is fetched. A prefix rather than a host, because
+`github.com` hosts every GitHub user's releases; and a new publisher is a reviewed code change, never
+a manifest edit.
 
-**The manifest is published to that hostname; nothing else of ours is, and no command here uploads
-anything.** Measured 2026-09-11: `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers
-`200` as `application/json` with `cf-cache-status: HIT`, and its SHA-256 equals that of the committed
-`toolchain.manifest.json` — the two are expected to be byte-identical and that digest is the check.
+**The version-1 manifest is published to that hostname, and no command here uploads anything.**
+Measured 2026-09-11: `https://cdn.xplainer.video/toolchain/v1/manifest.json` answers `200` as
+`application/json` with `cf-cache-status: HIT`, and its SHA-256 equalled that of the committed
+`toolchain.manifest.json` **until 2026-11-12, when format 2 replaced the committed copy**. The
+version-1 document stays on the CDN untouched, because released CLIs read it — 0.0.9 requires its
+old Chrome block and refuses a newer format — and this build reads format 2 at
+`toolchain/v2/manifest.json`, which is where a release uploads the committed copy and what the
+release check compares with it byte for byte
+([ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
+2026-11-12, D3 and D8). Until that upload nothing run from a checkout should request the version-2
+URL: every local `setup` passes `--manifest` naming the committed copy.
 All three pieces of infrastructure behind it are now declared (`cloudflare_r2_bucket.artifacts`,
 `cloudflare_r2_custom_domain.cdn`, `cloudflare_ruleset.cdn_cache`), so **connecting the domain and
 adding its Cache Rule have stopped being manual steps**; `infra/README.md` §*The delivery position*
@@ -634,7 +648,7 @@ checkout.
 breakage.** All four `speech` entries say `"status": "unavailable"` and their `reason` strings name
 the milestone and the route that needs no bundle. Three of the four speech routes read no manifest
 at all (`--tts-url`, the `docker` image pinned by digest, and the in-process `onnx` route), only
-`bundle` does, and what genuinely needed this address was the **browser's** expected digest.
+`bundle` does, and what genuinely needs this address is the **browser's and ffmpeg's** rows.
 `deliveryPosition()` is the paragraph `ManifestUnreachable` carries when the address cannot be
 reached, and it is **one message for every platform**: it used to carry a second, harder paragraph
 for Windows — no working speech route at all, phase 4 as the milestone — and the `onnx` route is what
@@ -667,18 +681,25 @@ carries; `speech: took the onnx route`; the workspace; and `toolchain.json` pars
 `speech.provider === "onnx"`. It is still `workflow_dispatch` only and still registers from the
 default branch, so what changed is what a dispatch means, not when one happens.
 
-**The expected digest is selected by the resolved URL, never by `<os>-<arch>`.**
-`@remotion/renderer`'s `getChromeDownloadUrl` branches on Amazon Linux 2023, on `chromeMode` and on
-whether the host's glibc is at least 2.35, so one platform resolves to several different artefacts
-— and ADR 0020's "Alpine is blocked on rendering, not on init" is what a key ignoring the C library
-buys you. `manifest.ts` therefore **mirrors** that function, and `selectChromeArtefact()` looks the
-URL up. Until 2026-11-11 `manifest.test.ts` also drove the real function over all 80 branch
-combinations and compared; this package stopped installing it when the renderer became its own, so
-the mirror is now the selector this package owns, frozen at the pinned line, and the committed
-manifest's recorded URLs are what it is checked against. Two
-consequences worth keeping: the manifest **cannot redirect a download**, because the URL fetched is
-the selector's rather than the document's; and a configuration with no recorded entry is a refusal
-naming the URL, never a download of unreviewed bytes.
+**The expected digest is selected by `<platform>-<arch>`, and the URL is admitted by code.**
+Until format 2 the browser's row was looked up by the URL a mirror of the previous renderer's own
+selector resolved, because that selector branched on Amazon Linux 2023, on its acquisition mode
+and on glibc 2.35, so one platform resolved to several artefacts. Format 2 deleted the mirror
+([ADR 0031](../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of
+2026-11-12, D3 and D4): Chrome for Testing 157.0.8103.50 publishes exactly one headless shell per
+platform, linux-arm64 included, and FFmpeg has one pin per platform, so `selectBrowserArtefact()`
+and `selectFfmpegArtefact()` take the row the key names. The one Linux variation — the C library —
+is a constraint on that row, and `assertLibcSatisfied()` applies it in the same call, because
+ADR 0020's "Alpine is blocked on rendering, not on init" is what skipping it buys you. What the URL
+lookup used to guarantee — that the manifest **cannot redirect a download** — is the allowlist's
+job now: a row's URL must begin with a prefix `ARTEFACT_ALLOWLIST` names, it must already be in its
+normal form so that the string reviewed is the string fetched, and the parsed row carries the
+publisher that prefix maps to rather than anything the document says. An `ffmpeg` row also names
+the one `member` to keep, its `member_sha256` and `member_size`, its `licence` — one of FFmpeg's
+four free configurations as an SPDX id — and its `licence_member`, and every member name passes
+`safeJoin` when the document is parsed. A platform a block has no row for is a refusal naming it,
+never a download of unreviewed bytes: `win32-arm64` has an `ffmpeg` row and no `browser`, so it is
+refused as an unsupported platform for the browser and cannot render.
 
 **Digests are expected, never recorded.** Nothing here writes a manifest, and no path takes a digest
 from the bytes that arrived — `sha256` is a required input to the download. A digest recorded on

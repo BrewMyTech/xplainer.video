@@ -71,7 +71,6 @@ async function serve(body: Buffer): Promise<ArtefactServer> {
 const probe: HostProbe = {
   platform: process.platform,
   arch: process.arch,
-  osRelease: null,
   glibc: null,
 };
 
@@ -79,8 +78,9 @@ const platformKey = `${probe.platform}-${probe.arch}`;
 
 function manifest(url: string, sha256: string, size: number): ToolchainManifest {
   return {
-    format_version: 1,
-    chrome: { remotion: "4.0.495", version: "149.0.7790.0", expected: {} },
+    format_version: 2,
+    browser: { expected: {} },
+    ffmpeg: { expected: {} },
     speech: {
       [platformKey]: { status: "recorded", version: BUNDLE_VERSION, url, sha256, size },
     },

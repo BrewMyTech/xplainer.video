@@ -1,19 +1,18 @@
 /**
- * The Chrome provider: the headless shell the pinned Remotion line would download, verified first.
+ * The Chrome provider: the Chrome for Testing headless shell the manifest records for this
+ * platform, verified first.
  *
- * **The URL comes from the selector and the digest comes from the manifest**, and neither can
- * supply the other's half. `manifest.ts` mirrors `@remotion/renderer`'s `getChromeDownloadUrl`
- * branch for branch, so the artefact fetched here is the one the pinned Remotion line itself would
- * fetch on this machine; the manifest is then searched for an entry carrying **that exact URL**, and
- * all it contributes is the expected `sha256` and the C-library constraint. A manifest naming a
- * different artefact therefore matches nothing and produces a refusal, not a download from
- * somewhere else.
+ * **The row is selected by `<platform>-<arch>`, and its URL is admitted by code.** Format 2 of the
+ * toolchain manifest names the browser's URL in the row itself, so `manifest.ts` refuses, when the
+ * document is parsed, any URL that does not begin with a prefix its `ARTEFACT_ALLOWLIST` maps to a
+ * publisher — for the browser, Google's `chrome-for-testing-public` bucket. A manifest naming an
+ * artefact anywhere else is a refusal before anything is fetched, not a download from somewhere
+ * else.
  *
  * **The digest is expected, never recorded.** Round 3 recorded the digest of whatever arrived, which
  * cannot reject an incorrect-but-intact archive on a first acquisition — it only detects later
- * drift. Where the manifest has no entry for this machine's configuration, `setup` says so instead
- * of trusting the bytes, and that refusal names the URL so the manifest can be extended with a
- * reviewed value rather than with a guess.
+ * drift. Where the manifest has no entry for this machine, `setup` says so instead of trusting the
+ * bytes.
  *
  * **What is recorded is the executable, and what is verified is the archive.** ADR 0020's install
  * preflight checks that `toolchain.json`'s paths still exist, so the path recorded has to be the
@@ -31,23 +30,30 @@ import { acquireArtefact } from "../download.js";
 import {
   type HostProbe,
   probeHost,
-  selectChromeArtefact,
+  selectBrowserArtefact,
   type ToolchainManifest,
 } from "../manifest.js";
 
-/** The `provider` token the marker records for this route. */
-export const CHROME_PROVIDER = "remotion";
+/**
+ * The `provider` token the marker records for this route: the browser the manifest's own row names.
+ *
+ * Until format 2 of the manifest it was the previous renderer's name, after the URL selector this
+ * package mirrored from it, which format 2 deleted. A marker an older `setup` wrote still carries
+ * the old token; the schema constrains only its spelling, and nothing branches on either.
+ */
+export const CHROME_PROVIDER = "manifest";
 
 /** The directory name, under the toolchain directory, one acquisition commits itself to. */
 export const CHROME_DIR_NAME = "chrome-headless-shell";
 
 /**
- * The executable names a Chrome-for-Testing or a remotion.media headless-shell archive unpacks to.
+ * The executable names a headless-shell archive unpacks to.
  *
- * Two spellings, because the two publishers disagree: Chrome for Testing ships
- * `chrome-headless-shell`, and the Playwright-derived builds Remotion mirrors ship `headless_shell`.
- * Both are searched for rather than one being assumed, because assuming produces a `toolchain.json`
- * whose recorded path does not exist on exactly the platforms that need the other one.
+ * Two spellings, because publishers disagree: Chrome for Testing ships `chrome-headless-shell`, and
+ * Playwright's Chromium builds — the linux-arm64 source ADR 0031's note of 2026-11-12 keeps as the
+ * fallback — ship `headless_shell`. Both are searched for rather than one being assumed, because
+ * assuming produces a `toolchain.json` whose recorded path does not exist on exactly the platforms
+ * that need the other one.
  */
 export const CHROME_EXECUTABLE_NAMES: readonly string[] = [
   "chrome-headless-shell",
@@ -60,16 +66,16 @@ export const CHROME_EXECUTABLE_NAMES: readonly string[] = [
  * What would be fetched for this machine, and what it must hash to.
  *
  * A named function rather than an object literal inside {@link acquireChrome}, because this is the
- * join the whole provider exists for: the `url` is the **selector's** and the `sha256` is the
- * **manifest's**, and neither can supply the other's half. `download.ts` refuses a body that hashes
- * to anything else (`checksum-mismatch`, and it deletes the partial so a wrong body is never
- * resumed onto), so what is asserted here is that the reviewed digest is what reaches it.
+ * one join the provider exists for: this platform's row, its allowlisted URL and its reviewed
+ * digest. `download.ts` refuses a body that hashes to anything else (`checksum-mismatch`, and it
+ * deletes the partial so a wrong body is never resumed onto), so what is asserted here is that the
+ * reviewed digest is what reaches it.
  */
 export function chromeRequest(
   manifest: ToolchainManifest,
   probe: HostProbe,
 ): { url: string; sha256: string; size: number } {
-  const selection = selectChromeArtefact(manifest, probe);
+  const selection = selectBrowserArtefact(manifest, probe);
   return { url: selection.url, sha256: selection.sha256, size: selection.size };
 }
 
@@ -115,11 +121,8 @@ export type AcquiredChrome = {
 export async function acquireChrome(options: AcquireChromeOptions): Promise<AcquiredChrome> {
   const log = options.log ?? ((): void => {});
   const probe = options.probe ?? probeHost();
-  const selection = selectChromeArtefact(options.manifest, probe);
-  const destination = join(
-    options.toolchainDir,
-    `${CHROME_DIR_NAME}-${options.manifest.chrome.version}`,
-  );
+  const selection = selectBrowserArtefact(options.manifest, probe);
+  const destination = join(options.toolchainDir, `${CHROME_DIR_NAME}-${selection.version}`);
 
   let fetched = false;
   if (existsSync(destination)) {
@@ -142,7 +145,7 @@ export async function acquireChrome(options: AcquireChromeOptions): Promise<Acqu
   }
   return {
     component: {
-      version: options.manifest.chrome.version,
+      version: selection.version,
       path: executable,
       sha256: selection.sha256,
       provider: CHROME_PROVIDER,
@@ -156,8 +159,8 @@ export async function acquireChrome(options: AcquireChromeOptions): Promise<Acqu
  * The headless shell inside an unpacked tree, or `null`.
  *
  * A search rather than a fixed relative path: Chrome for Testing unpacks to
- * `chrome-headless-shell-<platform>/chrome-headless-shell` and the remotion.media builds unpack to
- * a differently-named root, so one hard-coded path would be right on some platforms and produce a
+ * `chrome-headless-shell-<platform>/chrome-headless-shell` and Playwright's builds unpack to a
+ * differently-named root, so one hard-coded path would be right on some platforms and produce a
  * recorded path that does not exist on the others. The walk is bounded to three levels, which every
  * published layout is well inside, so a malformed tree cannot turn this into a filesystem crawl.
  */

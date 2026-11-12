@@ -24,6 +24,7 @@ import type { Toolchain, ToolchainComponent } from "@xplainer/protocol";
 import { hashFile, MANIFEST_VERSION, WORKSPACE_MANIFEST_FILE } from "../../runtime/manifest.js";
 import { readTemplatePins } from "../../runtime/verify.js";
 import { STYLE_DIMENSION } from "../../speech/index.js";
+import { CHROME_PROVIDER } from "../providers/chrome.js";
 import { KOKORO_IMAGE } from "../providers/speech-docker.js";
 import {
   ONNX_DIR_NAME,
@@ -84,10 +85,10 @@ export function recordTestToolchain(options: TestToolchainOptions): Toolchain {
     format_version: TOOLCHAIN_FORMAT_VERSION,
     created_at: new Date().toISOString(),
     chrome: {
-      version: "149.0.7790.0",
+      version: "157.0.8103.50",
       path: chromePath,
       sha256: hashFile(chromePath),
-      provider: "remotion",
+      provider: CHROME_PROVIDER,
     },
     speech: {
       version: KOKORO_IMAGE,

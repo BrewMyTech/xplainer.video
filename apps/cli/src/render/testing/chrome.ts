@@ -32,7 +32,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { hashFile } from "../../runtime/manifest.js";
-import { parseToolchainManifest, probeHost, selectChromeArtefact } from "../../setup/manifest.js";
+import { parseToolchainManifest, probeHost, selectBrowserArtefact } from "../../setup/manifest.js";
 import { acquireChrome, CHROME_DIR_NAME } from "../../setup/providers/chrome.js";
 import { committedManifestPath } from "../../setup/source.js";
 import { isExecutableFile } from "../encode.js";
@@ -81,8 +81,9 @@ async function acquireVerified(): Promise<TestChrome> {
     );
   }
   const manifest = parseToolchainManifest(readFileSync(manifestPath, "utf8"), manifestPath);
-  const archiveSha256 = selectChromeArtefact(manifest, probeHost()).sha256;
-  const destination = join(TEST_TOOLCHAIN_CACHE, `${CHROME_DIR_NAME}-${manifest.chrome.version}`);
+  const selection = selectBrowserArtefact(manifest, probeHost());
+  const archiveSha256 = selection.sha256;
+  const destination = join(TEST_TOOLCHAIN_CACHE, `${CHROME_DIR_NAME}-${selection.version}`);
   const record = `${destination}.verified.json`;
 
   if (existsSync(destination) && !stillVerified(record, archiveSha256)) {
@@ -98,7 +99,7 @@ async function acquireVerified(): Promise<TestChrome> {
     };
     writeFileSync(record, `${JSON.stringify(verified, null, 2)}\n`);
   }
-  return { path: acquired.component.path, sha256: archiveSha256, version: manifest.chrome.version };
+  return { path: acquired.component.path, sha256: archiveSha256, version: selection.version };
 }
 
 /** Whether the tree on disk is the one a verified acquisition of `archiveSha256` produced. */

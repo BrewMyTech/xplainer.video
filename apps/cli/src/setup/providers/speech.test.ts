@@ -238,7 +238,7 @@ describe("acquireSpeech", () => {
       // darwin-x64 has no ONNX binding, which is how the walk reaches docker with no pins to
       // point at loopback — see the reordering test below. A host that *does* have one would take
       // the onnx route here and fetch 204 MB from HuggingFace inside a unit test.
-      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+      probe: { platform: "darwin", arch: "x64", glibc: null },
     });
 
     expect(pulled.provider).toBe(DOCKER_PROVIDER);
@@ -252,7 +252,7 @@ describe("acquireSpeech", () => {
       // darwin-x64 is the one host `onnxruntime-node` publishes no binding for, so it is the only
       // way to reach the docker route without a `--speech` flag — which is the whole content of the
       // reordering below.
-      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+      probe: { platform: "darwin", arch: "x64", glibc: null },
     });
 
     expect(acquired.provider).toBe(DOCKER_PROVIDER);
@@ -311,7 +311,7 @@ describe("acquireSpeech", () => {
       manifest: async () => manifest(),
       toolchainDir: temporaryDirectory("xplainer-toolchain-"),
       runDocker: noDocker,
-      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+      probe: { platform: "darwin", arch: "x64", glibc: null },
     }).catch((error: unknown) => error);
 
     // darwin-x64 has none of the four, so the walk is visible end to end in one value.
@@ -561,7 +561,7 @@ describe("acquireSpeech refusals", () => {
       manifest: async () => manifest(),
       toolchainDir: temporaryDirectory("xplainer-toolchain-"),
       runDocker: noDocker,
-      probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+      probe: { platform: "darwin", arch: "x64", glibc: null },
     }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(SpeechRefusal);
@@ -598,7 +598,7 @@ describe("acquireSpeech refusals", () => {
         // rather than by `--speech docker`: darwin-x64 is the host with no ONNX binding, so `onnx`
         // reports itself absent, docker is tried, and its failure must not become a message about
         // the bundle below it.
-        probe: { platform: "darwin", arch: "x64", osRelease: null, glibc: null },
+        probe: { platform: "darwin", arch: "x64", glibc: null },
       }),
     ).rejects.toThrow(/no space left on device/);
   });

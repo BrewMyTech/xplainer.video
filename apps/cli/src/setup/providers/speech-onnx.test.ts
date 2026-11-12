@@ -74,7 +74,7 @@ function component(toolchainDir: string): string {
 }
 
 function probe(platform: string, arch: string): HostProbe {
-  return { platform, arch, osRelease: null, glibc: null };
+  return { platform, arch, glibc: null };
 }
 
 describe("acquireSpeechOnnx", () => {

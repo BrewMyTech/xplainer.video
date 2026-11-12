@@ -31,6 +31,7 @@ import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import { MANIFEST_VERSION, WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
 import { readTemplatePins } from "../runtime/verify.js";
+import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
 import { WORKSPACE_PAYLOAD_ENV } from "../setup/providers/workspace.js";
 import { committedManifestPath } from "../setup/source.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
@@ -253,7 +254,7 @@ describe("xplainer setup", () => {
     expect(marker?.workspace.platform).toBe(`${process.platform}-${process.arch}`);
     const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Toolchain;
     expect(onDisk.speech.provider).toBe("docker");
-    expect(onDisk.chrome.provider).toBe("remotion");
+    expect(onDisk.chrome.provider).toBe(CHROME_PROVIDER);
   });
 });
 
