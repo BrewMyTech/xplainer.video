@@ -138,6 +138,17 @@ defaults:
     shell: bash
 
 jobs:
+  # `fps` measures on the Linux leg only. Without `linux`, the run would be
+  # green having measured nothing, so it is refused instead.
+  fps-needs-linux:
+    name: fps needs the Linux leg
+    if: ${{ inputs.fps && !inputs.linux }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::-f fps=true measures on the Linux leg; dispatch it with -f linux=true"
+          exit 1
+
   gate:
     name: toolchain gate (${{ matrix.os }})
     # A dispatch that ticked nothing has asked for nothing.
@@ -284,32 +295,52 @@ jobs:
       # It REPORTS AND DOES NOT GATE. The spike exits 1 when its slowest run is
       # under `--bar`. That is written to the job summary as FAIL, and the step
       # stays green: `linux-12fps-run` closes by review of this run, not by its
-      # colour. Exit 2 means the spike could not measure, and fails the step.
+      # colour. Anything else fails the step: exit 2 is the spike's own refusal,
+      # and an exit 1 without the spike's verdict line is Node's code for an
+      # uncaught error, not a measurement. `defaults.run.shell: bash` runs this
+      # as `bash -eo pipefail`, so the pipeline runs under `set +e`; otherwise
+      # a miss would end the step before its status is read.
       - name: Linux 12 fps throughput, reported not gating (P0-6)
         if: runner.os == 'Linux' && inputs.fps
         run: |
           set -uo pipefail
+          summary() {
+            {
+              echo "## Linux 12 fps throughput (P0-6)"
+              echo
+              echo "**$1.** Loop fps is capture plus encode, from the first progress line to \`done\`."
+              if [ -f "$RUNNER_TEMP/fps.log" ]; then
+                echo
+                echo '```'
+                cat "$RUNNER_TEMP/fps.log"
+                echo '```'
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
           state="$RUNNER_TEMP/fps-state"
+          set +e
           node apps/cli/dist/bin.js setup --state-dir "$state" \
             --manifest apps/cli/src/setup/toolchain.manifest.json \
-            --tts-url http://127.0.0.1:8880 || exit 1
+            --tts-url http://127.0.0.1:8880
+          setup_status=$?
+          set -e
+          if [ "$setup_status" -ne 0 ]; then
+            summary "Not measured: setup exited $setup_status"
+            exit 1
+          fi
+          set +e
           node apps/cli/spikes/p1-render-fps.mjs --marker "$state/toolchain.json" \
-            --runs 3 --bar 12 | tee "$RUNNER_TEMP/fps.log"
+            --runs 3 --bar 12 2>&1 | tee "$RUNNER_TEMP/fps.log"
           status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$status" -eq 1 ] && ! grep -q 'FAIL against 12$' "$RUNNER_TEMP/fps.log"; then
+            status=2
+          fi
           case "$status" in
-            0) verdict="PASS: every run's loop fps is at least 12" ;;
-            1) verdict="FAIL: the slowest run's loop fps is under 12 (reported, not gating)" ;;
-            *) verdict="the spike could not measure (exit $status)" ;;
+            0) summary "PASS: every run's loop fps is at least 12" ;;
+            1) summary "FAIL: the slowest run's loop fps is under 12 (reported, not gating)" ;;
+            *) summary "Not measured: the spike stopped without a verdict" ;;
           esac
-          {
-            echo "## Linux 12 fps throughput (P0-6)"
-            echo
-            echo "**$verdict.** Loop fps is capture plus encode, from the first progress line to \`done\`."
-            echo
-            echo '```'
-            cat "$RUNNER_TEMP/fps.log"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$status" -gt 1 ]; then
             exit 1
           fi

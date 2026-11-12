@@ -125,6 +125,12 @@ jobs:
             printf '%s\t%s\n' "$platform" "$file" >> "$RUNNER_TEMP/kept.tsv"
             echo "ok  $platform  $file  $sha256"
           done < <(jq -r '.[] | [.platform, .url, .sha256, (.size | tostring)] | @tsv' "$RUNNER_TEMP/rows.json")
+          # A failure inside the process substitution above is not seen by
+          # errexit, so the rows kept are counted against the rows read.
+          if [ "$(wc -l < "$RUNNER_TEMP/kept.tsv")" -ne "$(jq length "$RUNNER_TEMP/rows.json")" ]; then
+            echo "::error::kept $(wc -l < "$RUNNER_TEMP/kept.tsv") archives of $(jq length "$RUNNER_TEMP/rows.json") rows"
+            exit 1
+          fi
 
       - name: Keep the FFmpeg-Builds scripts at the commit the release tag points at
         id: scripts
@@ -135,17 +141,25 @@ jobs:
           set -euo pipefail
           object="$(gh api "repos/$BTBN_REPO/git/ref/tags/$RELEASE" --jq '.object.type + " " + .object.sha')"
           read -r type commit <<< "$object"
-          # An annotated tag points at a tag object, which points at the commit.
-          if [ "$type" = tag ]; then
-            commit="$(gh api "repos/$BTBN_REPO/git/tags/$commit" --jq .object.sha)"
-          fi
-          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::the tag $RELEASE resolved to '$commit', not a commit"
+          # An annotated tag points at a tag object, which may point at another.
+          for _ in 1 2 3; do
+            [ "$type" = tag ] || break
+            object="$(gh api "repos/$BTBN_REPO/git/tags/$commit" --jq '.object.type + " " + .object.sha')"
+            read -r type commit <<< "$object"
+          done
+          if [ "$type" != commit ] || ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the tag $RELEASE resolved to a $type '$commit', not a commit"
             exit 1
           fi
-          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
-            --output "$RUNNER_TEMP/snapshot/FFmpeg-Builds-$commit.tar.gz" \
-            "https://github.com/$BTBN_REPO/archive/$commit.tar.gz"
+          # Built here rather than downloaded from GitHub's archive endpoint,
+          # whose bytes are not promised to stay the same: a re-run after a
+          # partial upload must produce the object it finds already there.
+          # `git archive` of one commit and `gzip -n` are both deterministic.
+          scripts="$RUNNER_TEMP/scripts"
+          git init --quiet "$scripts"
+          git -C "$scripts" fetch --quiet --depth 1 "https://github.com/$BTBN_REPO" "$commit"
+          git -C "$scripts" archive --format=tar --prefix="FFmpeg-Builds-$commit/" "$commit" |
+            gzip -n -9 > "$RUNNER_TEMP/snapshot/FFmpeg-Builds-$commit.tar.gz"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "FFmpeg-Builds at $commit"
 
@@ -157,15 +171,21 @@ jobs:
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/snapshot"
-          (cd "$dir" && for file in *; do
-            printf '%s\t%s\t%s\n' "$file" "$(sha256sum "$file" | cut -d' ' -f1)" "$(stat -c %s "$file")"
-          done) > "$RUNNER_TEMP/files.tsv"
+          : > "$RUNNER_TEMP/files.tsv"
+          for path in "$dir"/*; do
+            # Assigned first: errexit does not see a failure inside an argument.
+            sha256="$(sha256sum "$path" | cut -d' ' -f1)"
+            size="$(stat -c %s "$path")"
+            printf '%s\t%s\t%s\n' "${path##*/}" "$sha256" "$size" >> "$RUNNER_TEMP/files.tsv"
+          done
+          captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          manifest_sha256="$(sha256sum "$MANIFEST" | cut -d' ' -f1)"
           jq -n \
             --arg release "$RELEASE" \
             --arg scripts_commit "$SCRIPTS_COMMIT" \
-            --arg captured_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg captured_at "$captured_at" \
             --arg run "$RUN_URL" \
-            --arg manifest_sha256 "$(sha256sum "$MANIFEST" | cut -d' ' -f1)" \
+            --arg manifest_sha256 "$manifest_sha256" \
             --arg manifest_commit "$GITHUB_SHA" \
             --rawfile files "$RUNNER_TEMP/files.tsv" \
             --rawfile kept "$RUNNER_TEMP/kept.tsv" '
@@ -195,7 +215,7 @@ jobs:
             done < "$RUNNER_TEMP/files.tsv"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload to the private bucket, then read every object back
+      - name: Upload to the private bucket, then check every object's ETag
         env:
           PIN_R2_ACCESS_KEY_ID: ${{ secrets.PIN_R2_ACCESS_KEY_ID }}
           PIN_R2_SECRET_ACCESS_KEY: ${{ secrets.PIN_R2_SECRET_ACCESS_KEY }}
@@ -222,6 +242,10 @@ jobs:
           fi
           if ! [[ "$PIN_R2_BUCKET" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]]; then
             echo "::error::PIN_R2_BUCKET '$PIN_R2_BUCKET' is not an R2 bucket name"
+            exit 1
+          fi
+          if ! [[ "$R2_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "::error::R2_ACCOUNT_ID is not a Cloudflare account id (32 hex digits)"
             exit 1
           fi
           dir="$RUNNER_TEMP/snapshot"
@@ -262,17 +286,22 @@ jobs:
               *) echo "text/plain; charset=utf-8" ;;
             esac
           }
+          uploaded=0
           upload() { # file name inside the snapshot directory
-            local file="$dir/$1" key="$prefix/$1" md5 etag code
+            local file="$dir/$1" key="$prefix/$1" md5 sha256 type etag code
             md5="$(md5sum "$file" | cut -d' ' -f1)"
+            sha256="$(sha256sum "$file" | cut -d' ' -f1)"
+            type="$(content_type "$1")"
             etag="$(remote_etag "$key")"
             if [ "$etag" = "$md5" ]; then
               echo "present   $key (same bytes)"
               return
             fi
-            if [ -n "$etag" ] && [ "$1" = SNAPSHOT.json ]; then
-              # A re-run's record differs only in when and by which run: every
-              # object it names was just found present with the same bytes.
+            if [ -n "$etag" ] && [ "$1" = SNAPSHOT.json ] && [ "$uploaded" -eq 0 ]; then
+              # A re-run's record differs only in when and by which run, as
+              # long as every object it names was found present with the same
+              # bytes. Once this run has added an object, the earlier record
+              # no longer describes the prefix, and the check below refuses.
               echo "present   $key (an earlier run's record, kept)"
               return
             fi
@@ -281,8 +310,8 @@ jobs:
               exit 1
             fi
             code="$(s3 "$key" --upload-file "$file" \
-              --header "Content-Type: $(content_type "$1")" \
-              --header "x-amz-content-sha256: $(sha256sum "$file" | cut -d' ' -f1)" \
+              --header "Content-Type: $type" \
+              --header "x-amz-content-sha256: $sha256" \
               --header "If-None-Match: *" \
               --output /dev/null --write-out '%{http_code}')"
             if [ "$code" != 200 ]; then
@@ -294,6 +323,7 @@ jobs:
               echo "::error::$key reads back with etag '$etag', expected $md5"
               exit 1
             fi
+            uploaded=$((uploaded + 1))
             echo "put       $key"
           }
 
