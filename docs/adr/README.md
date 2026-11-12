@@ -93,7 +93,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
 | [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
-| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted |
+| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted — note 2026-11-12 |
 
 ### The relocated five, and why each could not stay
 
@@ -230,6 +230,15 @@ and each note records only what happened underneath its own record:
 | [0018](0018-engine-owns-the-composition-shell.md) | The ownership model is unchanged; the shell imports `@xplainer/motion`, `<Audio>` is a marker because the encoder muxes the narration itself, the provenance half of AC-7 is down to `types.ts`, and the `Video.tsx.max` test is retired |
 | [0022](0022-open-source-the-published-packages.md) | `SKILL.md` and the three plugin and marketplace `description` fields stop saying rendering uses Remotion, because it stopped being true; the three READMEs, `LICENSE` and `NOTICE` keep the disclosure while `setup --workspace` still installs Remotion, and no release carries the narrower set while it does |
 | [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | Payload 1 gains the renderer's pure-JS dependencies, with no native code and no install script; payload 2 is read by no render and is removed in Phase 2 |
+
+ADR 0031 then gained a dated note of 2026-11-12 **on itself**: Phase 2's twelve decisions, recorded
+before their code, each quoting the sentence of the record it amends — Follow-up 1's "keeps
+`format_version` 1" and its choice of xz decoder, §B2's "puts the acquired component in front of
+this order", Follow-up 2's "linux-arm64 has no Chrome for Testing build", Follow-up 4's ticket, and
+the page-network and signing questions the owner has now answered. A record correcting its own text
+by note has a precedent in ADR 0025's note of 2026-09-07. ADR 0005, ADR 0027 and ADR 0022 each gain
+a note of their own in the Phase 2 step that changes what their 2026-11-11 note describes, and their
+rows above take the date when it lands.
 
 ## Licence
 

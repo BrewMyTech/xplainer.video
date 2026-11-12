@@ -525,3 +525,316 @@ capture format are the two levers left, and neither is pulled by this record.
    - **The release gate includes the Linux fps run and the Windows pipe proof**, not only the macOS
      gate above, and a check that fails a publish while `template/package.json` still pins
      `remotion`, so the hard condition is a gate and not a sentence.
+
+## Note, 2026-11-12: Phase 2's twelve decisions, and the sentences of this record they amend
+
+Added as a dated note rather than a rewrite: nothing above is edited, and every earlier sentence
+this note changes is quoted where it is changed. The decisions are **D1–D12** of the Phase 2 plan,
+`.omc/plans/phase2-toolchain.md`, approved by the owner on 2026-11-12 and relayed by the
+coordinator; like the documents in this record's header it is not public, and
+[`README.md` §Provenance](README.md#provenance) is where its citation resolves. They are written
+down here before any of their code lands, as Follow-up 8 asks of the marker's shape. None of D1–D12
+is built on this date; each later step of the plan lands one or more of them, with its tests, in a
+commit of its own.
+
+### The owner's decisions behind them
+
+- **Q1 — the Remotion tree an older `setup` installed is deleted**, not merely reported (D7).
+- **Q2 — Chrome for Testing 157.0.8103.50 on all five render platforms** (D4).
+- **Q3 — crossing the cut stops with exit `3` and prints three commands**; nothing reinstalls the
+  daemon on the user's behalf (D2).
+- **Q4 — `xz-decompress@0.2.3` is accepted as it stands, with a `NOTICE` paragraph for its three
+  parts** (D5). Decided on 2026-11-11; the rest on 2026-11-12.
+- **The page's network is allowed by default**, which is what Remotion did. This answers the first
+  bullet of Follow-up 8. An opt-in deny is not in Phase 2's scope.
+- **There is no Developer ID, and our macOS FFmpeg ships ad-hoc signed.**
+
+The last two each amend a sentence of their own, quoted under §The page's network and §Signing
+below.
+
+### The macOS FFmpeg is published
+
+Our own static FFmpeg 9.0.2 — the build §The owner's decisions, 2026-11-11 chose for macOS — was
+published on 2026-11-12 by the `ffmpeg-macos` workflow, run `43133391215`, on `main` at `73be23c`.
+Its manifest fragment is `https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/ffmpeg-9.0.2.json`,
+sha256 `3921809380dee9fb1a79fe419f7cff1b71daeb32d156559e44f72a795348a4b9`, and its two rows are:
+
+```
+darwin-arm64  ffmpeg-9.0.2-darwin-arm64.zip   2,012,286 B
+              sha256 543246c663ec70903e1abb8823c825f234b7171a78e109820310d7cbbab68071
+              member ffmpeg-9.0.2-darwin-arm64/ffmpeg   4,533,080 B
+              sha256 0a8b6c740e77005fa9ecc42e1635c2c979428a6e16da9983a27ba1ba0aefd3c6
+darwin-x64    ffmpeg-9.0.2-darwin-x64.zip     2,172,480 B
+              sha256 3486a8fbf6934c4f494913a79a6d5e274db97c72c268eb9d71a446b2289a8ec5
+              member ffmpeg-9.0.2-darwin-x64/ffmpeg     5,300,616 B
+              sha256 52e637da7a4fc2e9bb996201563bbda2dca13173ade15d6704affb4bac0bd59c
+```
+
+Both archives live under `https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/`, carry `LICENSE`,
+`SOURCE.txt` and `BUILDINFO.txt` beside the binary, declare `GPL-2.0-or-later`, and name
+`…/9.0.2/source/README.txt` as their source, because the bucket serves no directory index. These
+are the rows D3's manifest carries. The plan drafted macOS **placeholder** rows for the case where
+they did not yet exist, and a skip in D12 to keep `setup` working on a Mac while they were; neither
+is written, because the case never arises.
+
+### D1 — the marker is `format_version` 2, without `workspace`
+
+`toolchain.json` moves to `format_version: 2`. `chrome` and `speech` stay required; `ffmpeg` is
+optional in the schema; `workspace` is no longer written, and stays in the schema as a deprecated
+optional property so that a version-1 document still validates. This build reads both versions, and
+a version-1 marker is a valid shape describing an incomplete toolchain. What a render needs is
+decided by the gate (D12), not by the schema.
+
+**Amends** Follow-up 1's "an optional `ffmpeg` component in `toolchain.json` that keeps
+`format_version` 1 (moving the version would make a rolled-back daemon report degraded while it
+has everything it needs)". The parenthesis is right about a rollback that stays inside one format,
+and it is the reason D2 exists: no rollback is allowed to cross the cut, so no rolled-back daemon
+reads a version-2 marker. Follow-up 8's statement that "`workspace` is required by the schema and by
+the reader" stops being true when this lands; the review's pick it names — `format_version` 2
+without `workspace` — is the one taken.
+
+### D2 — the cut is a reinstall, refused wherever it could be crossed by accident
+
+Payload 1's runtime manifest gains `toolchain: { format: 2, ffmpeg_min_libavcodec: 60 }`, and its
+`MANIFEST_VERSION` moves from 1 to 2; a payload built before the cut has no such block and reads as
+format 1. Then:
+
+- **(a) `daemon update`** refuses, exit `3`, having staged and drained nothing, when the installed
+  and incoming formats differ, in either direction; and, within one format, when the marker does
+  not satisfy the incoming runtime's `toolchain` requirements as `checkToolchain` judges them —
+  because an update's readiness check is a `200`, and a degraded `/healthz` is a `200` too. The
+  toolchain clause takes the place of the two that asked whether the installed workspace satisfies
+  both runtimes; the template-pin refusal of ADR 0027's decision A leaves with payload 2.
+- **(b) `xplainer update`** reads the installed daemon's format **before** its `setup` step, and
+  across the cut stops with exit `3` having run nothing.
+- **(c) `xplainer setup`** refuses, exit `3`, while an installed daemon's runtime reads format 1,
+  so a version-2 marker never sits under a version-1 daemon.
+
+(b) and (c) print the same three commands — `xplainer daemon uninstall`, `xplainer setup`,
+`xplainer daemon install` — and run none of them (Q3). A daemon is detected through `daemon.json`'s
+`runtime_dir` and that runtime's manifest; a recorded daemon whose manifest cannot be read is
+treated as format 1, and the refusal says so.
+
+**Amends** Follow-up 8's "an update transaction that refuses to roll back across the cut with a
+named, one-way message". The refusal moves from the rollback to the update itself, and widens to
+the two commands that would otherwise cross the cut first: `xplainer update` runs `setup` before it
+touches the daemon, so a refusal at rollback time would fire only after the marker every installed
+daemon reads had been rewritten. `e2e/update.mjs`'s "the rolled-back daemon renders" keeps holding,
+because no rollback crosses the cut.
+
+### D3 — a second toolchain manifest, at a new path
+
+The manifest `setup` reads moves to `toolchain/v2/manifest.json`, at `format_version` 2. Its
+`browser` and `ffmpeg` blocks are selected by a `<platform>-<arch>` key, and every URL in them must
+start with a prefix an allowlist **in code** maps to its publisher — Chrome for Testing to Google,
+`github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/` to BtbN's FFmpeg-Builds,
+`cdn.xplainer.video/toolchain/v1/ffmpeg/` to this project — checked at parse time. `speech` carries
+over unchanged. The version-1 document stays on the CDN, untouched, for released CLIs: 0.0.9 reads
+`toolchain/v1/manifest.json`, requires `chrome.remotion`, and refuses a document of a newer format.
+
+**Amends** Follow-up 2's "make the Chrome selector ours in name as well as in code". There is no
+selector left to rename: the mirror of the pinned Remotion line's URL function in
+`setup/manifest.ts` is deleted, and Chrome is selected by platform key, exactly as Follow-up 1
+decides for ffmpeg "because there is no upstream selector to mirror". §B1's sentence placing "the
+`remotion` provider token, the `remotion.media` URLs, `toolchain.manifest.json`, and the selector in
+`setup/manifest.ts` that mirrors the pinned Remotion line's" in Phase 2 is discharged by D3 and D4
+together.
+
+### D4 — Chrome for Testing 157.0.8103.50, on all five platforms
+
+The browser pin moves from `chrome-headless-shell` 149.0.7790.0 to Chrome for Testing
+157.0.8103.50 on darwin-arm64, darwin-x64, linux-x64, linux-arm64 and win32-x64. Measured on
+2026-11-11 and re-hashed from the same downloads on 2026-11-12:
+
+```
+linux-arm64  55add1fa634756811fd644094ec226fc7e405be698fb07dbf0634bca689e293a  128,169,705 B
+linux64      7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f  128,166,087 B
+mac-arm64    082e3fe8fcfac75aec2ef0949d70e8d2254a99ea465450e287e6c06a3f1863ed  104,775,379 B
+mac-x64      886beb07d8237b8acc2b879843a3506b3a56284264b82c806c7d80546e24e0ad  110,442,622 B
+win64        9e59432baf484387bdc9cc4a8efca499fb558aeda93e536eb8b859a065ddb884  126,512,350 B
+```
+
+each `…/157.0.8103.50/<platform>/chrome-headless-shell-<platform>.zip`, and **each carries
+`LICENSE.headless_shell`** — one publisher, one version and an in-archive licence everywhere, and
+no artefact hosted by Remotion. 157.0.8103.50 was the Stable channel, revision 1717349, when it was
+measured; by 2026-11-12 Stable reads 157.0.8103.78 on the same revision. The pin is the build that
+was measured, and following Stable is a re-pin. On linux-x64, measured on 2026-11-11, the binary's
+strong glibc references floor at 2.17, the publisher's `deb.deps` says `libc6 >= 2.25`, and every
+`NEEDED` soname exists on Amazon Linux 2023, so the Chrome for Testing row is the only one that
+platform needs: the row's
+`min_glibc` is the publisher's `deb.deps` value, and the `remotion.media` rows go. The provider
+token `remotion` becomes `manifest`.
+
+**The fallback**, if the throughput gate fails on 157 (below): Chrome for Testing 149.0.7790.0 for
+the four platforms it covers, and Playwright's `chromium-tip-of-tree` r1421 for linux-arm64 — still
+with no `remotion.media` URL. Playwright's build is not the primary because it ships no licence or
+notices file.
+
+**Amends** Follow-up 2's "**linux-arm64 has no Chrome for Testing build** — the spike's Linux legs
+ran on `headless_shell` 149.0.7790.0 from Remotion's linux-arm64 artefact — so the manifest needs a
+source for it". That was true of the 149 line and is not true of 157: Chrome for Testing has
+published linux-arm64 since 153.0.8001.0 (its own `known-good-versions-with-downloads.json`), so the
+source is the same publisher as the other four. ADR 0005's note of 2026-11-11 makes the same claim
+("Chrome for Testing publishes none") and is corrected by a note of its own (below).
+
+**And** §The idle-machine throughput gate measured `chrome-headless-shell` 149.0.7790.0. That table
+stands as a measurement of 149; the gate is re-run on 157 by the shipped worker, three runs with the
+load recorded, and the result is recorded in a later dated note — or D4's fallback is taken. The
+bundle's `target: "chrome149"` (§The pipeline as built) is a syntax floor that 157 meets, and D4 does
+not move it.
+
+### D5 — xz is decoded by `xz-decompress@0.2.3`
+
+Both Linux FFmpeg pins ship only as `.tar.xz`. `setup/tar.ts` takes a decompressor — gzip or xz —
+instead of hard-coding gunzip, and the xz decompressor is `xz-decompress@0.2.3`, pinned exactly:
+MIT, no dependencies, no install or postinstall script, XZ Embedded compiled to WebAssembly and
+inlined as a `data:` URI, `stream/web` its only `require`, and no network code. **Its tarball and
+both upstream repositories carry no licence file.** The grant is `package.json`'s
+`"license": "MIT"` and the bundle's own header, which names xzwasm (© Steve Sanderson, MIT), XZ
+Embedded by Lasse Collin and Igor Pavlov (public domain) and walloc (© 2020 Igalia, S.L., MIT) —
+which is why the owner accepted it with a `NOTICE` paragraph naming all three (Q4). Decoding stops
+once every member `setup` keeps has been seen, which is safe because the archive's digest is
+verified before a byte of it is decoded.
+
+**Measured** on the real BtbN linux-arm64 pin — `ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0.tar.xz`,
+128,664,064 B, sha256 `6cad88ae5bcec356cfc5d7979a036cc4007128201928a0cf243df3db483276cc`, equal to
+the release's own `checksums.sha256` — with Node 24.20.0 on the Apple M5 Pro above, at a one-minute
+load average of 5.7–7.1, two runs: `bin/ffmpeg` (131,591,912 B, sha256
+`091fe4df4902fedd20f4d5accab14d02947a531d14d789cc7e8f18b0a808e6d1`, the design's `member_sha256`)
+is fully decoded at **2.28–2.31 s** with a peak RSS of 122–125 MB; `LICENSE.txt` (35,147 B, sha256
+`8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903`) is the 31st of 73 entries and
+ends 404.2 MB into the 415.8 MB tar, after `ffplay` and `ffprobe`, so keeping it decodes 97 % of the
+archive: **6.80–6.88 s at 143–147 MB**, against 6.85–6.94 s for all of it. The plan's survey of
+2026-11-11, at a load of 4.4, measured 2.26 s and 6.7–6.8 s at 143 MB, and called `LICENSE.txt` the
+last member, which it is not; the early stop is worth about 1 % on this archive and is kept because
+it costs nothing and an archive whose licence comes first would gain the rest.
+
+**Amends** Follow-up 1's "(an in-house LZMA2-with-CRC64 single-stream decoder is recommended,
+`xz-decompress@0.2.3` the fallback)". The order is reversed. The dependency is about 52 KB unpacked
+against an estimated 600–800 lines of decoder to write and test, and it measured well; the in-house
+decoder is now the fallback if the dependency ever has to go.
+
+### D6 — no automatic system ffmpeg
+
+`setup` downloads the pin. A system ffmpeg is used only when someone names it:
+`setup --ffmpeg-path <file>` probes it — libavcodec ≥ 60, and `libx264` and a non-experimental
+`aac` listed — and records it with provider `path` and its digest as *recorded* rather than
+*expected*. Render-time resolution becomes **`XPLAINER_FFMPEG`** (an override) → **`toolchain.json`'s
+`ffmpeg.path`** → **`FFMPEG_NOT_FOUND`**, and the `PATH` lookup and the `/opt/homebrew/bin` and
+`/usr/local/bin` fallbacks are deleted from `render/encode.ts`. The design's preference for a system
+ffmpeg found on `PATH` is not taken, because the pinned build is what makes MP4 bytes reproducible.
+
+**Amends** §B2's "Phase 2 puts the acquired component in front of this order", and Follow-up 1's
+"placed in front of B2's order". The acquired component goes behind the override and replaces the
+rest of the order rather than standing in front of it. Follow-up 5's "only a system ffmpeg
+(`apk add ffmpeg`) would serve it" is served on musl/Alpine in the same way: by name, through
+`--ffmpeg-path`, never by search. §Consequences' "Pinning the build is Phase 2, with acquisition"
+holds for the download route; a binary named with `--ffmpeg-path` makes MP4 bytes reproducible per
+that binary, as any build does.
+
+### D7 — the old Remotion tree is deleted
+
+`setup` removes `<workspace>/node_modules`, `package.json`, `package-lock.json` and
+`workspace.manifest.json` **only when** `workspace.manifest.json` records a `remotion_entry` **and**
+`package.json`'s name and pins equal the last template's — so an `XPLAINER_VIDEOS_DIR` pointing at a
+user's own project is never touched — and only after D2 (c) has passed. It prints what it removed.
+It never touches `videos/`, `public/`, `out/`, `requests/` or `locks/`. About 234 MB leaves each
+machine that ran an older `setup --workspace` (Q1). Nothing in this record says otherwise: §B1 kept
+the payload "until Phase 2", and D2 means no rollback needs it again.
+
+### D8 — the hard condition becomes a gate
+
+`scripts/check-release-ready.mjs`, offline, refuses while (a) `packages/render-core/template/`
+still holds a `package.json`, or anything under `template/` names Remotion; (b) any render
+platform's `browser` or `ffmpeg` row is not `recorded`; or (d) any entry of a committed
+`docs/release-blockers.json` lacks its evidence — a run id or an ADR note. It runs as
+`prepublishOnly` on every published member, and `check-publish-contract` gains a self-tested rule
+requiring that hook. The one network rule (c) — the published `toolchain/v2/manifest.json` is
+byte-identical to the committed copy — runs once, from a root `release:publish` wrapper, before
+`pnpm publish -r`, so a CDN failure cannot leave a release half-published. Its rule functions are
+self-tested inside `pnpm verify`. This is Follow-up 8's last bullet, built: "so the hard condition
+is a gate and not a sentence". With the macOS rows recorded, (b) has nothing to refuse today; what
+keeps the gate red is (d) — the Linux 12 fps run and the Windows pipe proof (Follow-ups 6 and 8),
+the macOS default-encoder patent decision (§The owner's decisions, 2026-11-11), the re-pin snapshot
+of the distribution analysis's Checklist A7, and the upload of the version-2 manifest. The
+page-network entry is recorded as decided, with this note as its evidence.
+
+### D9 — the Remotion grep gate is committed
+
+`scripts/check-no-remotion.mjs`, in `pnpm verify` and as its own CI step, runs
+`git grep -niP '@remotion/|\bremotion\b'` over tracked files — case-insensitive, so prose is caught
+as well as imports — and allows exactly: `LEGACY_IMPORT_ALIASES` in `render/bundle.ts` and its test
+(the one-release alias §What an existing video meets records), `SKILL.md`'s migration paragraph, the
+`AC-14f` desktop gate and the places that describe it, a pronunciation entry in
+`render-core/src/g2p/data/lexicon.txt`, `docs/adr/`, `docs/ROADMAP.md`, the `CHANGELOG.md` files,
+`.changeset/` and the checker itself. "No Remotion code" stops being a sentence too.
+
+### D10 — `daemon status` and `/healthz` agree
+
+`daemon status` takes its verdict from `checkToolchain` at stat depth, with a second sentence for
+`toolchain_stale`; `xplainer status --json` gains `health.reason` and a `toolchain` object; and both
+commands print a `toolchain:` block naming the browser version, ffmpeg's version, licence, publisher
+and provider, and the speech route.
+
+**Amends** Follow-up 4's "**A ticket, not a fix**": it is fixed, in Phase 2.
+
+### D11 — payload 1 drops npm
+
+`copyNpm` and `LaunchContract.npm_cli` go, because their only purpose was `setup --workspace`; the
+reader treats `npm_cli` as optional under `MANIFEST_VERSION` 2 (D2), one-way like everything else at
+the cut. §Consequences' "**Payload 1 grows by pure JavaScript and nothing else**" stays true of
+what Phase 2 adds — `xz-decompress` is JavaScript with WebAssembly inside, as `esbuild-wasm`
+already is, with no native code, no platform package and no install script — and payload 1 also
+loses something for the first time.
+
+### D12 — what needs ffmpeg
+
+A **render** needs an executable `XPLAINER_FFMPEG` or a valid `ffmpeg` in the marker; a **still**
+needs neither, because the render worker encodes only for a render. Both the call-time refusal in
+`backend.ts` — which keeps the code `WORKSPACE_NOT_INSTALLED`, because the code is published API —
+and the worker-factory gate in `daemon/workers.ts` take the job's kind, and `/healthz` reports
+`degraded` with `toolchain_missing` while renders are unavailable. This is Follow-up 8's third
+bullet, "ffmpeg is judged at the gate, in `assertToolchainReady`, once the marker records it".
+§Consequences' "A machine without ffmpeg refuses every render with `FFMPEG_NOT_FOUND` … before a
+frame is captured" becomes: refuses every render at the call, before a worker or a browser starts.
+The worker's own `FFMPEG_NOT_FOUND` remains for an `XPLAINER_FFMPEG` naming nothing.
+
+### The page's network: allowed by default
+
+**Amends** §Consequences' "so it is the owner's decision and Follow-up 8": the owner has decided,
+and the page keeps the network, as it had under Remotion. Everything that Consequence says the page
+can reach, it can still reach — a scene can draw `<img src="http://10.…">` into a frame or `fetch` a
+CORS-permissive service from wherever the daemon runs, and a remote font or image makes the pixels
+depend on someone else's server — and that is now the accepted cost rather than an open question,
+in exchange for the web fonts scenes load from CDNs today. A deny-by-default page, or an opt-in to
+one, is a later decision.
+
+### Signing
+
+**Amends** §The owner's decisions, 2026-11-11, which lists for our own build "signing once a
+Developer ID exists". No Developer ID will exist for Phase 2: the macOS binary ships ad-hoc signed,
+which carries no identity, and that closes the distribution analysis's Checklist B5. The patent
+decision in the same sentence is not amended and is still open.
+
+### What later steps add to other records
+
+The three records whose 2026-11-11 notes described Phase 2 as still to come each gain a dated note
+in the step that changes what they describe, and the index in [`README.md`](README.md) gains each
+date as it lands:
+
+- **[ADR 0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md)** — with the marker's
+  version 2 (plan step 4): ffmpeg becomes the third acquired component and the workspace stops being
+  one; its 2026-11-11 note's "Chrome for Testing publishes none" for linux-arm64 and its
+  description of the `PATH` and Homebrew fallbacks stop being true.
+- **[ADR 0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md)** — with payload 2's
+  removal (plan step 6): one payload, and an update transaction with no template-pin refusals.
+- **[ADR 0022](0022-open-source-the-published-packages.md)** — with the words and licences (plan
+  step 8): the three READMEs, `LICENSE` and `NOTICE` stop carrying a Remotion disclosure, because
+  nothing installs Remotion any more.
+
+### What this note does not amend
+
+The licence position under §Decision Outcome; counsel's questions, which stay open; the hard
+condition, which D8 turns into a gate without changing what it requires; the patent decision before
+the first macOS release; Follow-ups 3, 6 and 7; and Follow-up 5's "win32-arm64 has an FFmpeg pin and
+no Chrome row, so it cannot render", which Chrome for Testing 157 does not change.
