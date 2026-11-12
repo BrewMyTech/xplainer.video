@@ -469,7 +469,7 @@ archive reader between them.
 | `archive.ts` | The zip reader: central directory, stored and deflate, per-entry CRC-32, modes, symlinks, every unsafe entry refused, and an optional **selector** so one binary leaves a 195 MB archive without the rest being inflated |
 | `tar.ts` | The tarball reader, gzip or xz: streamed, ustar only, header checksums, a **selector** so a package carrying five platforms lands one, and `stopAfter`, so decoding ends at the last member a caller keeps |
 | `acquired.ts` | The record a committed acquisition carries inside itself, and the check a warm cache passes |
-| `providers/chrome.ts` | The Chrome for Testing headless shell this platform's row names, admitted on the manifest's **expected** digest |
+| `providers/chrome.ts` | The Chrome for Testing headless shell this platform's row names, admitted on the manifest's **expected** digest: the row's `member` is the executable recorded and its `licence_member` must be in the tree, committed under a digest-named directory with its `acquired.ts` record and re-verified on reuse |
 | `providers/ffmpeg.ts` | The FFmpeg this platform's row names: the publisher-and-licence sentence before the first request, the executable member checked against the row's `member_sha256` and `size`, `PROVENANCE.txt`, the probe (`-version`, `-buildconf`, `-L`, `-encoders`; no shell, 10 s each) and the licence cross-check, all before the commit; and `--ffmpeg-path`, a user-named binary whose digest is recorded rather than expected |
 | `providers/speech.ts` | The four speech routes, their precedence, `--speech`, and the refusal that names all four |
 | `speech-locate.ts` | The marker read back as three paths: the locator `resolveSpeech()` defaults to |
@@ -775,6 +775,11 @@ its destination existed and then recorded the digest it had merely been told, fo
 checked — and its destination was named after the *version*, so a re-published artefact was served
 from that cold cache for ever. Cache identity now binds the digest (it is in the directory name) and
 a populated destination is judged against the digest its own record says it was admitted on.
+**The browser provider had the same defect until 2026-11-12**, found by review: a
+`chrome-headless-shell-<version>` directory that existed was recorded at the manifest's digest with
+nothing in it checked, so a `#!/bin/sh` stub passed as the browser. It now commits
+`chrome-headless-shell-<version>-<digest>` with a record witnessing the row's `member` and
+`licence_member`, as `providers/ffmpeg.ts` does; a tree in the older layout is simply not reused.
 
 ## Public surface
 

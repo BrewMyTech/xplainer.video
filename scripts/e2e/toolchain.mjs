@@ -1147,6 +1147,10 @@ async function main() {
   );
   if (download !== null) {
     check(
+      full.stdout.includes("chrome: already acquired and verified at"),
+      "the second run found the committed browser and re-verified it rather than fetching it again",
+    );
+    check(
       full.stdout.includes("ffmpeg: already acquired and verified at"),
       "the second run found the committed ffmpeg and re-verified it rather than fetching it again",
     );
