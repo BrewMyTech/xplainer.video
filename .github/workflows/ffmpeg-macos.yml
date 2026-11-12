@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Build the macOS FFmpeg that `xplainer setup` downloads, and publish it with
 # its complete corresponding source on cdn.xplainer.video.
 #

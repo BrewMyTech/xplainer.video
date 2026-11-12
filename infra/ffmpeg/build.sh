@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Build a static FFmpeg for macOS from the pinned, unmodified upstream sources.
 #
 #   infra/ffmpeg/build.sh <arm64|x64>

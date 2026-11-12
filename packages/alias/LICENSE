@@ -7,27 +7,28 @@ below. Read the whole of this file before copying anything out of here.
 
 PART ONE — OPEN SOURCE, APACHE LICENCE 2.0
 
-The seven packages published to npm — six under the `@xplainer/` scope, plus
+The eight packages published to npm — seven under the `@xplainer/` scope, plus
 the unscoped `xplainer`, which is an alias for `@xplainer/cli` — are licensed
 under the Apache Licence, Version 2.0:
 
     apps/cli                 @xplainer/cli
     packages/alias           xplainer
     packages/mcp-server      @xplainer/mcp-server
+    packages/motion          @xplainer/motion
     packages/protocol        @xplainer/protocol
     packages/render-core     @xplainer/render-core
     packages/skill           @xplainer/skill
     packages/tts-client      @xplainer/tts-client
 
-Everything inside those seven directories is Apache-2.0, including the Remotion
+Everything inside those eight directories is Apache-2.0, including the Remotion
 workspace template and the scaffold templates under `packages/render-core`.
 The full licence text is in LICENSE-APACHE-2.0 at the root of this repository,
-and a copy of it is committed as `LICENSE` inside each of the seven package
+and a copy of it is committed as `LICENSE` inside each of the eight package
 directories so that it also travels inside every published tarball. The
 attribution notice Apache-2.0 section 4(d) propagates is the NOTICE file, at
-the root and inside each of the seven.
+the root and inside each of the eight.
 
-Each of those seven manifests declares `"license": "Apache-2.0"`. That SPDX
+Each of those eight manifests declares `"license": "Apache-2.0"`. That SPDX
 identifier is the authoritative statement for machine consumers.
 
     Licensed under the Apache Licence, Version 2.0 (the "Licence"); you may
@@ -45,15 +46,17 @@ identifier is the authoritative statement for machine consumers.
 
 PART TWO — PROPRIETARY, ALL RIGHTS RESERVED
 
-Every other file in this repository is proprietary. No permission is granted
-to use, copy, modify, merge, publish, distribute, sublicense, or sell any part
-of it. This covers, without being limited to:
+Every file that neither Part One nor Part Three names is proprietary. No
+permission is granted to use, copy, modify, merge, publish, distribute,
+sublicense, or sell any part of it. This covers, without being limited to:
 
     apps/desktop             the desktop client                (tier: open-later)
     packages/config          shared build presets and tooling  (tier: open-later)
     services/tts-sidecar     the packaged TTS sidecar          (tier: open-later)
 
-    infra/, scripts/, docs/, and every other file at the root
+    infra/ (but not infra/ffmpeg/, which is Part Three), scripts/, docs/,
+    .github/ (but not .github/workflows/ffmpeg-macos.yml, also Part Three),
+    and every other file at the root
 
 No `hosted` member remains in this repository. `apps/api`, `apps/web` and
 `services/media-service` were relocated to a private repository on 2026-09-06
@@ -71,6 +74,29 @@ The tier each package belongs to is declared in its own package.json as
 the tiers is machine-checked. The tier field describes intent; this file
 describes the grant. Where they appear to disagree, this file and the
 `license` field of the package's own manifest govern.
+
+
+PART THREE — THE macOS FFMPEG BUILD SCRIPTS, MIT LICENCE
+
+The scripts that build the macOS FFmpeg which `xplainer setup` downloads, and
+the workflow that runs them, are licensed under the MIT Licence:
+
+    infra/ffmpeg/                          except infra/ffmpeg/keys/
+    .github/workflows/ffmpeg-macos.yml
+
+They are published beside every build as part of its complete corresponding
+source ("the scripts used to control compilation and installation of the
+executable", GPLv2 section 3), so that whoever receives the binary can rebuild
+it. The full licence text is in infra/ffmpeg/LICENSE. Each of those files
+carries `SPDX-License-Identifier: MIT`.
+
+infra/ffmpeg/keys/ holds the OpenPGP public keys of FFmpeg's release signer and
+of zlib's maintainer, unmodified, so that the build can check their signatures.
+They are their owners'; nothing in this file licenses them.
+
+The FFmpeg binary those scripts produce is not covered by any part of this
+file. It is FFmpeg, x264 and zlib under the GNU General Public License version
+2 or later, and every download carries their licences in its LICENSE file.
 
 
 THIRD PARTY COMPONENTS

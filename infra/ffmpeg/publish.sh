@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Upload a release directory (assemble.sh) to the R2 bucket behind
 # cdn.xplainer.video, then read every object back through the CDN.
 #

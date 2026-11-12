@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Package one built ffmpeg as the artefact `xplainer setup` downloads.
 #
 #   infra/ffmpeg/package.sh <arm64|x64> <dist-dir>
@@ -109,7 +110,7 @@ UPSTREAM INPUTS, each pinned by sha256 in infra/ffmpeg/pins.env:
     sha256 $ZLIB_SHA256
     OpenPGP signature verified against $ZLIB_KEY_FPR
 
-BUILD SCRIPTS AND WORKFLOW (licence: $XP_SCRIPTS_LICENCE):
+BUILD SCRIPTS AND WORKFLOW (licence: $XP_SCRIPTS_LICENCE, text in infra/ffmpeg/LICENSE):
 
   $SCRIPTS_ARCHIVE, in the directory above
   https://github.com/$repository/tree/$SCRIPTS_COMMIT/infra/ffmpeg
