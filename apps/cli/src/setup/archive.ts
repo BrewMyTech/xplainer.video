@@ -23,15 +23,34 @@
  * CRC covers each member, and a decompressor that produced the wrong bytes is not a file to leave
  * on disk. A method other than stored or deflate is refused by number.
  *
- * **Modes and symlinks are preserved**, because Chrome's own archives need both: the shell is
- * `0755` and its macOS framework carries symlinks. The mode comes from the high half of
+ * **Modes and symlinks are preserved**, because an executable has to stay runnable and a zip may
+ * carry relative links between its own members. The mode comes from the high half of
  * `externalFileAttributes`, `0644`/`0755` stand in where a zip carries none, and `__MACOSX/` is
- * skipped — the rules the previous renderer's extractor applied to the same kind of archive.
+ * skipped — the rules the previous renderer's extractor applied to the same kind of archive. No
+ * artefact the committed manifest pins carries a symlink (listed 2026-11-12: the five Chrome for
+ * Testing 157.0.8103.50 zips, our two macOS FFmpeg zips and BtbN's two Windows ones), so the rules
+ * below are about what a link may do rather than about any link a pin needs.
+ *
+ * **A link is a door, so it is judged where it lands and never walked through.** A member whose
+ * path passes through a link this extraction made is refused, whatever that link points at: each
+ * link of a chain can land inside when it is judged alone (`a/l` → `..`, then `a/l/m` → `..`) and
+ * still put the member after them outside. Asking the filesystem (`lstat`) rather than comparing
+ * names is also what refuses two members that a case-insensitive APFS or NTFS volume lands on one
+ * file.
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { crc32, inflateRawSync } from "node:zlib";
 
 /**
@@ -192,7 +211,8 @@ export function readZipEntries(archive: Buffer): ZipEntry[] {
  *
  * With no `select`, every member lands at the name it carries. Two members landing on one path is
  * refused either way, because the later one would silently win: a selector can collapse two
- * distinct names, and an archive can carry one name twice.
+ * distinct names, an archive can carry one name twice, and a case-insensitive volume makes one
+ * file of two names that differ only in case.
  */
 export function extractZip(
   archiveFile: string,
@@ -204,8 +224,6 @@ export function extractZip(
   mkdirSync(destination, { recursive: true });
   const root = resolve(destination);
   const summary: ExtractionSummary = { files: 0, directories: 0, symlinks: 0, bytes: 0 };
-  /** Every file and link this call has written, so a second member onto one of them is refused. */
-  const written = new Set<string>();
   for (const entry of entries) {
     if (entry.name.startsWith("__MACOSX/")) {
       continue;
@@ -215,13 +233,15 @@ export function extractZip(
       continue;
     }
     const target = safeJoin(destination, name);
+    // Before any directory is made for it: `mkdir -p` through a link would itself write outside.
+    assertNoLinkOnTheWay(root, target, entry.name);
     if (entry.isDirectory) {
       mkdirSync(target, { recursive: true, mode: entry.mode ?? DEFAULT_DIRECTORY_MODE });
       summary.directories += 1;
       continue;
     }
     mkdirSync(dirname(target), { recursive: true });
-    if (written.has(target)) {
+    if (lstatOrNull(target) !== null) {
       throw new ArchiveRefusal(
         "unsafe-entry",
         `${entry.name} would be written to ${target}, which another member of the same archive ` +
@@ -229,7 +249,6 @@ export function extractZip(
         entry.name,
       );
     }
-    written.add(target);
     const contents = readMember(archive, entry);
     if (entry.isSymlink) {
       const link = contents.toString("utf8");
@@ -347,20 +366,76 @@ export function safeJoin(destination: string, name: string): string {
 /**
  * A symlink may point anywhere **inside** the unpacked tree and nowhere outside it.
  *
- * Chrome's own macOS archives carry relative links that climb — `nested/link` → `../shell` — so a
- * blanket refusal of `..` would refuse the artefacts this exists to unpack. What matters is where
- * the link **lands**: resolved against its own directory, it has to stay under the destination,
- * because a link that escapes is also a door a later entry could be written through.
+ * A relative link that climbs — `nested/link` → `../shell`, as the committed fixture carries — is
+ * ordinary, so a blanket refusal of `..` would refuse archives that are fine. What matters is where
+ * the link **lands**, resolved against the real directory it is in.
+ *
+ * Two conditions make that resolution honest rather than lexical. The link's own directory holds no
+ * link ({@link assertNoLinkOnTheWay} has already refused one), so the directory it climbs from is
+ * a real one. And its value is in **normal form** — `..` only at the front, no `.` and no empty
+ * segment — because `l/..` reads as the directory the link is in while the kernel follows `l`
+ * first, so its landing would depend on what `l` turns out to be.
  */
 function assertLinkStaysInside(root: string, target: string, link: string, name: string): void {
-  const landing = resolve(dirname(target), link);
-  const outside = relative(root, landing);
-  if (isAbsolute(link) || outside === ".." || outside.startsWith(`..${sep}`)) {
+  if (isAbsolute(link) || link.includes("\\")) {
     throw new ArchiveRefusal(
       "unsafe-entry",
       `${name} is a symlink to ${JSON.stringify(link)}, which lands outside the unpacked tree.`,
       name,
     );
+  }
+  if (posix.normalize(link) !== link) {
+    throw new ArchiveRefusal(
+      "unsafe-entry",
+      `${name} is a symlink to ${JSON.stringify(link)}, which is not in its normal form, so where ` +
+        "it lands depends on what the links it passes through point at.",
+      name,
+    );
+  }
+  const landing = resolve(realpathSync(dirname(target)), link);
+  const outside = relative(realpathSync(root), landing);
+  if (outside === ".." || outside.startsWith(`..${sep}`) || isAbsolute(outside)) {
+    throw new ArchiveRefusal(
+      "unsafe-entry",
+      `${name} is a symlink to ${JSON.stringify(link)}, which lands outside the unpacked tree.`,
+      name,
+    );
+  }
+}
+
+/**
+ * Refuse a member whose path passes through a symlink — which, under a staging directory this
+ * extraction created, can only be one an earlier member made.
+ *
+ * Every component from the destination down to the member itself is `lstat`ed, so a link is seen
+ * as a link rather than followed. The walk stops at the first component that does not exist yet,
+ * because nothing below a missing directory can be a link.
+ */
+function assertNoLinkOnTheWay(root: string, target: string, name: string): void {
+  let at = root;
+  for (const part of relative(root, target).split(sep)) {
+    at = join(at, part);
+    const stats = lstatOrNull(at);
+    if (stats === null) {
+      return;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new ArchiveRefusal(
+        "unsafe-entry",
+        `${name} would be written through ${at}, a symlink an earlier member of the same archive ` +
+          "made. A member is never written through a link, wherever the link points.",
+        name,
+      );
+    }
+  }
+}
+
+/** A path's own `lstat`, or `null` where there is nothing there to describe. */
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
   }
 }
 

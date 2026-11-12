@@ -84,14 +84,23 @@ const SIZE = { at: 124, length: 12 } as const;
 const CHECKSUM = { at: 148, length: 8 } as const;
 const TYPEFLAG = 156;
 const MAGIC = { at: 257, length: 6 } as const;
+const VERSION = { at: 263, length: 2 } as const;
 const PREFIX = { at: 345, length: 155 } as const;
 
 /** The typeflags this reader writes. Everything else is a refusal — see the module docblock. */
 const REGULAR_FILE = "0";
 const DIRECTORY = "5";
 
-/** What the two magics mean: POSIX ustar, and the GNU spelling of the same field. */
+/**
+ * What the two magics mean: POSIX ustar, and the GNU spelling of the same field.
+ *
+ * They agree on every field this reader reads but one: the 155 bytes at offset 345 are POSIX's name
+ * prefix and GNU's access and change times, so the prefix is read only from a POSIX header —
+ * {@link POSIX_MAGIC} followed by version `00`.
+ */
 const MAGICS: ReadonlySet<string> = new Set(["ustar", "ustar "]);
+const POSIX_MAGIC = "ustar";
+const POSIX_VERSION = "00";
 
 /** The default mode a member with an unreadable one gets, matching `archive.ts`. */
 const DEFAULT_FILE_MODE = 0o644;
@@ -332,7 +341,10 @@ function readHeader(block: Buffer, archive: string): TarHeader {
     );
   }
   const name = text(block, NAME.at, NAME.length);
-  const prefix = text(block, PREFIX.at, PREFIX.length);
+  const posix =
+    magic === POSIX_MAGIC &&
+    block.toString("latin1", VERSION.at, VERSION.at + VERSION.length) === POSIX_VERSION;
+  const prefix = posix ? text(block, PREFIX.at, PREFIX.length) : "";
   const full = prefix === "" ? name : `${prefix}/${name}`;
   const size = octal(block, SIZE.at, SIZE.length, full, "size");
   const mode = octal(block, MODE.at, MODE.length, full, "mode");

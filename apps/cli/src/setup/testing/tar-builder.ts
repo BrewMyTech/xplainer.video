@@ -29,6 +29,13 @@ export type TarMemberSpec = {
   /** Write a magic other than `ustar` — the not-a-tarball case. */
   magicOverride?: string;
   /**
+   * Write GNU's magic and version, `ustar  \0`, instead of POSIX's `ustar\0` and `00` — the header
+   * in which bytes 345 onwards are the access and change times rather than a name prefix.
+   */
+  gnu?: boolean;
+  /** Bytes written at offset 345: a ustar name prefix, or whatever a GNU header keeps there. */
+  prefix?: string;
+  /**
    * Write these twelve bytes as the size field, before the checksum is computed over them.
    *
    * The one way to build a GNU base-256 size field — high bit of the first byte set — that a reader
@@ -94,8 +101,15 @@ function header(member: TarMemberSpec, size: number, mode: number, typeflag: str
   writeOctal(block, 136, 12, 0);
   block.write(" ".repeat(CHECKSUM_LENGTH), CHECKSUM_AT, CHECKSUM_LENGTH, "utf8");
   block.write(typeflag, 156, 1, "utf8");
-  block.write(member.magicOverride ?? "ustar\0", 257, 8, "utf8");
-  block.write("00", 263, 2, "utf8");
+  if (member.gnu === true) {
+    block.write("ustar  \0", 257, 8, "latin1");
+  } else {
+    block.write(member.magicOverride ?? "ustar\0", 257, 8, "utf8");
+    block.write("00", 263, 2, "utf8");
+  }
+  if (member.prefix !== undefined) {
+    block.write(member.prefix, 345, 155, "latin1");
+  }
   const sum = member.checksumOverride ?? checksum(block);
   // The field is six octal digits, a NUL and a space — the form GNU tar writes and every reader
   // accepts, and the reason the seventh and eighth bytes are not digits.

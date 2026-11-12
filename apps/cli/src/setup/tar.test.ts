@@ -258,6 +258,44 @@ describe("what the reader refuses", () => {
   });
 });
 
+describe("the name prefix, which only POSIX ustar has", () => {
+  it("joins a POSIX ustar header's prefix onto its name", async () => {
+    const archive = writeArchive(
+      buildTarGz([{ name: "a.txt", prefix: "package/deep", contents: "x" }]),
+    );
+    const destination = join(scratchDir(), "out");
+
+    await extractTar(archive, destination, everything, GZIP);
+
+    expect(tree(destination)).toEqual(["deep/a.txt"]);
+  });
+
+  /**
+   * A GNU header (`ustar  \0`) keeps the access and change times at offset 345, where POSIX keeps
+   * the prefix, so reading them as a prefix would put an octal timestamp at the front of the name.
+   */
+  it("reads no prefix from a GNU header, where those bytes are the access and change times", async () => {
+    const archive = writeArchive(
+      buildTarGz([
+        { name: "package/a.txt", gnu: true, prefix: "15123456701\u000015123456702", contents: "x" },
+      ]),
+    );
+    const names: string[] = [];
+
+    await extractTar(
+      archive,
+      join(scratchDir(), "out"),
+      (header) => {
+        names.push(header.name);
+        return null;
+      },
+      GZIP,
+    );
+
+    expect(names).toEqual(["package/a.txt"]);
+  });
+});
+
 /** The xz fixture's one root, which every selector over it strips. */
 const XZ_ROOT = "ffmpeg-fixture-linuxarm64-gpl/";
 
