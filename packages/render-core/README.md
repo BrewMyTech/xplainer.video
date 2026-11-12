@@ -2,9 +2,9 @@
 
 Four things that travel together:
 
-- **the workspace template** under `template/`, copied onto your machine as the workspace your
-  videos live in — and `materialiseWorkspace()` / `videoPaths()`, which lay it out and never
-  overwrite a file that is already there;
+- **the workspace template** under `template/` — `tailwind.css` and a `tsconfig.json` for your
+  editor, copied into the workspace your videos live in — and `materialiseWorkspace()` /
+  `videoPaths()`, which lay it out and never overwrite a file that is already there;
 - **the ownership-aware scaffold generator**, which writes the six files of a new video against
   `@xplainer/motion`'s authoring API;
 - **the narration port**, which measures real speech into `narration.wav`, `captions.json` and
@@ -29,24 +29,12 @@ import { videoPaths, scaffoldVideo, narrate, assertRenderable } from "@xplainer/
 
 Nothing here renders and nothing here installs anything. `materialiseWorkspace()` copies the
 template files and creates the directories; the renderer is `@xplainer/cli`'s, which bundles a
-video's files against its own copy of `@xplainer/motion` and React and never reads the
-workspace's `node_modules`.
+video's files against its own copy of `@xplainer/motion` and React. The workspace holds a video's
+sources and outputs, and nothing a package manager installed.
 
 The scaffold templates and the workspace template ship as readable, editable text on purpose:
 they land on your disk and you edit them. The exported surface is recorded in
 `api/render-core.api.md` in the repository.
-
-## Remotion, in the workspace template only
-
-Rendering no longer uses [Remotion](https://remotion.dev): `@xplainer/cli` renders with its own
-pipeline. The workspace template has not caught up yet — until it is retired,
-`template/package.json` still names Remotion's packages, so `xplainer setup --workspace` has
-your own package manager fetch them under Remotion's terms, on your machine, in your name. They
-are licensed commercially by Remotion AG; **this package declares them and never bundles them.**
-If you use that installed copy yourself — its Studio, its CLI — you are the party operating
-Remotion, and depending on the size of your company and how you use it you may need your own
-licence (free for individuals and companies of up to three people, chargeable above that). See
-<https://remotion.pro/license>.
 
 ## Docs
 
@@ -56,8 +44,9 @@ licence (free for individuals and companies of up to three people, chargeable ab
 
 ## Licence
 
-Apache-2.0. See `LICENSE` and `NOTICE`, both shipped inside this package. The Remotion licence
-above is separate and is not granted by it.
+Apache-2.0. See `LICENSE` and `NOTICE`, both shipped inside this package. `NOTICE` also names the
+two pieces of third-party data this package redistributes: the CMU Pronouncing Dictionary
+(2-clause BSD) and the Kokoro tokenizer (Apache-2.0).
 
 [architecture]: https://github.com/BrewMyTech/xplainer.video/blob/main/docs/ARCHITECTURE.md
 [adr]: https://github.com/BrewMyTech/xplainer.video/blob/main/docs/adr/README.md

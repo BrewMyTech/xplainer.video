@@ -32,6 +32,14 @@
  * command that exists to reconcile a machine after an upgrade cannot be the one that skips the
  * largest stale thing on it. {@link reconcileDaemon} is that step, and it is a no-op on the
  * majority case of a machine with no daemon at all.
+ *
+ * **Except across ADR 0031's cut, which stops it before it runs anything** (§Note, 2026-11-12,
+ * D2 (b)). Its first step is `setup`, which writes this build's `toolchain.json` — format 2 — and a
+ * daemon installed from before the cut reads format 1, so running `setup` would turn that daemon's
+ * toolchain into a missing one before the daemon step could refuse to update it. So the installed
+ * daemon's format is read first, ahead of the registry and of every child, and a daemon on the other
+ * side of the cut ends the command with exit `3` and the reinstall it needs, run by nobody. `--check`
+ * changes nothing either way, so it reports the same fact as a line instead of stopping.
  */
 
 import { spawnSync } from "node:child_process";
@@ -41,7 +49,7 @@ import { Command } from "commander";
 import { claudeUserConfigPath } from "../connect/claude.js";
 import { codexConfigPath } from "../connect/codex.js";
 import { copilotConfigPath } from "../connect/copilot.js";
-import { readDaemonState } from "../daemon/daemon-state.js";
+import { readDaemonState, StateFileUnreadableError } from "../daemon/daemon-state.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { resolveStateDir } from "../daemon/state-dir.js";
 import {
@@ -51,7 +59,9 @@ import {
 } from "../install/materialise.js";
 import { resolveProgram } from "../install/program.js";
 import { rootPackageOf } from "../install/stage.js";
+import { requireCompatibleAssembly, UpdatePrecondition } from "../install/update/stage.js";
 import type { CliIo } from "../io.js";
+import { crossingTheCutRefusal, REINSTALL_ACROSS_THE_CUT } from "../setup/toolchain.js";
 import { CLI_VERSION } from "../version.js";
 
 /** The published name a user installs, which is the alias rather than the scoped package. */
@@ -221,13 +231,20 @@ export function stagedRuntimeVersion(stateDir: string): string | null {
  */
 function reconcileDaemon(io: CliIo): Step {
   const label = "daemon";
+  const stateDir = resolveStateDir();
   const plan = planDaemonReconcile(
-    stagedRuntimeVersion(resolveStateDir()),
+    stagedRuntimeVersion(stateDir),
     CLI_VERSION,
     installedPackageRoot(),
+    () => daemonUpdateRefusal(stateDir),
   );
   if (plan.kind === "skip") {
     return { label, line: plan.line };
+  }
+  if (plan.kind === "refused") {
+    // Printed as `daemon update` prints it, because it is that command's refusal, asked early.
+    io.writeErr(`xplainer daemon update: ${plan.refusal}\n`);
+    return { label, line: `${plan.staged} left alone — see the refusal above` };
   }
   let payload: MaterialisedPayload;
   try {
@@ -255,9 +272,42 @@ function reconcileDaemon(io: CliIo): Step {
   }
 }
 
-/** Either a line to print and nothing to do, or the install to assemble the new runtime from. */
+/**
+ * The refusal `daemon update` would give the payload this build assembles, or `null` if none.
+ *
+ * Asked **before** {@link materialiseProgramPayload} builds ~146 MB for a child that would refuse
+ * it in its precondition: what that payload requires of the marker is a constant of this build, so
+ * the answer needs only the installed runtime and the marker. A state directory this cannot read
+ * answers `null` and is left to `daemon update`, which has the sentence for it.
+ */
+export function daemonUpdateRefusal(stateDir: string): string | null {
+  let installedRuntimeDir: string | null;
+  try {
+    installedRuntimeDir = readDaemonState(stateDir).runtime_dir;
+  } catch {
+    return null;
+  }
+  if (installedRuntimeDir === null) {
+    return null;
+  }
+  try {
+    requireCompatibleAssembly({ installedRuntimeDir, stateDir });
+    return null;
+  } catch (error) {
+    if (error instanceof UpdatePrecondition) {
+      return error.message;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Either a line to print and nothing to do, the refusal the update would end in, or the install
+ * to assemble the new runtime from.
+ */
 export type DaemonPlan =
   | { kind: "skip"; line: string }
+  | { kind: "refused"; staged: string; refusal: string }
   | { kind: "update"; installRoot: string; staged: string };
 
 /**
@@ -265,12 +315,15 @@ export type DaemonPlan =
  *
  * Split out from {@link reconcileDaemon} because the branches are the part worth testing and the
  * execution is a `spawnSync` of this same binary: a test that could only reach this table through a
- * child process would be an integration test for a decision that is pure.
+ * child process would be an integration test for a decision that is pure. The fourth argument is
+ * {@link daemonUpdateRefusal}, passed as a function so it is asked only when there is an update to
+ * refuse.
  */
 export function planDaemonReconcile(
   staged: string | null,
   cliVersion: string,
   installRoot: string | null,
+  refusal: () => string | null = () => null,
 ): DaemonPlan {
   if (staged === null) {
     return { kind: "skip", line: "none installed — nothing to update" };
@@ -287,6 +340,10 @@ export function planDaemonReconcile(
         `${staged} installed, ${cliVersion} here — this build is not a package install, so run ` +
         "`xplainer daemon update --build` from the checkout",
     };
+  }
+  const refused = refusal();
+  if (refused !== null) {
+    return { kind: "refused", staged, refusal: refused };
   }
   return { kind: "update", installRoot, staged };
 }
@@ -385,6 +442,13 @@ export function createUpdateCommand(io: CliIo): Command {
     )
     .option("--check", "report the version comparison and change nothing")
     .action(async (options: UpdateOptions) => {
+      // Before the registry and before every child: `setup` is the first thing this runs, and it
+      // is the step that would put a marker under the daemon that the daemon cannot read.
+      const crossing = crossingTheCut(io);
+      if (crossing !== null && options.check !== true) {
+        io.writeErr(crossing);
+        io.exit(PRECONDITION_UNMET_EXIT_CODE);
+      }
       const latest = await latestPublished();
       const steps: Step[] = [];
 
@@ -424,6 +488,14 @@ export function createUpdateCommand(io: CliIo): Command {
       }
 
       if (options.check === true) {
+        if (crossing !== null) {
+          steps.push({
+            label: "daemon",
+            line:
+              "installed from the other side of ADR 0031's cut, so `xplainer update` would stop " +
+              `before it ran anything — reinstall it: ${REINSTALL_ACROSS_THE_CUT.join(", then ")}`,
+          });
+        }
         report(io, steps);
         return;
       }
@@ -456,6 +528,23 @@ export function createUpdateCommand(io: CliIo): Command {
 
       report(io, steps);
     });
+}
+
+/**
+ * Why the daemon installed here stops this command, or `null` when it does not (D2 (b)).
+ *
+ * A `daemon.json` that exists and cannot be read ends the command here, with its own sentence and
+ * its own code, `11`: `setup` would stop on the same file, so carrying on would only reach it later.
+ */
+function crossingTheCut(io: CliIo): string | null {
+  try {
+    return crossingTheCutRefusal(resolveStateDir(), "xplainer update");
+  } catch (error) {
+    io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+    io.exit(
+      error instanceof StateFileUnreadableError ? error.exitCode : PRECONDITION_UNMET_EXIT_CODE,
+    );
+  }
 }
 
 /** The summary, one labelled line per step, in the shape `connect` and `daemon status` use. */

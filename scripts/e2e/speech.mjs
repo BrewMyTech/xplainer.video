@@ -67,8 +67,9 @@
  *   created**. Measured on `windows-latest`, run 34492604497, against the previous renderer's CLI
  *   shim, where an `existsSync` gate on that exact path passed and the spawn 320 lines later died as
  *   `control exited null`. And the shim with the extension is no answer either — a `.cmd` is what
- *   libuv refuses without `shell: true` since the CVE-2024-27980 fix, which is the defect
- *   `apps/cli/src/setup/providers/workspace.ts` was fixed for one layer down. What is spawnable on
+ *   libuv refuses without `shell: true` since the CVE-2024-27980 fix, which is the defect the
+ *   workspace provider that ran `npm ci` was fixed for one layer down before it left with payload 2.
+ *   What is spawnable on
  *   every platform is a **script under an explicit interpreter**, which is why the control render
  *   below runs the product's own `dist/workers/render.js` under `process.execPath`.
  *
@@ -83,7 +84,7 @@
  * is *for*, and not a side effect of it — and `onnx` acquires the model graph, one voice and this
  * platform's ONNX Runtime, each pinned by digest and each from its own upstream home. That is
  * ~204 MB across two hosts (HuggingFace twice, the npm registry twice), on top of the ~100 MB
- * browser and the workspace install. The marker is then read back the way the install preflight
+ * browser and this platform's pinned ffmpeg. The marker is then read back the way the install preflight
  * reads it: `provider` is `onnx`, and **every** path in `speech.files[]` exists and is still the
  * length it was recorded at.
  *
@@ -132,16 +133,18 @@
  * the engine back behind three variables would leave this proof unable to narrate at all, which is
  * the point of taking them away.
  *
- * **The render half needs an ffmpeg with libx264, and the child is told where it is.** The render
- * worker pipes every frame into ffmpeg, and the composed `PATH` deliberately holds none, so the
- * parent's own ffmpeg is handed to the child as `XPLAINER_FFMPEG` — the first place the worker
- * looks, a path rather than a directory, so it widens what the child can reach by exactly one file
- * and never by `docker` or `python`.
+ * **The render half encodes with the ffmpeg `setup` acquired, and the child is told nothing.** The
+ * render worker pipes every frame into `XPLAINER_FFMPEG` when it is set and into the marker's
+ * `ffmpeg.path` otherwise, and never looks on `PATH` (ADR 0031 §Note, 2026-11-12, D6). So
+ * `XPLAINER_FFMPEG` is scrubbed like the speech variables, the marker is required to record this
+ * platform's pinned build, and the render's `done` event has to name that path. Until 2026-11-12 the
+ * parent's ffmpeg was handed over through the variable, because nothing acquired one.
  *
  * **It is not part of `pnpm verify`, and it must not become part of it.** One run downloads ~204 MB
- * of model, voice and runtime, a ~100 MB browser, and a 247-package workspace; then it renders a
- * video twice. Measured end to end on darwin-arm64 on 2026-09-10: **84.1 s**, of which `setup` is
- * 35.7 s and the four-segment narration 14.8 s. That is a warm npm cache and a fast link, and a
+ * of model, voice and runtime, a ~100 MB browser and an ffmpeg; then it renders a video twice.
+ * Measured end to end on darwin-arm64 on 2026-09-10, when `setup` also installed a 247-package
+ * render workspace: **84.1 s**, of which `setup` is 35.7 s and the four-segment narration 14.8 s.
+ * That is a warm npm cache and a fast link, and a
  * cold CI runner pays a great deal more — from three upstream hosts, none of which a gate on every
  * commit may depend on. `apps/cli`'s own suites cover this code against a fake runtime and a
  * recorded voice pack and are what CI runs; this is the periodic proof that the recording still
@@ -154,10 +157,11 @@
  * ```
  *
  * Environment it reads: `COLLIE_ARTIFACTS_DIR` (default `<repo>/.session/artifacts`),
- * `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` (default: whatever is on `PATH`); the ffmpeg resolved
- * from them is the one the child renders with. It reads
- * `XPLAINER_TTS_URL`, `XPLAINER_TTS_FIXTURE`, `KOKORO_URL`, the `XPLAINER_ONNX_*` set,
- * `XPLAINER_TTS_PROVIDER` and `ELEVENLABS_API_KEY` only to refuse to pass them on.
+ * `XPLAINER_FFMPEG` and `XPLAINER_FFPROBE` (default: whatever is on `PATH`) for the tools this
+ * script reads the MP4 back with — from the system, because our macOS ffmpeg ships no `ffprobe` —
+ * and never for the child. It reads `XPLAINER_TTS_URL`, `XPLAINER_TTS_FIXTURE`, `KOKORO_URL`, the
+ * `XPLAINER_ONNX_*` set, `XPLAINER_TTS_PROVIDER`, `ELEVENLABS_API_KEY` and `XPLAINER_FFMPEG` only to
+ * refuse to pass them on.
  *
  * Everything it prints is also written to `<artifacts>/e2e-speech.log`, line by line as it happens,
  * so a run that dies mid-render still leaves its transcript behind.
@@ -181,12 +185,12 @@ import {
 } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { transcript, WORKSPACE_MANIFEST_FILE, workerStill } from "./spawn.mjs";
+import { transcript, workerStill } from "./spawn.mjs";
 
 /** The repository root, two levels up from this file. */
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
@@ -214,8 +218,8 @@ const PNPM_BUILD =
 /**
  * How long `setup` may take.
  *
- * ~304 MB from three hosts plus a package install, so this is a bound on a *hung* download and
- * nothing tighter. The ONNX runtime tarball alone is 111,735,068 bytes and the npm registry is not
+ * ~304 MB from three hosts plus this platform's ffmpeg, so this is a bound on a *hung* download
+ * and nothing tighter. The ONNX runtime tarball alone is 111,735,068 bytes and the npm registry is not
  * always quick about it.
  */
 const SETUP_TIMEOUT_MS = 2_700_000;
@@ -257,6 +261,9 @@ const HIDDEN_EXECUTABLES = ["docker", "python", "python3"];
  * at `elevenlabs` in a developer's shell would send this proof's script to a paid service and make
  * it a proof about somebody else's voice, and `ELEVENLABS_API_KEY` is the key that would pay for
  * it. The key is a secret, so the check below says whether it was set and never what it was.
+ *
+ * And `XPLAINER_FFMPEG`, which is not about speech: in the child it is the override that wins over
+ * the ffmpeg `setup` records, and the render half is about that one.
  */
 const SCRUBBED_VARIABLES = [
   "XPLAINER_TTS_FIXTURE",
@@ -268,6 +275,7 @@ const SCRUBBED_VARIABLES = [
   "XPLAINER_ONNX_VOICE_NAME",
   "XPLAINER_TTS_PROVIDER",
   "ELEVENLABS_API_KEY",
+  "XPLAINER_FFMPEG",
 ];
 
 /** The one scrubbed variable whose value is a secret, and so is never printed. */
@@ -585,21 +593,23 @@ function fromParentPath(stem, fallback) {
  *   name at all. Its exit status is not asserted — `sh -c 'exit 0'` and `icacls /?` do not agree
  *   about what success looks like, and the question here is resolution.
  *
- * **`git` is deliberately not here, and that is a measurement rather than an oversight — do not
- * add it back.** It is the obvious guess for "what an install needs", and the subtractive form of
- * this proof settled the question by accident: it dropped `/usr/bin`, `/usr/local/bin` and
- * `/opt/homebrew/bin` on macOS, which between them are every `git` on that machine, and `npm ci`
- * still resolved the template's 247 packages. The reason holds generally: the template's lockfile
- * carries no `git+` dependency, so npm never shells out to git. An entry added here on suspicion
- * rather than on a spawn the product actually makes is one more executable the child can reach,
- * which is the one thing this arrangement exists to prevent.
+ * **`node`, `npm` and `sh` were on it for the render workspace's `npm ci`**, which left with the
+ * previous renderer's payload 2 on 2026-11-12, and `setup` spawns no package manager since. They
+ * are kept rather than dropped because no run of this proof has been made without them, and the
+ * Windows leg is the wrong place to find out; their reasons below say what they were for.
  *
- * **`ffmpeg` is not here either, and since 2026-11-11 for a different reason.** The previous
- * renderer shipped its own encoder, so no render read `ffmpeg` at all; the renderer that replaced it
- * pipes every frame into an ffmpeg it finds through `XPLAINER_FFMPEG`, then `PATH`, then Homebrew's
- * two directories. The child is handed the parent's own ffmpeg through the variable rather than
- * through this directory — a file rather than a directory, and the product's first lookup — and the
- * `ffmpeg` and `ffprobe` *this script* runs are the parent's, resolved by {@link resolveTool}.
+ * **`git` is deliberately not here, and that is a measurement rather than an oversight — do not
+ * add it back.** It was the obvious guess for "what an install needs", and the subtractive form of
+ * this proof settled the question by accident: it dropped `/usr/bin`, `/usr/local/bin` and
+ * `/opt/homebrew/bin` on macOS, which between them are every `git` on that machine, and the
+ * workspace's `npm ci` still resolved its 247 packages. An entry added here on suspicion rather
+ * than on a spawn the product actually makes is one more executable the child can reach, which is
+ * the one thing this arrangement exists to prevent.
+ *
+ * **`ffmpeg` is not here either.** The render worker never looks for one on `PATH` (ADR 0031
+ * §Note, 2026-11-12, D6): it takes `XPLAINER_FFMPEG`, which is scrubbed, and otherwise the ffmpeg
+ * `setup` recorded, which is the one this proof renders with. The `ffmpeg` and `ffprobe` *this
+ * script* runs are the parent's, resolved by {@link resolveTool}, and never reach the child.
  */
 function allowList() {
   if (process.platform === "win32") {
@@ -618,10 +628,10 @@ function allowList() {
         probe: ["--version"],
         forward: true,
         why:
-          "npm's own lifecycle scripts may invoke `npm` by name. The product no longer does — the " +
-          "resolve route spawns `<interpreter> npm-cli.js` since the EINVAL fix — and this entry " +
-          "is kept rather than dropped because no run has ever been made without it, so its " +
-          "necessity is untested either way and a 2x runner is the wrong place to find out",
+          "was for the render workspace's `npm ci`, whose lifecycle scripts could invoke `npm` by " +
+          "name; nothing the product runs spawns npm since that install left with payload 2, and " +
+          "the entry is kept because no run has ever been made without it, so its necessity is " +
+          "untested either way and a 2x runner is the wrong place to find out",
       },
       {
         file: "cmd.exe",
@@ -662,7 +672,7 @@ function allowList() {
       spawnedAs: "node",
       target: process.execPath,
       probe: ["--version"],
-      why: "esbuild's postinstall calls bare `node`, and every `#!/usr/bin/env node` shim npm links into the workspace's `.bin` resolves it through PATH",
+      why: "was for the render workspace's `npm ci` — esbuild's postinstall called bare `node` — which left with payload 2; kept because no run has been made without it",
     },
     {
       file: "npm",
@@ -670,16 +680,16 @@ function allowList() {
       target: fromParentPath("npm", join(dirname(process.execPath), "npm")),
       probe: ["--version"],
       why:
-        "npm's own lifecycle scripts may invoke `npm` by name. The product no longer does — the " +
-        "resolve route spawns `<interpreter> npm-cli.js` on every platform now — and this entry is " +
-        "kept because no run has ever been made without it",
+        "was for the render workspace's `npm ci`, whose lifecycle scripts could invoke `npm` by " +
+        "name; nothing the product runs spawns npm since that install left with payload 2, and " +
+        "the entry is kept because no run has ever been made without it",
     },
     {
       file: "sh",
       spawnedAs: "sh",
       target: fromParentPath("sh", "/bin/sh"),
       probe: ["-c", "exit 0"],
-      why: "npm runs every lifecycle script through `sh -c`, so a PATH with no shell fails at `spawn sh ENOENT` before an interpreter could be looked for at all",
+      why: "was for the render workspace's `npm ci`, which ran every lifecycle script through `sh -c`; kept because no run has been made without it",
     },
   ];
   if (process.platform === "darwin") {
@@ -1242,6 +1252,18 @@ async function pollJob(client, jobId, jobType) {
 }
 
 /**
+ * The worker's final `{"event":"done",…}` line, parsed, or `null` when the job's log has none.
+ *
+ * Read from the end, because the job keeps a sixty-line tail: a long render's progress lines push
+ * the worker's start line — the one that names the encoder in prose — out of it, and the `done`
+ * event, which names it as `ffmpeg: { path, source }`, is the last line the worker prints.
+ */
+function doneEvent(job) {
+  const line = job.output.lines.findLast((entry) => entry.startsWith('{"event":"done"'));
+  return line === undefined ? null : JSON.parse(line);
+}
+
+/**
  * Enqueue one job, then poll it, asserting the sequence P1-5 requires and the exit code the
  * teardown-abort watch is about.
  *
@@ -1329,17 +1351,6 @@ async function main() {
   env.XPLAINER_STATE_DIR = stateDir;
   env.XPLAINER_VIDEOS_DIR = workspace;
   say(`  the child's whole PATH is ${toolbox}`);
-
-  // The render worker's encoder, handed over as a file: the composed `PATH` holds no ffmpeg, and
-  // `XPLAINER_FFMPEG` is the first place the worker looks. The parent's own, so the frames the
-  // child encodes and the frames this script decodes go through the same build.
-  const childFfmpeg = isAbsolute(ffmpeg) ? ffmpeg : onPath(process.env.PATH ?? "", ffmpeg);
-  check(
-    childFfmpeg !== null && existsSync(childFfmpeg),
-    `the ffmpeg this run uses is a file the child can be handed (${childFfmpeg ?? `no ${ffmpeg} on PATH`})`,
-  );
-  env.XPLAINER_FFMPEG = childFfmpeg;
-  say(`  the child renders with XPLAINER_FFMPEG=${childFfmpeg}`);
 
   for (const variable of SCRUBBED_VARIABLES) {
     check(
@@ -1443,11 +1454,6 @@ async function main() {
     "and named the two routes below it as never probed rather than as unavailable — on this " +
       "machine docker is hidden, but setup did not look and must not claim it did",
   );
-  check(
-    setupOutput.includes("workspace: resolve route"),
-    "the workspace came from `npm ci` over the template's own pins, which is the route a machine " +
-      "with no staged payload 2 takes",
-  );
 
   const markerPath = join(stateDir, "toolchain.json");
   check(existsSync(markerPath), `setup recorded ${markerPath}`);
@@ -1479,11 +1485,10 @@ async function main() {
     existsSync(marker.chrome.path),
     `the browser it recorded is on this machine at ${marker.chrome.path}`,
   );
-  const workspaceManifest = join(workspace, WORKSPACE_MANIFEST_FILE);
   check(
-    existsSync(workspaceManifest),
-    "the workspace describes what it resolved, which is the half of the render gate a borrowed " +
-      "node_modules can never satisfy",
+    marker.ffmpeg?.provider === "manifest" && existsSync(marker.ffmpeg.path),
+    `the ffmpeg it recorded is this platform's pinned build (${marker.ffmpeg?.version}, ` +
+      `${marker.ffmpeg?.licence}), on this machine at ${marker.ffmpeg?.path}`,
   );
   // The three artefacts the synthesiser needs, derived from the layout
   // `providers/speech-onnx.ts` documents and then asserted against the marker's own inventory. The
@@ -1728,9 +1733,15 @@ async function main() {
   check(probeStream(stillPath, "v:0", "height") === "540", "the still is 540 high at scale 0.5");
 
   section("render");
-  await runJob(client, "explainer_render", { slug: SLUG });
+  const rendered = await runJob(client, "explainer_render", { slug: SLUG });
   const mp4 = join(workspace, "out", SLUG, "explainer.mp4");
   check(existsSync(mp4), `explainer_render wrote ${mp4}`);
+  const encodedWith = doneEvent(rendered)?.ffmpeg;
+  check(
+    encodedWith?.path === marker.ffmpeg.path && encodedWith?.source === "toolchain.json",
+    `the render's done event names the encoder it used: ${marker.ffmpeg.path} (toolchain.json), ` +
+      `with XPLAINER_FFMPEG scrubbed — it said ${JSON.stringify(encodedWith ?? null)}`,
+  );
 
   const listed = await callTool(client, "explainer_list", {});
   const summary = listed.videos.find((video) => video.slug === SLUG);

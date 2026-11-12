@@ -71,7 +71,6 @@ const stateDir = required("XPLAINER_TEST_STATE_DIR");
 const home = required("XPLAINER_TEST_HOME");
 const payloadA = required("XPLAINER_TEST_PAYLOAD_A");
 const payloadB = required("XPLAINER_TEST_PAYLOAD_B");
-const workspaceRoot = required("XPLAINER_TEST_WORKSPACE");
 const parkAt = required("XPLAINER_TEST_PARK_AT") as UpdateTransition;
 
 /**
@@ -175,7 +174,6 @@ await updateDaemon({
   from: payloadB,
   environment,
   run,
-  workspaceRoot,
   healthTimeoutMs,
   ...addressed,
 });

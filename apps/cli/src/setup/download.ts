@@ -15,9 +15,11 @@
  * - A **short body** is a connection that ended before the length the server itself declared. It is
  *   resumable, and saying so is the difference between "run setup again" and "your network is
  *   broken".
- * - A **checksum mismatch** is bytes that arrived whole and are not the reviewed artefact. The
- *   partial file is deleted rather than kept, because resuming onto bytes that are already wrong
- *   would re-download the same mismatch for ever.
+ * - A **checksum mismatch** is bytes that arrived whole and are not the reviewed artefact — or more
+ *   bytes than the manifest records, which no reviewed artefact is, so the body is stopped at the
+ *   first byte over rather than written out in full. The partial file is deleted rather than kept,
+ *   because resuming onto bytes that are already wrong would re-download the same mismatch for
+ *   ever.
  * - A **resume that was not honoured** is a server that answered a `Range` request with something
  *   other than that range. Appending the body of such a response to a partial file produces a file
  *   of exactly the right length made of the wrong bytes — which the digest would catch, but only
@@ -30,9 +32,10 @@
  * Authentication Required` never reaches a `fetch` caller at all — undici turns it into a network
  * error whose `cause` is an empty `Error` with no `code`, so the one status a corporate proxy is
  * most likely to answer with would arrive indistinguishable from a dropped connection, and the
- * branch naming it would be dead code. The artefact URLs also **redirect**: the arm64 Linux build
- * the pinned Remotion line selects is a `307` to another host. Holding the status line, the headers
- * and the redirect chain is what makes both of those sayable.
+ * branch naming it would be dead code. The artefact URLs also **redirect**: measured 2026-11-12, a
+ * GitHub release download — how every Linux and Windows FFmpeg pin is fetched — answers `302` to
+ * GitHub's asset host. Holding the status line, the headers and the redirect chain is what makes
+ * both of those sayable.
  *
  * **What "atomic commit" means here.** The archive is verified, unpacked into a **staging
  * directory beside the destination**, and only then `rename`d onto it — the same argument
@@ -70,6 +73,7 @@ import { pipeline } from "node:stream/promises";
 import { flushDirectory } from "../daemon/durable-write.js";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
 import { extractZip } from "./archive.js";
+import { assertTarballArtefact, extractTar } from "./tar.js";
 
 /** Why a download was refused. One value per distinguishable condition, never a catch-all. */
 export type DownloadRefusalReason =
@@ -245,6 +249,17 @@ export async function downloadArtefact(options: DownloadOptions): Promise<Downlo
       response.body,
       async function* (chunks: AsyncIterable<Buffer>) {
         for await (const chunk of chunks) {
+          // Before the chunk is written: a body with no `Content-Length` says how long it is only
+          // by ending, and one that does not end would otherwise fill the disk.
+          if (received + chunk.length > request.size) {
+            throw new DownloadRefusal(
+              "checksum-mismatch",
+              request.url,
+              `${request.url} sent more than the ${request.size} bytes the toolchain manifest ` +
+                "records, so it is not the artefact whose digest was reviewed. The download was " +
+                "stopped there and discarded, and nothing was unpacked.",
+            );
+          }
           hash.update(chunk);
           received += chunk.length;
           options.onProgress?.(received, probe.length);
@@ -254,6 +269,14 @@ export async function downloadArtefact(options: DownloadOptions): Promise<Downlo
       sink,
     );
   } catch (error) {
+    if (error instanceof DownloadRefusal) {
+      // The descriptor is closed before the file goes, so the removal also holds on Windows.
+      if (!sink.closed) {
+        await new Promise<void>((resolve) => sink.once("close", () => resolve()));
+      }
+      rmSync(partFile, { force: true });
+      throw error;
+    }
     throw classifyTransferFailure(request, error, received);
   }
 
@@ -292,9 +315,12 @@ type ArtefactProbe = { length: number; acceptsRanges: boolean };
  *
  * A server that answers without a `Content-Length`, or that refuses `HEAD` outright, is not an
  * error: the manifest already records the size, so the recorded one stands and the resume is simply
- * not attempted. What the probe must not do is let a **disagreement** through — a server offering a
- * different length than the manifest records is serving a different artefact, and that is worth
- * saying before a hundred megabytes rather than after.
+ * not attempted. Nor is any other status outside `2xx` — a `503` from a busy origin describes the
+ * error, not the artefact, and its `Content-Length` is the length of that error — so the `GET`
+ * decides, and a `GET` that fails the same way is reported as `unreachable` by its status. What the
+ * probe must not do is let a **disagreement** through — a `2xx` offering a different length than
+ * the manifest records is serving a different artefact, and that is worth saying before a hundred
+ * megabytes rather than after.
  */
 async function headArtefact(options: DownloadOptions): Promise<ArtefactProbe> {
   const { request } = options;
@@ -304,6 +330,9 @@ async function headArtefact(options: DownloadOptions): Promise<ArtefactProbe> {
     return { length: request.size, acceptsRanges: false };
   }
   await assertServedByOrigin(request.url, response);
+  if (response.status < 200 || response.status > 299) {
+    return { length: request.size, acceptsRanges: false };
+  }
   const declared = response.headers["content-length"];
   if (declared === undefined) {
     return { length: request.size, acceptsRanges: false };
@@ -693,6 +722,20 @@ export const ZIP_ARCHIVE: ArchiveFormat = {
   extract: extractZip,
 };
 
+/**
+ * A tarball compressed with xz, every member written at the name it carries.
+ *
+ * The counterpart of {@link ZIP_ARCHIVE}, for the one publisher that ships nothing else: both
+ * Linux FFmpeg pins are BtbN `.tar.xz` builds. A caller that wants one binary out of a build's
+ * 400 MB builds its own format around `extractTar`'s selector and `stopAfter`, as the ONNX route
+ * builds one around its gzip tarball.
+ */
+export const TAR_XZ_ARCHIVE: ArchiveFormat = {
+  assert: (url) => assertTarballArtefact(url, "xz"),
+  extract: (archive, staging) =>
+    extractTar(archive, staging, (header) => header.name, { decompressor: "xz" }),
+};
+
 /** Where the work happens and where the result lands. */
 export type AcquireOptions = {
   request: ArtefactRequest;
@@ -775,10 +818,14 @@ export async function acquireArtefact(options: AcquireOptions): Promise<AcquireO
     options.stage?.(staging, download);
     mkdirSync(parent, { recursive: true });
     renameSync(staging, destination);
-    rmSync(download.path, { force: true });
     return { destination, download, extraction, flush: flushDirectory(parent) };
   } finally {
     rmSync(staging, { recursive: true, force: true });
+    // Whatever happened after the digest matched. A `.part` is a resume point for a download that
+    // is not whole yet; this one is whole and verified, so a refusal from the reader or from the
+    // provider's `stage` hook is a fact about these bytes, and keeping them would only have the
+    // next run refuse the same bytes again, silently, from a 100 MB file nothing mentions.
+    rmSync(download.path, { force: true });
   }
 }
 
@@ -852,8 +899,8 @@ export async function acquireFile(options: AcquireFileOptions): Promise<AcquireF
 /**
  * Refuse an artefact this build cannot unpack, by extension and before it is fetched.
  *
- * The query string is ignored on purpose: `remotion.media`'s URLs end `…zip?clear`, and a check
- * against the whole URL would refuse the artefact the pinned Remotion line actually selects.
+ * The query string is ignored on purpose: it is not part of the format, so an artefact URL that
+ * carries one (`…zip?download=1`) is judged by its path alone.
  */
 export function assertZipArtefact(url: string): void {
   const pathname = new URL(url).pathname;
@@ -861,8 +908,8 @@ export function assertZipArtefact(url: string): void {
     throw new DownloadRefusal(
       "unsupported-archive",
       url,
-      `${url} is not a .zip, and zip is the only archive format setup unpacks. Every artefact ` +
-        "the toolchain manifest names is one.",
+      `${url} is not a .zip, and this artefact is read as a zip archive. A tarball is read by ` +
+        "tar.ts, under the extension its own compression is published with.",
     );
   }
 }

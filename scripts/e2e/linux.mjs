@@ -17,13 +17,14 @@
  * WHAT THE CONTAINER REACHES BESIDES KOKORO. Since 2026-09-09 `render.mjs` runs a real
  * `xplainer setup` inside the container — the batch-6 toolchain gate refuses `explainer_still` and
  * `explainer_render` on a machine with no `<state>/toolchain.json`, and there is no honest way past
- * it — so the run now fetches a ~100 MB headless shell and resolves the workspace with `npm ci`
- * from the public registry. The user-defined bridge below gives it that, exactly as it gives Kokoro
- * its image; a machine that can build the image can run the proof. That headless shell is the only
- * browser in the run: the render worker launches the copy `setup` recorded, so the image carries
- * no browser of its own and nothing is downloaded inside the measured still job. On an arm64 host
- * (OrbStack on Apple silicon) the container is linux-arm64 with bookworm's glibc 2.36, which the
- * committed manifest answers with its `linux-arm64-glibc235` entry.
+ * it — so the run fetches a ~130 MB Chrome for Testing headless shell from Google's bucket and a
+ * BtbN FFmpeg `.tar.xz` from GitHub's releases. The user-defined bridge below gives it that,
+ * exactly as it gives Kokoro its image; a machine that can build the image can run the proof. Those
+ * are the only browser and the only encoder the render uses: the worker launches the headless shell
+ * `setup` recorded and pipes into the ffmpeg it recorded, never one on `PATH` (ADR 0031 §Note,
+ * 2026-11-12, D6) — the image's own ffmpeg is there for `render.mjs`'s `ffprobe` and frame reads
+ * alone. On an arm64 host (OrbStack on Apple silicon) the container is linux-arm64 with bookworm's
+ * glibc 2.36, which meets both rows' floors: Chrome for Testing's `min_glibc` 2.25 and BtbN's 2.28.
  *
  * WHY ITS OWN NETWORK AND ITS OWN KOKORO. A developer machine very often already has a Kokoro
  * container answering on host port 8880, and this script must neither disturb it nor depend on it.

@@ -41,6 +41,14 @@
  * `--url` that is not an endpoint (`1`) — write a sentence to stderr and nothing to stdout, so a
  * caller distinguishes them by exit code rather than by parsing an error object.
  *
+ * **The toolchain is reported here and judged by the daemon.** The `toolchain:` block (and
+ * `toolchain` in `--json`) is the render gate's verdict over this state directory's marker — the
+ * one `/healthz` gives, at stat depth (ADR 0031 §Note, 2026-11-12, D10) — and what the marker
+ * records: the browser's version, ffmpeg's version, licence, publisher and provider, and the speech
+ * route. `health.reason` is `/healthz`'s own word for a `degraded` answer. Neither changes the
+ * condition or the exit code: an answering daemon is `ready` in this command's closed set, and a
+ * degraded one says so through `health`, which is where the desktop already reads it.
+ *
  * **Speech is reported and never judged.** The `speech:` line (and `speech` in `--json`) says which
  * provider this machine narrates with, its voice and model, and whether an API key is stored — read
  * through `tts/resolve.ts`, the same function the narration worker asks, so the line and the job log
@@ -72,6 +80,7 @@ import { resolveStateDir } from "../daemon/state-dir.js";
 import { resolveTokenPath } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { DEFAULT_PORT } from "../server.js";
+import { summariseToolchain, type ToolchainSummary, toolchainLines } from "../setup/toolchain.js";
 import {
   type ApiKeyOrigin,
   ELEVENLABS_API_KEY_ENV,
@@ -93,6 +102,7 @@ export const DAEMON_URL_ENV = "XPLAINER_DAEMON_URL";
 /** What `/healthz` answers with when it is our daemon answering. */
 type HealthBody = {
   status?: unknown;
+  reason?: unknown;
   version?: unknown;
   contract_version?: unknown;
 };
@@ -167,8 +177,21 @@ export type StatusReport = {
     /** Why nothing answered, or `null`. */
     error: string | null;
   };
-  /** The `/healthz` body, present only for a `200`. */
-  health: { status: string | null; version: string | null; contract_version: string | null } | null;
+  /**
+   * The `/healthz` body, present only for a `200`. `reason` is `toolchain_missing` or
+   * `toolchain_stale` beside a `degraded` status, and `null` beside `ok`.
+   */
+  health: {
+    status: string | null;
+    reason: string | null;
+    version: string | null;
+    contract_version: string | null;
+  } | null;
+  /**
+   * The render toolchain this state directory records, judged as `/healthz` judges it. Additive, so
+   * {@link STATUS_REPORT_VERSION} stays `1`.
+   */
+  toolchain: ToolchainSummary;
   /**
    * The speech provider this machine narrates with, or `null` when `config.json` or
    * `credentials.json` cannot be read. Additive, so {@link STATUS_REPORT_VERSION} stays `1`.
@@ -485,6 +508,9 @@ export function createStatusCommand(io: CliIo): Command {
       const tokenPath = daemonState.token_file ?? resolveTokenPath(stateDir);
       const token = readTokenQuietly(tokenPath);
       const speech = readSpeech(stateDir);
+      // This machine's marker, judged on its own: what the daemon decides is `/healthz`'s answer,
+      // below, and with `--url` that daemon is not even on this machine.
+      const toolchain = summariseToolchain(stateDir);
 
       const lines = [
         `state directory: ${stateDir}`,
@@ -497,6 +523,7 @@ export function createStatusCommand(io: CliIo): Command {
         `token file:      ${tokenPath}${token === null ? " (absent or empty)" : ""}`,
         `socket:          ${daemonState.socket_path ?? "unrecorded — no run has bound here yet"}`,
         ...speechLines(speech),
+        ...toolchainLines(toolchain, endpoint.source === "configured" ? endpoint.url : null),
         neverBound(endpoint.source, daemonState.port, runtime)
           ? `probing:         nothing — neither file above records a daemon, so ${endpoint.url} would be somebody else's`
           : `probing:         ${endpoint.url}/healthz (port from ${endpoint.source})`,
@@ -541,11 +568,13 @@ export function createStatusCommand(io: CliIo): Command {
             result.kind === "ok"
               ? {
                   status: asReportedString(result.body.status),
+                  reason: asReportedString(result.body.reason),
                   version: asReportedString(result.body.version),
                   contract_version: asReportedString(result.body.contract_version),
                 }
               : null,
           speech: speechReport(speech),
+          toolchain,
         };
         io.writeOut(`${JSON.stringify(report)}\n`);
         if (exitCode !== 0) {
@@ -555,9 +584,14 @@ export function createStatusCommand(io: CliIo): Command {
       }
 
       if (result.kind === "ok") {
+        const reason = asReportedString(result.body.reason);
         lines.push(
-          `daemon:          running and healthy — version ${String(result.body.version)}, ` +
-            `contract ${String(result.body.contract_version)}`,
+          reason === null
+            ? `daemon:          running and healthy — version ${String(result.body.version)}, ` +
+                `contract ${String(result.body.contract_version)}`
+            : `daemon:          running, degraded (${reason}) — version ` +
+                `${String(result.body.version)}, contract ${String(result.body.contract_version)}; ` +
+                "the toolchain line above says what is wrong",
         );
         // **A matching contract is not a matching version, and only one of the two is visible.**
         // `mcp --attach` checks `contract_version` before it proxies, so a daemon several releases

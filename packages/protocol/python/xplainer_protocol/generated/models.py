@@ -212,6 +212,28 @@ class TimingsSegment(BaseModel):
     )
 
 
+class ToolchainFfmpegProbe(BaseModel):
+    """
+    What the executable said about itself when `setup` probed it, one array entry per line of output, as it printed them. Kept verbatim rather than summarised so that a support report, or a later build with a different question, can read the answer without running the binary again.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    version: list[str] = Field(
+        ...,
+        description='`ffmpeg -version`: the version line, the configuration and the library versions `libavcodec` is read from.',
+    )
+    buildconf: list[str] = Field(
+        ...,
+        description='`ffmpeg -buildconf`: the `configure` flags the build was made with, which is what says which encoders and which licence configuration it carries.',
+    )
+    license: list[str] = Field(
+        ...,
+        description='`ffmpeg -L`: the licence the build itself states. Spelled `license` because it is the name of the flag; the field it is checked against is `licence`.',
+    )
+
+
 class ToolchainFile(BaseModel):
     """
     One file a multi-file component is made of, and the two facts that let a later run decide whether it is still the file that was acquired.
@@ -239,7 +261,7 @@ class ToolchainFile(BaseModel):
 
 class ToolchainWorkspace(BaseModel):
     """
-    The workspace payload's own identity: which platform it was resolved for, and which template it resolved.
+    **Deprecated: written by `format_version` 1 only.** The workspace payload's own identity — which platform it was resolved for, and which template it resolved — from the releases that installed a render workspace through `setup --workspace`. No render reads that workspace and this build neither writes nor judges this field; it stays in the schema, optional, so that a version-1 marker still validates.
     """
 
     model_config = ConfigDict(
@@ -649,13 +671,69 @@ class ToolchainComponent(BaseModel):
     )
     provider: str = Field(
         ...,
-        description='Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.',
+        description="Which route acquired this component — `manifest` for the Chrome for Testing build the toolchain manifest's row for this platform names, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed.",
         pattern='^[a-z][a-z0-9-]*$',
     )
     files: list[ToolchainFile] | None = Field(
         None,
         description='Every file this component is made of, where it is made of more than the one `path` names. Optional, and absent for every route that acquires a single artefact — which is why adding it did not move `format_version`: a build that does not read it still finds everything it needs, and a build that does reads a strictly larger set. It is a **small, named** set and never a tree inventory: the four artefacts the ONNX speech route pins, not the several thousand files inside an unpacked bundle. Its purpose is the existence check ADR 0020 §Ordering requires of `daemon install` — "verifies the recorded paths still exist" — which for a multi-file component is only meaningful if every path is recorded. The digests make the same check able to tell a replaced file from a missing one, and are what a warm cache is re-verified against instead of being trusted. It carries no `minItems`, deliberately: a provider that records the field and then leaves it empty is caught by a runtime assertion beside the provider that knows how many files its own route has, and a schema keyword would instead have made the shape depend on `provider` — a conditional, which is the one construct the codegen splitter handles badly.',
     )
+
+
+class ToolchainFfmpeg(BaseModel):
+    """
+    The FFmpeg executable every render pipes its frames to, and what `setup` proved about it. A separate definition rather than a `ToolchainComponent`, because that one is `additionalProperties: false` and shared by `chrome` and `speech`, and making these fields conditional on which component it is would be the construct the codegen splitter handles badly. Optional at the root, so that a marker written before FFmpeg was acquired is still a document every reader can parse; a build that renders with it treats its absence as an incomplete toolchain.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    version: str = Field(
+        ...,
+        description='The token after `ffmpeg version ` on the first line of `ffmpeg -version`, exactly as the build spells it — `9.0.2`, `n9.0.2-39-g7adfbe40dc-20261031`. Reported, never parsed: capability is judged on `libavcodec`.',
+        min_length=1,
+    )
+    path: str = Field(
+        ...,
+        description='The absolute path of the executable a render spawns, resolved on this machine. Never looked up on `PATH` at render time: what `setup` probed is what runs.',
+        min_length=1,
+    )
+    sha256: str = Field(
+        ...,
+        description="For `manifest`: the archive's reviewed digest, as for Chrome. For `path`: the executable's own digest when `setup` probed it — recorded rather than expected, so it detects later drift and proves nothing about provenance.",
+        pattern='^[0-9a-f]{64}$',
+    )
+    provider: str = Field(
+        ...,
+        description="Which route recorded it — `manifest` for the pinned build the toolchain manifest's row for this platform names, `path` for an executable named with `setup --ffmpeg-path`. There is no route that finds one on `PATH` by itself.",
+        pattern='^[a-z][a-z0-9-]*$',
+    )
+    files: list[ToolchainFile] = Field(
+        ...,
+        description="The executable **first**, with its own digest and length — the manifest row's reviewed `member_sha256` for `manifest`, the probed digest for `path` — followed by whatever was kept beside it, such as the licence text and the provenance record. `files[0].bytes` is what the stat-only check compares, so a replaced binary is `toolchain_stale` without hashing it. `minItems` is safe here, unlike on `ToolchainComponent.files`, because every route records the executable, so the constraint does not depend on the route.",
+        min_length=1,
+    )
+    libavcodec: str = Field(
+        ...,
+        description='The libavcodec version the executable reported it had loaded, `major.minor.micro`, so a build that raises its floor can judge a recorded component without running it. The floor is judged on the major alone.',
+        pattern='^\\d+\\.\\d+\\.\\d+$',
+    )
+    licence: str = Field(
+        ...,
+        description="The licence the build's own `configure` declared, as an SPDX id — `GPL-3.0-or-later`, `GPL-2.0-or-later`, `LGPL-2.1-or-later`, `LGPL-3.0-or-later`. For `manifest` it is the row's, cross-checked against `probe.license` and `probe.buildconf` before anything is recorded; `status` prints it.",
+        pattern='^[A-Za-z0-9][A-Za-z0-9.+-]*$',
+    )
+    publisher: str | None = Field(
+        None,
+        description="Who published the artefact, as the allowlist in code maps the row's URL prefix — never a value the manifest supplied. Absent for `path`, which no publisher vouches for.",
+        min_length=1,
+    )
+    source_url: str | None = Field(
+        None,
+        description='Where the corresponding source of that build is published, when its row names one. Recorded so that the licence obligation travels with the binary rather than with a manifest the machine may never read again.',
+        pattern='^https://',
+    )
+    probe: ToolchainFfmpegProbe
 
 
 class ExplainerNarrateInput(BaseModel):
@@ -681,7 +759,7 @@ class ExplainerNarrateInput(BaseModel):
 
 class Toolchain(BaseModel):
     """
-    The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install "checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check compares the workspace it records against an incoming runtime's template pins. The three components are the two binaries a render needs — the Chrome Headless Shell that draws every frame, and the speech synthesiser every narration goes through, each recorded with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk — plus the workspace payload, which is recorded here rather than beside the runtime because it survives daemon updates while the runtime does not. Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.
+    The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install "checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check judges it against what an incoming runtime requires. It records the binaries a render needs — the Chrome Headless Shell that draws every frame, the speech synthesiser every narration goes through and, from `format_version` 2, the FFmpeg every render pipes its frames to — each with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk. The schema decides what a document may say and not what a render needs: `ffmpeg` is optional here, and whether its absence stops a render is the gate's judgement (ADR 0031 §Note, 2026-11-12, D1 and D12). Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.
     """
 
     model_config = ConfigDict(
@@ -689,7 +767,7 @@ class Toolchain(BaseModel):
     )
     format_version: int = Field(
         ...,
-        description='The shape of this document. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon.',
+        description="The shape of this document. `2` is what this build writes: `chrome` and `speech`, an optional `ffmpeg`, and no `workspace`. `1` is the shape every release before ADR 0031's cut wrote, with a required `workspace` and no `ffmpeg`; it still validates here and this build still reads it, as a valid document describing an incomplete toolchain. The two are not interchangeable across a daemon: a runtime records the format it reads, and an update or a `setup` that would leave a version-2 marker under a version-1 daemon is refused, because crossing the cut is a reinstall. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon.",
         ge=1,
     )
     created_at: AwareDatetime = Field(
@@ -698,4 +776,5 @@ class Toolchain(BaseModel):
     )
     chrome: ToolchainComponent
     speech: ToolchainComponent
-    workspace: ToolchainWorkspace
+    ffmpeg: ToolchainFfmpeg | None = None
+    workspace: ToolchainWorkspace | None = None

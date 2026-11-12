@@ -22,16 +22,18 @@
 ARG NODE_VERSION=24.20.0
 FROM node:${NODE_VERSION}-bookworm-slim
 
-# ffmpeg is what the render worker pipes every frame into — Debian's build is
-# linked against libx264, which the worker requires — and what the proof probes
-# with. Everything after it is the Chrome headless shell's shared-library set on
-# Debian. The shell itself is not in the image: `render.mjs` runs a real
-# `xplainer setup`, which acquires it at run time from the manifest this
-# checkout commits — on arm64 (OrbStack on Apple silicon, say) bookworm's glibc
-# 2.36 selects the `linux-arm64-glibc235` entry, on x64 `linux-x64-glibc235` —
-# and the render launches that recorded copy and no other. What the download
-# does not bring is the system libraries the shell dynamically links, and a
-# missing one surfaces as a Chrome that exits before it prints anything.
+# ffmpeg is what the proof reads the MP4 back with — `ffprobe` and the frame
+# extracts — and nothing else: the render worker pipes every frame into the
+# ffmpeg `xplainer setup` acquires and records, and never looks on `PATH` (ADR
+# 0031 §Note, 2026-11-12, D6). Everything after it is the Chrome headless
+# shell's shared-library set on Debian. Neither the shell nor the encoder is in
+# the image: `render.mjs` runs a real `xplainer setup`, which acquires both at
+# run time from the manifest this checkout commits — the `linux-arm64` rows on
+# arm64 (OrbStack on Apple silicon, say), `linux-x64` on x64, and bookworm's
+# glibc 2.36 meets both rows' floors — and the render launches those recorded
+# copies and no others. What the download does not bring is the system
+# libraries the shell dynamically links, and a missing one surfaces as a Chrome
+# that exits before it prints anything.
 # fonts-liberation is not optional either — with no font on the box the captions
 # render as empty boxes and the burned caption comparison would pass on the
 # wrong pixels.

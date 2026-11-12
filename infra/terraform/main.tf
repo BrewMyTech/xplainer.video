@@ -100,34 +100,78 @@ resource "cloudflare_r2_custom_domain" "cdn" {
 #
 # A release artefact is immutable: a published version's bytes never change and
 # a new version gets a new key, so a long edge TTL is safe and is the whole
-# point. The toolchain manifest is the one mutable key — it is rewritten when a
-# new artefact is published — which is why the browser TTL is short and a
-# publish is expected to purge it rather than wait the edge TTL out.
+# point. Two things are not, and each gets its own clause:
+#
+# - **An error is never cached.** The edge TTL below *overrides* the origin, so
+#   without `status_code_ttl` a `404` for a key requested before its upload
+#   would be served from the edge for the full 30 days after the object
+#   arrived — a URL poisoned by one premature request. Every 4xx and 5xx is
+#   `-1` (no-store) in both rules.
+# - **A manifest is the one mutable kind of key** (`toolchain/v1/manifest.json`,
+#   `toolchain/v2/manifest.json`): it is rewritten when a new artefact is
+#   published. The second rule matches it by path and caps both TTLs at five
+#   minutes. It sits after the first rule on purpose: when several cache rules
+#   match, Cloudflare applies them in order and a later rule's setting wins.
+#   A publish that cannot wait five minutes purges the one URL
+#   (infra/README.md §Publishing a manifest).
 resource "cloudflare_ruleset" "cdn_cache" {
   zone_id = local.zone_id
   name    = "Cache release artefacts on ${local.cdn_hostname}"
   kind    = "zone"
   phase   = "http_request_cache_settings"
 
-  rules = [{
-    ref         = "cdn_artefacts_eligible_for_cache"
-    description = "Release artefacts on ${local.cdn_hostname} are immutable and cacheable"
-    expression  = "(http.host eq \"${local.cdn_hostname}\")"
-    action      = "set_cache_settings"
-    enabled     = true
+  rules = [
+    {
+      ref         = "cdn_artefacts_eligible_for_cache"
+      description = "Release artefacts on ${local.cdn_hostname} are immutable and cacheable; errors are not"
+      expression  = "(http.host eq \"${local.cdn_hostname}\")"
+      action      = "set_cache_settings"
+      enabled     = true
 
-    action_parameters = {
-      cache = true
+      action_parameters = {
+        cache = true
 
-      edge_ttl = {
-        mode    = "override_origin"
-        default = 2592000 # 30 days
+        edge_ttl = {
+          mode    = "override_origin"
+          default = 2592000 # 30 days
+
+          status_code_ttl = [{
+            status_code_range = { from = 400, to = 599 }
+            value             = -1 # no-store: a premature 404 must not outlive the upload
+          }]
+        }
+
+        browser_ttl = {
+          mode    = "override_origin"
+          default = 3600 # 1 hour
+        }
       }
+    },
+    {
+      ref         = "cdn_manifests_short_ttl"
+      description = "Manifests on ${local.cdn_hostname} are rewritten on publish: five minutes at the edge and in the browser"
+      expression  = "(http.host eq \"${local.cdn_hostname}\" and ends_with(http.request.uri.path, \"/manifest.json\"))"
+      action      = "set_cache_settings"
+      enabled     = true
 
-      browser_ttl = {
-        mode    = "override_origin"
-        default = 3600 # 1 hour: the manifest is the one key that is rewritten
+      action_parameters = {
+        cache = true
+
+        edge_ttl = {
+          mode    = "override_origin"
+          default = 300 # 5 minutes
+
+          status_code_ttl = [{
+            status_code_range = { from = 400, to = 599 }
+            value             = -1
+          }]
+        }
+
+        browser_ttl = {
+          mode    = "override_origin"
+          default = 300
+        }
       }
-    }
-  }]
+    },
+  ]
 }

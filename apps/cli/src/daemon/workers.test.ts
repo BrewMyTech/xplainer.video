@@ -14,15 +14,22 @@
  * reach Chrome and ffmpeg as well as the worker.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { readScaffoldTemplate, scaffoldVideo, videoPaths } from "@xplainer/render-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readJobRequest, writeJobRequest } from "../job-request.js";
-import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
-import { recordTestToolchain, writeTestWorkspaceManifest } from "../setup/testing/toolchain.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import type { JobRecord } from "./job-store.js";
 import { makeJobRecord } from "./testing/records.js";
 import { videoLockPath } from "./video-lock.js";
@@ -65,12 +72,12 @@ function narratedVideo(slug: string): void {
 }
 
 /**
- * A machine where `xplainer setup` has run: the marker, its two acquisitions, and the workspace
- * manifest. The factory reads all three before it builds a spec. There is no `node_modules`: the
- * render worker reads nothing from the workspace's own install.
+ * A machine where `xplainer setup` has run: the marker and its two acquisitions, which the factory
+ * reads before it builds a spec. There is no `node_modules`: the render worker reads nothing from
+ * the workspace's own install.
  */
 function pretendSetUp(): void {
-  recordTestToolchain({ stateDir, workspaceRoot: root });
+  recordTestToolchain({ stateDir });
 }
 
 beforeEach(() => {
@@ -159,19 +166,6 @@ describe("the render worker", () => {
     ).toThrow(/captions/);
   });
 
-  it("refuses a workspace nobody set up, naming the command that fixes it", () => {
-    narratedVideo("demo");
-    recordTestToolchain({ stateDir, workspaceRoot: root });
-    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
-    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
-
-    expect(() =>
-      createWorkerRegistry({ root, stateDir }).explainer_render?.(
-        record(1, "explainer_render", "demo"),
-      ),
-    ).toThrow(/xplainer setup --workspace/);
-  });
-
   /**
    * The gate `toolchain.json` exists for, asked at the one moment it can still be reported.
    *
@@ -179,7 +173,7 @@ describe("the render worker", () => {
    * the daemon never downloads, so a machine where `setup` has not run renders nothing and the only
    * question is whether it says so now or three minutes into a job.
    */
-  it("refuses a machine where setup has never run, before it looks at the workspace at all", () => {
+  it("refuses a machine where setup has never run", () => {
     narratedVideo("demo");
     pretendSetUp();
     rmSync(join(stateDir, "toolchain.json"));
@@ -195,7 +189,7 @@ describe("the render worker", () => {
   /** A recorded artefact that has been cleaned away is a different repair from a missing marker. */
   it("refuses when a path the marker recorded is no longer on this machine", () => {
     narratedVideo("demo");
-    const marker = recordTestToolchain({ stateDir, workspaceRoot: root });
+    const marker = recordTestToolchain({ stateDir });
     pretendSetUp();
     rmSync(marker.chrome.path);
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
@@ -206,24 +200,120 @@ describe("the render worker", () => {
       ),
     ).toThrow(/no longer on this machine/);
   });
+});
 
-  /** The skew D2 is about: the workspace is intact and is not the one this build's template wants. */
-  it("refuses a workspace resolved for a template this build no longer ships", () => {
+/**
+ * AC-A6 (ii), ADR 0031 §Note, 2026-11-12, D12: what a job needs of the toolchain is decided by its
+ * kind. A render pipes every frame into ffmpeg, so a job that reaches the factory on a machine that
+ * names none fails *here*, before a worker or a browser is started and before the video's lock is
+ * taken — and a still, which encodes nothing, is built on that same machine.
+ */
+describe("ffmpeg, by job kind", () => {
+  /** Run `body` with `XPLAINER_FFMPEG` set to `value` — or unset — and put it back afterwards. */
+  function withFfmpegOverride(value: string | undefined, body: () => void): void {
+    const before = process.env.XPLAINER_FFMPEG;
+    if (value === undefined) {
+      delete process.env.XPLAINER_FFMPEG;
+    } else {
+      process.env.XPLAINER_FFMPEG = value;
+    }
+    try {
+      body();
+    } finally {
+      if (before === undefined) {
+        delete process.env.XPLAINER_FFMPEG;
+      } else {
+        process.env.XPLAINER_FFMPEG = before;
+      }
+    }
+  }
+
+  it("refuses a render and builds a still where neither the marker nor XPLAINER_FFMPEG names one", () => {
     narratedVideo("demo");
-    pretendSetUp();
-    writeTestWorkspaceManifest({
-      stateDir,
-      workspaceRoot: root,
-      resolved: { remotion: "4.0.495" },
-      pins: { remotion: "4.0.494" },
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+    writeJobRequest(root, 2, { job_type: "explainer_still", slug: "demo", frame: 0, scale: 1 });
+    const registry = createWorkerRegistry({ root, stateDir });
+
+    withFfmpegOverride(undefined, () => {
+      expect(() => registry.explainer_render?.(record(1, "explainer_render", "demo"))).toThrow(
+        /records no ffmpeg/,
+      );
+      expect(existsSync(videoLockPath(root, "demo"))).toBe(false);
+
+      const still = registry.explainer_still?.(record(2, "explainer_still", "demo"));
+      expect(still?.command).toBe(process.execPath);
+      expect(still?.args.at(-3)).toMatch(/[\\/]workers[\\/]render\.(ts|js)$/);
+      still?.release?.();
     });
+  });
+
+  it("builds a render on an executable XPLAINER_FFMPEG alone, and refuses one naming nothing", () => {
+    narratedVideo("demo");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
+    const registry = createWorkerRegistry({ root, stateDir });
+
+    withFfmpegOverride(join(stateDir, "no-such-ffmpeg"), () => {
+      expect(() => registry.explainer_render?.(record(1, "explainer_render", "demo"))).toThrow(
+        /XPLAINER_FFMPEG names .*no-such-ffmpeg, which is not an executable file/,
+      );
+    });
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n");
+    chmodSync(named, 0o755);
+    withFfmpegOverride(named, () => {
+      const spec = registry.explainer_render?.(record(1, "explainer_render", "demo"));
+      // The override reaches the worker by inheritance from this process, never through `env`.
+      expect(spec?.env).toEqual({ XPLAINER_STATE_DIR: stateDir });
+      spec?.release?.();
+    });
+  });
+
+  /**
+   * D12's two halves together: a still needs no ffmpeg, so whatever has become of the recorded one
+   * does not stop it; and a render needs an override *or* a valid recorded one, so an executable
+   * `XPLAINER_FFMPEG` admits it over a recorded ffmpeg that is gone.
+   */
+  it("builds a still beside a recorded ffmpeg that is gone, and a render on an override beside it", () => {
+    narratedVideo("demo");
+    const marker = recordTestToolchain({ stateDir });
+    rmSync(marker.ffmpeg?.path ?? "");
+    writeJobRequest(root, 1, { job_type: "explainer_still", slug: "demo", frame: 0, scale: 1 });
+    writeJobRequest(root, 2, { job_type: "explainer_render", slug: "demo" });
+    const registry = createWorkerRegistry({ root, stateDir });
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n");
+    chmodSync(named, 0o755);
+
+    withFfmpegOverride(undefined, () => {
+      const still = registry.explainer_still?.(record(1, "explainer_still", "demo"));
+      expect(still?.command).toBe(process.execPath);
+      still?.release?.();
+      expect(() => registry.explainer_render?.(record(2, "explainer_render", "demo"))).toThrow(
+        /no longer on this machine/,
+      );
+    });
+    withFfmpegOverride(named, () => {
+      const render = registry.explainer_render?.(record(2, "explainer_render", "demo"));
+      expect(render?.command).toBe(process.execPath);
+      render?.release?.();
+    });
+  });
+
+  it("refuses a render whose recorded ffmpeg has been replaced, as stale", () => {
+    narratedVideo("demo");
+    const marker = recordTestToolchain({ stateDir });
+    writeFileSync(marker.ffmpeg?.path ?? "", "a different binary, put here after setup\n");
     writeJobRequest(root, 1, { job_type: "explainer_render", slug: "demo" });
 
-    expect(() =>
-      createWorkerRegistry({ root, stateDir }).explainer_render?.(
-        record(1, "explainer_render", "demo"),
-      ),
-    ).toThrow(/remotion versions/);
+    withFfmpegOverride(undefined, () => {
+      expect(() =>
+        createWorkerRegistry({ root, stateDir }).explainer_render?.(
+          record(1, "explainer_render", "demo"),
+        ),
+      ).toThrow(/replaced since setup checked it/);
+    });
   });
 });
 

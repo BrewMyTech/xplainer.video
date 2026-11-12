@@ -42,7 +42,6 @@ import {
 import { TOKEN_FILE } from "../../daemon/token.js";
 import { type LaunchSpec, SETTING_FLAGS } from "../../runtime/launch-spec.js";
 import { recordTestToolchain } from "../../setup/testing/toolchain.js";
-import { WORKSPACE_DIR_NAME } from "../../workspace-root.js";
 import { daemonStatus, loadedConfigurationQuery, type StatusProbe } from "../lifecycle.js";
 import type { ProbeCommand, ProbeResult, ProbeRunner } from "../preflight.js";
 import { writeToolchainMarker } from "../testing/toolchain.js";
@@ -428,7 +427,7 @@ describe("row 3, from a daemon that is actually answering", () => {
       // The subject here is row 3, and a daemon whose toolchain is absent answers `/healthz` with
       // `degraded` (T19) — correct, and a different assertion. Recording one keeps `ok` meaning
       // "this daemon is healthy" rather than "this fixture never ran setup".
-      recordTestToolchain({ stateDir, workspaceRoot: join(stateDir, WORKSPACE_DIR_NAME) });
+      recordTestToolchain({ stateDir });
       const started = await serveWith(stateDir, { tokenFile, socket });
 
       const health = await getHealthz(started.port, started.token);

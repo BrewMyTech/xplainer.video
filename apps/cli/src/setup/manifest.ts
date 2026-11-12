@@ -4,8 +4,8 @@
  * [ADR 0005](../../../../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md)
  * books this document as infrastructure rather than an afterthought — "a CDN and a
  * version/checksum manifest become infrastructure … the download path has to verify the checksum
- * before extracting" — and this module is that document's shape, its address, and the one function
- * that decides which entry in it describes *this* machine.
+ * before extracting" — and this module is that document's shape, its address, and the functions
+ * that decide which row in it describes *this* machine.
  *
  * **The address is the hostname Terraform provisions and no other.** `infra/terraform/main.tf`
  * declares `cdn_hostname = "cdn.${var.zone_name}"` as a **proxied** CNAME onto the R2 bucket, and
@@ -15,31 +15,34 @@
  * would pay origin egress on every single download" — so an `r2.dev` host is refused here by
  * {@link toolchainManifestUrl} rather than being merely discouraged in prose.
  *
- * **The manifest cannot redirect a download.** The URL `setup` fetches for Chrome is the one the
- * *pinned Remotion line's own selector* returns for this machine ({@link chromeDownloadUrl}); the
- * manifest is then searched for an entry carrying **that exact URL**, and all the entry
- * contributes is the expected digest and the C-library constraint. So a manifest that named a
- * different artefact matches nothing and produces a refusal, not a download from somewhere else.
+ * **Format 2, at a path of its own** ([ADR 0031](../../../../docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s
+ * note of 2026-11-12, D3). Released CLIs read `toolchain/v1/manifest.json` and refuse a document
+ * of a newer format, so the version-1 document stays where it is for them and this build reads
+ * `toolchain/v2/manifest.json`. Its `browser` and `ffmpeg` blocks are **selected by
+ * `<platform>-<arch>`** — there is exactly one artefact per platform for each, and the one Linux
+ * variation, the C library, is a constraint on that artefact that {@link assertLibcSatisfied}
+ * expresses rather than a branch to another one. `speech` is carried over from format 1 unchanged.
+ *
+ * **The manifest names the URL, and code names who may serve it.** Selected by key, a row supplies
+ * its own URL, so every `browser` and `ffmpeg` URL has to begin with a prefix
+ * {@link ARTEFACT_ALLOWLIST} maps to a publisher — checked when the document is parsed, before a
+ * byte is fetched, and a prefix rather than a host because `github.com` hosts every GitHub user's
+ * releases. A new publisher is a reviewed code change, never a manifest edit. Speech bundles keep
+ * their own, older and narrower rule: they are ours, so they come from
+ * {@link TOOLCHAIN_CDN_HOSTNAME}.
  *
  * **The digest is expected, never recorded.** Nothing in this module or in `download.ts` writes a
  * manifest, and no code path takes a digest from the bytes that arrived: `sha256` is a required
  * field, captured when the manifest was built and reviewed like any other pinned input. A digest
  * recorded on first acquisition cannot reject an incorrect-but-intact archive — it only detects
  * later drift — which is why the field is an input to the download rather than an output of it.
- *
- * **Selection is by resolved URL, not by `<os>-<arch>`.** `@remotion/renderer`'s
- * `getChromeDownloadUrl({platform, version, chromeMode})` branches on Amazon Linux 2023, on
- * `chromeMode`, and on whether the host's glibc is at least 2.35, so one platform and architecture
- * resolve to **several different artefacts**. {@link chromeDownloadUrl} mirrors that function
- * branch for branch — `manifest.test.ts` compared the two over the whole 80-row matrix, driving
- * the real module, until this package stopped installing it on 2026-11-11; the mirror is now the
- * selector this package owns — and a configuration with no recorded entry is a named refusal,
- * because a key that ignores the C library selects an artefact that installs and cannot run.
+ * FFmpeg's rows carry the same promise one level down: `member_sha256` is what the one binary kept
+ * out of the archive must hash to.
  */
 
-import { readFileSync } from "node:fs";
 import process from "node:process";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../daemon/exit-codes.js";
+import { ArchiveRefusal, safeJoin } from "./archive.js";
 
 /** The Cloudflare zone `infra/terraform/variables.tf` defaults `zone_name` to. */
 export const TOOLCHAIN_ZONE_NAME = "xplainer.video";
@@ -47,14 +50,67 @@ export const TOOLCHAIN_ZONE_NAME = "xplainer.video";
 /** `infra/terraform/main.tf`'s `local.cdn_hostname`, which is also `outputs.tf`'s `cdn_hostname`. */
 export const TOOLCHAIN_CDN_HOSTNAME: string = `cdn.${TOOLCHAIN_ZONE_NAME}`;
 
-/** Where the manifest sits under that hostname. `v1` is the path, `format_version` is the shape. */
-export const TOOLCHAIN_MANIFEST_PATH = "toolchain/v1/manifest.json";
+/**
+ * Where the manifest sits under that hostname. `v2` is the path, `format_version` is the shape.
+ *
+ * The two moved together on purpose: a format-2 document at the version-1 path would be refused
+ * as "newer" by every released CLI, which reads that path.
+ */
+export const TOOLCHAIN_MANIFEST_PATH = "toolchain/v2/manifest.json";
 
 /** The one address `setup` reads the manifest from, built by the same rule any other zone is. */
 export const TOOLCHAIN_MANIFEST_URL: string = toolchainManifestUrl(TOOLCHAIN_ZONE_NAME);
 
-/** The shape this build understands. A newer document is reported, never guessed at. */
-export const TOOLCHAIN_MANIFEST_FORMAT_VERSION = 1;
+/** The shape this build understands. Any other is reported, never guessed at. */
+export const TOOLCHAIN_MANIFEST_FORMAT_VERSION = 2;
+
+/**
+ * Every URL prefix a `browser` or `ffmpeg` row may name, and who publishes what is under it.
+ *
+ * The publisher travels with the parsed row, so what `setup` prints and records about an artefact's
+ * origin is decided here, in code, and never by the document it is checking. Each prefix ends in a
+ * `/` and is matched against the URL's normal form, so neither a sibling path
+ * (`…/FFmpeg-Builds-evil/`) nor a `..` segment can stand in for it.
+ */
+export const ARTEFACT_ALLOWLIST: Readonly<Record<string, string>> = {
+  "https://storage.googleapis.com/chrome-for-testing-public/": "Google (Chrome for Testing)",
+  "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/": "BtbN FFmpeg-Builds",
+  [`https://${TOOLCHAIN_CDN_HOSTNAME}/toolchain/v1/ffmpeg/`]: "xplainer.video",
+};
+
+/**
+ * The platforms a manifest must have a `browser` answer for, even when the answer is "unavailable".
+ *
+ * The five Chrome for Testing publishes a headless shell for. `win32-arm64` is not one of them, so
+ * it is not required here, and a machine asking for it is refused as an unsupported platform.
+ */
+export const BROWSER_PLATFORMS: readonly string[] = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
+  "win32-x64",
+];
+
+/**
+ * The platforms a manifest must have an `ffmpeg` answer for: the browser's five and `win32-arm64`,
+ * which has an FFmpeg pin and no Chrome row, and so cannot render (ADR 0031, Follow-up 5).
+ */
+export const FFMPEG_PLATFORMS: readonly string[] = [...BROWSER_PLATFORMS, "win32-arm64"];
+
+/**
+ * The licences an FFmpeg row may declare: FFmpeg's own four free configurations, as SPDX ids.
+ *
+ * `configure` reports exactly one of `LGPL version 2.1 or later`, `LGPL version 3 or later`,
+ * `GPL version 2 or later`, `GPL version 3 or later` or `nonfree and unredistributable`, and only
+ * the last is missing here: a build nobody may redistribute is not one a manifest may name.
+ */
+export const ACCEPTED_FFMPEG_LICENCES: readonly string[] = [
+  "LGPL-2.1-or-later",
+  "LGPL-3.0-or-later",
+  "GPL-2.0-or-later",
+  "GPL-3.0-or-later",
+];
 
 /**
  * The speech platforms a manifest must have an answer for, even when the answer is "not published".
@@ -75,6 +131,13 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** `2.31`, `2.35` — a glibc floor as its own release spells it. */
 const GLIBC_VERSION = /^\d+\.\d+$/;
+
+/**
+ * `157.0.8103.50`, `9.0.2`, `n9.0.2-39-g7adfbe40dc` — a version as one path segment, because every
+ * provider joins it into the name of the directory it installs under. `.` and `..` match it and are
+ * refused separately.
+ */
+const VERSION_SEGMENT = /^[A-Za-z0-9._+-]+$/;
 
 /** A document that is not a toolchain manifest, or is one this build cannot read. */
 export class ToolchainManifestError extends Error {
@@ -101,7 +164,7 @@ export type ToolchainSelectionReason =
 export class ToolchainSelectionRefusal extends Error {
   readonly reason: ToolchainSelectionReason;
   readonly exitCode: number = PRECONDITION_UNMET_EXIT_CODE;
-  /** The URL the pinned selector resolved to, where the refusal is about one. */
+  /** The URL the selected row names, where the refusal is about one. */
   readonly url: string | undefined;
 
   constructor(reason: ToolchainSelectionReason, message: string, url?: string) {
@@ -115,7 +178,7 @@ export class ToolchainSelectionRefusal extends Error {
 /** One artefact the manifest has a reviewed digest for. */
 export type RecordedArtefact = {
   status: "recorded";
-  /** The exact URL this digest describes. For Chrome it is what the pinned selector returns. */
+  /** The exact URL this digest describes. */
   url: string;
   /** Lowercase hex SHA-256, captured at manifest-build time. */
   sha256: string;
@@ -126,7 +189,7 @@ export type RecordedArtefact = {
 /** One artefact the manifest deliberately has no digest for, and the measured reason why. */
 export type UnavailableArtefact = {
   status: "unavailable";
-  /** The URL this entry is about, where there is one — a Chrome branch always has one. */
+  /** The URL this entry is about, where there is one. */
   url?: string;
   /** What `setup` prints. A measurement or a decision, never "todo". */
   reason: string;
@@ -138,8 +201,45 @@ export type LibcConstraint = {
   min_glibc?: string;
 };
 
-/** One row of `chrome.expected`: an artefact plus the C library it needs. */
-export type ChromeArtefact = (RecordedArtefact | UnavailableArtefact) & LibcConstraint;
+/** A `browser` row with a digest: a Chrome for Testing headless shell, and where it unpacks to. */
+export type RecordedBrowserArtefact = RecordedArtefact & {
+  /** The Chrome build, exactly as its publisher spells it. */
+  version: string;
+  /** The headless shell executable inside the archive, as the archive names it. */
+  member: string;
+  /** The licence file inside the archive, as the archive names it. */
+  licence_member: string;
+  /** Who serves the URL: {@link ARTEFACT_ALLOWLIST}'s answer, never the document's. */
+  publisher: string;
+} & LibcConstraint;
+
+/** One row of `browser.expected`. */
+export type BrowserArtefact = RecordedBrowserArtefact | (UnavailableArtefact & LibcConstraint);
+
+/** An `ffmpeg` row with a digest: an archive, and the one binary and the licence kept out of it. */
+export type RecordedFfmpegArtefact = RecordedArtefact & {
+  /** The build, exactly as its publisher spells it — `9.0.2`, `n9.0.2-39-g7adfbe40dc`. */
+  version: string;
+  /** The `ffmpeg[.exe]` inside the archive, as the archive names it. */
+  member: string;
+  /** What {@link RecordedFfmpegArtefact.member} must hash to, captured at manifest-build time. */
+  member_sha256: string;
+  /** Its length in bytes. */
+  member_size: number;
+  /** One of {@link ACCEPTED_FFMPEG_LICENCES}: what the build's own `configure` says it is. */
+  licence: string;
+  /** The licence text inside the archive, kept beside the binary. */
+  licence_member: string;
+  /** Further members kept beside the binary — our own build's `SOURCE.txt` and `BUILDINFO.txt`. */
+  extra_members?: string[];
+  /** Where this build's corresponding source is offered, where its publisher names one. */
+  source_url?: string;
+  /** Who serves the URL: {@link ARTEFACT_ALLOWLIST}'s answer, never the document's. */
+  publisher: string;
+} & LibcConstraint;
+
+/** One row of `ffmpeg.expected`. */
+export type FfmpegArtefact = RecordedFfmpegArtefact | (UnavailableArtefact & LibcConstraint);
 
 /** One row of `speech`: a per-OS bundle, or the statement that none is published. */
 export type SpeechArtefact = (RecordedArtefact & { version: string }) | UnavailableArtefact;
@@ -147,14 +247,10 @@ export type SpeechArtefact = (RecordedArtefact & { version: string }) | Unavaila
 /** The document at {@link TOOLCHAIN_MANIFEST_URL}. */
 export type ToolchainManifest = {
   format_version: number;
-  chrome: {
-    /** The Remotion line whose selector chose every URL below. */
-    remotion: string;
-    /** The Chrome build those URLs carry — `@remotion/renderer`'s own `TESTED_VERSION`. */
-    version: string;
-    /** Keyed for a human reader; **selected** by {@link ChromeArtefact.url}. */
-    expected: Record<string, ChromeArtefact>;
-  };
+  /** Keyed by `<platform>-<arch>`, in Node's spelling, and selected by that key. */
+  browser: { expected: Record<string, BrowserArtefact> };
+  /** Keyed and selected the same way. */
+  ffmpeg: { expected: Record<string, FfmpegArtefact> };
   speech: Record<string, SpeechArtefact>;
 };
 
@@ -185,40 +281,32 @@ export function toolchainManifestUrl(zoneName: string): string {
 /**
  * The delivery position, in the words a user meets when the published address cannot be read.
  *
- * **Rewritten 2026-09-11, and the previous version's central claim is now the opposite of true.**
- * It said the address was provisioned and empty, that connecting the bucket to its custom domain
- * and adding the Cache Rule were steps `infra/terraform` deliberately did not manage, and therefore
- * that "a fetch that fails here is the expected state and not an outage". All three have changed:
- * the manifest is published and answers `200`, and both Cloudflare steps are declared in
- * `infra/terraform` (`cloudflare_r2_custom_domain.cdn` and `cloudflare_ruleset.cdn_cache`). Telling
- * a user that an unreachable manifest is expected would now be the single most misleading sentence
- * in the product: it would explain away a real network failure, a proxy, or an outage as normal, on
- * the one code path whose whole job is to say what went wrong.
+ * **Rewritten 2026-09-11**, when the manifest was first published: a fetch failure here **is** a
+ * failure — no route, a proxy, DNS, or an outage — and the message names those causes rather than
+ * explaining away an empty address. **Rewritten again 2026-11-12, for format 2**: the version-2
+ * document at {@link TOOLCHAIN_MANIFEST_URL} is uploaded as a release step, and the release check
+ * refuses to publish a CLI until the served copy is byte-identical to the committed one (ADR 0031's
+ * note, D8), so a published build that reads this message is reading it about an address that was
+ * answering when that build shipped.
  *
- * So this message now says a fetch failure **is** a failure, and names the four things it is
- * usually caused by. What has *not* changed is the part that was always true and is the reason the
- * message exists at all: three of the four speech routes read no manifest, so speech is not waiting
- * on this address, and what genuinely needs it is the **browser's** expected digest.
+ * What the 2026-11-12 rewrite changed is the paragraph about what the failure blocks. It used to
+ * say the browser's URL came from a mirrored selector and that the manifest contributed only a
+ * digest for it. Neither is true of format 2: the manifest names both the browser's URL — Chrome
+ * for Testing, on Google's storage — and ffmpeg's — BtbN's FFmpeg-Builds releases on GitHub for
+ * Linux and Windows, this project's CDN for macOS — and code admits only the publishers
+ * {@link ARTEFACT_ALLOWLIST} names. So the two components that cannot be improvised are now the
+ * browser and ffmpeg, and that is what the message says.
  *
  * Two claims are deliberately kept because they remain accurate. **No command in this repository
- * uploads a manifest** — the upload is still the release owner's, done by hand — so a stale
+ * uploads a manifest** — the release check reads the served copy and never writes it — so a stale
  * manifest is a thing a human forgot rather than a pipeline that failed. And the **per-platform
  * speech bundles are still unpublished**, which is phase 4 and is deferred by choice rather than
  * broken, because the `onnx` route acquires an engine from its components' own upstream homes.
  *
- * **There is no longer a Windows paragraph, and its removal is the point.** This function used to
- * carry a second, harder message for `win32`: that all three speech routes were unavailable there —
- * nothing published for `bundle`, a `docker` route needing a linux/amd64 engine a Windows host need
- * not have, and `--tts-url` recording a server rather than acquiring one — and that phase 4 was the
- * milestone which would close it. The `onnx` route closes it instead and closes it now, on
- * `win32-x64` and `win32-arm64` alike, by fetching the model, a voice and that platform's ONNX
- * Runtime from their own upstream homes and reading no manifest at all. So the asymmetry that
- * paragraph described has gone, and keeping a sentence that said Windows has no speech would have
- * been the most confidently wrong line in the product.
- *
- * What is left is one message for every platform: the address is empty, three of the four speech
- * routes never read it, and the one thing that genuinely is waiting on it is the **browser's**
- * expected digest.
+ * **There is one message for every platform.** This function used to carry a second, harder
+ * message for `win32`: that all three speech routes were unavailable there. The `onnx` route closes
+ * that on `win32-x64` and `win32-arm64` alike, so a sentence saying Windows has no speech would be
+ * the most confidently wrong line in the product.
  */
 export function deliveryPosition(probe: HostProbe = probeHost()): string {
   const position =
@@ -244,99 +332,24 @@ export function deliveryPosition(probe: HostProbe = probeHost()): string {
     "pinned by digest and each from its own upstream home, and synthesises in the narration " +
     "worker: no container, no Python and no server.\n\n" +
     "Only the bundle route reads this manifest, and it is the one with nothing published.\n\n" +
-    "The browser is fetched from Google's own storage host at the URL the pinned Remotion line " +
-    "resolves, and all this manifest contributes is the expected digest for that exact URL. That " +
-    "digest is the one thing here that cannot be improvised: without it there is nothing to admit " +
-    "the download on, and setup refuses rather than unpacking unreviewed bytes. So the browser is " +
-    "what this failure actually blocks, and `--manifest <path or https URL>` naming a reviewed " +
-    "copy is how to get past it on a machine that cannot reach the published one."
+    "The browser and ffmpeg are both named by this manifest: the browser is Google's Chrome for " +
+    "Testing headless shell, and ffmpeg is a BtbN FFmpeg-Builds release on Linux and Windows and " +
+    `this project's own build, served from ${TOOLCHAIN_CDN_HOSTNAME}, on macOS. The manifest ` +
+    "supplies each one's URL and expected digest, and setup admits a URL only from a publisher " +
+    "this build names in code. Neither can be improvised: without the reviewed digest there is " +
+    "nothing to admit the download on, and setup refuses rather than unpacking unreviewed bytes. " +
+    "So the browser and ffmpeg are what this failure actually blocks, and " +
+    "`--manifest <path or https URL>` naming a reviewed copy is how to get past it on a machine " +
+    "that cannot reach the published one."
   );
 }
 
-/**
- * The five platform names `@remotion/renderer` knows, which are not Node's.
- *
- * `mac-arm64` rather than `darwin-arm64`, `win64` rather than `win32-x64`: the selector this module
- * mirrors takes Remotion's spelling, and translating at the boundary is what keeps the mirror
- * comparable with the original.
- */
-export type RemotionPlatform = "linux64" | "linux-arm64" | "mac-x64" | "mac-arm64" | "win64";
-
-/** Remotion's two acquisition modes. `headless-shell` is what a render uses. */
-export type ChromeMode = "headless-shell" | "chrome-for-testing";
-
-/** Everything `getChromeDownloadUrl` branches on, as data rather than as globals. */
-export type ChromeSelection = {
-  platform: RemotionPlatform;
-  /** A pinned build number, or `null` for the tested one. Remotion's own parameter. */
-  version: string | null;
-  chromeMode: ChromeMode;
-  /** `isAmazonLinux2023()` — `/etc/os-release` names Amazon Linux and `VERSION="2023"`. */
-  amazonLinux2023: boolean;
-  /** `canUseRemotionMediaBinaries()` — Linux with glibc ≥ 2.35. */
-  remotionMediaBinaries: boolean;
-};
-
-/** `@remotion/renderer`'s `TESTED_VERSION` at the pinned line, mirrored. */
-export const REMOTION_TESTED_CHROME_VERSION = "149.0.7790.0";
-
-/** The Playwright build number that line falls back to on arm64, mirrored. */
-export const REMOTION_PLAYWRIGHT_BUILD = "1421";
-
-/** The glibc floor Remotion's own `MINIMUM_GLIBC_FOR_REMOTION_MEDIA` sets for its Linux builds. */
-export const REMOTION_MEDIA_MIN_GLIBC: readonly [number, number] = [2, 35];
-
-/**
- * The URL the pinned Remotion line downloads Chrome from, branch for branch.
- *
- * This is a **mirror**, and it is a mirror on purpose: `getChromeDownloadUrl` is not part of
- * `@remotion/renderer`'s public surface — the package's `exports` map offers `.`, `./client`,
- * `./pure` and `./error-handling`, and the function is in none of their declarations — so calling
- * it from product code would be reaching into somebody else's internals. Until 2026-11-11 the
- * test drove the real module by absolute path and compared every branch; this package no longer
- * installs it, so the mirror is frozen at the pinned line, and a URL it produces that the
- * committed manifest does not record is a named refusal rather than a download.
- */
-export function chromeDownloadUrl(selection: ChromeSelection): string {
-  const { platform, version, chromeMode, amazonLinux2023, remotionMediaBinaries } = selection;
-  if (platform === "linux-arm64") {
-    if (amazonLinux2023 && chromeMode === "headless-shell" && !version) {
-      return "https://remotion.media/chromium-headless-shell-amazon-linux-arm64-149.0.7790.0.zip?clear";
-    }
-    if (chromeMode === "chrome-for-testing") {
-      return `https://playwright.azureedge.net/builds/chromium/${version ?? REMOTION_PLAYWRIGHT_BUILD}/chromium-linux-arm64.zip`;
-    }
-    if (version) {
-      return `https://playwright.azureedge.net/builds/chromium/${version}/chromium-headless-shell-linux-arm64.zip`;
-    }
-    if (remotionMediaBinaries) {
-      return `https://remotion.media/chromium-headless-shell-linux-arm64-${REMOTION_TESTED_CHROME_VERSION}.zip?clear`;
-    }
-    return `https://playwright.azureedge.net/builds/chromium/${REMOTION_PLAYWRIGHT_BUILD}/chromium-headless-shell-linux-arm64.zip`;
-  }
-  if (chromeMode === "headless-shell") {
-    if (amazonLinux2023 && platform === "linux64" && !version) {
-      return "https://remotion.media/chromium-headless-shell-amazon-linux-x64-149.0.7790.0.zip?clear";
-    }
-    if (platform === "linux64" && version === null) {
-      if (remotionMediaBinaries) {
-        return `https://remotion.media/chromium-headless-shell-linux-x64-${REMOTION_TESTED_CHROME_VERSION}.zip?clear`;
-      }
-      return `https://storage.googleapis.com/chrome-for-testing-public/${REMOTION_TESTED_CHROME_VERSION}/${platform}/chrome-headless-shell-${platform}.zip`;
-    }
-    return `https://storage.googleapis.com/chrome-for-testing-public/${version ?? REMOTION_TESTED_CHROME_VERSION}/${platform}/chrome-headless-shell-${platform}.zip`;
-  }
-  return `https://storage.googleapis.com/chrome-for-testing-public/${version ?? REMOTION_TESTED_CHROME_VERSION}/${platform}/chrome-${platform}.zip`;
-}
-
-/** The three facts about this machine the two Remotion predicates are computed from. */
+/** The two facts about this machine that selection and the C-library check are computed from. */
 export type HostProbe = {
   /** `process.platform`. */
   platform: string;
   /** `process.arch`. */
   arch: string;
-  /** `/etc/os-release`, or `null` where it cannot be read — which is every non-Linux host. */
-  osRelease: string | null;
   /** The runtime glibc as `[major, minor]`, or `null` where Node does not report one. */
   glibc: [number, number] | null;
 };
@@ -346,30 +359,17 @@ export function probeHost(): HostProbe {
   return {
     platform: process.platform,
     arch: process.arch,
-    osRelease: readOsRelease(),
     glibc: runtimeGlibc(),
   };
 }
 
-function readOsRelease(): string | null {
-  if (process.platform !== "linux") {
-    return null;
-  }
-  try {
-    return readFileSync("/etc/os-release", "utf-8");
-  } catch {
-    return null;
-  }
-}
-
 /**
- * The runtime glibc, read the way Remotion reads it.
+ * The runtime glibc, as Node reports it.
  *
  * `process.report.getReport().header.glibcVersionRuntime` is present only on a glibc Linux, which
- * is exactly what makes its absence meaningful: a musl host reports nothing here, and Remotion's
- * own `isGlibcVersionAtLeast` treats an unreadable version as "not compatible, to be safe". A
- * version that is not two dot-separated numbers is `null` for the same reason it is in Remotion —
- * agreeing with the original matters more than parsing more forms than it does.
+ * is exactly what makes its absence meaningful: a musl host reports nothing here, and an unreadable
+ * version is treated as "not compatible", to be safe. A version that is not two dot-separated
+ * numbers is `null` for the same reason.
  */
 function runtimeGlibc(): [number, number] | null {
   if (process.platform !== "linux") {
@@ -396,22 +396,6 @@ function runtimeGlibc(): [number, number] | null {
   return [major, minor];
 }
 
-/** `isAmazonLinux2023()`, over a probe rather than over the filesystem. */
-export function isAmazonLinux2023(probe: HostProbe): boolean {
-  if (probe.platform !== "linux" || probe.osRelease === null) {
-    return false;
-  }
-  return probe.osRelease.includes("Amazon Linux") && probe.osRelease.includes('VERSION="2023"');
-}
-
-/** `canUseRemotionMediaBinaries()`, over a probe. Linux only, and glibc ≥ 2.35. */
-export function canUseRemotionMediaBinaries(probe: HostProbe): boolean {
-  if (probe.platform !== "linux") {
-    return false;
-  }
-  return atLeastGlibc(probe.glibc, REMOTION_MEDIA_MIN_GLIBC);
-}
-
 function atLeastGlibc(
   found: [number, number] | null,
   required: readonly [number, number],
@@ -425,102 +409,65 @@ function atLeastGlibc(
   return found[0] === required[0] && found[1] >= required[1];
 }
 
-/** Node's platform and architecture in Remotion's spelling, or `null` where Remotion has none. */
-export function remotionPlatform(platform: string, arch: string): RemotionPlatform | null {
-  if (platform === "darwin") {
-    return arch === "arm64" ? "mac-arm64" : arch === "x64" ? "mac-x64" : null;
-  }
-  if (platform === "win32") {
-    return arch === "x64" ? "win64" : null;
-  }
-  if (platform === "linux") {
-    return arch === "x64" ? "linux64" : arch === "arm64" ? "linux-arm64" : null;
-  }
-  return null;
-}
+/** A selected browser row, and the manifest key it was selected by. */
+export type BrowserSelection = RecordedBrowserArtefact & { key: string };
 
-/** How `setup` acquires Chrome. Remotion's default and ours is the headless shell. */
-export const DEFAULT_CHROME_MODE: ChromeMode = "headless-shell";
+/** A selected ffmpeg row, and the manifest key it was selected by. */
+export type FfmpegSelection = RecordedFfmpegArtefact & { key: string };
 
 /**
- * What the pinned Remotion line would download on the machine this probe describes.
+ * The reviewed browser for this machine, or a refusal saying why there is none.
  *
- * Refuses `unsupported-platform` rather than guessing: a 32-bit Linux or a Windows arm64 has no
- * Remotion platform name at all, and inventing one would produce a URL that 404s halfway through
- * `setup` instead of a sentence before it starts.
+ * It takes the **probe** rather than a key so that the C-library check cannot be skipped by a
+ * caller who only wanted a URL: selection and constraint are one answer, and ADR 0020's "Alpine is
+ * blocked on rendering, not on init" is what skipping it buys.
  */
-export function hostChromeSelection(
-  probe: HostProbe,
-  options: { chromeMode?: ChromeMode; version?: string | null } = {},
-): ChromeSelection {
-  const platform = remotionPlatform(probe.platform, probe.arch);
-  if (platform === null) {
-    throw new ToolchainSelectionRefusal(
-      "unsupported-platform",
-      `The pinned Remotion line has no Chrome build for ${probe.platform}-${probe.arch}. ` +
-        "Supported: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64.",
-    );
-  }
-  return {
-    platform,
-    version: options.version ?? null,
-    chromeMode: options.chromeMode ?? DEFAULT_CHROME_MODE,
-    amazonLinux2023: isAmazonLinux2023(probe),
-    remotionMediaBinaries: canUseRemotionMediaBinaries(probe),
-  };
-}
-
-/** A selected Chrome artefact: which manifest row it came from, and what it must hash to. */
-export type ChromeAcquisition = {
-  /** The manifest key, for a message a human reads. */
-  key: string;
-  /** The URL the **selector** produced, which is what makes the manifest unable to redirect it. */
-  url: string;
-  /** The configuration that URL was resolved for, so a report can say why this artefact. */
-  selection: ChromeSelection;
-  sha256: string;
-  size: number;
-};
-
-/**
- * The reviewed digest for what this machine would download, or a refusal saying why there is none.
- *
- * The lookup is by exact URL and never by `<os>-<arch>`: `chrome.expected`'s keys are for a human
- * reviewing the file, and the machine matches on the artefact itself, which is the only key that
- * survives Remotion's distribution and glibc branches.
- *
- * It takes the **probe** rather than a {@link ChromeSelection} so that the C-library check cannot
- * be skipped by a caller who only wanted a URL: selection and constraint are one answer, and
- * ADR 0020's "Alpine is blocked on rendering, not on init" is what skipping it buys.
- */
-export function selectChromeArtefact(
+export function selectBrowserArtefact(
   manifest: ToolchainManifest,
   probe: HostProbe,
-  options: { chromeMode?: ChromeMode; version?: string | null } = {},
-): ChromeAcquisition {
-  const selection = hostChromeSelection(probe, options);
-  const url = chromeDownloadUrl(selection);
-  const found = Object.entries(manifest.chrome.expected).find(([, entry]) => entry.url === url);
-  if (found === undefined) {
+): BrowserSelection {
+  return selectRow("browser", BROWSER_PLATFORMS, manifest.browser.expected, probe);
+}
+
+/** The reviewed ffmpeg for this machine, or a refusal saying why there is none. */
+export function selectFfmpegArtefact(
+  manifest: ToolchainManifest,
+  probe: HostProbe,
+): FfmpegSelection {
+  return selectRow("ffmpeg", FFMPEG_PLATFORMS, manifest.ffmpeg.expected, probe);
+}
+
+function selectRow<Row extends { status: "recorded" } & LibcConstraint>(
+  component: string,
+  supported: readonly string[],
+  expected: Record<string, Row | (UnavailableArtefact & LibcConstraint)>,
+  probe: HostProbe,
+): Row & { key: string } {
+  const key = speechPlatformKey(probe);
+  const entry = expected[key];
+  if (entry === undefined) {
+    if (!supported.includes(key)) {
+      throw new ToolchainSelectionRefusal(
+        "unsupported-platform",
+        `There is no ${component} for ${key}; one is published for ${supported.join(", ")}.`,
+      );
+    }
     throw new ToolchainSelectionRefusal(
       "no-recorded-entry",
-      `The toolchain manifest records no expected digest for ${url}, which is what the pinned ` +
-        `Remotion line (${manifest.chrome.remotion}) downloads on this machine. setup will not ` +
-        "trust an artefact it has no reviewed digest for; the manifest has to record this " +
-        "configuration first.",
-      url,
+      `The toolchain manifest records no expected digest for a ${component} on ${key}. setup ` +
+        "will not trust an artefact it has no reviewed digest for; the manifest has to record " +
+        "this platform first.",
     );
   }
-  const [key, entry] = found;
   if (entry.status === "unavailable") {
     throw new ToolchainSelectionRefusal(
       "artefact-unavailable",
-      `The toolchain manifest records ${key} as unavailable: ${entry.reason}`,
-      url,
+      `The toolchain manifest records the ${component} for ${key} as unavailable: ${entry.reason}`,
+      entry.url,
     );
   }
-  assertLibcSatisfied(key, entry, probe);
-  return { key, url, selection, sha256: entry.sha256, size: entry.size };
+  assertLibcSatisfied(`The ${component} for ${key}`, entry, probe);
+  return { ...entry, key };
 }
 
 /**
@@ -528,10 +475,14 @@ export function selectChromeArtefact(
  *
  * ADR 0020 records that "Alpine is blocked on rendering, not on init", and this is the check that
  * makes the block legible at acquisition instead: a musl host reports no runtime glibc at all, and
- * a glibc older than the artefact's floor produces a browser that unpacks and cannot start. Both
- * are stated before ~100 MB is fetched.
+ * a glibc older than the artefact's floor produces a binary that unpacks and cannot start. Both
+ * are stated before a hundred megabytes are fetched.
  */
-export function assertLibcSatisfied(key: string, entry: LibcConstraint, probe: HostProbe): void {
+export function assertLibcSatisfied(
+  subject: string,
+  entry: LibcConstraint,
+  probe: HostProbe,
+): void {
   if (entry.libc === undefined && entry.min_glibc === undefined) {
     return;
   }
@@ -541,9 +492,9 @@ export function assertLibcSatisfied(key: string, entry: LibcConstraint, probe: H
   if (entry.libc === "glibc" && probe.glibc === null) {
     throw new ToolchainSelectionRefusal(
       "libc-unsatisfied",
-      `${key} is a glibc build and this machine reports no runtime glibc, which is what a musl ` +
+      `${subject} is a glibc build and this machine reports no runtime glibc, which is what a musl ` +
         "system (Alpine) looks like. The artefact would unpack and fail to start; use a glibc " +
-        "base image, or point setup at a Chrome you supply.",
+        "base image.",
     );
   }
   if (entry.min_glibc === undefined) {
@@ -554,7 +505,7 @@ export function assertLibcSatisfied(key: string, entry: LibcConstraint, probe: H
     const found = probe.glibc === null ? "none" : probe.glibc.join(".");
     throw new ToolchainSelectionRefusal(
       "libc-unsatisfied",
-      `${key} needs glibc ${entry.min_glibc} or newer and this machine reports ${found}.`,
+      `${subject} needs glibc ${entry.min_glibc} or newer and this machine reports ${found}.`,
     );
   }
 }
@@ -585,7 +536,12 @@ export function selectSpeechBundle(
   return entry;
 }
 
-/** `<platform>-<arch>` in Node's own spelling, which is how the speech map is keyed. */
+/**
+ * `<platform>-<arch>` in Node's own spelling, which is how all three blocks are keyed.
+ *
+ * The name is the speech map's, which was keyed this way first; `browser` and `ffmpeg` adopted the
+ * same key in format 2.
+ */
 export function speechPlatformKey(probe: HostProbe): string {
   return `${probe.platform}-${probe.arch}`;
 }
@@ -604,20 +560,23 @@ export function parseToolchainManifest(text: string, source: string): ToolchainM
   const formatVersion = asNumber(document.format_version, source, "format_version");
   if (formatVersion !== TOOLCHAIN_MANIFEST_FORMAT_VERSION) {
     throw new ToolchainManifestError(
-      `${source} says format_version ${formatVersion}; this build reads ` +
-        `${TOOLCHAIN_MANIFEST_FORMAT_VERSION}. A newer manifest is a rollback signal and never ` +
-        "corruption: nothing here is guessed at.",
+      formatVersion < TOOLCHAIN_MANIFEST_FORMAT_VERSION
+        ? `${source} says format_version ${formatVersion}; this build reads ` +
+            `${TOOLCHAIN_MANIFEST_FORMAT_VERSION}, at ${TOOLCHAIN_MANIFEST_PATH}. An older ` +
+            "document is the one released CLIs read, and it does not describe ffmpeg."
+        : `${source} says format_version ${formatVersion}; this build reads ` +
+            `${TOOLCHAIN_MANIFEST_FORMAT_VERSION}. A newer manifest is a rollback signal and never ` +
+            "corruption: nothing here is guessed at.",
     );
   }
-  const chrome = asRecord(document.chrome, source, "chrome");
-  const expected = asRecord(chrome.expected, source, "chrome.expected");
-  const chromeEntries: Record<string, ChromeArtefact> = {};
-  for (const [key, value] of Object.entries(expected)) {
-    chromeEntries[key] = asChromeArtefact(value, source, `chrome.expected.${key}`);
-  }
-  if (Object.keys(chromeEntries).length === 0) {
-    throw new ToolchainManifestError(`${source} records no Chrome artefacts at all.`);
-  }
+  const browser = asBlock(
+    document.browser,
+    source,
+    "browser",
+    BROWSER_PLATFORMS,
+    asBrowserArtefact,
+  );
+  const ffmpeg = asBlock(document.ffmpeg, source, "ffmpeg", FFMPEG_PLATFORMS, asFfmpegArtefact);
   const speech = asRecord(document.speech, source, "speech");
   const speechEntries: Record<string, SpeechArtefact> = {};
   for (const [key, value] of Object.entries(speech)) {
@@ -633,35 +592,103 @@ export function parseToolchainManifest(text: string, source: string): ToolchainM
   }
   return {
     format_version: formatVersion,
-    chrome: {
-      remotion: asNonEmptyString(chrome.remotion, source, "chrome.remotion"),
-      version: asNonEmptyString(chrome.version, source, "chrome.version"),
-      expected: chromeEntries,
-    },
+    browser,
+    ffmpeg,
     speech: speechEntries,
   };
 }
 
-function asChromeArtefact(value: unknown, source: string, field: string): ChromeArtefact {
+/** A `browser` or `ffmpeg` block: `{ expected: { <platform>-<arch>: row } }`, all keys required. */
+function asBlock<Row>(
+  value: unknown,
+  source: string,
+  name: string,
+  required: readonly string[],
+  asRow: (value: unknown, source: string, field: string) => Row,
+): { expected: Record<string, Row> } {
+  const block = asRecord(value, source, name);
+  const expected = asRecord(block.expected, source, `${name}.expected`);
+  const entries: Record<string, Row> = {};
+  for (const [key, row] of Object.entries(expected)) {
+    entries[key] = asRow(row, source, `${name}.expected.${key}`);
+  }
+  for (const platform of required) {
+    if (entries[platform] === undefined) {
+      throw new ToolchainManifestError(
+        `${source} has no ${name} entry for ${platform}. Every platform ${name} is selected on ` +
+          'needs an answer, and "unavailable, because …" is one — a missing key is not.',
+      );
+    }
+  }
+  return { expected: entries };
+}
+
+function asBrowserArtefact(value: unknown, source: string, field: string): BrowserArtefact {
   const entry = asRecord(value, source, field);
   const libc = asLibc(entry.libc, source, `${field}.libc`);
   const minGlibc = asMinGlibc(entry.min_glibc, source, `${field}.min_glibc`);
   if (entry.status === "unavailable") {
-    return {
-      status: "unavailable",
-      ...(entry.url === undefined ? {} : { url: asArtefactUrl(entry.url, source, `${field}.url`) }),
-      reason: asNonEmptyString(entry.reason, source, `${field}.reason`),
-      ...libc,
-      ...minGlibc,
-    };
+    return asUnavailable(entry, source, field, { ...libc, ...minGlibc });
   }
+  const { url, publisher } = asAllowedUrl(entry.url, source, `${field}.url`);
   return {
     status: asRecorded(entry.status, source, field),
-    url: asArtefactUrl(entry.url, source, `${field}.url`),
+    version: asVersion(entry.version, source, `${field}.version`),
+    url,
     sha256: asSha256(entry.sha256, source, `${field}.sha256`),
     size: asSize(entry.size, source, `${field}.size`),
+    member: asMember(entry.member, source, `${field}.member`),
+    licence_member: asMember(entry.licence_member, source, `${field}.licence_member`),
+    publisher,
     ...libc,
     ...minGlibc,
+  };
+}
+
+function asFfmpegArtefact(value: unknown, source: string, field: string): FfmpegArtefact {
+  const entry = asRecord(value, source, field);
+  const libc = asLibc(entry.libc, source, `${field}.libc`);
+  const minGlibc = asMinGlibc(entry.min_glibc, source, `${field}.min_glibc`);
+  if (entry.status === "unavailable") {
+    return asUnavailable(entry, source, field, { ...libc, ...minGlibc });
+  }
+  const { url, publisher } = asAllowedUrl(entry.url, source, `${field}.url`);
+  return {
+    status: asRecorded(entry.status, source, field),
+    version: asVersion(entry.version, source, `${field}.version`),
+    url,
+    sha256: asSha256(entry.sha256, source, `${field}.sha256`),
+    size: asSize(entry.size, source, `${field}.size`),
+    member: asMember(entry.member, source, `${field}.member`),
+    member_sha256: asSha256(entry.member_sha256, source, `${field}.member_sha256`),
+    member_size: asSize(entry.member_size, source, `${field}.member_size`),
+    licence: asLicence(entry.licence, source, `${field}.licence`),
+    licence_member: asMember(entry.licence_member, source, `${field}.licence_member`),
+    ...(entry.extra_members === undefined
+      ? {}
+      : { extra_members: asMembers(entry.extra_members, source, `${field}.extra_members`) }),
+    ...(entry.source_url === undefined
+      ? {}
+      : { source_url: asArtefactUrl(entry.source_url, source, `${field}.source_url`) }),
+    publisher,
+    ...libc,
+    ...minGlibc,
+  };
+}
+
+function asUnavailable(
+  entry: Record<string, unknown>,
+  source: string,
+  field: string,
+  constraint: LibcConstraint,
+): UnavailableArtefact & LibcConstraint {
+  return {
+    status: "unavailable",
+    ...(entry.url === undefined
+      ? {}
+      : { url: asAllowedUrl(entry.url, source, `${field}.url`).url }),
+    reason: asNonEmptyString(entry.reason, source, `${field}.reason`),
+    ...constraint,
   };
 }
 
@@ -677,7 +704,7 @@ function asSpeechArtefact(value: unknown, source: string, field: string): Speech
   assertDeliveredByUs(url, source, `${field}.url`);
   return {
     status: asRecorded(entry.status, source, field),
-    version: asNonEmptyString(entry.version, source, `${field}.version`),
+    version: asVersion(entry.version, source, `${field}.version`),
     url,
     sha256: asSha256(entry.sha256, source, `${field}.sha256`),
     size: asSize(entry.size, source, `${field}.size`),
@@ -687,8 +714,8 @@ function asSpeechArtefact(value: unknown, source: string, field: string): Speech
 /**
  * A speech bundle is **ours**, so it comes from the hostname Terraform provisions and no other.
  *
- * Chrome is not checked this way on purpose: its URL is chosen by the pinned Remotion selector, so
- * the host is whatever that line publishes to, and the manifest only supplies the digest.
+ * Narrower than {@link ARTEFACT_ALLOWLIST} on purpose, and older: a speech bundle has no
+ * third-party publisher at all, so the one host that is ours is the whole list.
  */
 function assertDeliveredByUs(url: string, source: string, field: string): void {
   const host = new URL(url).host;
@@ -699,6 +726,69 @@ function assertDeliveredByUs(url: string, source: string, field: string): void {
         "r2.dev URL in particular is uncached and pays origin egress on every download.",
     );
   }
+}
+
+/**
+ * An artefact URL under a prefix {@link ARTEFACT_ALLOWLIST} names, and the publisher it maps to.
+ *
+ * The URL must already be in its normal form, so the string a reviewer read is the one fetched: a
+ * `..` segment, a backslash or an upper-case host would each be normalised by the HTTP client into
+ * a URL nobody reviewed, and a prefix check on the raw string would have passed it.
+ */
+function asAllowedUrl(
+  value: unknown,
+  source: string,
+  field: string,
+): { url: string; publisher: string } {
+  const url = asArtefactUrl(value, source, field);
+  const normal = new URL(url).href;
+  if (normal !== url) {
+    throw new ToolchainManifestError(
+      `${source}: ${field} is ${url}, which is not in its normal form (${normal}). The URL a ` +
+        "manifest names has to be the URL that is fetched.",
+    );
+  }
+  const allowed = Object.entries(ARTEFACT_ALLOWLIST).find(([prefix]) => url.startsWith(prefix));
+  if (allowed === undefined) {
+    throw new ToolchainManifestError(
+      `${source}: ${field} is ${url}, and no publisher this build trusts serves it. The allowlist ` +
+        `in setup/manifest.ts admits ${Object.keys(ARTEFACT_ALLOWLIST).join(", ")}; a new ` +
+        "publisher is a reviewed code change, never a manifest edit.",
+    );
+  }
+  return { url, publisher: allowed[1] };
+}
+
+/** An archive member's name, refused here if unpacking it could leave the destination. */
+function asMember(value: unknown, source: string, field: string): string {
+  const member = asNonEmptyString(value, source, field);
+  try {
+    safeJoin(".", member);
+  } catch (error) {
+    if (error instanceof ArchiveRefusal) {
+      throw new ToolchainManifestError(`${source}: ${field} is refused: ${error.message}`);
+    }
+    throw error;
+  }
+  return member;
+}
+
+function asMembers(value: unknown, source: string, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ToolchainManifestError(`${source}: ${field} is not an array.`);
+  }
+  return value.map((member, index) => asMember(member, source, `${field}[${index}]`));
+}
+
+function asLicence(value: unknown, source: string, field: string): string {
+  const licence = asNonEmptyString(value, source, field);
+  if (!ACCEPTED_FFMPEG_LICENCES.includes(licence)) {
+    throw new ToolchainManifestError(
+      `${source}: ${field} is ${JSON.stringify(licence)}, which is not one of the SPDX ids this ` +
+        `build accepts for FFmpeg: ${ACCEPTED_FFMPEG_LICENCES.join(", ")}.`,
+    );
+  }
+  return licence;
 }
 
 function asRecord(value: unknown, source: string, field: string): Record<string, unknown> {
@@ -720,6 +810,25 @@ function asNonEmptyString(value: unknown, source: string, field: string): string
     throw new ToolchainManifestError(`${source}: ${field} is not a non-empty string.`);
   }
   return value;
+}
+
+/**
+ * A version that is safe to join into a directory name: one path segment, never `.` or `..`.
+ *
+ * Checked when the document is parsed rather than where it is joined, because the providers join it
+ * in three places and a version that climbs (`9/../../../../tmp/planted`) moved the whole install
+ * outside the toolchain directory.
+ */
+function asVersion(value: unknown, source: string, field: string): string {
+  const version = asNonEmptyString(value, source, field);
+  if (!VERSION_SEGMENT.test(version) || version === "." || version === "..") {
+    throw new ToolchainManifestError(
+      `${source}: ${field} is ${JSON.stringify(version)}, which is not one path segment. A version ` +
+        "names the directory setup installs into, so it is letters, digits, '.', '_', '+' and '-', " +
+        "and never '.' or '..'.",
+    );
+  }
+  return version;
 }
 
 function asRecorded(value: unknown, source: string, field: string): "recorded" {

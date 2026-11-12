@@ -3,9 +3,9 @@
  *
  * Nothing here is substituted. The checkout is a directory tree with `package.json` files and a
  * `node_modules` npm itself would recognise; the payload is assembled by the shipped code; the
- * interpreter inside it is a copy of this process's own; and the three things the payload has to be
- * able to do — run its entry, resolve its data files, run its npm — are asserted by **spawning
- * them**, under a `PATH` on which `node` does not resolve. That last part is the whole point: every
+ * interpreter inside it is a copy of this process's own; and the two things the payload has to be
+ * able to do — run its entry and resolve its data files — are asserted by **spawning it**, under a
+ * `PATH` on which `node` does not resolve. That last part is the whole point: every
  * defect this story exists to remove looked fine from inside the Vitest worker and failed in a
  * child process with no interpreter on its `PATH`.
  *
@@ -16,18 +16,10 @@
  * where today's dependency graph happens to exercise them, and would make the suite depend on
  * `apps/cli/dist/` existing, which `turbo.json` does not guarantee when `test` runs. The real
  * repository payload is built and verified by `scripts/e2e/runtime.mjs` and on all three runners.
- *
- * **Why a fixture template rather than Remotion.** `assembleWorkspace()` runs a real `npm ci`. The
- * behaviour being asserted is that it is a real install, that the manifest records what actually
- * arrived, and that a lifecycle script calling bare `node` succeeds because `<runtime>/bin` reached
- * the child's `PATH` and nothing else did. A local tarball dependency exercises every one of those
- * with npm doing all of its own work, and it does it without a network — which a unit test must not
- * need. Installing the actual 247-package Remotion tree is the e2e's job.
  */
 
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -42,16 +34,12 @@ import process from "node:process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   type AssembledRuntime,
-  type AssembledWorkspace,
   AssemblyRefusal,
   allowlistMatcher,
   assembleRuntime,
-  assembleWorkspace,
   findCheckout,
-  npmInstallation,
-  remotionEntryPath,
 } from "./assemble.js";
-import { isPayloadPath, RUNTIME_MANIFEST_FILE, WORKSPACE_MANIFEST_FILE } from "./manifest.js";
+import { isPayloadPath, RUNTIME_MANIFEST_FILE } from "./manifest.js";
 import { verifyRuntimePayload } from "./verify.js";
 
 /** The fixture's root package — the one whose closure a payload is. */
@@ -61,7 +49,7 @@ const ROOT = "@fixture/root";
 let scratch = "";
 /** The fixture checkout, built once. */
 let checkout = "";
-/** One assembled payload, built once: it is 130 MB of copying and every read-only test shares it. */
+/** One assembled payload, built once: it is 110 MB of copying and every read-only test shares it. */
 let payload: AssembledRuntime;
 
 beforeAll(() => {
@@ -102,7 +90,6 @@ describe("assembleRuntime — what travels", () => {
     expect(names).toContain("external-a");
     expect(names).toContain("external-b");
     expect(names).toContain("@fixture/lib");
-    expect(names).toContain("npm");
   });
 
   it("nests a second version of a package under the one that asked for it", () => {
@@ -126,21 +113,19 @@ describe("assembleRuntime — what travels", () => {
     }
   });
 
-  it("carries npm with its own vendored node_modules, which is what makes it runnable", () => {
-    const npm = join(payload.outDir, "lib", "node_modules", "npm");
-    const vendored = join(npm, "node_modules");
+  // npm travelled with payload 1 for `setup --workspace` alone, and left with it (ADR 0031 §Note,
+  // 2026-11-12, D11): not copied, not shimmed, and not named anywhere in the manifest on disk.
+  it("carries no npm, and its manifest names none", () => {
+    const written = JSON.parse(readFileSync(payload.manifestPath, "utf8"));
 
-    expect(existsSync(join(npm, "bin", "npm-cli.js"))).toBe(true);
-    expect(existsSync(vendored)).toBe(true);
-    expect(
-      payload.manifest.files.some((file) =>
-        file.path.startsWith("lib/node_modules/npm/node_modules/"),
-      ),
-    ).toBe(true);
+    expect(existsSync(join(payload.outDir, "lib", "node_modules", "npm"))).toBe(false);
+    expect(existsSync(join(payload.outDir, "bin", "npm"))).toBe(false);
+    expect(payload.manifest.packages.map((entry) => entry.name)).not.toContain("npm");
+    expect(written).not.toHaveProperty("npm_version");
+    expect(written.launch).not.toHaveProperty("npm_cli");
   });
 
-  it("records npm's version, the platform and the interpreter's architecture", () => {
-    expect(payload.manifest.npm_version).toBe(npmInstallation(process.execPath).version);
+  it("records the platform and the interpreter's architecture", () => {
     expect(payload.manifest.platform).toBe(process.platform);
     expect(payload.manifest.arch).toBe(process.arch);
     expect(payload.manifest.node_version).toBe(process.version);
@@ -156,7 +141,6 @@ describe("assembleRuntime — the manifest", () => {
       ...payload.manifest.packages.map((entry) => entry.path),
       payload.manifest.launch.interpreter,
       payload.manifest.launch.entry,
-      payload.manifest.launch.npm_cli,
       ...payload.manifest.launch.argv,
     ];
 
@@ -233,18 +217,7 @@ describe("assembleRuntime — the payload runs with no node on PATH", () => {
     // not slow; it is contended, so the budget says so rather than the machine deciding.
   }, 30_000);
 
-  it("runs the npm it carries — the D3 assertion, in miniature", () => {
-    const result = spawnSync(
-      join(payload.outDir, ...payload.manifest.launch.interpreter.split("/")),
-      [join(payload.outDir, ...payload.manifest.launch.npm_cli.split("/")), "--version"],
-      { encoding: "utf8", env: scrubbedEnvironment(), cwd: scratch },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(payload.manifest.npm_version);
-  });
-
-  it("cannot find a node on that PATH, which is what makes the two runs above mean something", () => {
+  it("cannot find a node on that PATH, which is what makes the run above mean something", () => {
     const environment = scrubbedEnvironment();
     const lookup = spawnSync(
       process.platform === "win32" ? "where" : join(environment.PATH ?? "", "sh"),
@@ -344,142 +317,24 @@ describe("assembleRuntime — what it refuses", () => {
   });
 });
 
-describe("assembleWorkspace", () => {
-  /** One real `npm ci`, shared: every read-only assertion below is about the same install. */
-  let installed: AssembledWorkspace;
-
-  beforeAll(() => {
-    installed = assembleWorkspace({
-      outDir: join(scratch, "workspace"),
-      templateDir: buildTemplate(join(scratch, "template")),
-      runtimeDir: payload.outDir,
-      env: scrubbedEnvironment({
-        npm_config_cache: join(scratch, "npm-cache"),
-        npm_config_offline: "true",
-      }),
-    });
-  }, 120_000);
-
-  it("installs the template with npm ci and records what actually arrived", () => {
-    expect(installed.manifest.kind).toBe("workspace");
-    expect(installed.manifest.installer).toBe("npm ci");
-    expect(installed.manifest.pins["@remotion/cli"]).toMatch(/remotion-cli-9\.9\.9\.tgz$/);
-    expect(installed.manifest.resolved["@remotion/cli"]).toBe("9.9.9");
-    expect(installed.manifest.platform).toBe(process.platform);
-    expect(installed.manifest.arch).toBe(process.arch);
-    expect(installed.manifest.remotion_entry).toBe("node_modules/@remotion/cli/remotion-cli.js");
-    expect(installed.manifest.files.some((file) => file.path === WORKSPACE_MANIFEST_FILE)).toBe(
-      false,
-    );
-    expect(installed.manifest.files.length).toBeGreaterThan(0);
-    expect(existsSync(join(installed.outDir, WORKSPACE_MANIFEST_FILE))).toBe(true);
-  });
-
-  it("puts <runtime>/bin on the install subprocess's PATH, so a script calling bare node runs", () => {
-    expect(
-      readFileSync(
-        join(installed.outDir, "node_modules", "@remotion", "cli", "postinstall.txt"),
-        "utf8",
-      ),
-    ).toBe("ran");
-  });
-
-  it("is the reason that install works: the same npm ci without it exits non-zero", () => {
-    const bare = join(scratch, "no-path-injection");
-    mkdirSync(bare, { recursive: true });
-    const template = buildTemplate(join(scratch, "template-bare"));
-    for (const file of ["package.json", "package-lock.json"]) {
-      writeFileSync(join(bare, file), readFileSync(join(template, file)));
-    }
-
-    const result = spawnSync(
-      join(payload.outDir, ...payload.manifest.launch.interpreter.split("/")),
-      [
-        join(payload.outDir, ...payload.manifest.launch.npm_cli.split("/")),
-        "ci",
-        "--no-audit",
-        "--no-fund",
-      ],
-      {
-        cwd: bare,
-        encoding: "utf8",
-        env: scrubbedEnvironment({
-          npm_config_cache: join(scratch, "npm-cache"),
-          npm_config_offline: "true",
-        }),
-      },
-    );
-
-    expect(result.status).not.toBe(0);
-    expect(`${result.stdout}${result.stderr}`).toMatch(/node: (command )?not found/);
-  }, 120_000);
-
-  it("resolves the Remotion entry through the package's own `bin` field", () => {
-    const entry = installed.manifest.remotion_entry;
-
-    expect(remotionEntryPath(installed.outDir)).toBe(entry);
-    expect(existsSync(join(installed.outDir, ...entry.split("/")))).toBe(true);
-  });
-
-  it("answers null for a directory with no @remotion/cli in it", () => {
-    expect(remotionEntryPath(scratch)).toBeNull();
-  });
-
-  it("classifies an npm ci that ran and failed as install-failed, not as a precondition", () => {
-    const template = buildTemplate(join(scratch, "template-desynced"));
-    const manifestFile = join(template, "package.json");
-    const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as {
-      dependencies: Record<string, string>;
-    };
-    manifest.dependencies["never-locked"] = "1.0.0";
-    writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
-
-    try {
-      assembleWorkspace({
-        outDir: join(scratch, "workspace-desynced"),
-        templateDir: template,
-        runtimeDir: payload.outDir,
-        env: scrubbedEnvironment({
-          npm_config_cache: join(scratch, "npm-cache"),
-          npm_config_offline: "true",
-        }),
-      });
-      throw new Error("assembleWorkspace accepted a lockfile that does not match its package.json");
-    } catch (error) {
-      expect(error).toBeInstanceOf(AssemblyRefusal);
-      expect((error as AssemblyRefusal).reason).toBe("install-failed");
-      expect((error as AssemblyRefusal).message).toContain("npm ci");
-    }
-  }, 120_000);
-
-  it("refuses a template with no committed lockfile beside its package.json", () => {
-    const template = buildTemplate(join(scratch, "template-unlocked"), { dropLockfile: true });
-
-    expect(() =>
-      assembleWorkspace({ outDir: join(scratch, "workspace-unlocked"), templateDir: template }),
-    ).toThrowError(/package-lock\.json does not exist/);
-    expect(existsSync(join(scratch, "workspace-unlocked"))).toBe(false);
-  });
-});
-
 /**
  * An environment with a `PATH` on which nothing resolves.
  *
  * The directory is real and empty rather than absent, so a failure is "nothing on this `PATH`"
  * rather than "this `PATH` is malformed". On Windows a child needs `SystemRoot` to start at all,
- * and npm needs somewhere to call home on every platform, so those are supplied and nothing else
- * is: the point of the scrub is the interpreter, not the whole environment.
+ * and a home is supplied on every platform, and nothing else is: the point of the scrub is the
+ * interpreter, not the whole environment.
  */
 function scrubbedEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const path = join(scratch, "no-node-path");
   if (!existsSync(path)) {
     mkdirSync(path, { recursive: true });
     if (process.platform !== "win32") {
-      // npm runs every lifecycle script through `sh -c`, so a `PATH` with no shell at all fails
-      // with `spawn sh ENOENT` before any script could look for an interpreter — which would prove
-      // nothing about interpreters. The directory therefore holds a shell and provably nothing
-      // else, which is a stricter scrub than `/usr/bin:/bin` and does not depend on what the host
-      // happens to have installed there.
+      // The lookup that proves no `node` resolves runs `command -v node` through a shell, and a
+      // `PATH` with no shell at all would fail before it looked — which would prove nothing about
+      // interpreters. The directory therefore holds a shell and provably nothing else, which is a
+      // stricter scrub than `/usr/bin:/bin` and does not depend on what the host happens to have
+      // installed there.
       symlinkSync("/bin/sh", join(path, "sh"));
     }
   }
@@ -606,103 +461,4 @@ function buildCheckout(root: string, options: CheckoutOptions = {}): string {
   writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return root;
-}
-
-/** How a fixture template may be deliberately broken. */
-type TemplateOptions = {
-  /** Write the `package.json` and leave the lockfile out. */
-  dropLockfile?: boolean;
-};
-
-/**
- * Write a template the way `packages/render-core/template/` is written: a `package.json` with pins
- * and a `package-lock.json` npm generated from it, both committed side by side.
- *
- * The one dependency is a tarball this function packs, named `@remotion/cli` so the entry
- * resolution under test has something to resolve, and carrying a `postinstall` that calls bare
- * `node` — which is precisely the lifecycle script that exits 127 when nothing puts an interpreter
- * on the install subprocess's `PATH`.
- */
-function buildTemplate(root: string, options: TemplateOptions = {}): string {
-  if (existsSync(join(root, "package.json"))) {
-    return root;
-  }
-  const source = `${root}-dep`;
-  mkdirSync(source, { recursive: true });
-  writeFileSync(
-    join(source, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "@remotion/cli",
-        version: "9.9.9",
-        bin: { remotion: "remotion-cli.js" },
-        scripts: {
-          postinstall: `node -e "require('node:fs').writeFileSync('postinstall.txt','ran')"`,
-        },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  const entry = join(source, "remotion-cli.js");
-  writeFileSync(entry, '#!/usr/bin/env node\nprocess.stdout.write("fixture remotion\\n");\n');
-  chmodSync(entry, 0o755);
-
-  mkdirSync(root, { recursive: true });
-  const npm = npmInstallation(process.execPath);
-  const packDir = `${root}-pack`;
-  mkdirSync(packDir, { recursive: true });
-  const packed = runNpm(npm.cli, ["pack", "--pack-destination", packDir, source], packDir);
-  const tarball = packed
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.endsWith(".tgz"))
-    .at(-1);
-  if (tarball === undefined) {
-    throw new Error(`npm pack wrote no tarball name:\n${packed}`);
-  }
-
-  // Two fixture-only choices, both deliberate. A `file:` dependency on a **directory** is
-  // materialised as a symlink out of the tree, which a payload cannot carry; a `file:` dependency
-  // on a **tarball** is extracted into a real directory, so the template names the packed file. And
-  // the path is absolute because `assembleWorkspace()` copies the template's two documents into a
-  // staging directory and installs there — a relative `file:` would resolve against the staging
-  // directory, where nothing packed it. The real template has no `file:` dependency at all.
-  writeFileSync(
-    join(root, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "@xplainer/render-workspace",
-        version: "1.0.0",
-        private: true,
-        dependencies: { "@remotion/cli": `file:${join(packDir, tarball)}` },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  if (options.dropLockfile === true) {
-    return root;
-  }
-  runNpm(npm.cli, ["install", "--package-lock-only", "--no-audit", "--no-fund"], root);
-  return root;
-}
-
-/** Run npm from this machine's own installation, and fail loudly rather than silently. */
-function runNpm(cli: string, args: string[], cwd: string): string {
-  const result = spawnSync(process.execPath, [cli, ...args], {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      npm_config_cache: join(scratch, "npm-cache"),
-      npm_config_offline: "true",
-    },
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `npm ${args.join(" ")} exited ${result.status}:\n${result.stdout}${result.stderr}`,
-    );
-  }
-  return result.stdout;
 }

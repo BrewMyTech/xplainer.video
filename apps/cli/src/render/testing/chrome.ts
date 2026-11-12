@@ -7,33 +7,33 @@
  * with were admitted on the same reviewed digest a user's are, into
  * `<repo>/node_modules/.cache/xplainer-test-toolchain/` — the one directory CI caches.
  *
- * **A warm cache is re-verified, not trusted.** The archive's digest is checked by `download.ts`
- * during the acquisition and the archive itself is deleted after it is unpacked, so what a cold run
- * records beside the tree is the digest of the executable it unpacked, together with the archive
- * digest it was admitted on. A warm run re-hashes the executable against that record and
- * re-acquires on any disagreement — including a manifest that has since moved to another build.
+ * **A warm cache is re-verified, not trusted**, and by the product rather than by this file:
+ * `acquireChrome()` commits the tree under a directory named for the archive's digest, with a record
+ * of the executable and the licence inside it, and re-hashes both on every later run. A tree that
+ * no longer verifies is refused there as `cache-unverified`, which for a test cache means "refill
+ * it", so it is removed and acquired again. A manifest that has moved to another build names
+ * another directory. The layout before 2026-11-12 — a directory named for the version alone, and
+ * a `.verified.json` this file kept beside it — is never reused, so it is removed rather than left
+ * in the directory CI caches.
  *
  * Several suites ask at once on a cold cache, so the acquisition is serialised through a lock file.
  *
  * `tsconfig.build.json` excludes `src/**\/testing/**`; none of this ships.
  */
 
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { hashFile } from "../../runtime/manifest.js";
-import { parseToolchainManifest, probeHost, selectChromeArtefact } from "../../setup/manifest.js";
-import { acquireChrome, CHROME_DIR_NAME } from "../../setup/providers/chrome.js";
+import { parseToolchainManifest, probeHost, selectBrowserArtefact } from "../../setup/manifest.js";
+import {
+  type AcquiredChrome,
+  acquireChrome,
+  CHROME_DIR_NAME,
+  ChromeRefusal,
+  chromeDestination,
+} from "../../setup/providers/chrome.js";
 import { committedManifestPath } from "../../setup/source.js";
 import { isExecutableFile } from "../encode.js";
 
@@ -50,9 +50,6 @@ const STALE_LOCK_MS = 15 * 60_000;
 
 /** A browser for a test, in the shape `toolchain.json` records one. */
 export type TestChrome = { path: string; sha256: string; version: string };
-
-/** What a verified acquisition left beside the tree. */
-type Verified = { archiveSha256: string; executable: string; executableSha256: string };
 
 let memo: Promise<TestChrome> | null = null;
 
@@ -81,42 +78,22 @@ async function acquireVerified(): Promise<TestChrome> {
     );
   }
   const manifest = parseToolchainManifest(readFileSync(manifestPath, "utf8"), manifestPath);
-  const archiveSha256 = selectChromeArtefact(manifest, probeHost()).sha256;
-  const destination = join(TEST_TOOLCHAIN_CACHE, `${CHROME_DIR_NAME}-${manifest.chrome.version}`);
-  const record = `${destination}.verified.json`;
+  const selection = selectBrowserArtefact(manifest, probeHost());
+  const legacy = join(TEST_TOOLCHAIN_CACHE, `${CHROME_DIR_NAME}-${selection.version}`);
+  rmSync(legacy, { recursive: true, force: true });
+  rmSync(`${legacy}.verified.json`, { force: true });
 
-  if (existsSync(destination) && !stillVerified(record, archiveSha256)) {
-    rmSync(destination, { recursive: true, force: true });
-    rmSync(record, { force: true });
-  }
-  const acquired = await acquireChrome({ manifest, toolchainDir: TEST_TOOLCHAIN_CACHE });
-  if (acquired.fetched || !existsSync(record)) {
-    const verified: Verified = {
-      archiveSha256,
-      executable: acquired.component.path,
-      executableSha256: hashFile(acquired.component.path),
-    };
-    writeFileSync(record, `${JSON.stringify(verified, null, 2)}\n`);
-  }
-  return { path: acquired.component.path, sha256: archiveSha256, version: manifest.chrome.version };
-}
-
-/** Whether the tree on disk is the one a verified acquisition of `archiveSha256` produced. */
-function stillVerified(record: string, archiveSha256: string): boolean {
-  if (!existsSync(record)) {
-    return false;
-  }
+  let acquired: AcquiredChrome;
   try {
-    const verified = JSON.parse(readFileSync(record, "utf8")) as Partial<Verified>;
-    return (
-      verified.archiveSha256 === archiveSha256 &&
-      typeof verified.executable === "string" &&
-      existsSync(verified.executable) &&
-      hashFile(verified.executable) === verified.executableSha256
-    );
-  } catch {
-    return false;
+    acquired = await acquireChrome({ manifest, toolchainDir: TEST_TOOLCHAIN_CACHE });
+  } catch (error) {
+    if (!(error instanceof ChromeRefusal) || error.reason !== "cache-unverified") {
+      throw error;
+    }
+    rmSync(chromeDestination(TEST_TOOLCHAIN_CACHE, selection), { recursive: true, force: true });
+    acquired = await acquireChrome({ manifest, toolchainDir: TEST_TOOLCHAIN_CACHE });
   }
+  return { path: acquired.component.path, sha256: selection.sha256, version: selection.version };
 }
 
 async function withLock<T>(lock: string, work: () => Promise<T>): Promise<T> {

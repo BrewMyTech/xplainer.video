@@ -44,9 +44,11 @@ terraform -chdir=infra/terraform validate
 | Resource | Purpose |
 | --- | --- |
 | `cloudflare_r2_bucket.artifacts` | Release artefacts: signed CLI and desktop builds, the per-OS TTS bundles, and the version/checksum manifest naming them. No AWS (ADR 0011). |
-| `cloudflare_dns_record.cdn` | `cdn.<zone>` → the bucket, proxied. The hostname an update feed or a first-run download is served from. |
+| `cloudflare_r2_custom_domain.cdn` | `cdn.<zone>` → the bucket, proxied, with the DNS record and certificate R2 owns. The hostname an update feed or a first-run download is served from. |
+| `cloudflare_ruleset.cdn_cache` | The Cache Rule: artefacts 30 days at the edge, manifests five minutes, errors never (below). |
 
-That is the whole module. Four inputs, two outputs, one bucket, one record.
+That is the whole module. Four inputs, two outputs, one bucket, one custom domain, one ruleset of
+two rules.
 
 ### Why a public, local-first repository declares any infrastructure at all
 
@@ -116,71 +118,119 @@ curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect MISS
 curl -sI https://cdn.<zone>/<key> | grep -i cf-cache-status   # expect HIT
 ```
 
+### The cache rule, and publishing a manifest
+
+*Added 2026-11-12.* `cf-cache-status` on `cdn.xplainer.video` reads **`DYNAMIC`** on that date:
+the Cache Rule declared below has never been applied, so every download is served from R2 with no
+caching at all. Applying it turns caching on for the first time. The ruleset has two rules, in
+this order, and a later matching rule's setting wins:
+
+1. **Every key on the hostname**: cacheable, 30 days at the edge, an hour in the browser — and
+   **every 4xx and 5xx `no-store`** (`status_code_ttl`, value `-1`). The edge TTL *overrides* the
+   origin, so without that clause one request made before an object's upload would cache its `404`
+   for 30 days after the object arrived. That is why no session requests an artefact or manifest
+   URL before it is published, a rule this clause makes cheaper to break but does not retire.
+2. **Any path ending `/manifest.json`** (`toolchain/v1/manifest.json`, `toolchain/v2/manifest.json`):
+   five minutes at the edge and in the browser, errors still `no-store`. A manifest is the one key
+   that is rewritten in place.
+
+**Applying it is the owner's step.** It needs an API token with `Zone:Cache Rules:Edit` beside the
+DNS and R2 permissions `variables.tf` lists:
+
+```sh
+cd infra/terraform
+TF_VAR_cloudflare_api_token=<token> terraform init
+TF_VAR_cloudflare_api_token=<token> terraform plan
+TF_VAR_cloudflare_api_token=<token> terraform apply
+```
+
+`plan` must show exactly one change, to `cloudflare_ruleset.cdn_cache` — a create if the ruleset
+was never applied, as `DYNAMIC` suggests, otherwise an in-place update — and nothing else. If the
+create is refused because the zone already has an `http_request_cache_settings` entry-point
+ruleset (one made in the dashboard), that ruleset has to be deleted or imported first. Then check
+with the cold-and-warm `curl` pair above, once on an artefact (`MISS` then `HIT`) and once on a key
+that does not exist (`cf-cache-status` never `HIT`).
+
+**Publishing a manifest** is an upload to its key followed by either a purge of that one URL (a
+token with `Zone:Cache Purge`) or a five-minute wait:
+
+```sh
+curl -X POST "https://api.cloudflare.com/client/v4/zones/<zone_id>/purge_cache" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  --data '{"files":["https://cdn.xplainer.video/toolchain/v2/manifest.json"]}'
+```
+
+An artefact key is never rewritten and never needs a purge: a changed build is a new version and a
+new key.
+
 ### The delivery position
 
-*Rewritten 2026-09-11. The paragraph that stood here said the bucket was empty and that an empty
-`cdn.xplainer.video` was this phase's intended state. That stopped being true the moment
-`xplainer@0.0.1` reached npm, and the two facts together were a product defect rather than a
-position: a published build has **exactly two** manifest sources — `--manifest` and the network —
-because `source.ts` deliberately keeps the committed copy out of the tarball, so an unpublished
-manifest left `xplainer setup` unable to acquire a browser for **any** user without a checkout.
-Publishing the manifest is what closed that, and it is why the bucket is no longer empty.*
+*Rewritten 2026-11-12, for the toolchain manifest's format 2 and ADR 0031's Phase 2. The section
+it replaces described the format-1 manifest as the one `xplainer setup` reads, a browser on the
+previous renderer's URL line, and a first run that installed a render workspace from the npm
+registry; none of those describes this tree. The constraint behind all of it is unchanged: a
+published build has **exactly two** manifest sources — `--manifest` and the network — because
+`source.ts` keeps the committed copy out of the tarball, so a manifest that is not on the CDN is a
+`setup` that cannot acquire a browser or an FFmpeg for any user without a checkout.*
 
-**The toolchain manifest is published**, at
-`https://cdn.xplainer.video/toolchain/v1/manifest.json` — the address
-`apps/cli/src/setup/manifest.ts` fixes, and the only one `xplainer setup` reads over the network. It
-is the reviewed document committed at `apps/cli/src/setup/toolchain.manifest.json`, uploaded
-verbatim; the two are expected to be byte-identical and their SHA-256 is the check.
+**There are two manifests, and only one is published.**
 
-**Nothing else is published, and no command in this repository publishes anything.** The upload is
-still the release owner's manual step — there is no workflow that does it — so re-publishing after a
-manifest change is a thing a human must remember, and forgetting it means `setup` hands users a
-digest for an artefact the manifest no longer describes. The **per-platform speech bundles** remain
-unpublished and their four manifest entries still say `"status": "unavailable"`; that is phase 4,
-and it is genuinely deferred rather than broken, because the `onnx` route acquires speech from its
-components' own upstream homes and needs no manifest at all.
+- **Format 1**, at `https://cdn.xplainer.video/toolchain/v1/manifest.json`, is published and stays
+  exactly as it is, because the CLIs already released read it: 0.0.9 requires its old browser
+  block and refuses a document of a newer format. Its SHA-256 equalled the committed copy's from
+  2026-09-11 until 2026-11-12, when format 2 replaced the committed copy; nothing in this tree
+  reads or re-publishes it.
+- **Format 2**, at `https://cdn.xplainer.video/toolchain/v2/manifest.json` — the address
+  `apps/cli/src/setup/manifest.ts` fixes for this build, and the only one it reads over the
+  network — is committed at `apps/cli/src/setup/toolchain.manifest.json` and is **not yet
+  uploaded**. Uploading it verbatim, and purging its URL or waiting out its five-minute TTL
+  (§*The cache rule, and publishing a manifest* above), is the release owner's step, and it has to
+  happen before any release of a CLI that reads it. The release is to be gated on it: ADR 0031's
+  note of 2026-11-12 (D8) specifies a check that compares the published document with the committed
+  copy byte for byte before `pnpm publish -r`. *That check is not in this tree yet; until it lands,
+  the upload is something a release owner has to remember.* Until the upload, nothing run from a
+  checkout should request the format-2 URL, because a premature `404` is exactly what rule 1's
+  `status_code_ttl` exists to keep out of the cache: a local `setup` passes `--manifest` naming the
+  committed copy.
+
+**What else is published, and by what.** The macOS FFmpeg 9.0.2 archives and their source bundle,
+under `toolchain/v1/ffmpeg/9.0.2/`, uploaded by `.github/workflows/ffmpeg-macos.yml` from `main`
+([`ffmpeg/README.md`](ffmpeg/README.md)); a published version key is never rewritten. No other
+command or workflow in this repository uploads anything, the manifest included. The
+**per-platform speech bundles** remain unpublished and their four manifest entries still say
+`"status": "unavailable"`; that is phase 4, and it is genuinely deferred rather than broken,
+because the `onnx` route acquires speech from its components' own upstream homes and needs no
+manifest at all.
 
 `xplainer setup` says the same thing rather than reporting a DNS or HTTP error: `deliveryPosition()`
-in that module is the paragraph its refusal carries, and it names what still works on the machine
+in `manifest.ts` is the paragraph its refusal carries, and it names what still works on the machine
 that is reading it.
 
-| Platform | Browser | Speech | Roadmap **P2-4** |
-| --- | --- | --- | --- |
-| macOS arm64, Linux, Windows | the pinned Remotion line's headless shell, on the **expected** digest the published manifest carries | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | **met** |
-| macOS x64 (Intel) | the same | `onnx` is structurally unavailable — `onnxruntime-node` ships no `darwin/x64` binding — so `docker`'s pinned image, or `--tts-url` | **met** |
+| Platform | Browser | FFmpeg | Speech | Roadmap **P2-4** |
+| --- | --- | --- | --- | --- |
+| macOS arm64, Linux, Windows | Chrome for Testing 157.0.8103.50, from Google's storage, on the **expected** digest the manifest carries | ours from this CDN on macOS; BtbN's FFmpeg-Builds release on Linux and Windows; each on two expected digests | the `onnx` route: Kokoro-82M, one voice and this platform's ONNX Runtime, each from its own upstream home and none of them from here | met for the browser and speech; FFmpeg on a Linux or Windows runner is still to be proved |
+| macOS x64 (Intel) | the same | ours, from this CDN | `onnx` is structurally unavailable — `onnxruntime-node` ships no `darwin/x64` binding — so `docker`'s pinned image, or `--tts-url` | the same |
 
-*This table said something different until 2026-09-11, and both rows were wrong by then.* The
-browser row required `--manifest` to name a reviewed copy, which was true only while the manifest
-was unpublished. The Windows row said **none of the three** speech routes was available and that
-P2-4 was **pending** there — retired by [ADR 0028](../docs/adr/0028-in-process-onnx-speech-and-a-g2p-we-own.md)'s
-`onnx` route, which reads no manifest at all and is proven on all three platforms
-(`e2e-speech` run `34496585851`). Intel Macs are the one platform with a structural gap, and it is
-the reason the `docker` route is kept rather than retired.
+**The browser's and FFmpeg's bytes never come from a host the manifest picks.** Each row names its
+own URL, and `manifest.ts`'s `ARTEFACT_ALLOWLIST` admits a URL only under a prefix it maps to a
+publisher — Google's `chrome-for-testing-public` bucket, BtbN's FFmpeg-Builds releases on GitHub,
+and `cdn.xplainer.video/toolchain/v1/ffmpeg/` — so what the manifest supplies is the choice of row
+and its expected digests, and a new host is a reviewed code change.
 
-Two consequences of the empty bucket are worth stating plainly, because both look like defects from
-the outside:
-
-- **A browser acquisition needs a manifest named by hand.** The bytes come from Google's own storage
-  host at the URL the pinned Remotion line resolves; only the expected digest comes from the
-  manifest. With nothing published, that digest arrives from `--manifest <path or https URL>` (or
-  `XPLAINER_TOOLCHAIN_MANIFEST`), and from the reviewed copy committed beside the module when the
-  CLI is running out of a checkout.
-- **The `bundle` provider is finished code with nothing to fetch.** Its download, resume, checksum
-  and atomic-install path is proved against the fixture server in
-  `apps/cli/src/setup/testing/artefact-server.ts`. What is missing is the publication.
-
-**The milestone that closes P2-4 on Windows is phase 4**: a native relocatable speech bundle per
-platform, published together with the manifest to this bucket, behind the custom domain connected in
-step 1 and the Cache Rule added in step 2.
+**The `bundle` provider is finished code with nothing to fetch.** Its download, resume, checksum
+and atomic-install path is proved against the fixture server in
+`apps/cli/src/setup/testing/artefact-server.ts`. What is missing is the publication, and **the
+milestone that closes it is phase 4**: a native relocatable speech bundle per platform, published
+with the manifest to this bucket, behind the custom domain and the Cache Rule declared above.
 
 **First-run rendering needs a network, by the same argument.** The desktop installer carries the
-interpreter payload — Node and npm — and deliberately not the render workspace, which is a few
-hundred megabytes and would not survive the size argument in
-[ADR 0005](../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md). Nothing is
-published here for it to download either, so the first `xplainer setup --workspace` resolves the
-template's pinned dependencies with the shipped npm, from the public registry. That is ADR 0005's
-own contract for the other two artefacts, applied to the third, and it is stated here and in
-`docs/ROADMAP.md` rather than discovered on a first run.
+interpreter payload and none of the toolchain: the browser, FFmpeg and speech come to a few
+hundred megabytes, which would not survive the size argument in
+[ADR 0005](../docs/adr/0005-download-on-first-run-chrome-headless-shell-and-tts.md), so the first
+`xplainer setup` downloads them. No package manager runs any more: the render workspace that used
+to be installed from the npm registry now holds only a video's sources and outputs, and the one
+thing still fetched from the registry is ONNX Runtime's tarball, by version and digest, for the
+`onnx` speech route.
 
 ### The bucket is a new bucket, not a renamed one
 
@@ -275,7 +325,9 @@ pnpm e2e:render:linux
 
 `e2e/Dockerfile` is `node:24-bookworm-slim` plus ffmpeg, the Chrome headless
 shell's Debian library set and a Liberation font, with this repository installed
-and built. `scripts/e2e/linux.mjs` is what
+and built. The image's own ffmpeg is the proof's tool — `ffprobe` on the MP4 and
+the frame extract — and no longer what renders: a render never looks on `PATH`,
+and uses the one `setup` acquires below. `scripts/e2e/linux.mjs` is what
 runs it: it builds the image, creates a user-defined bridge network, starts its
 own Kokoro container on it, runs `pnpm e2e:render` inside the image against that
 container — which waits for `/v1/audio/voices` to answer before it narrates —
@@ -285,11 +337,12 @@ both containers and the network on the way out, on the failure path too.
 **The container needs the public network too, not only Kokoro.** Since 2026-09-09
 `render.mjs` runs a real `xplainer setup` inside it — the toolchain gate refuses
 `explainer_still` and `explainer_render` on a machine with no
-`<state>/toolchain.json` — so the run fetches a headless shell from the reviewed
-manifest and resolves the workspace with `npm ci`. That headless shell is the
-only browser in the run — the render worker launches the copy `setup` recorded —
-so the image carries none of its own. On arm64 the container is linux-arm64 with
-bookworm's glibc 2.36, which the manifest answers with `linux-arm64-glibc235`.
+`<state>/toolchain.json` — so the run fetches a headless shell and an FFmpeg
+from the reviewed manifest; no package manager runs, because the workspace is
+sources and outputs only. That headless shell is the only browser in the run —
+the render worker launches the copy `setup` recorded — so the image carries none
+of its own. On arm64 the container is linux-arm64 with bookworm's glibc 2.36,
+which meets the `linux-arm64` row's floor of 2.25.
 
 **It starts its own Kokoro and publishes no host port.** A developer machine very
 often already has a Kokoro answering on 8880, and this proof must neither disturb

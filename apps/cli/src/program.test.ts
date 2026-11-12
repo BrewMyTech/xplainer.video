@@ -272,24 +272,28 @@ describe("xplainer", () => {
    *
    * The surface is asserted rather than the behaviour: what each flag *does* is
    * `commands/setup.test.ts`'s subject, and what belongs here is that the options the rest of the
-   * phase's proofs and documents name — `--workspace` under a scrubbed `PATH`, `--skip-speech`
-   * where a speech acquisition is not wanted in a run, `--tts-url` for a server somebody else runs,
+   * phase's proofs and documents name — `--skip-speech` where a speech acquisition is not wanted in
+   * a run, `--tts-url` for a server somebody else runs,
    * `--speech <route>` as `scripts/e2e/toolchain.mjs` passes it to name the provider it proves, and
    * `--state-dir` as `SETTING_FLAGS` spells it — are still on the command a user reaches. The
    * listing is `toEqual` for the same reason every group's is: an option that appeared without
    * anyone deciding about it would ship unnoticed.
    *
    * `--speech` sits beside `--tts-url` in the listing because that is where it belongs in the
-   * reading: both name where speech comes from, one by URL and one by route, and neither is part of
-   * the `--workspace`/`--skip-*` union rule above them.
+   * reading: both name where speech comes from, one by URL and one by route, and neither adds or
+   * removes a component the way the `--skip-*` flags above them do. `--ffmpeg-path` is the same kind
+   * of flag for ffmpeg — which one, not whether — and opens that group. `--workspace` is absent on
+   * purpose: the previous renderer's payload it installed is gone, and so is the flag (AC-A9).
    */
   it("offers setup's documented options exactly, now that it is no longer a stub", () => {
     const setup = createProgram().commands.find((command) => command.name() === "setup");
 
     expect(setup?.options.map((option) => option.long)).toEqual([
-      "--workspace",
       "--skip-browser",
+      "--skip-ffmpeg",
       "--skip-speech",
+      "--ffmpeg-path",
+      "--ffmpeg-pinned",
       "--tts-url",
       "--speech",
       "--state-dir",

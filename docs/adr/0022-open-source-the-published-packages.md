@@ -493,3 +493,32 @@ The paragraph above headed "binding **today**" still describes `template/package
 It no longer describes the video files the scaffold writes, which contain no Remotion code. This
 note records that fact and draws no licensing conclusion from it: ADR 0015's open question 5 is
 still open, and still relocated with it.
+
+## Note, 2026-11-12: nothing installs Remotion, so no surface discloses it
+
+Added as a dated note rather than a rewrite. The decision is unchanged.
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of this date, D7,
+removes payload 2: `packages/render-core/template/` is now `tailwind.css` and `tsconfig.json`, its
+`package.json` and `package-lock.json` are deleted, and `xplainer setup` no longer has a
+`--workspace` component, so no command in this repository puts a Remotion package on a user's
+machine.
+
+**The remaining disclosure surfaces drop it, because it stopped being true.** The root `README.md`,
+`apps/cli/README.md` and `packages/render-core/README.md` — the three the note of 2026-11-11 left
+carrying it — and `packages/alias/README.md`, a sixth surface that note did not count, no longer say
+that rendering involves Remotion. The root `LICENSE` and `NOTICE`, and the copies of both in all
+eight published packages, drop their Remotion paragraphs, and `NOTICE`'s closing sentence now speaks
+of the components `xplainer setup` acquires.
+
+**Item 2 has no object any more.** It required a user to be told that their own install pulls
+Remotion under Remotion's terms; from this date no install does. The paragraph above headed
+"binding **today**" is history for the same reason: the template it describes is deleted, and the
+scaffold has written no Remotion code since 2026-11-11.
+
+**Item 1 is untouched.** The hosted tier, its rendering-service question and ADR 0015's open
+questions are where the note of 2026-09-06 left them, in the private repository.
+
+**What a user is told now is about FFmpeg, and it lives elsewhere.** `xplainer setup` acquires a
+GPL FFmpeg build, which xplainer runs as a separate program and does not bundle; the disclosure is
+the `NOTICE` paragraph, `docs/third-party-components.md` and the root `README.md`'s FFmpeg section,
+and the licence position behind it is ADR 0031's to record, not this one's.

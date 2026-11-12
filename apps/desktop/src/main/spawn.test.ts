@@ -131,12 +131,10 @@ function makePayload(fixture: PayloadFixture = {}): string {
           platform: host.platform,
           arch: host.arch,
           node_version: process.version,
-          npm_version: "11.0.0",
           host: "node",
           launch: {
             interpreter: payloadInterpreterEntry(host.platform),
             entry: PAYLOAD_CLI_ENTRY,
-            npm_cli: "lib/node_modules/npm/bin/npm-cli.js",
             argv: [payloadInterpreterEntry(host.platform), PAYLOAD_CLI_ENTRY],
           },
           packages: [],
@@ -162,7 +160,7 @@ describe("parseRuntimeManifest", () => {
         kind: "runtime",
         platform: "win32",
         arch: "x64",
-        launch: { interpreter: "bin/node.exe", entry: PAYLOAD_CLI_ENTRY, npm_cli: "x", argv: [] },
+        launch: { interpreter: "bin/node.exe", entry: PAYLOAD_CLI_ENTRY, argv: [] },
       }),
       file,
     );

@@ -28,6 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.emit.json",
     "prepack": "xplainer-sync-license",
+    "prepublishOnly": "node ../../scripts/check-release-ready.mjs --prepublish",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

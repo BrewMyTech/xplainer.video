@@ -1,7 +1,7 @@
 /**
  * Where this machine's shared video workspace lives.
  *
- * One directory holds every video and one `node_modules/` (see
+ * One directory holds every video's sources and outputs (see
  * `@xplainer/render-core`'s `workspace.ts` for the layout inside it), so the question this module
  * answers is only *where the root is* — and it is asked from two places that must agree: the job
  * runner's worker registry, built in `daemon/start.ts`, and the backend the tools are served from,

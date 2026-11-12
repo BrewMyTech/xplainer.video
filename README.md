@@ -90,12 +90,13 @@ rendering run on your machine.
 | 🖥 **Cross-platform** | macOS, Linux and Windows — including headless servers |
 | 🔁 **Optional daemon** | Renders outlive the agent session, and several agents share one queue |
 | 📖 **Editable pronunciations** | Your own lexicon, consulted before the built-in one and before CMUdict |
-| ⚖ **Apache-2.0** | Every one of the seven packages published to npm |
+| ⚖ **Apache-2.0** | Every one of the eight packages published to npm |
 
 ## 🚀 Quick start
 
-Requires **Node 24 LTS**, and **ffmpeg with libx264** to render — see
-[Rendering needs ffmpeg](#rendering-needs-ffmpeg). Works on macOS, Linux and Windows.
+Requires **Node 24 LTS**. Works on macOS, Linux and Windows. `xplainer setup` downloads everything
+else a render needs — a headless browser, FFmpeg and the speech engine; see
+[Setup and speech](#-setup-and-speech).
 
 ### Option 1: npm (recommended)
 
@@ -141,8 +142,7 @@ npx -y xplainer setup
 > [!IMPORTANT]
 > `setup` is required for every route, and must run on the machine that will render. Allow roughly
 > two minutes for the first downloads. **Intel Macs need an alternative speech route** — see
-> [Setup and speech](#-setup-and-speech). **Rendering also needs ffmpeg with libx264**, which `setup`
-> does not install yet — see [Rendering needs ffmpeg](#rendering-needs-ffmpeg).
+> [Setup and speech](#-setup-and-speech).
 
 ## 📖 Your first video
 
@@ -165,32 +165,50 @@ the state directory.
 
 ## 🔊 Setup and speech
 
-`xplainer setup` downloads a headless browser, prepares the video workspace and installs the
-built-in Kokoro ONNX speech engine: the model, one voice and your platform's ONNX Runtime. The
-speech downloads come from their upstream sources and are pinned by digest; the browser and
-workspace setup use the published
-[toolchain manifest](https://cdn.xplainer.video/toolchain/v1/manifest.json).
+`xplainer setup` downloads three things onto the machine that will render: a headless browser
+(the Chrome for Testing headless shell, from Google), **FFmpeg** to encode the MP4, and the built-in
+Kokoro ONNX speech engine — the model, one voice and your platform's ONNX Runtime. Each comes from
+its publisher's own home and is checked against a pinned digest before it is unpacked. The browser
+and FFmpeg are the ones the reviewed
+[toolchain manifest](https://cdn.xplainer.video/toolchain/v2/manifest.json) names, and `setup`
+accepts a download only from a publisher it names in its own code.
 
 The voice produces word-level timestamps, which is what lets scene lengths follow the narration
 automatically. Render tools refuse to run until setup is complete — installing an agent plugin
 alone does not prepare the machine.
 
-### Rendering needs ffmpeg
+### FFmpeg
 
-The final MP4 is encoded by **ffmpeg**, run as a separate program, and it must include the
-**libx264** encoder. In this release you install it yourself — `xplainer setup` acquires it in a
-coming release:
+The final MP4 is encoded by **FFmpeg**, which xplainer runs as a separate program and never links,
+modifies or bundles. `setup` downloads a pinned build for your platform:
+
+| Platform | The build `setup` downloads | Licence |
+| --- | --- | --- |
+| macOS (Apple silicon and Intel) | FFmpeg 9.0.2 with x264, built by xplainer.video from unmodified sources | GPL, version 2 or later |
+| Linux and Windows | The `gpl` build of FFmpeg 9.0.2 from BtbN's FFmpeg-Builds | GPL, version 3 or later |
+
+Before the download it says who publishes that binary, under which licence, and where its source
+is.
+It keeps the binary under `<state dir>/toolchain/` beside its licence text and a `PROVENANCE.txt`
+recording where it came from and what it hashed to — the macOS build also carries `SOURCE.txt` and
+`BUILDINFO.txt` — and only after checking it against the manifest's digest and asking it for its
+version, its build configuration and its licence.
+[Third-party components](docs/third-party-components.md) lists everything `setup` acquires, who
+publishes each, and under what licence.
+
+To use an FFmpeg you installed yourself instead, name it:
 
 ```bash
-brew install ffmpeg        # macOS
-sudo apt install ffmpeg    # Debian or Ubuntu
+xplainer setup --ffmpeg-path /usr/bin/ffmpeg
 ```
 
-On Windows, put an ffmpeg build that includes libx264 on `PATH`. xplainer looks for ffmpeg in
-`XPLAINER_FFMPEG` first, then on `PATH`, then in `/opt/homebrew/bin` and `/usr/local/bin` — the last
-two because a daemon started by launchd sees neither on its `PATH`. A render on a machine without a
-usable ffmpeg fails at once with `FFMPEG_NOT_FOUND` or `FFMPEG_NO_LIBX264`, naming the fix;
-`explainer_still` does not need it.
+It must be FFmpeg 6.0 or newer with `libx264` and the built-in `aac` encoder, and `setup` checks
+that before recording it. A later plain `xplainer setup` — which `xplainer update` runs — keeps it,
+checks it again if it has changed, and downloads the pinned build only once it is gone;
+`xplainer setup --ffmpeg-pinned` switches back to the pinned build. `XPLAINER_FFMPEG`, an absolute
+path, overrides the recorded binary for any process it is set in. xplainer never looks for FFmpeg on `PATH` or in Homebrew's directories by itself. A render on a
+machine with no FFmpeg recorded is refused at once, naming `xplainer setup`; `explainer_still` does
+not need one.
 
 **Intel Macs are the exception:** ONNX Runtime has no `darwin/x64` binding. Use a Kokoro-FastAPI
 server you already run:
@@ -323,6 +341,14 @@ agent's MCP entry and skill, preserving whether each one uses `--spawn` or attac
 > what renders. `xplainer status` warns when the two are out of step; `xplainer update` is what
 > brings them level. On a machine with no daemon the step does nothing.
 
+**One upgrade is a reinstall.** This release records its toolchain in a new format, which a daemon
+installed by an earlier release cannot read. On such a machine `xplainer update` and
+`xplainer setup` stop with exit code `3` having changed nothing, and print the three commands that
+move the daemon across — `xplainer daemon uninstall`, then `xplainer setup`, then
+`xplainer daemon install` — without running them. `setup` also removes the render workspace an
+earlier release installed (about 234 MB), and only when it is provably that release's; your videos
+are never touched.
+
 If you upgrade through npm instead, re-run `connect` for each agent you use:
 
 ```bash
@@ -423,8 +449,8 @@ directory and drains on `SIGTERM`. `xplainer status` reports its health in prose
 
 ### Does anything leave my machine?
 
-No, unless you choose a remote speech provider. `setup` downloads a headless browser, the speech
-model, a voice and your platform's ONNX Runtime, each pinned by digest, and making a video after
+No, unless you choose a remote speech provider. `setup` downloads a headless browser, FFmpeg, the
+speech model, a voice and your platform's ONNX Runtime, each pinned by digest, and making a video after
 that uses the network for nothing: your source, narration, stills and MP4 stay on your disk. With
 [ElevenLabs configured](#using-elevenlabs-instead), the narration text is sent to ElevenLabs to be
 spoken — and nothing else is. Only you can turn that on, with `xplainer config`; your agent cannot.
@@ -479,9 +505,8 @@ share one serial queue and one speech engine.
 
 ### Is there a hosted version?
 
-Not in this repository. The hosted tier lives in a separate private repository and is deferred
-pending a Remotion licensing decision; the local product does not depend on it. See
-[ADR 0023](docs/adr/0023-split-the-repository.md).
+Not in this repository. The hosted tier lives in a separate private repository and is deferred;
+the local product does not depend on it. See [ADR 0023](docs/adr/0023-split-the-repository.md).
 
 ## 🧰 Tech stack
 
@@ -513,20 +538,21 @@ required. Open an issue before contributing to the proprietary parts of the repo
 
 ## 📄 Licence
 
-The **seven packages published to npm** are open source under the Apache Licence 2.0:
+The **eight packages published to npm** are open source under the Apache Licence 2.0:
 
 | Directory | Package |
 | --- | --- |
 | `apps/cli` | `@xplainer/cli` |
 | `packages/alias` | `xplainer` |
 | `packages/mcp-server` | `@xplainer/mcp-server` |
+| `packages/motion` | `@xplainer/motion` |
 | `packages/protocol` | `@xplainer/protocol` |
 | `packages/render-core` | `@xplainer/render-core` |
 | `packages/skill` | `@xplainer/skill` |
 | `packages/tts-client` | `@xplainer/tts-client` |
 
-`packages/motion` (`@xplainer/motion`, the authoring API scenes import) is Apache-2.0 too and is
-published from the next release. The unscoped `xplainer` package forwards to `@xplainer/cli`. See
+`@xplainer/motion`, the authoring API scenes import, is published from the next release. The
+unscoped `xplainer` package forwards to `@xplainer/cli`. See
 [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0) and [NOTICE](NOTICE); both accompany the published
 packages, whose manifests declare `Apache-2.0`.
 
@@ -535,8 +561,11 @@ packages, whose manifests declare `Apache-2.0`.
 boundary. The historical `open-later` tier label describes the plan, not a licence grant.
 
 > [!IMPORTANT]
-> **Remotion has its own terms.** It is free for individuals and companies of up to three people;
-> larger companies need their own Remotion licence. xplainer's Apache-2.0 licence does not grant
-> rights to Remotion. The render workspace installs Remotion as a dependency on your machine;
-> xplainer does not bundle it. See [Remotion's licence](https://remotion.pro/license) and
+> **What `setup` downloads has licences of its own.** FFmpeg is GPL — version 2 or later for the
+> macOS build, version 3 or later for the Linux and Windows builds — and runs as a separate
+> program; the browser is Chromium under the notices it ships with; the speech model is Apache-2.0
+> and ONNX Runtime is MIT. None of them is bundled in an xplainer package, each download carries
+> its own licence text, and xplainer's Apache-2.0 licence grants no rights to any of them. A
+> copyright licence grants no patent rights either: whether your use of an encoder needs a patent
+> licence is your own question. See [Third-party components](docs/third-party-components.md) and
 > [NOTICE](NOTICE).

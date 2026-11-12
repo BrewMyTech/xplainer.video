@@ -1,85 +1,111 @@
 /**
- * The Chrome provider: the headless shell the pinned Remotion line would download, verified first.
+ * The Chrome provider: the Chrome for Testing headless shell the manifest records for this
+ * platform, verified first.
  *
- * **The URL comes from the selector and the digest comes from the manifest**, and neither can
- * supply the other's half. `manifest.ts` mirrors `@remotion/renderer`'s `getChromeDownloadUrl`
- * branch for branch, so the artefact fetched here is the one the pinned Remotion line itself would
- * fetch on this machine; the manifest is then searched for an entry carrying **that exact URL**, and
- * all it contributes is the expected `sha256` and the C-library constraint. A manifest naming a
- * different artefact therefore matches nothing and produces a refusal, not a download from
- * somewhere else.
+ * **The row is selected by `<platform>-<arch>`, and its URL is admitted by code.** Format 2 of the
+ * toolchain manifest names the browser's URL in the row itself, so `manifest.ts` refuses, when the
+ * document is parsed, any URL that does not begin with a prefix its `ARTEFACT_ALLOWLIST` maps to a
+ * publisher — for the browser, Google's `chrome-for-testing-public` bucket. A manifest naming an
+ * artefact anywhere else is a refusal before anything is fetched, not a download from somewhere
+ * else.
  *
  * **The digest is expected, never recorded.** Round 3 recorded the digest of whatever arrived, which
  * cannot reject an incorrect-but-intact archive on a first acquisition — it only detects later
- * drift. Where the manifest has no entry for this machine's configuration, `setup` says so instead
- * of trusting the bytes, and that refusal names the URL so the manifest can be extended with a
- * reviewed value rather than with a guess.
+ * drift. Where the manifest has no entry for this machine, `setup` says so instead of trusting the
+ * bytes.
  *
  * **What is recorded is the executable, and what is verified is the archive.** ADR 0020's install
  * preflight checks that `toolchain.json`'s paths still exist, so the path recorded has to be the
- * file a render actually needs — the headless shell binary inside the unpacked tree — while the
- * `sha256` beside it is the reviewed digest the archive was admitted on. The two answer different
- * questions and the schema's own wording keeps them apart.
+ * file a render actually needs — the row's `member`, inside the unpacked tree — while the `sha256`
+ * beside it is the reviewed digest the archive was admitted on. The two answer different questions
+ * and the schema's own wording keeps them apart. The row's `licence_member` has to be in the tree
+ * too, because ADR 0031's note of 2026-11-12 (D4) pins one publisher, one version and "an in-archive
+ * licence everywhere", and only an acquisition that refuses an archive without one makes that so.
+ *
+ * **A warm cache is re-verified, never trusted** (`acquired.ts`), exactly as ffmpeg's is: the
+ * directory's name carries the archive's digest, the tree carries a record of what it was admitted
+ * on, and a re-run re-hashes the executable and the licence against that record before it records
+ * anything. Until 2026-11-12 a directory named after the version alone was recorded at the reviewed
+ * digest with nothing about it checked, so a `#!/bin/sh` stub there passed as the browser. A tree in
+ * that older layout is not reused; it is simply not the name this build looks for.
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import process from "node:process";
 import type { ToolchainComponent } from "@xplainer/protocol";
 import { PRECONDITION_UNMET_EXIT_CODE } from "../../daemon/exit-codes.js";
+import { isExecutableFile } from "../../render/encode.js";
+import { stageAcquired, verifyAcquired } from "../acquired.js";
 import { acquireArtefact } from "../download.js";
 import {
+  type BrowserSelection,
   type HostProbe,
   probeHost,
-  selectChromeArtefact,
+  selectBrowserArtefact,
   type ToolchainManifest,
 } from "../manifest.js";
 
-/** The `provider` token the marker records for this route. */
-export const CHROME_PROVIDER = "remotion";
+/**
+ * The `provider` token the marker records for this route: the browser the manifest's own row names.
+ *
+ * Until format 2 of the manifest it was the previous renderer's name, after the URL selector this
+ * package mirrored from it, which format 2 deleted. A marker an older `setup` wrote still carries
+ * the old token; the schema constrains only its spelling, and nothing branches on either.
+ */
+export const CHROME_PROVIDER = "manifest";
 
 /** The directory name, under the toolchain directory, one acquisition commits itself to. */
 export const CHROME_DIR_NAME = "chrome-headless-shell";
 
-/**
- * The executable names a Chrome-for-Testing or a remotion.media headless-shell archive unpacks to.
- *
- * Two spellings, because the two publishers disagree: Chrome for Testing ships
- * `chrome-headless-shell`, and the Playwright-derived builds Remotion mirrors ship `headless_shell`.
- * Both are searched for rather than one being assumed, because assuming produces a `toolchain.json`
- * whose recorded path does not exist on exactly the platforms that need the other one.
- */
-export const CHROME_EXECUTABLE_NAMES: readonly string[] = [
-  "chrome-headless-shell",
-  "chrome-headless-shell.exe",
-  "headless_shell",
-  "headless_shell.exe",
-];
+/** How many hex characters of the archive digest go in that name — enough to be an identity. */
+export const CHROME_DIGEST_IN_NAME = 12;
 
 /**
  * What would be fetched for this machine, and what it must hash to.
  *
  * A named function rather than an object literal inside {@link acquireChrome}, because this is the
- * join the whole provider exists for: the `url` is the **selector's** and the `sha256` is the
- * **manifest's**, and neither can supply the other's half. `download.ts` refuses a body that hashes
- * to anything else (`checksum-mismatch`, and it deletes the partial so a wrong body is never
- * resumed onto), so what is asserted here is that the reviewed digest is what reaches it.
+ * one join the provider exists for: this platform's row, its allowlisted URL and its reviewed
+ * digest. `download.ts` refuses a body that hashes to anything else (`checksum-mismatch`, and it
+ * deletes the partial so a wrong body is never resumed onto), so what is asserted here is that the
+ * reviewed digest is what reaches it.
  */
 export function chromeRequest(
   manifest: ToolchainManifest,
   probe: HostProbe,
 ): { url: string; sha256: string; size: number } {
-  const selection = selectChromeArtefact(manifest, probe);
+  const selection = selectBrowserArtefact(manifest, probe);
   return { url: selection.url, sha256: selection.sha256, size: selection.size };
 }
 
+/**
+ * The directory one build commits itself under: its version **and** its archive's digest.
+ *
+ * The version is what a person reads; the digest is what makes the name an identity, so a
+ * re-published archive at an unchanged version cannot be served out of the tree the last one left.
+ */
+export function chromeDestination(toolchainDir: string, selection: BrowserSelection): string {
+  return join(
+    toolchainDir,
+    `${CHROME_DIR_NAME}-${selection.version}-${selection.sha256.slice(0, CHROME_DIGEST_IN_NAME)}`,
+  );
+}
+
+/** Why a browser was not recorded. One value per distinguishable condition. */
+export type ChromeRefusalReason =
+  | "cache-unverified"
+  | "member-missing"
+  | "licence-missing"
+  | "not-executable";
+
 /** The browser was not acquired, and nothing was committed. */
 export class ChromeRefusal extends Error {
+  readonly reason: ChromeRefusalReason;
   readonly exitCode: number = PRECONDITION_UNMET_EXIT_CODE;
 
-  constructor(message: string) {
+  constructor(reason: ChromeRefusalReason, message: string) {
     super(message);
     this.name = "ChromeRefusal";
+    this.reason = reason;
   }
 }
 
@@ -100,14 +126,14 @@ export type AcquiredChrome = {
   component: ToolchainComponent;
   /** The unpacked tree's root, which is the directory a re-run finds already committed. */
   destination: string;
-  /** Whether this call fetched anything, or found the tree already there. */
+  /** Whether this call fetched anything, or found the tree already there and verified it. */
   fetched: boolean;
 };
 
 /**
- * Acquire the headless shell, or refuse by name having downloaded nothing.
+ * Acquire the headless shell, or refuse by name having committed nothing.
  *
- * Idempotent on purpose: a re-run over an already-committed tree re-locates the executable and
+ * Idempotent on purpose: a re-run over a tree an earlier run committed re-verifies it and
  * re-records it rather than re-fetching ~100 MB. `setup` is the command a user runs again after an
  * interrupted first attempt, and a provider that could only work on an empty machine would make the
  * second run worse than the first.
@@ -115,72 +141,97 @@ export type AcquiredChrome = {
 export async function acquireChrome(options: AcquireChromeOptions): Promise<AcquiredChrome> {
   const log = options.log ?? ((): void => {});
   const probe = options.probe ?? probeHost();
-  const selection = selectChromeArtefact(options.manifest, probe);
-  const destination = join(
-    options.toolchainDir,
-    `${CHROME_DIR_NAME}-${options.manifest.chrome.version}`,
-  );
+  const selection = selectBrowserArtefact(options.manifest, probe);
+  const destination = chromeDestination(options.toolchainDir, selection);
+  const expectation = chromeRequest(options.manifest, probe);
+  /** The two files the tree is made of, as far as anything here reads it. */
+  const witnesses = [selection.member, selection.licence_member];
+  const executable = inTree(destination, selection.member);
 
-  let fetched = false;
   if (existsSync(destination)) {
-    log(`chrome: already acquired at ${destination}`);
-  } else {
-    log(`chrome: ${selection.url}`);
-    log(`chrome: expecting sha256 ${selection.sha256} (${selection.key})`);
-    await acquireArtefact({ request: chromeRequest(options.manifest, probe), destination });
-    fetched = true;
+    const verdict = verifyAcquired(destination, expectation);
+    if (!verdict.ok) {
+      throw new ChromeRefusal("cache-unverified", `chrome: ${verdict.detail}`);
+    }
+    const witnessed = verdict.files.map((file) => file.path);
+    const unwitnessed = witnesses.filter(
+      (member) => !witnessed.includes(inTree(destination, member)),
+    );
+    if (unwitnessed.length > 0) {
+      throw new ChromeRefusal(
+        "cache-unverified",
+        `chrome: ${destination} was committed without ${unwitnessed.join(" and ")} in its ` +
+          `record, so it is not the tree this row admits. Remove ${destination} and run setup ` +
+          "again.",
+      );
+    }
+    if (!isExecutableFile(executable)) {
+      throw new ChromeRefusal(
+        "cache-unverified",
+        `chrome: ${executable} is no longer an executable file, though its bytes are the ones ` +
+          `acquired. Remove ${destination} and run setup again.`,
+      );
+    }
+    log(`chrome: already acquired and verified at ${destination}`);
+    return { component: component(selection, executable), destination, fetched: false };
   }
 
-  const executable = findExecutable(destination);
-  if (executable === null) {
-    throw new ChromeRefusal(
-      `${destination} holds no headless shell executable — none of ` +
-        `${CHROME_EXECUTABLE_NAMES.join(", ")} is in it. The archive at ${selection.url} matched ` +
-        "its reviewed digest, so this is a layout this build does not know rather than a bad " +
-        "download. Nothing was recorded.",
-    );
-  }
-  return {
-    component: {
-      version: options.manifest.chrome.version,
-      path: executable,
-      sha256: selection.sha256,
-      provider: CHROME_PROVIDER,
-    },
+  log(`chrome: ${selection.url}`);
+  log(`chrome: expecting sha256 ${selection.sha256} (${selection.key})`);
+  await acquireArtefact({
+    request: expectation,
     destination,
-    fetched,
+    stage: (staging) => {
+      assertTree(selection, staging);
+      stageAcquired(staging, expectation, witnesses);
+    },
+  });
+  return { component: component(selection, executable), destination, fetched: true };
+}
+
+/** A `/`-separated archive member, as a path under `root`. */
+function inTree(root: string, member: string): string {
+  return join(root, ...member.split("/"));
+}
+
+/** The marker entry: the row's version, its member's path, and the archive's reviewed digest. */
+function component(selection: BrowserSelection, executable: string): ToolchainComponent {
+  return {
+    version: selection.version,
+    path: executable,
+    sha256: selection.sha256,
+    provider: CHROME_PROVIDER,
   };
 }
 
 /**
- * The headless shell inside an unpacked tree, or `null`.
- *
- * A search rather than a fixed relative path: Chrome for Testing unpacks to
- * `chrome-headless-shell-<platform>/chrome-headless-shell` and the remotion.media builds unpack to
- * a differently-named root, so one hard-coded path would be right on some platforms and produce a
- * recorded path that does not exist on the others. The walk is bounded to three levels, which every
- * published layout is well inside, so a malformed tree cannot turn this into a filesystem crawl.
+ * Refuse a staging tree that lacks the row's executable or its licence, or whose executable will
+ * not run, before it is committed. The archive matched its reviewed digest, so each of these is a
+ * row that does not describe that archive rather than a bad download.
  */
-export function findExecutable(root: string, depth = 3): string | null {
-  if (depth < 0 || !existsSync(root)) {
-    return null;
+function assertTree(selection: BrowserSelection, staging: string): void {
+  const executable = inTree(staging, selection.member);
+  if (!existsSync(executable)) {
+    throw new ChromeRefusal(
+      "member-missing",
+      `chrome: ${selection.url} matched its reviewed digest and does not contain ` +
+        `${selection.member}, which its manifest row names as the headless shell. Nothing was ` +
+        "committed.",
+    );
   }
-  const entries = readdirSync(root, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isFile() && CHROME_EXECUTABLE_NAMES.includes(entry.name)) {
-      const candidate = join(root, entry.name);
-      if (process.platform === "win32" || (statSync(candidate).mode & 0o111) !== 0) {
-        return candidate;
-      }
-    }
+  if (!existsSync(inTree(staging, selection.licence_member))) {
+    throw new ChromeRefusal(
+      "licence-missing",
+      `chrome: ${selection.url} matched its reviewed digest and does not contain ` +
+        `${selection.licence_member}, the licence its manifest row names. A browser is recorded ` +
+        "only with the licence it is distributed under beside it. Nothing was committed.",
+    );
   }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      const found = findExecutable(join(root, entry.name), depth - 1);
-      if (found !== null) {
-        return found;
-      }
-    }
+  if (!isExecutableFile(executable)) {
+    throw new ChromeRefusal(
+      "not-executable",
+      `chrome: ${selection.member} in ${selection.url} is not an executable file, so it is not a ` +
+        "headless shell a render can launch. Nothing was committed.",
+    );
   }
-  return null;
 }

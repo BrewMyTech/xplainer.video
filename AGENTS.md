@@ -33,8 +33,10 @@ That is the whole procedure. It chains every gate, in this order:
 turbo build lint typecheck test
   -> biome check .
   -> check:no-suppressions
+  -> check:no-remotion
   -> lint:tiers
   -> check:publish-contract
+  -> check:release-gates
   -> check:codegen-fresh
   -> check:api-report
   -> check:docs-contract
@@ -43,7 +45,11 @@ turbo build lint typecheck test
 **The order is not arbitrary.** `turbo build` comes first because it is the only thing that surfaces
 `isolatedDeclarations` errors, and because `check:api-report` reads `dist/`. The root
 `biome check .` comes next because it covers the `scripts/` and config files that `turbo run lint`
-never reaches. The cheap greps follow, so a stray suppression fails fast. `check:docs-contract`
+never reaches. The cheap greps follow, so a stray suppression fails fast — and the previous
+renderer's name outside `check-no-remotion.mjs`'s allowlist with it. `check:release-gates` sits
+beside `check:publish-contract` because the two judge a publish between them; it needs no build,
+and it runs the release check's **self-tests** only, because the check itself is red until every
+entry of `docs/release-blockers.json` is closed (§Publishing a release). `check:docs-contract`
 needs no build and is last only so that a failure in a cheaper gate reports first.
 
 One thing `verify` deliberately does **not** cover: per-member task coverage (`AC-2b`, `AC-2f`,
@@ -121,9 +127,25 @@ TURBO_FORCE=true pnpm verify    # the gate, on the versioned tree
 git commit && git push          # the repository records what is about to ship, first
 
 pnpm install --config.nodeLinker=isolated     # ONLY for the publish; do not commit a lockfile from it
-pnpm publish -r --no-git-checks --access public
+pnpm release:publish                          # add --otp <code> for a classic authenticator
 pnpm install                                  # restore the committed hoisted layout
 ```
+
+`pnpm release:publish` runs the release check first — `scripts/check-release-ready.mjs`: no
+`package.json` in the render template and no trace of the previous renderer under it, every render
+platform's browser and ffmpeg row `recorded`, every entry of `docs/release-blockers.json` closed
+with its evidence — then requires the manifest served at
+`https://cdn.xplainer.video/toolchain/v2/manifest.json` to be byte-identical to the committed
+`apps/cli/src/setup/toolchain.manifest.json`, and only then runs
+`pnpm publish -r --no-git-checks --access public` with your arguments appended (ADR 0031's note of
+2026-11-12, D8). The check is also every published member's `prepublishOnly`, which
+`check-publish-contract` requires, so a bare `pnpm publish -r` is refused by it too. That hook is
+`check-release-ready.mjs --prepublish`, because pnpm also runs this workspace's `prepublishOnly`
+hooks on **install** (with `npm_command=install`), and the bare check refused every fresh
+`pnpm install` while a blocker was open; with the flag it checks a publish, or a run nobody's
+lifecycle started, and stands aside for everything else. The manifest
+compare is not in the hook, because pnpm publishes one package at a time and a CDN failing between
+two of them would leave half a release on the registry.
 
 **Verify from the registry rather than from the tarball**, because the tarball is what you already
 believed: `npm install @xplainer/cli` in an empty directory outside this workspace, confirm the four
@@ -206,20 +228,22 @@ Each one, and the thing that catches you:
   tree.*
 - **`.skipIf(` is allowed, and only with the condition written at the call site.** It is the one
   form of skip this repository uses on purpose — a live Kokoro server, a live ElevenLabs request, a
-  real ONNX inference, a real render, a probe that only `darwin` has — and the rule that keeps it
-  honest is that the condition must **begin with `process.env` or `process.platform` on the same
-  line** (an opening parenthesis before it is allowed, as in `(process.env.X ?? "").trim()`). A
-  `describe.skipIf(SKIPPED)` reads as an unconditional skip to everyone but the author of the
-  constant, and the gate cannot tell the two apart; an inline `process.env.X === "1"` says what is
-  being waited for and where to set it. There is no `.skipIf` that is not gated on one of those
-  two, and the eleven files in the tree that carry one are `commands/config.test.ts`,
-  `daemon/shutdown.test.ts`, `install/preflight.test.ts`, `render/capture.test.ts` (twice),
-  `render/encode.test.ts`, `setup/providers/chrome.test.ts`, `setup/providers/workspace.test.ts`
-  (twice), `speech/synthesiser.test.ts` and `workers/render.test.ts` in `apps/cli/src/`, and
-  `tts-client/src/client.test.ts` and `tts-client/src/elevenlabs/client.test.ts`. The four render
-  ones are all on `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
-  The last one **bills** whoever exports `ELEVENLABS_API_KEY`; `packages/tts-client/AGENTS.md` says
-  when it runs.
+  real ONNX inference, a real render, a real FFmpeg pin, a probe that only `darwin` has — and the
+  rule that keeps it honest is that the condition must **begin with `process.env` or
+  `process.platform` on the same line** (an opening parenthesis before it is allowed, as in
+  `(process.env.X ?? "").trim()`). A `describe.skipIf(SKIPPED)` reads as an unconditional skip to
+  everyone but the author of the constant, and the gate cannot tell the two apart; an inline
+  `process.env.X === "1"` says what is being waited for and where to set it. There is no `.skipIf`
+  that is not gated on one of those two, and the twelve files in the tree that carry one are
+  `commands/config.test.ts`, `daemon/shutdown.test.ts`, `install/preflight.test.ts`,
+  `render/capture.test.ts` (twice), `render/encode.test.ts`, `setup/providers/chrome.test.ts`,
+  `setup/providers/ffmpeg.test.ts`, `setup/tar.test.ts`, `speech/synthesiser.test.ts`
+  and `workers/render.test.ts` in `apps/cli/src/`, and `tts-client/src/client.test.ts` and
+  `tts-client/src/elevenlabs/client.test.ts`. The five render ones are all on
+  `XPLAINER_SKIP_RENDER_TEST`, because each needs a real browser or a real ffmpeg.
+  `setup/tar.test.ts`'s downloads the real 128.7 MB BtbN linux-arm64 FFmpeg pin and decodes it, so
+  it runs only on `XPLAINER_REAL_FFMPEG_PIN=1`. The last one **bills** whoever exports
+  `ELEVENLABS_API_KEY`; `packages/tts-client/AGENTS.md` says when it runs.
   *Enforcement: `AC-2c`'s second grep, in the same CI step.*
 - **No type or lint suppressions, in either language.** No `as any`, no `@ts-ignore`, no
   `@ts-expect-error`, no `biome-ignore`; and on the Python side no `# noqa` — including the
@@ -230,6 +254,15 @@ Each one, and the thing that catches you:
   `@remotion/`, `remotion`, `@xplainer/motion`, `kokoro`, `captioned_speech` and `tts` across
   `apps/desktop` — `apps/desktop/src`, its root `*.ts` files and its `package.json` — as its own
   CI step beside AC-2c's.*
+- **The previous renderer is named only where `scripts/check-no-remotion.mjs` allows it** — in any
+  case and inside any word, so a component, a constant or a field that carries it is a hit, and in
+  a tracked file's name as well as its lines. Its allowlist is data in that file — history (ADRs,
+  the roadmap, changelogs, changesets), the one release of grace for older videos, the gates that
+  keep it out, a pronunciation — each entry with its reason and scoped to the lines it was written
+  for. Reword a new mention rather than widening
+  an entry, and delete an entry that admits nothing: the gate fails on it. Test fixtures build the
+  word from two halves. *Enforcement: `pnpm check:no-remotion` (ADR 0031 D9), in `pnpm verify`
+  and as its own CI step.*
 - **After changing any `export` in a built package, run `pnpm api:report` and commit the result.**
   The `.api.md` diff is the review. *Enforcement: `pnpm check:api-report`.*
 - **`isolatedDeclarations` errors only appear under `build`.** It is set on the
@@ -249,9 +282,9 @@ workspace-wide change.
 
 | Path | What it is | What checks it |
 |---|---|---|
-| `scripts/` | The four bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`, `check-no-suppressions.mjs`), and the **eight** end-to-end proofs in `scripts/e2e/` — each a proof rather than a gate, deliberately outside `pnpm verify` for the reason `e2e/render.mjs`'s docblock gives. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
-| `.github/workflows/` | CI, the desktop packaging workflow, and the **proof** workflows — `e2e-linux.yml`, `e2e-runtime.yml`, `e2e-speech.yml`, `e2e-toolchain.yml`, `phase2-proofs.yml` and the seven `daemon-*` files (`daemon-lifecycle`, `daemon-restart`, `daemon-breaker`, `daemon-update`, `daemon-identity`, `daemon-remote`, `daemon-windows`) — every one of them `workflow_dispatch` only, because each renders a real video, assembles a real artefact, drives a real supervisor or binds a real network address. `workflow_dispatch` registers from the **default branch**, so a new proof workflow is dispatchable only once it is on `main`, whatever `--ref` says. Each carries a boolean input for the operating systems it can actually run on, and nothing for the ones it cannot: **eight of the twelve** carry all three (`e2e-runtime`, `e2e-speech`, `e2e-toolchain` and the five three-platform `daemon-*` files), `e2e-linux.yml` carries `linux` alone, `phase2-proofs.yml` carries `linux` and `windows`, `daemon-remote.yml` carries `linux` and `macos`, and `daemon-windows.yml` carries `windows` alone. Every input defaults to `false` except the one that names the workflow's home platform — `linux=true` in eleven of them, `windows=true` in `daemon-windows.yml`, which has no Linux leg. An omitted input keeps its default, so a Windows-only iteration is `gh workflow run daemon-lifecycle.yml --ref phase-2 -f linux=false -f windows=true`, and an unselected platform is excluded from the matrix before a runner is allocated, so iterating on one platform never re-pays for the others. **`ffmpeg-macos.yml` is the one build-and-publish workflow**, not a proof: it builds the macOS FFmpeg in `infra/ffmpeg/`, runs on macOS alone and so carries no per-OS boolean, and takes `x64` and `twice` (both default `true`) and `publish` (default `false`; refused unless `x64` is on and the run is on `main`, because a published version can never be rewritten, and a no-op unless the `toolchain-cdn` environment holds its R2 credentials) | `actionlint` (`AC-4a`) |
-| `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `daemon.md`, `ROADMAP.md`, `acceptance-criteria.md` | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; review for everything else |
+| `scripts/` | The six bespoke gates (`check-publish-contract.mjs`, `api-report.mjs`, `check-docs-contract.mjs`, `check-no-suppressions.mjs`, `check-no-remotion.mjs`, `check-release-ready.mjs`), `release-publish.mjs` — the `pnpm release:publish` wrapper §Publishing a release describes, and the only script here that reaches the network — and the **eight** end-to-end proofs in `scripts/e2e/` — each a proof rather than a gate, deliberately outside `pnpm verify` for the reason `e2e/render.mjs`'s docblock gives. `e2e:macos` is a deprecated alias for `e2e:render` kept for one release and then deleted | Root `pnpm biome check .`, in CI and in the lefthook pre-commit job. Not `turbo run lint`. |
+| `.github/workflows/` | CI, the desktop packaging workflow, and the **proof** workflows — `e2e-linux.yml`, `e2e-runtime.yml`, `e2e-speech.yml`, `e2e-toolchain.yml`, `phase2-proofs.yml` and the seven `daemon-*` files (`daemon-lifecycle`, `daemon-restart`, `daemon-breaker`, `daemon-update`, `daemon-identity`, `daemon-remote`, `daemon-windows`) — every one of them `workflow_dispatch` only, because each renders a real video, assembles a real artefact, drives a real supervisor or binds a real network address. `workflow_dispatch` registers from the **default branch**, so a new proof workflow is dispatchable only once it is on `main`, whatever `--ref` says. Each carries a boolean input for the operating systems it can actually run on, and nothing for the ones it cannot: **eight of the twelve** carry all three (`e2e-runtime`, `e2e-speech`, `e2e-toolchain` and the five three-platform `daemon-*` files), `e2e-linux.yml` carries `linux` alone, `phase2-proofs.yml` carries `linux` and `windows`, `daemon-remote.yml` carries `linux` and `macos`, and `daemon-windows.yml` carries `windows` alone. Every input defaults to `false` except the one that names the workflow's home platform — `linux=true` in eleven of them, `windows=true` in `daemon-windows.yml`, which has no Linux leg. One input names a job rather than a platform: `e2e-toolchain.yml`'s `windows_setup` (default `false`, and not implied by `windows`) runs its bare Windows `setup`, which reads the published manifest and so is dispatched only once the v2 document is uploaded. An omitted input keeps its default, so a Windows-only iteration is `gh workflow run daemon-lifecycle.yml --ref phase-2 -f linux=false -f windows=true`, and an unselected platform is excluded from the matrix before a runner is allocated, so iterating on one platform never re-pays for the others. **`ffmpeg-macos.yml` is the one build-and-publish workflow**, not a proof: it builds the macOS FFmpeg in `infra/ffmpeg/`, runs on macOS alone and so carries no per-OS boolean, and takes `x64` and `twice` (both default `true`) and `publish` (default `false`; refused unless `x64` is on and the run is on `main`, because a published version can never be rewritten, and a no-op unless the `toolchain-cdn` environment holds its R2 credentials) | `actionlint` (`AC-4a`) |
+| `docs/` | ADRs (immutable), `ARCHITECTURE.md`, `daemon.md`, `ROADMAP.md`, `acceptance-criteria.md`, and `release-blockers.json` — what stands between the tree and a release, each entry open or closed with evidence | `pnpm check:docs-contract` for `ARCHITECTURE.md`'s two `CHECKED` blocks and the `AGENTS.md`/`CLAUDE.md` set; `check-release-ready.mjs` for `release-blockers.json`, at every publish; review for everything else |
 | `infra/ffmpeg/` | The pinned inputs, build, smoke test, packaging and publishing of the static macOS FFmpeg `xplainer setup` downloads, run by `ffmpeg-macos.yml`. No GPL code is committed: FFmpeg, x264 and zlib enter only as their upstream tarballs, fetched at build time and checked against `pins.env`. The one open directory under `infra/`: it and the workflow are MIT (root `LICENSE` Part Three), because they are published as part of the binary's corresponding source | Root `pnpm biome check .` for `smoke.mjs`; the workflow run for the rest. Its `README.md` is the account |
 | `infra/e2e/` | The Debian image `pnpm e2e:render:linux` builds to run that proof on Linux, and its own `Dockerfile.dockerignore`. Not a Compose file, and not reachable from one | The run itself; nothing else builds it |
 | `.claude-plugin/`, `.claude-plugin/marketplace.json` | The one-entry marketplace `/plugin marketplace add BrewMyTech/xplainer.video` reads, because that command reads the repository **root** and the bundle lives in a member. It carries no plugin content of its own: its `source` is a plain relative path to `packages/skill/claude-plugin`, and it declares no `version`, because nothing stamps one at the root and a hand-written one would drift from the package's on the next release | Root `pnpm biome check .`, and `pnpm check:docs-contract` for the one thing a tarball check cannot see: that it is **tracked by git**, since a marketplace reads the repository and this file spent a whole run existing only in a working tree. No gate validates its *contents* — it is in no member's tarball, so `check-publish-contract` never sees it. What does, by hand, is **`claude plugin validate .claude-plugin/marketplace.json`**, which passes as of 2026-09-11; it is not in `pnpm verify` because it needs the Claude Code CLI, which a CI runner and a Codex session both lack. Run it after editing this file. Note that the same command **fails** against the `source` it points at (`No manifest found in directory. Expected .claude-plugin/…`) and that this is the already-booked gap in `docs/ROADMAP.md` rather than a new defect: that directory is a build *input* with a flat `plugin.json`, and it still installs, because components at a plugin root are auto-discovered |
@@ -267,12 +300,12 @@ same proof on a hosted runner — every one `workflow_dispatch` only.
 
 | Script | Command | What it proves | The `[runner]` half |
 |---|---|---|---|
-| `e2e/render.mjs` | `pnpm e2e:render` | P1-1: one real video through the MCP tools — a real `xplainer setup` first, because batch 6's toolchain gate refuses `still` and `render` without one, then `create → put_source → narrate → still → render` over `mcp --attach`, real Kokoro speech, `ffprobe` on the MP4 and a frame diff against a captions-disabled render | `e2e-linux.yml` (the same render on a Linux VM) |
+| `e2e/render.mjs` | `pnpm e2e:render` | P1-1: one real video through the MCP tools — a real `xplainer setup` first, because batch 6's toolchain gate refuses `still` and `render` without one, then `create → put_source → narrate → still → render` over `mcp --attach`, real Kokoro speech, `ffprobe` on an MP4 the render job's log says the recorded ffmpeg encoded, and a frame diff against a captions-disabled render | `e2e-linux.yml` (the same render on a Linux VM) |
 | `e2e/speech.mjs` | `pnpm e2e:speech` | P2-4: speech with **no Docker, no `--tts-url`, no server and no Python** — the three executables made unreachable and the absence proved with the product's own `spawn`, then `setup` acquires the model, a voice and this platform's ONNX Runtime, and `narrate → still → render` comes out with **every word of the script present in `captions.json`** (AC 2, plan D5), word timings from the model's own duration predictor, and the narration worker's exit code asserted | `e2e-speech.yml` (3-OS matrix) |
 | `e2e/linux.mjs` | `pnpm e2e:render:linux` | The Linux half of P1-1: `render.mjs` inside the `infra/e2e` Debian container, against a Kokoro container, both created and destroyed around it | none of its own: `e2e-linux.yml` is the hosted form of the same proof and runs `render.mjs` directly against a service container |
-| `e2e/runtime.mjs` | `pnpm e2e:runtime` | B1: `create → put_source → narrate` driven entirely out of a **relocated** payload 1, with no `node` on `PATH` and no checkout in any ancestor | `e2e-runtime.yml` (3-OS matrix) |
-| `e2e/toolchain.mjs` | `pnpm e2e:toolchain` | B6: `xplainer setup` acquires a browser, records a speech route and materialises the workspace on that same machine — and a picture comes out of `still → render` | `e2e-toolchain.yml` (3-OS matrix) |
-| `e2e/update.mjs` | `pnpm e2e:update` | B5: the update transaction killed at **every** durable transition, its two refusals, and six assertions per rollback — including that the rolled-back daemon renders | `daemon-update.yml` |
+| `e2e/runtime.mjs` | `pnpm e2e:runtime` | B1: `create → put_source → narrate` driven entirely out of a **relocated** payload 1, with no `node` on `PATH` and no checkout in any ancestor — and that payload's own manifest declares `toolchain.json` format 2 and the libavcodec floor, and it carries no npm (ADR 0031 D2, D11) | `e2e-runtime.yml` (3-OS matrix) |
+| `e2e/toolchain.mjs` | `pnpm e2e:toolchain` | B6: `xplainer setup --manifest` (the committed manifest, never the network one) acquires a browser and an FFmpeg — the publisher and licence printed before the download, both digests matching the manifest row, `LICENSE*` and `PROVENANCE.txt` beside the binary — and records a speech route on that same machine; then a picture comes out of `still → render` with a scrubbed `PATH` and no `XPLAINER_FFMPEG`, the render's `done` event naming the recorded ffmpeg, and every rollback case is rerun to a PNG | `e2e-toolchain.yml` (3-OS matrix) |
+| `e2e/update.mjs` | `pnpm e2e:update` | B5: the update transaction killed at **every** durable transition with six assertions per rollback, a `toolchain.json` that lacks the incoming runtime's ffmpeg refused with nothing disturbed, and a daemon from before ADR 0031's cut refused by `update`, `setup` and `daemon update` while it still answers `ok`. That a rolled-back daemon renders is B6's last phase | `daemon-update.yml` |
 | `e2e/identity.mjs` | `pnpm e2e:identity` | T17: desired / loaded / responding compared against a **real** service manager, which is the only way a switch that was written and never reloaded is visible | `daemon-identity.yml` |
 | `e2e/remote.mjs` | `pnpm e2e:remote` | P2-5: R-SEC-9 on a non-loopback address — five refusals decided *before* the bind, then `401`, `200` and a `403` on a foreign `Host` over real TLS. `docs/daemon.md` §5 | `daemon-remote.yml` |
 

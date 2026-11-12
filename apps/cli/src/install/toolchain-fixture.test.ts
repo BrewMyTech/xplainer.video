@@ -13,12 +13,17 @@
  * agree with the schema only until one of them changed.
  *
  * The digests are checked too. The marker records a `sha256` for each acquired component, and the
- * two stand-ins beside it are what those digests describe — so a stand-in edited without the marker
+ * stand-ins beside it are what those digests describe — so a stand-in edited without the marker
  * being updated fails here rather than being discovered as a puzzle inside an install test.
+ *
+ * **And the shape on the other side of the cut is checked against the same schema.** A version-1
+ * marker — a `workspace`, no `ffmpeg` — is what every machine set up before ADR 0031's cut holds,
+ * and this build reads it; a schema that stopped accepting it would make that a claim about a
+ * document the contract calls invalid.
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,21 +84,33 @@ describe("the synthetic toolchain marker", () => {
     expect(onDisk.format_version).toBe(TOOLCHAIN_FORMAT_VERSION);
   });
 
-  it("points at two stand-ins that exist and hash to the digests it records", () => {
+  it("points at stand-ins that exist and hash to the digests it records", () => {
     const stateDir = stateDirectory();
 
     const marker = writeToolchainMarker(stateDir);
+    const ffmpeg = marker.ffmpeg;
 
-    for (const component of [marker.chrome, marker.speech]) {
+    expect(ffmpeg).toBeDefined();
+    for (const component of [
+      marker.chrome,
+      marker.speech,
+      ...(ffmpeg === undefined ? [] : [ffmpeg]),
+    ]) {
       expect(existsSync(component.path)).toBe(true);
       expect(createHash("sha256").update(readFileSync(component.path)).digest("hex")).toBe(
         component.sha256,
       );
     }
+    // The ffmpeg's executable is `files[0]`, at the same path, with its real length: the size is
+    // what the daemon's gate stats, so a recorded length that drifted would be a fixture that reads
+    // as a replaced binary.
+    expect(ffmpeg?.files[0].path).toBe(ffmpeg?.path);
+    expect(ffmpeg?.files[0].bytes).toBe(statSync(ffmpeg?.path ?? "").size);
     // The copies live under the state directory, which is what lets a refusal test remove one
     // without reaching into the repository.
     expect(marker.chrome.path.startsWith(stateDir)).toBe(true);
     expect(marker.speech.path.startsWith(stateDir)).toBe(true);
+    expect(ffmpeg?.path.startsWith(stateDir)).toBe(true);
   });
 
   it("is labelled a fixture by where it lives and by every version string in it", () => {
@@ -102,6 +119,57 @@ describe("the synthetic toolchain marker", () => {
     expect(TOOLCHAIN_FIXTURE_FILE).toContain("__fixtures__");
     expect(fixture.chrome.version).toContain("fixture");
     expect(fixture.speech.version).toContain("fixture");
-    expect(fixture.workspace.version).toContain("fixture");
+    expect(fixture.ffmpeg?.version).toContain("fixture");
+  });
+
+  it("is the version-2 shape, with no workspace", () => {
+    const fixture = readToolchainFixture();
+
+    expect(fixture.format_version).toBe(2);
+    expect(fixture).not.toHaveProperty("workspace");
+  });
+});
+
+describe("the toolchain schema across the cut", () => {
+  it("still validates a version-1 marker: a workspace and no ffmpeg", () => {
+    const validate = toolchainValidator();
+    const { ffmpeg: _dropped, ...rest } = readToolchainFixture();
+    const versionOne = {
+      ...rest,
+      format_version: 1,
+      workspace: { platform: "darwin-arm64", version: "0.0.0-fixture" },
+    };
+
+    expect(validate(versionOne), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("validates a version-2 marker with no ffmpeg, because the gate and not the schema needs one", () => {
+    const validate = toolchainValidator();
+    const { ffmpeg: _dropped, ...versionTwo } = readToolchainFixture();
+
+    expect(validate(versionTwo), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  /** AC-A2: `additionalProperties: false`, `files` with at least one entry, and the probe's three. */
+  it("refuses an ffmpeg with no files, an unknown field, or a probe missing a transcript", () => {
+    const validate = toolchainValidator();
+    const fixture = readToolchainFixture();
+    const ffmpeg = fixture.ffmpeg;
+    expect(ffmpeg).toBeDefined();
+    if (ffmpeg === undefined) {
+      return;
+    }
+    const { license: _license, ...probe } = ffmpeg.probe;
+    const { licence: _licence, ...unlicensed } = ffmpeg;
+
+    for (const broken of [
+      { ...ffmpeg, files: [] },
+      { ...ffmpeg, found_at: "/usr/bin" },
+      { ...ffmpeg, probe },
+      unlicensed,
+      { ...ffmpeg, libavcodec: "62" },
+    ]) {
+      expect(validate({ ...fixture, ffmpeg: broken }), JSON.stringify(broken)).toBe(false);
+    }
   });
 });

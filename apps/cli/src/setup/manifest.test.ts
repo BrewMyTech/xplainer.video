@@ -3,17 +3,15 @@
  *
  * Two things are checked against something outside this module rather than against a copy of it:
  * the **hostname** comes out of `infra/terraform`, and the **committed manifest** is read as a
- * document rather than as a fixture — so every URL the selector can produce for a supported host
- * has to be one a reviewed digest was recorded for. A test that asserted the URL against a constant
- * declared beside it would agree with itself for ever.
+ * document rather than as a fixture — its recorded digests against the ones ADR 0031's note of
+ * 2026-11-12 published, and every row against the allowlist the parser applies. A test that
+ * asserted a URL against a constant declared beside it would agree with itself for ever.
  *
- * Note, 2026-11-11: the **selector** used to be a third such check, compared with the pinned
- * Remotion line's own `getChromeDownloadUrl` over its whole 80-row branch matrix by loading that
- * function out of this checkout's installed `@remotion/cli`. This package stopped depending on it
- * when the renderer became its own, so there is no installed original left to drive and the three
- * cases that did were retired here. The mirror in `manifest.ts` is now the selector this package
- * owns, frozen at that line; its URL table and the committed digests are unchanged, and the cases
- * under "the committed manifest" below are what still tie the two together.
+ * Note, 2026-11-11: the **selector** used to be a third such check, compared with the previous
+ * renderer's own URL function over its whole 80-row branch matrix, until this package stopped
+ * installing it. Note, 2026-11-12: format 2 deleted the selector itself. A row is chosen by
+ * `<platform>-<arch>`, so the cases that pinned the mirror's branches went with it, and what stands
+ * in their place is the allowlist — the one thing that now decides where a download may come from.
  */
 
 import { readFileSync } from "node:fs";
@@ -22,19 +20,18 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ACCEPTED_FFMPEG_LICENCES,
+  ARTEFACT_ALLOWLIST,
   assertLibcSatisfied,
-  canUseRemotionMediaBinaries,
-  chromeDownloadUrl,
+  BROWSER_PLATFORMS,
   deliveryPosition,
+  FFMPEG_PLATFORMS,
   type HostProbe,
-  hostChromeSelection,
-  isAmazonLinux2023,
   parseToolchainManifest,
   probeHost,
-  REMOTION_TESTED_CHROME_VERSION,
   REQUIRED_SPEECH_PLATFORMS,
-  remotionPlatform,
-  selectChromeArtefact,
+  selectBrowserArtefact,
+  selectFfmpegArtefact,
   selectSpeechBundle,
   speechPlatformKey,
   TOOLCHAIN_CDN_HOSTNAME,
@@ -50,6 +47,10 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY = join(HERE, "..", "..", "..", "..");
 const COMMITTED_MANIFEST = join(HERE, "toolchain.manifest.json");
+const ADR_0031 = join(
+  REPOSITORY,
+  "docs/adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md",
+);
 
 function readCommittedManifest(): ToolchainManifest {
   return parseToolchainManifest(
@@ -59,7 +60,24 @@ function readCommittedManifest(): ToolchainManifest {
 }
 
 function probe(overrides: Partial<HostProbe> = {}): HostProbe {
-  return { platform: "linux", arch: "x64", osRelease: null, glibc: [2, 36], ...overrides };
+  return { platform: "linux", arch: "x64", glibc: [2, 36], ...overrides };
+}
+
+/** The probe a `<platform>-<arch>` key describes, on a glibc new enough for every Linux row. */
+function probeFor(key: string): HostProbe {
+  const [platform = "", arch = ""] = key.split("-");
+  return probe({ platform, arch, glibc: platform === "linux" ? [2, 36] : null });
+}
+
+/** What `fn` threw, as the refusal it must be. */
+function refusalOf(fn: () => unknown): ToolchainSelectionRefusal {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ToolchainSelectionRefusal);
+    return error as ToolchainSelectionRefusal;
+  }
+  return expect.unreachable("the selection must refuse");
 }
 
 describe("where the toolchain manifest is fetched from", () => {
@@ -74,8 +92,16 @@ describe("where the toolchain manifest is fetched from", () => {
     expect(main).toMatch(/cdn_hostname\s*=\s*"cdn\.\$\{var\.zone_name}"/);
     expect(TOOLCHAIN_CDN_HOSTNAME).toBe(`cdn.${zone}`);
     expect(TOOLCHAIN_MANIFEST_URL).toBe(toolchainManifestUrl(zone as string));
-    expect(TOOLCHAIN_MANIFEST_URL).toBe("https://cdn.xplainer.video/toolchain/v1/manifest.json");
-    expect(TOOLCHAIN_MANIFEST_PATH).toBe("toolchain/v1/manifest.json");
+  });
+
+  /**
+   * Format 2 lives at a path of its own. Released CLIs read `toolchain/v1/manifest.json` and refuse
+   * a newer format there, so a format-2 document at the old path would break every one of them.
+   */
+  it("is the version-2 path, which no released CLI reads", () => {
+    expect(TOOLCHAIN_MANIFEST_URL).toBe("https://cdn.xplainer.video/toolchain/v2/manifest.json");
+    expect(TOOLCHAIN_MANIFEST_PATH).toBe("toolchain/v2/manifest.json");
+    expect(TOOLCHAIN_MANIFEST_FORMAT_VERSION).toBe(2);
   });
 
   it("is never the bucket's own r2.dev host, which Cloudflare does not cache", () => {
@@ -163,6 +189,25 @@ describe("the delivery position, when the published address answers nothing", ()
   });
 
   /**
+   * Rewritten 2026-11-12 for format 2. The paragraph used to say the browser's URL came from a
+   * mirrored selector and the manifest contributed only its digest; the manifest now names the
+   * URL of both the browser and ffmpeg, and code admits only the publishers it names. So both are
+   * what an unreadable manifest blocks, and the message has to say who each one comes from.
+   */
+  it("says the browser and ffmpeg are what the failure blocks, and who publishes each", () => {
+    const message = deliveryPosition(probe({ platform: "darwin", arch: "arm64", glibc: null }));
+
+    expect(message).toContain("the browser and ffmpeg are what this failure actually blocks");
+    expect(message).toContain("Chrome for Testing");
+    expect(message).toContain("BtbN FFmpeg-Builds");
+    expect(message).toContain(`served from ${TOOLCHAIN_CDN_HOSTNAME}, on macOS`);
+    expect(message).toContain("a publisher this build names in code");
+    expect(message).toContain("--manifest <path or https URL>");
+    // The retired account of where the browser's URL came from.
+    expect(message).not.toMatch(/selector|line resolves|only the expected digest/);
+  });
+
+  /**
    * The asymmetry §2.5 recorded has gone, and this is the case that pins its removal.
    *
    * This message used to carry a second, harder paragraph for `win32`: that all three speech routes
@@ -181,115 +226,100 @@ describe("the delivery position, when the published address answers nothing", ()
     expect(message).toContain("the onnx route fetches the Kokoro model");
     // The one thing that genuinely is waiting on the address, on every platform alike.
     expect(message).toContain("Only the bundle route reads this manifest");
-    // Reworded 2026-09-11 with the rest of this message: `--manifest` used to be "what lets a
-    // browser acquisition run at all", which was true only while nothing was published. It is now
-    // the way past a manifest this machine cannot reach, and the browser is what the failure blocks.
-    expect(message).toContain("the browser is what this failure actually blocks");
-  });
-});
-
-describe("the mirror of the pinned Remotion line's Chrome selector", () => {
-  // Note, 2026-11-11: three cases stood here — the mirror against the real getChromeDownloadUrl
-  // on all 80 branch combinations, the pinned TESTED_VERSION and Playwright build read out of the
-  // real module, and this machine's own configuration answered by the unpatched original. Each
-  // loaded the function out of this checkout's installed @remotion/cli, and this package no longer
-  // installs it: the renderer is its own, and the mirror is the selector it owns. They were retired
-  // rather than pointed at a copy, because a mirror compared with itself proves nothing.
-  it("refuses a platform the pinned line has no build for, rather than inventing a URL", () => {
-    expect(remotionPlatform("linux", "ia32")).toBeNull();
-    expect(remotionPlatform("win32", "arm64")).toBeNull();
-    expect(remotionPlatform("freebsd", "x64")).toBeNull();
-    expect(() => hostChromeSelection(probe({ arch: "ia32" }))).toThrow(ToolchainSelectionRefusal);
-    try {
-      hostChromeSelection(probe({ arch: "ia32" }));
-      expect.unreachable("a platform with no Remotion build must refuse");
-    } catch (error) {
-      expect((error as ToolchainSelectionRefusal).reason).toBe("unsupported-platform");
-      expect((error as ToolchainSelectionRefusal).exitCode).toBe(3);
-    }
-  });
-
-  it("reads Amazon Linux and glibc the way the real predicates do", () => {
-    const amazon = probe({
-      osRelease: 'NAME="Amazon Linux"\nVERSION="2023"\nID="amzn"\n',
-    });
-
-    expect(isAmazonLinux2023(amazon)).toBe(true);
-    expect(isAmazonLinux2023(probe({ osRelease: 'NAME="Amazon Linux"\nVERSION="2"\n' }))).toBe(
-      false,
-    );
-    expect(isAmazonLinux2023(probe({ platform: "darwin", osRelease: 'NAME="Amazon Linux"' }))).toBe(
-      false,
-    );
-    expect(canUseRemotionMediaBinaries(probe({ glibc: [2, 35] }))).toBe(true);
-    expect(canUseRemotionMediaBinaries(probe({ glibc: [2, 34] }))).toBe(false);
-    expect(canUseRemotionMediaBinaries(probe({ glibc: [3, 0] }))).toBe(true);
-    expect(canUseRemotionMediaBinaries(probe({ glibc: null }))).toBe(false);
-    expect(canUseRemotionMediaBinaries(probe({ platform: "darwin", glibc: [2, 39] }))).toBe(false);
+    expect(message).toContain("the browser and ffmpeg are what this failure actually blocks");
   });
 });
 
 describe("the committed manifest", () => {
-  it("parses, and pins the selector's line and the Chrome build the selector names", () => {
+  it("parses as format 2, with a row for every platform each block is selected on", () => {
     const manifest = readCommittedManifest();
 
     expect(manifest.format_version).toBe(TOOLCHAIN_MANIFEST_FORMAT_VERSION);
-    // Until 2026-11-11 this compared the line with this package's own devDependency on it, which
-    // the move to an owned renderer removed. What is left to assert is that the field names one
-    // exact release, which is what a refusal quotes back to the user.
-    expect(manifest.chrome.remotion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(manifest.chrome.version).toBe(REMOTION_TESTED_CHROME_VERSION);
+    expect(Object.keys(manifest.browser.expected).sort()).toEqual([...BROWSER_PLATFORMS].sort());
+    expect(Object.keys(manifest.ffmpeg.expected).sort()).toEqual([...FFMPEG_PLATFORMS].sort());
+    expect(FFMPEG_PLATFORMS).toEqual([...BROWSER_PLATFORMS, "win32-arm64"]);
   });
 
-  it("records an expected digest for every URL the pinned selector can resolve to here", () => {
+  /**
+   * Chrome for Testing 157.0.8103.50 on all five (ADR 0031's note of 2026-11-12, D4), each row's
+   * digest the one that note records — read out of the ADR, so a digest changed here without a
+   * record changed there fails — and each archive's own executable and licence file named.
+   */
+  it("pins the browser to Chrome for Testing 157.0.8103.50 everywhere, at the digests D4 records", () => {
     const manifest = readCommittedManifest();
-    // The nine configurations `setup` can meet: three platform-and-architecture pairs with one
-    // artefact each, and the two Linux architectures with their three C-library branches.
-    const supported: HostProbe[] = [
-      probe({ platform: "darwin", arch: "arm64", glibc: null }),
-      probe({ platform: "darwin", arch: "x64", glibc: null }),
-      probe({ platform: "win32", arch: "x64", glibc: null }),
-      probe({ platform: "linux", arch: "x64", glibc: [2, 31] }),
-      probe({ platform: "linux", arch: "x64", glibc: [2, 36] }),
-      probe({ platform: "linux", arch: "x64", osRelease: 'NAME="Amazon Linux"\nVERSION="2023"' }),
-      probe({ platform: "linux", arch: "arm64", glibc: [2, 36] }),
-      probe({ platform: "linux", arch: "arm64", osRelease: 'NAME="Amazon Linux"\nVERSION="2023"' }),
-    ];
+    const adr = readFileSync(ADR_0031, "utf8");
 
-    for (const host of supported) {
-      const acquisition = selectChromeArtefact(manifest, host);
-      expect(acquisition.url).toBe(chromeDownloadUrl(hostChromeSelection(host)));
-      expect(acquisition.sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(acquisition.size).toBeGreaterThan(1_000_000);
+    for (const key of BROWSER_PLATFORMS) {
+      const row = selectBrowserArtefact(manifest, probeFor(key));
+      expect(row.version).toBe("157.0.8103.50");
+      expect(row.publisher).toBe("Google (Chrome for Testing)");
+      expect(row.url).toMatch(
+        /^https:\/\/storage\.googleapis\.com\/chrome-for-testing-public\/157\.0\.8103\.50\/[a-z0-9-]+\/chrome-headless-shell-[a-z0-9-]+\.zip$/,
+      );
+      expect(adr).toContain(row.sha256);
+      expect(adr).toContain(row.size.toLocaleString("en-GB"));
+      expect(row.member).toMatch(
+        /^chrome-headless-shell-[a-z0-9-]+\/chrome-headless-shell(\.exe)?$/,
+      );
+      expect(row.licence_member).toMatch(
+        /^chrome-headless-shell-[a-z0-9-]+\/LICENSE\.headless_shell$/,
+      );
     }
-    expect(supported).toHaveLength(8);
-    expect(Object.keys(manifest.chrome.expected)).toContain("linux-x64-glibc");
-    expect(manifest.chrome.expected["linux-x64-glibc"]).toMatchObject({
-      libc: "glibc",
-      min_glibc: "2.31",
-    });
-    expect(Object.keys(manifest.chrome.expected).some((key) => key.startsWith("linux-arm64"))).toBe(
-      true,
-    );
+    // The Linux floor is the publisher's own `deb.deps` (`libc6 (>= 2.25)`), on both architectures.
+    for (const key of ["linux-x64", "linux-arm64"]) {
+      expect(manifest.browser.expected[key]).toMatchObject({ libc: "glibc", min_glibc: "2.25" });
+    }
   });
 
-  it("says so, rather than trusting the bytes, where an artefact cannot be recorded", () => {
+  /**
+   * The macOS rows are our own build, published by run `43133391215`; the note quotes them, so
+   * the archive and binary digests are read back out of it. Every other platform is BtbN's
+   * `autobuild-2026-10-31-12-59`, GPL variant — whose `configure` enables version 3, so the row
+   * says so, as `-buildconf` will when the binary is probed.
+   */
+  it("pins ffmpeg to our macOS 9.0.2 and BtbN's n9.0.2 everywhere else", () => {
     const manifest = readCommittedManifest();
-    // arm64 Linux below glibc 2.35 and not Amazon Linux: the pinned line selects a Playwright
-    // build whose CDN answers 400 through its redirect, so there is nothing to digest.
-    const host = probe({ arch: "arm64", glibc: [2, 31] });
-    const selection = hostChromeSelection(host);
+    const adr = readFileSync(ADR_0031, "utf8");
 
-    expect(chromeDownloadUrl(selection)).toContain("playwright.azureedge.net");
-    try {
-      selectChromeArtefact(manifest, host);
-      expect.unreachable("an unavailable artefact must refuse");
-    } catch (error) {
-      const refusal = error as ToolchainSelectionRefusal;
-      expect(refusal.reason).toBe("artefact-unavailable");
-      expect(refusal.url).toBe(chromeDownloadUrl(selection));
-      expect(refusal.message).toContain("GatewayExceptionResponse");
-      expect(refusal.exitCode).toBe(3);
+    for (const key of ["darwin-arm64", "darwin-x64"]) {
+      const row = selectFfmpegArtefact(manifest, probeFor(key));
+      expect(row).toMatchObject({
+        version: "9.0.2",
+        publisher: "xplainer.video",
+        licence: "GPL-2.0-or-later",
+        source_url: `https://${TOOLCHAIN_CDN_HOSTNAME}/toolchain/v1/ffmpeg/9.0.2/source/README.txt`,
+      });
+      expect(row.url).toBe(
+        `https://${TOOLCHAIN_CDN_HOSTNAME}/toolchain/v1/ffmpeg/9.0.2/ffmpeg-9.0.2-${key}.zip`,
+      );
+      expect(adr).toContain(row.sha256);
+      expect(adr).toContain(row.member_sha256);
+      expect(row.member).toBe(`ffmpeg-9.0.2-${key}/ffmpeg`);
+      expect(row.extra_members).toEqual([
+        `ffmpeg-9.0.2-${key}/SOURCE.txt`,
+        `ffmpeg-9.0.2-${key}/BUILDINFO.txt`,
+      ]);
+    }
+    for (const key of ["linux-x64", "linux-arm64", "win32-x64", "win32-arm64"]) {
+      const row = selectFfmpegArtefact(manifest, probeFor(key));
+      expect(row).toMatchObject({
+        version: "n9.0.2-39-g7adfbe40dc",
+        publisher: "BtbN FFmpeg-Builds",
+        licence: "GPL-3.0-or-later",
+      });
+      expect(row.url).toMatch(
+        /^https:\/\/github\.com\/FFmpeg-Builds\/FFmpeg-Builds\/releases\/download\/autobuild-2026-10-31-12-59\/ffmpeg-n9\.0\.2-39-g7adfbe40dc-[a-z0-9]+-gpl-9\.0\.(tar\.xz|zip)$/,
+      );
+      expect(row.member).toMatch(/\/bin\/ffmpeg(\.exe)?$/);
+      expect(row.licence_member).toMatch(/\/LICENSE\.txt$/);
+      expect(row.extra_members).toBeUndefined();
+    }
+    // The one BtbN row the note measured end to end, through the xz decoder.
+    const arm64 = selectFfmpegArtefact(manifest, probeFor("linux-arm64"));
+    expect(adr).toContain(arm64.sha256);
+    expect(adr).toContain(arm64.member_sha256);
+    for (const key of ["linux-x64", "linux-arm64"]) {
+      expect(manifest.ffmpeg.expected[key]).toMatchObject({ libc: "glibc", min_glibc: "2.28" });
     }
   });
 
@@ -319,69 +349,105 @@ describe("the committed manifest", () => {
   });
 });
 
-describe("selecting an entry", () => {
-  it("matches on the resolved URL and not on an os-and-architecture key", () => {
+describe("selecting a row", () => {
+  it("selects by <platform>-<arch>, whatever the row's URL is", () => {
     const manifest = readCommittedManifest();
-    const host = probe({ platform: "darwin", arch: "arm64", glibc: null });
-    const renamed: ToolchainManifest = {
+
+    for (const key of BROWSER_PLATFORMS) {
+      expect(selectBrowserArtefact(manifest, probeFor(key)).key).toBe(key);
+    }
+    for (const key of FFMPEG_PLATFORMS) {
+      expect(selectFfmpegArtefact(manifest, probeFor(key)).key).toBe(key);
+    }
+  });
+
+  /**
+   * win32-arm64 has an FFmpeg pin and no Chrome for Testing build, so it cannot render (ADR 0031,
+   * Follow-up 5) — and a 32-bit Linux has neither. Both are refused by name before a byte moves.
+   */
+  it("refuses a platform a block has no answer for, rather than inventing one", () => {
+    const manifest = readCommittedManifest();
+    const windowsArm = probe({ platform: "win32", arch: "arm64", glibc: null });
+
+    const noBrowser = refusalOf(() => selectBrowserArtefact(manifest, windowsArm));
+    expect(noBrowser.reason).toBe("unsupported-platform");
+    expect(noBrowser.exitCode).toBe(3);
+    expect(noBrowser.message).toContain("no browser for win32-arm64");
+    expect(selectFfmpegArtefact(manifest, windowsArm).key).toBe("win32-arm64");
+
+    for (const select of [selectBrowserArtefact, selectFfmpegArtefact]) {
+      expect(refusalOf(() => select(manifest, probe({ arch: "ia32" }))).reason).toBe(
+        "unsupported-platform",
+      );
+    }
+  });
+
+  it("refuses a supported platform the manifest in hand records nothing for", () => {
+    const manifest = readCommittedManifest();
+    const host = probeFor("darwin-arm64");
+    const { "darwin-arm64": _browser, ...otherBrowsers } = manifest.browser.expected;
+    const { "darwin-arm64": _ffmpeg, ...otherFfmpegs } = manifest.ffmpeg.expected;
+    const emptied: ToolchainManifest = {
       ...manifest,
-      chrome: {
-        ...manifest.chrome,
-        expected: { "a-key-nobody-would-guess": manifest.chrome.expected["darwin-arm64"] as never },
+      browser: { expected: otherBrowsers },
+      ffmpeg: { expected: otherFfmpegs },
+    };
+
+    const browser = refusalOf(() => selectBrowserArtefact(emptied, host));
+    expect(browser.reason).toBe("no-recorded-entry");
+    expect(browser.message).toContain("records no expected digest for a browser on darwin-arm64");
+    expect(refusalOf(() => selectFfmpegArtefact(emptied, host)).reason).toBe("no-recorded-entry");
+  });
+
+  it("refuses a row the manifest records as unavailable, quoting its reason", () => {
+    const manifest = readCommittedManifest();
+    const unavailable: ToolchainManifest = {
+      ...manifest,
+      ffmpeg: {
+        expected: {
+          ...manifest.ffmpeg.expected,
+          "linux-x64": { status: "unavailable", reason: "the publisher withdrew this build" },
+        },
       },
     };
 
-    expect(selectChromeArtefact(renamed, host).key).toBe("a-key-nobody-would-guess");
-    expect(selectChromeArtefact(renamed, host).url).toBe(
-      chromeDownloadUrl(hostChromeSelection(host)),
-    );
+    const refusal = refusalOf(() => selectFfmpegArtefact(unavailable, probeFor("linux-x64")));
+    expect(refusal.reason).toBe("artefact-unavailable");
+    expect(refusal.message).toContain("the publisher withdrew this build");
   });
 
   it("refuses an artefact this machine's C library cannot run, in the same call", () => {
     const manifest = readCommittedManifest();
     // Alpine: a glibc-free Linux, where Node reports no runtime glibc at all.
-    const alpine = probe({
-      glibc: null,
-      osRelease: 'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.21.0\n',
-    });
+    const alpine = probe({ glibc: null });
 
-    try {
-      selectChromeArtefact(manifest, alpine);
-      expect.unreachable("a musl host must refuse");
-    } catch (error) {
-      expect((error as ToolchainSelectionRefusal).reason).toBe("libc-unsatisfied");
-      expect((error as ToolchainSelectionRefusal).message).toContain("Alpine");
+    for (const select of [selectBrowserArtefact, selectFfmpegArtefact]) {
+      const refusal = refusalOf(() => select(manifest, alpine));
+      expect(refusal.reason).toBe("libc-unsatisfied");
+      expect(refusal.message).toContain("Alpine");
     }
-  });
-
-  it("refuses a configuration the manifest does not record, naming the URL", () => {
-    const manifest = readCommittedManifest();
-
-    try {
-      selectChromeArtefact(manifest, probe({ platform: "darwin", arch: "arm64", glibc: null }), {
-        version: "1500",
-      });
-      expect.unreachable("an unrecorded configuration must refuse");
-    } catch (error) {
-      const refusal = error as ToolchainSelectionRefusal;
-      expect(refusal.reason).toBe("no-recorded-entry");
-      expect(refusal.message).toContain("1500");
-      expect(refusal.message).toContain(manifest.chrome.remotion);
-    }
+    // A glibc below the browser's floor, and one between the browser's and ffmpeg's.
+    expect(
+      refusalOf(() => selectBrowserArtefact(manifest, probe({ glibc: [2, 24] }))).message,
+    ).toMatch(/needs glibc 2\.25 or newer and this machine reports 2\.24/);
+    expect(selectBrowserArtefact(manifest, probe({ glibc: [2, 27] })).key).toBe("linux-x64");
+    expect(
+      refusalOf(() => selectFfmpegArtefact(manifest, probe({ glibc: [2, 27] }))).message,
+    ).toMatch(/needs glibc 2\.28 or newer/);
   });
 
   it("refuses an artefact whose C library this machine does not have", () => {
     const glibcOnly = { libc: "glibc" as const, min_glibc: "2.31" };
 
     expect(() =>
-      assertLibcSatisfied("linux-x64-glibc", glibcOnly, probe({ glibc: [2, 36] })),
+      assertLibcSatisfied("linux-x64", glibcOnly, probe({ glibc: [2, 36] })),
     ).not.toThrow();
-    expect(() => assertLibcSatisfied("linux-x64-glibc", glibcOnly, probe({ glibc: null }))).toThrow(
+    expect(() => assertLibcSatisfied("linux-x64", glibcOnly, probe({ glibc: null }))).toThrow(
       /musl/,
     );
-    expect(() =>
-      assertLibcSatisfied("linux-x64-glibc", glibcOnly, probe({ glibc: [2, 28] })),
-    ).toThrow(/glibc 2\.31 or newer and this machine reports 2\.28/);
+    expect(() => assertLibcSatisfied("linux-x64", glibcOnly, probe({ glibc: [2, 28] }))).toThrow(
+      /glibc 2\.31 or newer and this machine reports 2\.28/,
+    );
     // A macOS or Windows host has no glibc to compare and no constraint to satisfy.
     expect(() =>
       assertLibcSatisfied("darwin-arm64", {}, probe({ platform: "darwin", glibc: null })),
@@ -396,13 +462,21 @@ describe("reading a manifest document", () => {
   function refuses(mutate: (document: Record<string, unknown>) => void, pattern: RegExp): void {
     const document = good();
     mutate(document);
+    expect(() => parseToolchainManifest(JSON.stringify(document), "fixture")).toThrow(
+      ToolchainManifestError,
+    );
     expect(() => parseToolchainManifest(JSON.stringify(document), "fixture")).toThrow(pattern);
   }
 
-  /** The `darwin-arm64` row of a parsed document, as a plain record to edit. */
-  function macEntry(document: Record<string, unknown>): Record<string, unknown> {
-    const chrome = document.chrome as { expected: Record<string, Record<string, unknown>> };
-    const entry = chrome.expected["darwin-arm64"];
+  /** One row of a parsed document's `browser` or `ffmpeg` block, as a plain record to edit. */
+  function row(
+    document: Record<string, unknown>,
+    block: "browser" | "ffmpeg",
+    key: string,
+  ): Record<string, unknown> {
+    const expected = (document[block] as { expected: Record<string, Record<string, unknown>> })
+      .expected;
+    const entry = expected[key];
     expect(entry).toBeDefined();
     return entry as Record<string, unknown>;
   }
@@ -411,23 +485,165 @@ describe("reading a manifest document", () => {
     expect(() => parseToolchainManifest("{", "fixture")).toThrow(/not valid JSON/);
     expect(() => parseToolchainManifest("[]", "fixture")).toThrow(/the manifest is not an object/);
     refuses((d) => {
-      d.format_version = 2;
-    }, /format_version 2; this build reads 1/);
-    refuses((d) => {
       delete (d.speech as Record<string, unknown>)["win32-x64"];
     }, /no speech entry for win32-x64/);
     refuses((d) => {
-      macEntry(d).sha256 = "NOTHEX";
+      row(d, "browser", "darwin-arm64").sha256 = "NOTHEX";
     }, /not a lowercase 64-character hex SHA-256/);
     refuses((d) => {
-      macEntry(d).url = "http://storage.googleapis.com/x.zip";
+      row(d, "browser", "darwin-arm64").url =
+        "http://storage.googleapis.com/chrome-for-testing-public/x.zip";
     }, /http:\/\/, and an artefact is fetched over https only/);
     refuses((d) => {
-      macEntry(d).status = "trusted";
+      row(d, "ffmpeg", "darwin-arm64").status = "trusted";
     }, /is neither "recorded" nor "unavailable"/);
     refuses((d) => {
-      (d.chrome as Record<string, unknown>).expected = {};
-    }, /records no Chrome artefacts at all/);
+      delete d.ffmpeg;
+    }, /ffmpeg is not an object/);
+  });
+
+  /**
+   * A format-1 document is what released CLIs read, at the version-1 path: refused as older, by
+   * name, rather than read as a document with no ffmpeg in it. A newer one is a rollback signal.
+   */
+  it("refuses a format it does not read, in both directions", () => {
+    refuses((d) => {
+      d.format_version = 1;
+    }, /format_version 1; this build reads 2, at toolchain\/v2\/manifest\.json/);
+    refuses((d) => {
+      d.format_version = 3;
+    }, /format_version 3; this build reads 2\. A newer manifest is a rollback signal/);
+  });
+
+  // AC-A3, one refusal each.
+
+  it("refuses a browser URL no allowlisted publisher serves", () => {
+    refuses((d) => {
+      row(d, "browser", "linux-arm64").url =
+        "https://playwright.azureedge.net/builds/chromium/1421/chromium-headless-shell-linux-arm64.zip";
+    }, /browser\.expected\.linux-arm64\.url is https:\/\/playwright\.azureedge\.net\/.*no publisher this build trusts serves it/);
+  });
+
+  /**
+   * A prefix and not a host, because `github.com` hosts every GitHub user's releases: the project's
+   * previous owner, a sibling repository and a `..` segment that climbs out of the prefix are all
+   * on the right host and all refused.
+   */
+  it("refuses an ffmpeg URL no allowlisted publisher serves, however close it looks", () => {
+    for (const url of [
+      "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+      "https://github.com/FFmpeg-Builds/FFmpeg-Builds-mirror/releases/download/x/ffmpeg.tar.xz",
+      "https://cdn.xplainer.video/toolchain/v1/speech/ffmpeg.zip",
+    ]) {
+      refuses((d) => {
+        row(d, "ffmpeg", "linux-x64").url = url;
+      }, /ffmpeg\.expected\.linux-x64\.url is .*no publisher this build trusts serves it/);
+    }
+    refuses((d) => {
+      row(d, "ffmpeg", "linux-x64").url =
+        "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/../../../../evil/x/releases/download/y/ffmpeg.tar.xz";
+    }, /not in its normal form \(https:\/\/github\.com\/evil\/x\/releases\/download\/y\/ffmpeg\.tar\.xz\)/);
+  });
+
+  it("refuses a block that is missing a platform it is selected on", () => {
+    refuses((d) => {
+      delete (d.browser as { expected: Record<string, unknown> }).expected["win32-x64"];
+    }, /has no browser entry for win32-x64/);
+    refuses((d) => {
+      delete (d.ffmpeg as { expected: Record<string, unknown> }).expected["win32-arm64"];
+    }, /has no ffmpeg entry for win32-arm64/);
+  });
+
+  it("refuses a member that could be unpacked outside its destination", () => {
+    refuses((d) => {
+      row(d, "ffmpeg", "linux-x64").member = "../../bin/ffmpeg";
+    }, /ffmpeg\.expected\.linux-x64\.member is refused: .*climbs out of the directory/);
+    refuses((d) => {
+      row(d, "browser", "win32-x64").member = "C:/Windows/chrome-headless-shell.exe";
+    }, /browser\.expected\.win32-x64\.member is refused: .*absolute path/);
+  });
+
+  it("refuses a licence member that could be unpacked outside its destination", () => {
+    refuses((d) => {
+      row(d, "ffmpeg", "win32-x64").licence_member = "ffmpeg\\..\\LICENSE.txt";
+    }, /ffmpeg\.expected\.win32-x64\.licence_member is refused: .*backslash/);
+  });
+
+  it("refuses an extra member that could be unpacked outside its destination", () => {
+    refuses((d) => {
+      row(d, "ffmpeg", "darwin-arm64").extra_members = [
+        "ffmpeg-9.0.2-darwin-arm64/SOURCE.txt",
+        "/etc/BUILDINFO.txt",
+      ];
+    }, /ffmpeg\.expected\.darwin-arm64\.extra_members\[1\] is refused: .*absolute path/);
+  });
+
+  /**
+   * A version becomes part of the directory a component is installed under —
+   * `ffmpeg-<version>-<digest>`, `chrome-headless-shell-<version>-<digest>` — so one that could be
+   * read as a path (`9/../../../../tmp/planted` put the ffmpeg tree in `/tmp`) is refused before it
+   * is ever joined onto one.
+   */
+  it("refuses a version that is not one path segment, in every block that installs by it", () => {
+    for (const version of ["9/../../../../tmp/planted", "..", ".", "9.0 2", "9\\..\\x"]) {
+      refuses((d) => {
+        row(d, "ffmpeg", "darwin-arm64").version = version;
+      }, /ffmpeg\.expected\.darwin-arm64\.version is .*, which is not one path segment/);
+    }
+    refuses((d) => {
+      row(d, "browser", "linux-x64").version = "157/../../../../tmp/planted-browser";
+    }, /browser\.expected\.linux-x64\.version is .*, which is not one path segment/);
+    refuses((d) => {
+      (d.speech as Record<string, unknown>)["linux-x64"] = {
+        status: "recorded",
+        version: "../0.19.0",
+        url: `https://${TOOLCHAIN_CDN_HOSTNAME}/toolchain/v1/speech-linux-x64.zip`,
+        sha256: "a".repeat(64),
+        size: 123,
+      };
+    }, /speech\.linux-x64\.version is .*, which is not one path segment/);
+  });
+
+  it("refuses a member digest that is not a lowercase 64-character hex SHA-256", () => {
+    refuses((d) => {
+      row(d, "ffmpeg", "linux-arm64").member_sha256 = "091FE4DF";
+    }, /ffmpeg\.expected\.linux-arm64\.member_sha256 is not a lowercase 64-character hex SHA-256/);
+  });
+
+  it("refuses a licence that is not one of the accepted SPDX ids", () => {
+    for (const licence of ["GPL-3.0", "nonfree", "MIT"]) {
+      refuses((d) => {
+        row(d, "ffmpeg", "win32-arm64").licence = licence;
+      }, /ffmpeg\.expected\.win32-arm64\.licence is ".*", which is not one of the SPDX ids/);
+    }
+    expect(ACCEPTED_FFMPEG_LICENCES).toEqual([
+      "LGPL-2.1-or-later",
+      "LGPL-3.0-or-later",
+      "GPL-2.0-or-later",
+      "GPL-3.0-or-later",
+    ]);
+  });
+
+  /**
+   * The publisher on a parsed row is the allowlist's answer, never the document's: a `publisher`
+   * the document carries is not read, so a manifest cannot relabel whose bytes it is admitting.
+   */
+  it("gives every recorded row the publisher its URL prefix maps to, and ignores the document's", () => {
+    const document = good();
+    row(document, "browser", "darwin-arm64").publisher = "somebody trustworthy";
+    const manifest = parseToolchainManifest(JSON.stringify(document), "fixture");
+
+    expect(selectBrowserArtefact(manifest, probeFor("darwin-arm64")).publisher).toBe(
+      "Google (Chrome for Testing)",
+    );
+    expect(Object.values(ARTEFACT_ALLOWLIST).sort()).toEqual([
+      "BtbN FFmpeg-Builds",
+      "Google (Chrome for Testing)",
+      "xplainer.video",
+    ]);
+    for (const prefix of Object.keys(ARTEFACT_ALLOWLIST)) {
+      expect(prefix).toMatch(/^https:\/\/[^/]+\/.+\/$/);
+    }
   });
 
   it("refuses a speech bundle served from anywhere but the provisioned hostname", () => {

@@ -1,20 +1,20 @@
 /**
- * T16's rollback cases, rerun where a browser and a real workspace exist: **the recovered daemon
+ * T16's rollback cases, rerun where a browser and a real toolchain exist: **the recovered daemon
  * renders**.
  *
  * B5 proves the transaction — the operation lock, the durable journal, the boundaries, the
  * commanded recovery — and it ends every rollback case with five assertions plus one that is only
- * half of the sixth: *the installed workspace satisfies the pins of the runtime that came back*.
+ * half of the sixth: *the marker on disk satisfies the requirements of the runtime that came back*.
  * That is readiness, not a render. A daemon that answers `/healthz` and cannot produce a picture is
  * the exact failure class principle P2 exists for, and the plan splits the remaining half here on
- * purpose: the PNG needs a headless shell and a payload-2 workspace, which are `xplainer setup`'s
- * to acquire and therefore B6's to have (§12.3, "B5 proves recovery; B6 reruns every rollback case
- * after T19 has supplied the browser and the workspace").
+ * purpose: the PNG needs a headless shell, which is `xplainer setup`'s to acquire and therefore
+ * B6's to have (§12.3, "B5 proves recovery; B6 reruns every rollback case after T19 has supplied
+ * the browser").
  *
  * So this is that rerun, and it is `scripts/e2e/toolchain.mjs`'s last phase rather than a unit
  * suite, because everything it needs is what that gate has already built: an artefact assembled by
- * the shipped assembler, a workspace `setup` materialised, a browser `setup` acquired, and one
- * video whose narration has been measured. It is handed those four things and nothing else.
+ * the shipped assembler, the toolchain `setup` acquired and recorded, a workspace, and one video in
+ * it whose narration has been measured. It is handed those four things and nothing else.
  *
  * **Six cases, which is every case that ends in a rollback.** The five durable boundaries an
  * updater can be killed at ({@link UPDATE_TRANSITIONS}), each driven by the same child entry B5
@@ -28,9 +28,8 @@
  * A from this checkout, and B is A with its own version and an entry that binds nothing, rescanned
  * by the shipped scanner. So the daemon that comes back after each rollback is a real
  * `xplainer serve` out of a real payload 1, reading the real `toolchain.json` `setup` wrote and
- * gated on the real workspace `setup` materialised — and the still it is then asked for spawns the
- * payload's own render worker through the interpreter D1 resolves, against the browser `setup`
- * acquired.
+ * gated on it — and the still it is then asked for spawns the payload's own render worker under
+ * the payload's own interpreter, against the browser `setup` acquired.
  *
  * **What stays a seam, and why that is not a weakening.** The supervisor: `updateHarness()`'s `run`
  * is what `launchctl`, `systemctl` and Task Scheduler would be, and it really does start and stop
@@ -40,12 +39,15 @@
  * proof already establishes, and would say nothing about the picture — which is the only thing this
  * rerun exists to add.
  *
- * **The marker is put back after every kill.** `interrupt-update.ts` writes the committed
- * `install/__fixtures__/toolchain.json` into the state directory, because an install refuses a
- * machine with no setup marker and B5 has no real one. Its stand-in chrome path is not a browser,
- * so this proof copies the **real** marker over it once the updater is dead and before the recovery
- * runs — which is also the honest ordering: what a user would have on that machine is what `setup`
- * left there.
+ * **The marker is put back after every kill.** `interrupt-update.ts` writes the committed fixture
+ * marker (`install/testing/toolchain.ts`, from `install/__fixtures__/toolchain.json`) into the
+ * state directory, because an install refuses a machine with no setup marker and B5 has no real
+ * one. Its stand-in chrome is not a browser and its stand-in ffmpeg is not an encoder, so this
+ * proof copies the **real** marker — the browser, the ffmpeg and the speech route `setup` recorded —
+ * over it once the updater is dead and before the recovery runs, which is also the honest ordering:
+ * what a user would have on that machine is what `setup` left there. A still needs no ffmpeg, but
+ * the recovered daemon's `/healthz` and the update's own precondition both judge the whole marker,
+ * so it has to be the real one.
  *
  * It prints one `ok:` line per assertion and exits non-zero on the first that fails. Nothing here
  * ships: `tsconfig.build.json` excludes `src/**\/testing/**`.
@@ -99,7 +101,6 @@ import {
   type RuntimeManifest,
   scanTree,
 } from "../../runtime/manifest.js";
-import { readTemplatePins, verifyWorkspacePayload } from "../../runtime/verify.js";
 
 /** The child entry that parks a half-finished transaction so this proof can kill it. */
 const INTERRUPT_UPDATE = fileURLToPath(
@@ -115,7 +116,7 @@ const DOOMED_HEALTH_MS = 1_500;
 /** How long one case's install, update, kill and recovery may take. */
 const CASE_TIMEOUT_MS = 180_000;
 
-/** How long one still may take. The first render of a run downloads a headless shell. */
+/** How long one still may take. Nothing is downloaded: the browser is the one `setup` recorded. */
 const STILL_TIMEOUT_MS = 900_000;
 
 /** The case that needs no kill: a replacement that starts and never becomes ready. */
@@ -165,7 +166,7 @@ function required(name: string): string {
   return value;
 }
 
-/** The materialised workspace every case renders out of — one tree, shared, never copied. */
+/** The workspace every case renders out of — one tree, shared, never copied. */
 const workspaceRoot = required("XPLAINER_ROLLBACK_WORKSPACE");
 
 /** The marker `xplainer setup` wrote, whose recorded paths are on this machine. */
@@ -408,34 +409,10 @@ try {
   say(`workspace:           ${workspaceRoot}`);
   say(`marker:              ${realMarker}`);
   say(`video:               ${slug}, frame ${String(frame)}`);
-  require_(existsSync(join(workspaceRoot, "node_modules")), "the workspace has a node_modules");
   require_(existsSync(realMarker), "the marker setup wrote is on this machine");
   require_(
     existsSync(videoPaths(workspaceRoot, slug).timings),
     `${slug} has the measured timings.json a still is rendered against`,
-  );
-
-  // Asked here rather than discovered three minutes into the first case, because it is the one
-  // condition every case below shares and because a refusal is a **finding**: this is the exact
-  // call `openTransaction()` makes (`install/update/transaction.ts:806`) with the pins
-  // `templatePinsOf()` reads, so a workspace it rejects is a machine `xplainer daemon update`
-  // rejects.
-  const updatable = verifyWorkspacePayload(workspaceRoot, readTemplatePins());
-  require_(
-    updatable.ok,
-    "the update precondition accepts the workspace `xplainer setup --workspace` materialised" +
-      (updatable.ok
-        ? ""
-        : ` — it does not: ${updatable.failure.reason} at ${updatable.failure.name}. ` +
-          `${updatable.failure.detail} A workspace is verified in \`described\` mode ` +
-          "(`runtime/verify.ts`, step 5): every file the manifest names must be present with its " +
-          "recorded digest — that is what proves the pins — while the files a live workspace " +
-          "legitimately holds beside them are allowed, because the manifest describes only " +
-          "node_modules/, package.json and package-lock.json and `materialiseWorkspace()` also " +
-          "copies in tailwind.css and tsconfig.json, with videos/, out/, public/ and anything a " +
-          "tool leaves in node_modules/.cache/ arriving after that. So a refusal here is " +
-          "a real one: something the manifest describes has changed, gone, or been shadowed by a " +
-          "nested copy — and `xplainer daemon update` would refuse this machine too."),
   );
 
   say("");
@@ -449,8 +426,9 @@ try {
   say(`  A: ${alpha.outDir}, @xplainer/cli ${alphaVersion}`);
 
   // B is A's bytes with its own version and an entry that binds nothing. A copy rather than a
-  // second assembly, because the two payloads have to be the same tree for the pins on both sides
-  // of the switch to be identical — which is what §1.3d A bounds a supported update to.
+  // second assembly, because the two payloads have to be the same tree for both sides of the switch
+  // to read the same `toolchain.json` format and state the same requirements of it — which is what
+  // `daemon update`'s precondition bounds a supported update to (ADR 0031 §Note, 2026-11-12, D2).
   say("copying A into payload B, and making it a replacement that never becomes ready");
   const betaDir = join(root, "payload-b");
   // `COPYFILE_FICLONE`: on a copy-on-write filesystem this is a clone rather than 150 MB of
@@ -521,7 +499,6 @@ try {
         from: betaDir,
         environment,
         run: harness.run,
-        workspaceRoot,
         healthTimeoutMs: DOOMED_HEALTH_MS,
       }).then(
         () => null,
@@ -538,7 +515,6 @@ try {
         XPLAINER_TEST_HOME: home,
         XPLAINER_TEST_PAYLOAD_A: alpha.outDir,
         XPLAINER_TEST_PAYLOAD_B: betaDir,
-        XPLAINER_TEST_WORKSPACE: workspaceRoot,
         XPLAINER_TEST_PARK_AT: current,
         XPLAINER_TEST_REFUSE_START: join(stagedRuntimeRoot(stateDir), `${INCOMING_VERSION}-`),
         XPLAINER_TEST_HEALTH_MS: String(DOOMED_HEALTH_MS),
@@ -563,7 +539,6 @@ try {
         stateDir,
         environment,
         run: harness.run,
-        workspaceRoot,
         healthTimeoutMs: DOOMED_HEALTH_MS,
       }).then(
         () => null,

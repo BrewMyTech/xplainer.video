@@ -1,12 +1,12 @@
 /**
- * Reading the one archive format the toolchain artefacts arrive in, and unpacking it into staging.
+ * Reading the zip archives the toolchain artefacts mostly arrive in, and unpacking them into staging.
  *
- * Every artefact `setup` fetches is a **zip**: Chrome for Testing publishes
- * `chrome-headless-shell-<platform>.zip`, `remotion.media` publishes
- * `chromium-headless-shell-<platform>-<version>.zip`, and the speech bundles are named the same
- * way. So the reader here is a zip reader, an archive whose extension says anything else is a
- * named refusal rather than a branch that guesses, and nothing in this package shells out to
- * `unzip` — a Debian slim image has no `unzip`, and GNU `tar` cannot read a zip at all.
+ * Chrome for Testing publishes `chrome-headless-shell-<platform>.zip`, the macOS and Windows FFmpeg
+ * pins are zips, and the speech bundles are named the same way. The tarballs — the Linux FFmpeg
+ * pins' `.tar.xz` and `onnxruntime-node`'s `.tgz` — are `tar.ts`'s, so an archive whose extension
+ * names neither is a named refusal rather than a branch that guesses, and nothing in this package
+ * shells out to `unzip` — a Debian slim image has no `unzip`, and GNU `tar` cannot read a zip at
+ * all.
  *
  * **Why this is written rather than depended on.** `@xplainer/cli` is the one published
  * application and its production dependency list is copied wholesale into payload 1 by
@@ -23,16 +23,34 @@
  * CRC covers each member, and a decompressor that produced the wrong bytes is not a file to leave
  * on disk. A method other than stored or deflate is refused by number.
  *
- * **Modes and symlinks are preserved**, because Chrome's own archives need both: the shell is
- * `0755` and its macOS framework carries symlinks. The rules are the ones `@remotion/renderer`'s
- * own extractor applies to the same archives — mode from the high half of
- * `externalFileAttributes`, `0644`/`0755` where a zip carries none, `__MACOSX/` skipped — so an
- * artefact unpacked here and one unpacked by Remotion are the same tree.
+ * **Modes and symlinks are preserved**, because an executable has to stay runnable and a zip may
+ * carry relative links between its own members. The mode comes from the high half of
+ * `externalFileAttributes`, `0644`/`0755` stand in where a zip carries none, and `__MACOSX/` is
+ * skipped — the rules the previous renderer's extractor applied to the same kind of archive. No
+ * artefact the committed manifest pins carries a symlink (listed 2026-11-12: the five Chrome for
+ * Testing 157.0.8103.50 zips, our two macOS FFmpeg zips and BtbN's two Windows ones), so the rules
+ * below are about what a link may do rather than about any link a pin needs.
+ *
+ * **A link is a door, so it is judged where it lands and never walked through.** A member whose
+ * path passes through a link this extraction made is refused, whatever that link points at: each
+ * link of a chain can land inside when it is judged alone (`a/l` → `..`, then `a/l/m` → `..`) and
+ * still put the member after them outside. Asking the filesystem (`lstat`) rather than comparing
+ * names is also what refuses two members that a case-insensitive APFS or NTFS volume lands on one
+ * file.
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { crc32, inflateRawSync } from "node:zlib";
 
 /**
@@ -42,14 +60,18 @@ import { crc32, inflateRawSync } from "node:zlib";
  * the same either way and three of the four conditions are literally the same rule: `unsafe-entry`
  * is {@link safeJoin} in both, `unsupported-entry` is a member kind neither will write, and
  * `corrupt-entry` is a member whose own integrity field disagrees with its bytes (a CRC-32 in a
- * zip, a header checksum in a tar). Only the two format assertions are per format.
+ * zip, a header checksum in a tar). The two format assertions are per format, and so is
+ * `corrupt-stream`: a tarball is compressed as one stream around every member — gzip or xz — and
+ * that stream's decoder refusing it is a different fact from any one member being wrong, where a
+ * zip compresses each member on its own and reports the same fault as `corrupt-entry`.
  */
 export type ArchiveRefusalReason =
   | "not-a-zip"
   | "not-a-tarball"
   | "unsupported-entry"
   | "unsafe-entry"
-  | "corrupt-entry";
+  | "corrupt-entry"
+  | "corrupt-stream";
 
 /** The archive will not be unpacked, and the destination holds nothing this call made. */
 export class ArchiveRefusal extends Error {
@@ -82,6 +104,17 @@ export type ZipEntry = {
   localHeaderOffset: number;
 };
 
+/**
+ * Which members to write, and where — `tar.ts`'s selector contract, over a zip member's name.
+ *
+ * Answer with a **destination-relative** path to write the member there, or `null` to leave it
+ * out. A member left out is never decompressed, which is what lets a caller take one binary out of
+ * a 195 MB archive without inflating the rest. The answer goes through {@link safeJoin} whatever it
+ * says, because a selector that composed a path out of an archive-supplied name would otherwise be
+ * a way around the check.
+ */
+export type ZipSelector = (name: string) => string | null;
+
 /** What {@link extractZip} unpacked. */
 export type ExtractionSummary = {
   files: number;
@@ -103,7 +136,7 @@ const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
 
-/** The default modes a zip with no unix attributes gets, matching Remotion's own extractor. */
+/** The default modes a zip with no unix attributes gets. */
 const DEFAULT_FILE_MODE = 0o644;
 const DEFAULT_DIRECTORY_MODE = 0o755;
 
@@ -175,8 +208,17 @@ export function readZipEntries(archive: Buffer): ZipEntry[] {
  * The destination is expected to be a **staging** directory — one that nothing else can see yet —
  * because a half-unpacked tree under a name a caller may read is exactly the state
  * `download.ts`'s temp-then-rename exists to make impossible.
+ *
+ * With no `select`, every member lands at the name it carries. Two members landing on one path is
+ * refused either way, because the later one would silently win: a selector can collapse two
+ * distinct names, an archive can carry one name twice, and a case-insensitive volume makes one
+ * file of two names that differ only in case.
  */
-export function extractZip(archiveFile: string, destination: string): ExtractionSummary {
+export function extractZip(
+  archiveFile: string,
+  destination: string,
+  select?: ZipSelector,
+): ExtractionSummary {
   const archive = readFileSync(archiveFile);
   const entries = readZipEntries(archive);
   mkdirSync(destination, { recursive: true });
@@ -186,13 +228,27 @@ export function extractZip(archiveFile: string, destination: string): Extraction
     if (entry.name.startsWith("__MACOSX/")) {
       continue;
     }
-    const target = safeJoin(destination, entry.name);
+    const name = select === undefined ? entry.name : select(entry.name);
+    if (name === null) {
+      continue;
+    }
+    const target = safeJoin(destination, name);
+    // Before any directory is made for it: `mkdir -p` through a link would itself write outside.
+    assertNoLinkOnTheWay(root, target, entry.name);
     if (entry.isDirectory) {
       mkdirSync(target, { recursive: true, mode: entry.mode ?? DEFAULT_DIRECTORY_MODE });
       summary.directories += 1;
       continue;
     }
     mkdirSync(dirname(target), { recursive: true });
+    if (lstatOrNull(target) !== null) {
+      throw new ArchiveRefusal(
+        "unsafe-entry",
+        `${entry.name} would be written to ${target}, which another member of the same archive ` +
+          "has already been written to, and the later one would silently win.",
+        entry.name,
+      );
+    }
     const contents = readMember(archive, entry);
     if (entry.isSymlink) {
       const link = contents.toString("utf8");
@@ -310,20 +366,76 @@ export function safeJoin(destination: string, name: string): string {
 /**
  * A symlink may point anywhere **inside** the unpacked tree and nowhere outside it.
  *
- * Chrome's own macOS archives carry relative links that climb — `nested/link` → `../shell` — so a
- * blanket refusal of `..` would refuse the artefacts this exists to unpack. What matters is where
- * the link **lands**: resolved against its own directory, it has to stay under the destination,
- * because a link that escapes is also a door a later entry could be written through.
+ * A relative link that climbs — `nested/link` → `../shell`, as the committed fixture carries — is
+ * ordinary, so a blanket refusal of `..` would refuse archives that are fine. What matters is where
+ * the link **lands**, resolved against the real directory it is in.
+ *
+ * Two conditions make that resolution honest rather than lexical. The link's own directory holds no
+ * link ({@link assertNoLinkOnTheWay} has already refused one), so the directory it climbs from is
+ * a real one. And its value is in **normal form** — `..` only at the front, no `.` and no empty
+ * segment — because `l/..` reads as the directory the link is in while the kernel follows `l`
+ * first, so its landing would depend on what `l` turns out to be.
  */
 function assertLinkStaysInside(root: string, target: string, link: string, name: string): void {
-  const landing = resolve(dirname(target), link);
-  const outside = relative(root, landing);
-  if (isAbsolute(link) || outside === ".." || outside.startsWith(`..${sep}`)) {
+  if (isAbsolute(link) || link.includes("\\")) {
     throw new ArchiveRefusal(
       "unsafe-entry",
       `${name} is a symlink to ${JSON.stringify(link)}, which lands outside the unpacked tree.`,
       name,
     );
+  }
+  if (posix.normalize(link) !== link) {
+    throw new ArchiveRefusal(
+      "unsafe-entry",
+      `${name} is a symlink to ${JSON.stringify(link)}, which is not in its normal form, so where ` +
+        "it lands depends on what the links it passes through point at.",
+      name,
+    );
+  }
+  const landing = resolve(realpathSync(dirname(target)), link);
+  const outside = relative(realpathSync(root), landing);
+  if (outside === ".." || outside.startsWith(`..${sep}`) || isAbsolute(outside)) {
+    throw new ArchiveRefusal(
+      "unsafe-entry",
+      `${name} is a symlink to ${JSON.stringify(link)}, which lands outside the unpacked tree.`,
+      name,
+    );
+  }
+}
+
+/**
+ * Refuse a member whose path passes through a symlink — which, under a staging directory this
+ * extraction created, can only be one an earlier member made.
+ *
+ * Every component from the destination down to the member itself is `lstat`ed, so a link is seen
+ * as a link rather than followed. The walk stops at the first component that does not exist yet,
+ * because nothing below a missing directory can be a link.
+ */
+function assertNoLinkOnTheWay(root: string, target: string, name: string): void {
+  let at = root;
+  for (const part of relative(root, target).split(sep)) {
+    at = join(at, part);
+    const stats = lstatOrNull(at);
+    if (stats === null) {
+      return;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new ArchiveRefusal(
+        "unsafe-entry",
+        `${name} would be written through ${at}, a symlink an earlier member of the same archive ` +
+          "made. A member is never written through a link, wherever the link points.",
+        name,
+      );
+    }
+  }
+}
+
+/** A path's own `lstat`, or `null` where there is nothing there to describe. */
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
   }
 }
 

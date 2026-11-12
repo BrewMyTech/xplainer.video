@@ -1,71 +1,145 @@
 {
-  "format_version": 1,
-  "chrome": {
-    "remotion": "4.0.495",
-    "version": "149.0.7790.0",
+  "format_version": 2,
+  "browser": {
     "expected": {
       "darwin-arm64": {
         "status": "recorded",
-        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/mac-arm64/chrome-headless-shell-mac-arm64.zip",
-        "sha256": "17ef152eba8ffcfebc42e25ab295eb040d8e62455cff7dfcc735b652456d6899",
-        "size": 98080877
+        "version": "157.0.8103.50",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/mac-arm64/chrome-headless-shell-mac-arm64.zip",
+        "sha256": "082e3fe8fcfac75aec2ef0949d70e8d2254a99ea465450e287e6c06a3f1863ed",
+        "size": 104775379,
+        "member": "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+        "licence_member": "chrome-headless-shell-mac-arm64/LICENSE.headless_shell"
       },
       "darwin-x64": {
         "status": "recorded",
-        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/mac-x64/chrome-headless-shell-mac-x64.zip",
-        "sha256": "2597bf0940b54afbdfcb76519b5c8cf423cec49eea90ce1c4123456aca47a851",
-        "size": 103187459
+        "version": "157.0.8103.50",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/mac-x64/chrome-headless-shell-mac-x64.zip",
+        "sha256": "886beb07d8237b8acc2b879843a3506b3a56284264b82c806c7d80546e24e0ad",
+        "size": 110442622,
+        "member": "chrome-headless-shell-mac-x64/chrome-headless-shell",
+        "licence_member": "chrome-headless-shell-mac-x64/LICENSE.headless_shell"
       },
-      "linux-x64-glibc": {
+      "linux-x64": {
         "status": "recorded",
-        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/linux64/chrome-headless-shell-linux64.zip",
-        "sha256": "a3b011ab4c726e215cdeb623907a09cfb48f07054a7271fdda555ee2ae4f804d",
-        "size": 119987220,
+        "version": "157.0.8103.50",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux64/chrome-headless-shell-linux64.zip",
+        "sha256": "7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f",
+        "size": 128166087,
+        "member": "chrome-headless-shell-linux64/chrome-headless-shell",
+        "licence_member": "chrome-headless-shell-linux64/LICENSE.headless_shell",
         "libc": "glibc",
-        "min_glibc": "2.31"
+        "min_glibc": "2.25"
       },
-      "linux-x64-glibc235": {
+      "linux-arm64": {
         "status": "recorded",
-        "url": "https://remotion.media/chromium-headless-shell-linux-x64-149.0.7790.0.zip?clear",
-        "sha256": "f11d8e76f043a8a70c7ebdae2834f94370ad329ed997ddcdfd5dbcd803f53f76",
-        "size": 96395776,
+        "version": "157.0.8103.50",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux-arm64/chrome-headless-shell-linux-arm64.zip",
+        "sha256": "55add1fa634756811fd644094ec226fc7e405be698fb07dbf0634bca689e293a",
+        "size": 128169705,
+        "member": "chrome-headless-shell-linux-arm64/chrome-headless-shell",
+        "licence_member": "chrome-headless-shell-linux-arm64/LICENSE.headless_shell",
         "libc": "glibc",
-        "min_glibc": "2.35"
-      },
-      "linux-x64-amazonlinux2023": {
-        "status": "recorded",
-        "url": "https://remotion.media/chromium-headless-shell-amazon-linux-x64-149.0.7790.0.zip?clear",
-        "sha256": "e752ceee45a183b3500744ee34b4ae2a03335c41d5ce27c349e943e68ab9b1ed",
-        "size": 98356499,
-        "libc": "glibc"
-      },
-      "linux-arm64-glibc": {
-        "status": "unavailable",
-        "url": "https://playwright.azureedge.net/builds/chromium/1421/chromium-headless-shell-linux-arm64.zip",
-        "reason": "Measured 2026-09-08: playwright.azureedge.net answers 307 to playwright.download.prss.microsoft.com, which answers 400 GatewayExceptionResponse (24 bytes). The artefact the pinned Remotion line selects for an arm64 Linux with glibc below 2.35 is not retrievable, so there is nothing to record a digest for. Run xplainer setup on an arm64 base with glibc 2.35 or newer (Debian bookworm, Ubuntu 24.04), which selects the remotion.media build recorded as linux-arm64-glibc235.",
-        "libc": "glibc",
-        "min_glibc": "2.31"
-      },
-      "linux-arm64-glibc235": {
-        "status": "recorded",
-        "url": "https://remotion.media/chromium-headless-shell-linux-arm64-149.0.7790.0.zip?clear",
-        "sha256": "c8ac2ea8fed57653d07c80caacb67bb0e833af32012059bfccf90b6246302706",
-        "size": 92243209,
-        "libc": "glibc",
-        "min_glibc": "2.35"
-      },
-      "linux-arm64-amazonlinux2023": {
-        "status": "recorded",
-        "url": "https://remotion.media/chromium-headless-shell-amazon-linux-arm64-149.0.7790.0.zip?clear",
-        "sha256": "d1eb83a59313db3804f3e52b5193571f695e6e2f5b2ff10e4accb5b45b277edf",
-        "size": 93778089,
-        "libc": "glibc"
+        "min_glibc": "2.25"
       },
       "win32-x64": {
         "status": "recorded",
-        "url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/win64/chrome-headless-shell-win64.zip",
-        "sha256": "8a112c0e768907ff382ff994dcde35cdbd0e1f5a3a475da93d3a83e3260e78c2",
-        "size": 118785025
+        "version": "157.0.8103.50",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/win64/chrome-headless-shell-win64.zip",
+        "sha256": "9e59432baf484387bdc9cc4a8efca499fb558aeda93e536eb8b859a065ddb884",
+        "size": 126512350,
+        "member": "chrome-headless-shell-win64/chrome-headless-shell.exe",
+        "licence_member": "chrome-headless-shell-win64/LICENSE.headless_shell"
+      }
+    }
+  },
+  "ffmpeg": {
+    "expected": {
+      "darwin-arm64": {
+        "status": "recorded",
+        "version": "9.0.2",
+        "url": "https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/ffmpeg-9.0.2-darwin-arm64.zip",
+        "sha256": "543246c663ec70903e1abb8823c825f234b7171a78e109820310d7cbbab68071",
+        "size": 2012286,
+        "member": "ffmpeg-9.0.2-darwin-arm64/ffmpeg",
+        "member_sha256": "0a8b6c740e77005fa9ecc42e1635c2c979428a6e16da9983a27ba1ba0aefd3c6",
+        "member_size": 4533080,
+        "licence": "GPL-2.0-or-later",
+        "licence_member": "ffmpeg-9.0.2-darwin-arm64/LICENSE",
+        "extra_members": [
+          "ffmpeg-9.0.2-darwin-arm64/SOURCE.txt",
+          "ffmpeg-9.0.2-darwin-arm64/BUILDINFO.txt"
+        ],
+        "source_url": "https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/README.txt"
+      },
+      "darwin-x64": {
+        "status": "recorded",
+        "version": "9.0.2",
+        "url": "https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/ffmpeg-9.0.2-darwin-x64.zip",
+        "sha256": "3486a8fbf6934c4f494913a79a6d5e274db97c72c268eb9d71a446b2289a8ec5",
+        "size": 2172480,
+        "member": "ffmpeg-9.0.2-darwin-x64/ffmpeg",
+        "member_sha256": "52e637da7a4fc2e9bb996201563bbda2dca13173ade15d6704affb4bac0bd59c",
+        "member_size": 5300616,
+        "licence": "GPL-2.0-or-later",
+        "licence_member": "ffmpeg-9.0.2-darwin-x64/LICENSE",
+        "extra_members": [
+          "ffmpeg-9.0.2-darwin-x64/SOURCE.txt",
+          "ffmpeg-9.0.2-darwin-x64/BUILDINFO.txt"
+        ],
+        "source_url": "https://cdn.xplainer.video/toolchain/v1/ffmpeg/9.0.2/source/README.txt"
+      },
+      "linux-x64": {
+        "status": "recorded",
+        "version": "n9.0.2-39-g7adfbe40dc",
+        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0.tar.xz",
+        "sha256": "73e29a56974ae5a651133a04584c7483b21afe941e17dc91d79814a758b608d3",
+        "size": 153175100,
+        "member": "ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0/bin/ffmpeg",
+        "member_sha256": "384742b75419584d065bbf372613f9f7e8ccf22525b421c16a2ee679a78ee748",
+        "member_size": 173534088,
+        "licence": "GPL-3.0-or-later",
+        "licence_member": "ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0/LICENSE.txt",
+        "libc": "glibc",
+        "min_glibc": "2.28"
+      },
+      "linux-arm64": {
+        "status": "recorded",
+        "version": "n9.0.2-39-g7adfbe40dc",
+        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0.tar.xz",
+        "sha256": "6cad88ae5bcec356cfc5d7979a036cc4007128201928a0cf243df3db483276cc",
+        "size": 128664064,
+        "member": "ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0/bin/ffmpeg",
+        "member_sha256": "091fe4df4902fedd20f4d5accab14d02947a531d14d789cc7e8f18b0a808e6d1",
+        "member_size": 131591912,
+        "licence": "GPL-3.0-or-later",
+        "licence_member": "ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0/LICENSE.txt",
+        "libc": "glibc",
+        "min_glibc": "2.28"
+      },
+      "win32-x64": {
+        "status": "recorded",
+        "version": "n9.0.2-39-g7adfbe40dc",
+        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-win64-gpl-9.0.zip",
+        "sha256": "693f3e224bc184b40524a62ca47526cfebaf2504414021b92fe75f677ad868b9",
+        "size": 195110184,
+        "member": "ffmpeg-n9.0.2-39-g7adfbe40dc-win64-gpl-9.0/bin/ffmpeg.exe",
+        "member_sha256": "c930b63cb1ee8b7e2eaf9c15161160edd5c9acad34f0303b5855c8eb142a7e8d",
+        "member_size": 165984256,
+        "licence": "GPL-3.0-or-later",
+        "licence_member": "ffmpeg-n9.0.2-39-g7adfbe40dc-win64-gpl-9.0/LICENSE.txt"
+      },
+      "win32-arm64": {
+        "status": "recorded",
+        "version": "n9.0.2-39-g7adfbe40dc",
+        "url": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-winarm64-gpl-9.0.zip",
+        "sha256": "8b3c394762f26716ccef03ac1b7ac76430759080e1255aa9bc01d74db590bcb5",
+        "size": 136603040,
+        "member": "ffmpeg-n9.0.2-39-g7adfbe40dc-winarm64-gpl-9.0/bin/ffmpeg.exe",
+        "member_sha256": "e2248aa5ecd155814e951fd0606df71589699a2fd4db14a9323a0b400a6c9b06",
+        "member_size": 95170560,
+        "licence": "GPL-3.0-or-later",
+        "licence_member": "ffmpeg-n9.0.2-39-g7adfbe40dc-winarm64-gpl-9.0/LICENSE.txt"
       }
     }
   },

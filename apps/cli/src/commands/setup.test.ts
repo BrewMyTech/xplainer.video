@@ -1,24 +1,25 @@
 /**
  * `xplainer setup`, driven as the real commander program with a recording `CliIo`.
  *
- * Two things are asserted here and nowhere else. **Which components a spelling selects** — the union
- * rule, whose two ends are the D8 proof's `setup --workspace` and the Windows leg's
- * `--skip-speech`, and neither may quietly acquire the other's components. And **the marker**:
+ * Three things are asserted here and nowhere else. **Which components a spelling selects** — the
+ * default less each `--skip-*` flag, with `--workspace` gone as an unknown option. **The marker**:
  * that a partial run leaves the state directory usable and says what is still missing, that a
  * second run merges into what the first recorded, and that what lands on disk is a document
- * `install`'s own preflight validates.
+ * `install`'s own preflight validates. And **the previous renderer's install** (D7): removed from the
+ * workspace only when it is provably the tree an earlier `setup` wrote, only once the refusal to
+ * cross the cut has passed, and printed when it is.
  *
- * The heavy halves are deliberately elsewhere: a real `npm ci` under a scrubbed `PATH` is
- * `scripts/e2e/toolchain.mjs`, and a real browser download is `download.test.ts`'s loopback server.
+ * The heavy half is deliberately elsewhere: a real browser download is `download.test.ts`'s
+ * loopback server.
  */
 
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,16 +27,23 @@ import { join } from "node:path";
 import process from "node:process";
 import type { Toolchain } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { updateDaemonState } from "../daemon/daemon-state.js";
+import { stateDirLayout } from "../daemon/state-dir.js";
 import { toolchainMarkerPath } from "../install/preflight.js";
+import { buildFixturePayload } from "../install/testing/payload.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
-import { MANIFEST_VERSION, WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
-import { readTemplatePins } from "../runtime/verify.js";
-import { WORKSPACE_PAYLOAD_ENV } from "../setup/providers/workspace.js";
+import {
+  LAST_TEMPLATE,
+  PREVIOUS_ENTRY_FIELD,
+  PREVIOUS_WORKSPACE_MANIFEST,
+} from "../setup/previous-renderer.js";
+import { CHROME_PROVIDER } from "../setup/providers/chrome.js";
 import { committedManifestPath } from "../setup/source.js";
+import { writeFakeFfmpeg } from "../setup/testing/fake-ffmpeg.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
 import { readToolchainMarker } from "../setup/toolchain.js";
-import { selectedComponents, TOOLCHAIN_DIR_NAME } from "./setup.js";
+import { SETUP_COMPONENTS, selectedComponents, TOOLCHAIN_DIR_NAME } from "./setup.js";
 
 const directories: string[] = [];
 
@@ -80,21 +88,26 @@ async function run(argv: string[]): Promise<{ stdout: string; stderr: string; ex
 
 class ExitSignal extends Error {}
 
+/** A run that acquires nothing: what is left is the marker, the lexicon and D7's removal. */
+const SKIP_ALL = ["--skip-browser", "--skip-ffmpeg", "--skip-speech"] as const;
+
 describe("selectedComponents", () => {
   /**
-   * The two spellings the rest of the phase names, and the rule that makes both mean what they say.
-   * `--workspace` alone is the form the D8 proof runs under `env -i PATH=/usr/bin:/bin`; dragging a
-   * browser download or a Docker pull in behind it would make that proof unrunnable.
+   * A bare run acquires all three, and each `--skip-*` flag leaves one out. `--speech`,
+   * `--tts-url` and `--ffmpeg-path` say *which* route or binary rather than whether, so none of
+   * them changes the selection.
    */
-  it("restricts to what a positive flag names, and trims what a negative one excludes", () => {
-    expect(selectedComponents({})).toEqual(["browser", "speech", "workspace"]);
-    expect(selectedComponents({ workspace: true })).toEqual(["workspace"]);
-    expect(selectedComponents({ skipSpeech: true })).toEqual(["browser", "workspace"]);
-    expect(selectedComponents({ skipSpeech: true, workspace: true })).toEqual([
-      "browser",
-      "workspace",
-    ]);
-    expect(selectedComponents({ skipBrowser: true, skipSpeech: true })).toEqual(["workspace"]);
+  it("selects all three by default, and leaves out what each --skip-* flag names", () => {
+    expect(selectedComponents({})).toEqual(["browser", "ffmpeg", "speech"]);
+    expect(selectedComponents({ skipSpeech: true })).toEqual(["browser", "ffmpeg"]);
+    expect(selectedComponents({ skipBrowser: true, skipSpeech: true })).toEqual(["ffmpeg"]);
+    expect(selectedComponents({ skipBrowser: true, skipFfmpeg: true, skipSpeech: true })).toEqual(
+      [],
+    );
+    expect(selectedComponents({ ffmpegPath: "/usr/bin/ffmpeg" })).toEqual(SETUP_COMPONENTS);
+    expect(selectedComponents({ ttsUrl: "http://127.0.0.1:8880", speech: "onnx" })).toEqual(
+      SETUP_COMPONENTS,
+    );
   });
 });
 
@@ -102,7 +115,6 @@ describe("xplainer setup", () => {
   it("reports what it will acquire before it acquires anything", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");
-    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
     const { stdout, exitCode } = await runWithEnv(
       [
@@ -110,16 +122,17 @@ describe("xplainer setup", () => {
         "--state-dir",
         stateDir,
         "--skip-browser",
+        "--skip-ffmpeg",
         "--skip-speech",
         "--manifest",
         committedManifestPath() ?? "",
       ],
-      { XPLAINER_VIDEOS_DIR: workspace, [WORKSPACE_PAYLOAD_ENV]: payload },
+      { XPLAINER_VIDEOS_DIR: workspace },
     );
 
     expect(exitCode, stdout).toBe(0);
     expect(stdout).toContain(`state directory ${stateDir}`);
-    expect(stdout).toContain("acquiring: workspace");
+    expect(stdout).toContain("acquiring: nothing");
     expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(true);
   });
 
@@ -131,19 +144,16 @@ describe("xplainer setup", () => {
   it("records nothing yet after a partial run, and names what is still to acquire", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");
-    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
-    const { stdout, exitCode } = await runWithEnv(
-      ["setup", "--state-dir", stateDir, "--workspace"],
-      { XPLAINER_VIDEOS_DIR: workspace, [WORKSPACE_PAYLOAD_ENV]: payload },
-    );
+    const { stdout, exitCode } = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("nothing was recorded in toolchain.json yet");
     expect(stdout).toContain("browser");
     expect(stdout).toContain("speech");
     expect(existsSync(toolchainMarkerPath(stateDir))).toBe(false);
-    expect(existsSync(join(workspace, "node_modules", "@remotion", "cli"))).toBe(true);
   });
 
   /**
@@ -154,11 +164,9 @@ describe("xplainer setup", () => {
   it("merges a later run into what an earlier one recorded, and writes the marker once complete", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");
-    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
-    const first = await runWithEnv(["setup", "--state-dir", stateDir, "--workspace"], {
+    const first = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
       XPLAINER_VIDEOS_DIR: workspace,
-      [WORKSPACE_PAYLOAD_ENV]: payload,
     });
     expect(first.exitCode).toBe(0);
 
@@ -168,12 +176,13 @@ describe("xplainer setup", () => {
         "--state-dir",
         stateDir,
         "--skip-browser",
+        "--skip-ffmpeg",
         "--tts-url",
         "http://127.0.0.1:8880",
         "--manifest",
         committedManifestPath() ?? "",
       ],
-      { XPLAINER_VIDEOS_DIR: workspace, [WORKSPACE_PAYLOAD_ENV]: payload },
+      { XPLAINER_VIDEOS_DIR: workspace },
     );
 
     expect(second.exitCode, second.stderr).toBe(0);
@@ -210,50 +219,538 @@ describe("xplainer setup", () => {
     expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(false);
   });
 
-  it("refuses a staged payload built for another platform, with exit 3 and nothing recorded", async () => {
+  /**
+   * AC-A9: the workspace is sources only and `setup` acquires nothing into it, so the flag that
+   * used to install the previous renderer there is commander's own unknown option — exit `1`, the
+   * table's usage code — and not a no-op that a script relying on it would mistake for success.
+   */
+  it("refuses --workspace as an unknown option, with exit 1 and nothing written", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
-    const workspace = temporaryDirectory("xplainer-setup-workspace-");
-    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"), "sunos");
 
-    const { stderr, exitCode } = await runWithEnv(
-      ["setup", "--state-dir", stateDir, "--workspace"],
-      { XPLAINER_VIDEOS_DIR: workspace, [WORKSPACE_PAYLOAD_ENV]: payload },
-    );
+    const { stderr, exitCode } = await run(["setup", "--state-dir", stateDir, "--workspace"]);
 
-    expect(exitCode).toBe(3);
-    expect(stderr).toContain("sunos");
-    expect(existsSync(toolchainMarkerPath(stateDir))).toBe(false);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("unknown option '--workspace'");
+    expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(false);
   });
 
   /**
    * The document that lands on disk is the one three other surfaces read, so it is asserted through
    * the reader `install/preflight.ts` uses rather than as the object this command happened to build.
+   *
+   * It starts from a **version-1** marker, which is what every machine set up before ADR 0031's cut
+   * holds: a run that acquires nothing reads its two components and writes version 2 with no
+   * `workspace` at all (§Note, 2026-11-12, D1).
    */
-  it("writes a marker whose validating reader accepts it, once all three are recorded", async () => {
+  it("rewrites a version-1 marker as version 2, without a workspace, keeping what it recorded", async () => {
     const stateDir = temporaryDirectory("xplainer-setup-state-");
     const workspace = temporaryDirectory("xplainer-setup-workspace-");
-    const payload = stagedPayloadFrom(temporaryDirectory("xplainer-setup-payload-"));
 
-    // The browser and speech halves this suite does not download, recorded exactly as `setup`
-    // records them; the run under test then re-resolves the workspace and completes the document.
-    recordTestToolchain({ stateDir, workspaceRoot: workspace });
-    rmSync(join(workspace, WORKSPACE_MANIFEST_FILE));
-    const { exitCode, stdout } = await runWithEnv(
-      ["setup", "--state-dir", stateDir, "--workspace"],
-      {
-        XPLAINER_VIDEOS_DIR: workspace,
-        [WORKSPACE_PAYLOAD_ENV]: payload,
-      },
+    // The browser and speech halves this suite does not download, recorded exactly as a
+    // version-1 `setup` recorded them, with the workspace beside them and no ffmpeg.
+    const recorded = recordTestToolchain({ stateDir, ffmpeg: false });
+    writeFileSync(
+      toolchainMarkerPath(stateDir),
+      `${JSON.stringify({
+        ...recorded,
+        format_version: 1,
+        workspace: { platform: `${process.platform}-${process.arch}`, version: "1.0.0" },
+      })}\n`,
     );
+    const { exitCode, stdout } = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("recorded ");
     const marker = readToolchainMarker(stateDir);
-    expect(marker).not.toBeNull();
-    expect(marker?.workspace.platform).toBe(`${process.platform}-${process.arch}`);
+    expect(marker?.format_version).toBe(2);
+    expect(marker?.chrome).toEqual(recorded.chrome);
+    expect(marker?.speech).toEqual(recorded.speech);
     const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Toolchain;
+    expect(onDisk).not.toHaveProperty("workspace");
     expect(onDisk.speech.provider).toBe("docker");
-    expect(onDisk.chrome.provider).toBe("remotion");
+    expect(onDisk.chrome.provider).toBe(CHROME_PROVIDER);
+  });
+});
+
+/**
+ * The ffmpeg component (ADR 0031 §Note, 2026-11-12, D6 and D12). The download route itself is
+ * `providers/ffmpeg.test.ts`'s, against a real binary over the loopback server; what is asserted
+ * here is what the command does with it — the route a flag selects, and that a row recording this
+ * platform's build as unavailable is a printed skip and a marker without ffmpeg rather than a
+ * failure, so `setup` and `xplainer update` keep working on such a platform.
+ */
+describe("xplainer setup — ffmpeg", () => {
+  /** A machine whose browser and speech are already recorded, with no ffmpeg. */
+  function machineWithoutFfmpeg(): { stateDir: string; env: Record<string, string> } {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    return {
+      stateDir,
+      env: { XPLAINER_VIDEOS_DIR: temporaryDirectory("xplainer-setup-workspace-") },
+    };
+  }
+
+  it("records the ffmpeg --ffmpeg-path names, as provider path, without reading a manifest", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const fake = writeFakeFfmpeg(temporaryDirectory("xplainer-setup-ffmpeg-"), {
+      licence: "GPL-3.0-or-later",
+    });
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--ffmpeg-path", fake],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("acquiring: ffmpeg");
+    expect(stdout).not.toContain("manifest");
+    const marker = readToolchainMarker(stateDir);
+    expect(marker?.ffmpeg).toMatchObject({
+      path: fake,
+      provider: "path",
+      licence: "GPL-3.0-or-later",
+      files: [{ path: fake }],
+    });
+    expect(marker?.ffmpeg).not.toHaveProperty("publisher");
+  });
+
+  it("refuses --ffmpeg-path beside --skip-ffmpeg, and a path that is no ffmpeg, writing nothing", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const before = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const both = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-path", "/usr/bin/ffmpeg", "--skip-ffmpeg"],
+      env,
+    );
+    expect(both.exitCode).toBe(1);
+    expect(both.stderr).toContain("give one or the other");
+
+    const missing = join(temporaryDirectory("xplainer-setup-ffmpeg-"), "ffmpeg");
+    const nothing = await runWithEnv(
+      [
+        "setup",
+        "--state-dir",
+        stateDir,
+        "--skip-browser",
+        "--skip-speech",
+        "--ffmpeg-path",
+        missing,
+      ],
+      env,
+    );
+    expect(nothing.exitCode).toBe(3);
+    expect(nothing.stderr).toContain(`--ffmpeg-path names ${missing}`);
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(before);
+  });
+
+  /**
+   * The generic form of D12's skip. Every row in the committed manifest is recorded, so the case is
+   * seeded: this platform's row is replaced by an `unavailable` one, as a manifest would carry a
+   * platform whose build is not yet published.
+   */
+  it("prints a skip naming --ffmpeg-path and writes the marker without ffmpeg for an unavailable row", async () => {
+    const { stateDir, env } = machineWithoutFfmpeg();
+    const committed = JSON.parse(readFileSync(committedManifestPath() ?? "", "utf8")) as {
+      ffmpeg: { expected: Record<string, unknown> };
+    };
+    const key = `${process.platform}-${process.arch}`;
+    committed.ffmpeg.expected[key] = {
+      status: "unavailable",
+      reason: "the build for this platform is not published yet.",
+    };
+    const manifest = join(temporaryDirectory("xplainer-setup-manifest-"), "manifest.json");
+    writeFileSync(manifest, `${JSON.stringify(committed)}\n`);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--manifest", manifest],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain(
+      `ffmpeg: skipped — The toolchain manifest records the ffmpeg for ${key} as unavailable: ` +
+        "the build for this platform is not published yet.",
+    );
+    expect(stdout).toContain("`xplainer setup --ffmpeg-path <file>`");
+    expect(stdout).toContain("ffmpeg is not recorded: stills will work");
+    const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Toolchain;
+    expect(onDisk.format_version).toBe(2);
+    expect(onDisk).not.toHaveProperty("ffmpeg");
+  });
+});
+
+/**
+ * A plain `setup` — which `xplainer update` runs on every upgrade — keeps an ffmpeg the user named
+ * with `--ffmpeg-path` rather than replacing it with the pinned build: on musl or Alpine, the reason
+ * the flag exists, the pin's C-library check would fail and take `setup` and `update` with it. The
+ * named binary is kept while it verifies, probed again where it is when it has changed, and given
+ * up for the pin only once it is gone. `--ffmpeg-pinned` is the way back.
+ */
+describe("xplainer setup — an ffmpeg named with --ffmpeg-path, on a plain re-run", () => {
+  /** A machine whose last run recorded `fake` with `--ffmpeg-path`. */
+  async function namedFfmpegMachine(): Promise<{
+    stateDir: string;
+    env: Record<string, string>;
+    fake: string;
+    fakeDir: string;
+  }> {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    const env = { XPLAINER_VIDEOS_DIR: temporaryDirectory("xplainer-setup-workspace-") };
+    const fakeDir = temporaryDirectory("xplainer-setup-ffmpeg-");
+    const fake = writeFakeFfmpeg(fakeDir, { version: "6.1.1", libavcodec: "60.31.102" });
+    const first = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech", "--ffmpeg-path", fake],
+      env,
+    );
+    expect(first.exitCode, first.stderr).toBe(0);
+    return { stateDir, env, fake, fakeDir };
+  }
+
+  /** A manifest that is not there: a run that reads one fails, so a pass proves none was read. */
+  const NO_MANIFEST = (): string =>
+    join(temporaryDirectory("xplainer-setup-manifest-"), "absent.json");
+
+  /** A manifest whose row for this platform is unavailable, so the pin route ends in its skip. */
+  function unavailableRowManifest(): string {
+    const committed = JSON.parse(readFileSync(committedManifestPath() ?? "", "utf8")) as {
+      ffmpeg: { expected: Record<string, unknown> };
+    };
+    committed.ffmpeg.expected[`${process.platform}-${process.arch}`] = {
+      status: "unavailable",
+      reason: "the build for this platform is not published yet.",
+    };
+    const path = join(temporaryDirectory("xplainer-setup-manifest-"), "manifest.json");
+    writeFileSync(path, `${JSON.stringify(committed)}\n`);
+    return path;
+  }
+
+  it("keeps the named ffmpeg while it is the binary setup probed, and reads no manifest", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+    const recorded = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+      { ...env, XPLAINER_TOOLCHAIN_MANIFEST: NO_MANIFEST() },
+    );
+    const again = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(again.exitCode, again.stderr).toBe(0);
+    expect(stdout).toContain(`ffmpeg: kept ${fake}, which an earlier`);
+    expect(stdout).toContain("`xplainer setup --ffmpeg-pinned`");
+    expect(stdout).toContain("`xplainer setup --ffmpeg-path <file>`");
+    expect(stdout).not.toContain("manifest:");
+    const marker = readToolchainMarker(stateDir);
+    expect(marker?.ffmpeg).toMatchObject({ path: fake, provider: "path", version: "6.1.1" });
+    expect(marker?.ffmpeg?.sha256).toBe((JSON.parse(recorded) as Toolchain).ffmpeg?.sha256);
+  });
+
+  it("probes the named ffmpeg again where it is when it has changed in place", async () => {
+    const { stateDir, env, fake, fakeDir } = await namedFfmpegMachine();
+    // An upgrade in place: a different binary at the same path, saying a different version.
+    writeFakeFfmpeg(fakeDir, { version: "7.1.2", libavcodec: "61.19.101" });
+    writeFileSync(fake, `${readFileSync(fake, "utf8")}# upgraded\n`);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("is no longer the binary setup probed — its digest has changed");
+    expect(readToolchainMarker(stateDir)?.ffmpeg).toMatchObject({
+      path: fake,
+      provider: "path",
+      version: "7.1.2",
+      libavcodec: "61.19.101",
+    });
+  });
+
+  it("refuses a changed named ffmpeg the probe refuses, naming both ways out", async () => {
+    const { stateDir, env, fake, fakeDir } = await namedFfmpegMachine();
+    writeFakeFfmpeg(fakeDir, { version: "5.1.6", libavcodec: "59.37.100" });
+    writeFileSync(fake, `${readFileSync(fake, "utf8")}# downgraded\n`);
+    const before = readFileSync(toolchainMarkerPath(stateDir), "utf8");
+
+    const { stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", NO_MANIFEST()],
+      ],
+      env,
+    );
+
+    expect(exitCode).toBe(3);
+    expect(stderr).toContain("libavcodec 59.37.100");
+    expect(stderr).toContain("`xplainer setup --ffmpeg-pinned`");
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(before);
+  });
+
+  it("acquires the pinned build in place of a named ffmpeg that is gone, and says so", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+    rmSync(fake);
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--manifest", unavailableRowManifest()],
+      ],
+      env,
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain(
+      `ffmpeg: ${fake}, which an earlier \`xplainer setup --ffmpeg-path\` recorded, is no longer ` +
+        "an executable file there, so the pinned build is acquired in its place.",
+    );
+    // The pin route ran: here it meets this manifest's unavailable row.
+    expect(stdout).toContain("ffmpeg: skipped — The toolchain manifest records the ffmpeg");
+  });
+
+  it("takes the pin route on --ffmpeg-pinned, and refuses it beside --ffmpeg-path or --skip-ffmpeg", async () => {
+    const { stateDir, env, fake } = await namedFfmpegMachine();
+
+    const pinned = await runWithEnv(
+      [
+        ...["setup", "--state-dir", stateDir, "--skip-browser", "--skip-speech"],
+        ...["--ffmpeg-pinned", "--manifest", unavailableRowManifest()],
+      ],
+      env,
+    );
+    const withPath = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-pinned", "--ffmpeg-path", fake],
+      env,
+    );
+    const withSkip = await runWithEnv(
+      ["setup", "--state-dir", stateDir, "--ffmpeg-pinned", "--skip-ffmpeg"],
+      env,
+    );
+
+    expect(pinned.exitCode, pinned.stderr).toBe(0);
+    expect(pinned.stdout).not.toContain("ffmpeg: kept");
+    expect(pinned.stdout).toContain("ffmpeg: skipped — The toolchain manifest records the ffmpeg");
+    expect(withPath.exitCode).toBe(1);
+    expect(withPath.stderr).toContain("--ffmpeg-path records one you name instead");
+    expect(withSkip.exitCode).toBe(1);
+    expect(withSkip.stderr).toContain("--skip-ffmpeg leaves ffmpeg out of this run");
+  });
+});
+
+/**
+ * D2 (c): `setup` writes a version-2 marker, and a daemon installed from before ADR 0031's cut reads
+ * version 1 — so under such a daemon it refuses, exit `3`, having written nothing, and names the
+ * reinstall rather than running it (§Note, 2026-11-12). The daemon is found the way every surface
+ * finds it: `daemon.json`'s `runtime_dir`, then that runtime's own manifest.
+ */
+describe("xplainer setup — under a daemon installed from the other side of the cut", () => {
+  /** A state directory holding a version-1 marker and a daemon registered from `runtimeDir`. */
+  function preCutMachine(runtimeDir: string): { stateDir: string; marker: string } {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    const recorded = recordTestToolchain({ stateDir, ffmpeg: false });
+    const marker = `${JSON.stringify({
+      ...recorded,
+      format_version: 1,
+      workspace: { platform: `${process.platform}-${process.arch}`, version: "1.0.0" },
+    })}\n`;
+    writeFileSync(toolchainMarkerPath(stateDir), marker);
+    updateDaemonState(stateDir, { runtime_dir: runtimeDir });
+    return { stateDir, marker };
+  }
+
+  const setupArgv = (stateDir: string): string[] => [
+    "setup",
+    "--state-dir",
+    stateDir,
+    "--skip-browser",
+    "--skip-ffmpeg",
+    "--skip-speech",
+    "--manifest",
+    committedManifestPath() ?? "",
+  ];
+
+  function expectReinstall(stderr: string): void {
+    const uninstall = stderr.indexOf("  xplainer daemon uninstall\n");
+    expect(uninstall).toBeGreaterThan(-1);
+    expect(stderr.indexOf("  xplainer setup\n")).toBeGreaterThan(uninstall);
+    expect(stderr.indexOf("  xplainer daemon install\n")).toBeGreaterThan(
+      stderr.indexOf("  xplainer setup\n"),
+    );
+  }
+
+  it("refuses with exit 3 and leaves the marker's bytes exactly as they were", async () => {
+    const preCut = buildFixturePayload({
+      outDir: join(temporaryDirectory("xplainer-setup-precut-"), "payload"),
+      version: "0.0.9",
+      marker: "0.0.9",
+      runnable: false,
+      toolchain: null,
+    });
+    const { stateDir, marker } = preCutMachine(preCut.outDir);
+    const listing = readdirSync(stateDir, { recursive: true }).map(String).sort();
+
+    const { stdout, stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(3);
+    expect(stderr).toContain(`runs the runtime at ${preCut.outDir}`);
+    expect(stderr).toContain("reads toolchain.json format 1");
+    expect(stderr).toContain("Nothing was run and nothing was written.");
+    expectReinstall(stderr);
+    expect(stdout).toBe("");
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+    // Not one entry added or removed: the refusal comes before the toolchain directory is made.
+    expect(readdirSync(stateDir, { recursive: true }).map(String).sort()).toEqual(listing);
+  });
+
+  it("treats a recorded runtime it cannot read as one from before the cut, and says so", async () => {
+    const gone = join(temporaryDirectory("xplainer-setup-gone-"), "runtime", "0.0.9-0123456789ab");
+    const { stateDir, marker } = preCutMachine(gone);
+
+    const { stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(3);
+    expect(stderr).toContain(`records the runtime at ${gone}, whose manifest cannot be read`);
+    expect(stderr).toContain("treated as a runtime from before the cut");
+    expectReinstall(stderr);
+    expect(readFileSync(toolchainMarkerPath(stateDir), "utf8")).toBe(marker);
+  });
+
+  it("stops with exit 11 on a daemon.json it cannot read, rather than guessing", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    writeFileSync(stateDirLayout(stateDir).daemonState, "{ not json");
+
+    const { stderr, exitCode } = await run(setupArgv(stateDir));
+
+    expect(exitCode, stderr).toBe(11);
+    expect(stderr).toContain("cannot be read as JSON");
+    expect(existsSync(join(stateDir, TOOLCHAIN_DIR_NAME))).toBe(false);
+  });
+
+  it("runs as usual under a daemon whose runtime reads format 2", async () => {
+    const current = buildFixturePayload({
+      outDir: join(temporaryDirectory("xplainer-setup-current-"), "payload"),
+      version: "0.0.12",
+      marker: "0.0.12",
+      runnable: false,
+    });
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    updateDaemonState(stateDir, { runtime_dir: current.outDir });
+    const workspace = temporaryDirectory("xplainer-setup-workspace-");
+
+    const { stdout, stderr, exitCode } = await runWithEnv(setupArgv(stateDir), {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("acquiring: nothing");
+  });
+});
+
+/**
+ * D7 through the command (ADR 0031 §Note, 2026-11-12): which trees count is
+ * `setup/previous-renderer.test.ts`'s subject; what is asserted here is where the command runs it —
+ * the workspace root `XPLAINER_VIDEOS_DIR` names, every time, and never before D2 (c) has passed —
+ * and that what it removed is printed.
+ */
+describe("xplainer setup — the previous renderer's install (D7)", () => {
+  /** A workspace root as an older `setup --workspace` left it, with a video beside the tree. */
+  function previousTree(packageJson: Record<string, unknown> = { ...LAST_TEMPLATE }): string {
+    const root = temporaryDirectory("xplainer-setup-workspace-");
+    mkdirSync(join(root, "node_modules", "react"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "react", "package.json"), "{}\n");
+    writeFileSync(join(root, "package.json"), `${JSON.stringify(packageJson)}\n`);
+    writeFileSync(join(root, "package-lock.json"), "{}\n");
+    writeFileSync(
+      join(root, PREVIOUS_WORKSPACE_MANIFEST),
+      `${JSON.stringify({ kind: "workspace", [PREVIOUS_ENTRY_FIELD]: "node_modules/cli/cli.js" })}\n`,
+    );
+    mkdirSync(join(root, "videos", "demo"), { recursive: true });
+    writeFileSync(join(root, "videos", "demo", "Scenes.tsx"), "export const scenes = [];\n");
+    return root;
+  }
+
+  it("removes the tree an earlier setup wrote under XPLAINER_VIDEOS_DIR, says so, keeps videos", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    const workspace = previousTree();
+
+    const { stdout, stderr, exitCode } = await runWithEnv(
+      ["setup", "--state-dir", stateDir, ...SKIP_ALL],
+      { XPLAINER_VIDEOS_DIR: workspace },
+    );
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain(
+      `removed the previous renderer's install from ${workspace}: node_modules/, ` +
+        `package-lock.json, package.json, ${PREVIOUS_WORKSPACE_MANIFEST}.`,
+    );
+    expect(readdirSync(workspace).sort()).toEqual(["videos"]);
+    expect(readFileSync(join(workspace, "videos", "demo", "Scenes.tsx"), "utf8")).toBe(
+      "export const scenes = [];\n",
+    );
+  });
+
+  it("leaves a project of the user's own exactly as it is, and says nothing about it", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    const workspace = previousTree({ name: "my-videos", dependencies: { react: "19.2.8" } });
+    rmSync(join(workspace, PREVIOUS_WORKSPACE_MANIFEST));
+    const listing = readdirSync(workspace, { recursive: true }).map(String).sort();
+
+    const { stdout, exitCode } = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("previous renderer");
+    expect(readdirSync(workspace, { recursive: true }).map(String).sort()).toEqual(listing);
+  });
+
+  it("keeps a tree whose package.json is not the last template's, and says why", async () => {
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    const workspace = previousTree({
+      ...LAST_TEMPLATE,
+      dependencies: { ...LAST_TEMPLATE.dependencies, react: "19.2.8" },
+    });
+    const listing = readdirSync(workspace, { recursive: true }).map(String).sort();
+
+    const { stdout, exitCode } = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`left the previous renderer's install in ${workspace} as it is`);
+    expect(readdirSync(workspace, { recursive: true }).map(String).sort()).toEqual(listing);
+  });
+
+  it("removes nothing while a daemon from before the cut is installed", async () => {
+    const preCut = buildFixturePayload({
+      outDir: join(temporaryDirectory("xplainer-setup-precut-"), "payload"),
+      version: "0.0.9",
+      marker: "0.0.9",
+      runnable: false,
+      toolchain: null,
+    });
+    const stateDir = temporaryDirectory("xplainer-setup-state-");
+    updateDaemonState(stateDir, { runtime_dir: preCut.outDir });
+    const workspace = previousTree();
+    const listing = readdirSync(workspace, { recursive: true }).map(String).sort();
+
+    const { exitCode } = await runWithEnv(["setup", "--state-dir", stateDir, ...SKIP_ALL], {
+      XPLAINER_VIDEOS_DIR: workspace,
+    });
+
+    expect(exitCode).toBe(3);
+    expect(readdirSync(workspace, { recursive: true }).map(String).sort()).toEqual(listing);
   });
 });
 
@@ -275,49 +772,4 @@ async function runWithEnv(
       }
     }
   }
-}
-
-/** A staged payload 2 the copy route accepts, so no test here needs a network. */
-function stagedPayloadFrom(payload: string, platform: string = process.platform): string {
-  const pins = readTemplatePins();
-  writeFileSync(join(payload, "package.json"), `${JSON.stringify({ name: "staged" })}\n`);
-  writeFileSync(join(payload, "package-lock.json"), `${JSON.stringify({ name: "staged" })}\n`);
-  const packageDir = join(payload, "node_modules", "@remotion", "cli");
-  mkdirSync(packageDir, { recursive: true });
-  writeFileSync(
-    join(packageDir, "package.json"),
-    `${JSON.stringify({ name: "@remotion/cli", version: "4.0.495", bin: { remotion: "remotion-cli.js" } })}\n`,
-  );
-  writeFileSync(join(packageDir, "remotion-cli.js"), "#!/usr/bin/env node\n");
-  const bin = join(payload, "node_modules", ".bin");
-  mkdirSync(bin, { recursive: true });
-  const shim = join(bin, process.platform === "win32" ? "remotion.cmd" : "remotion");
-  if (process.platform === "win32") {
-    writeFileSync(shim, "@echo off\n");
-  } else {
-    symlinkSync("../@remotion/cli/remotion-cli.js", shim);
-  }
-  writeFileSync(
-    join(payload, WORKSPACE_MANIFEST_FILE),
-    `${JSON.stringify(
-      {
-        kind: "workspace",
-        manifest_version: MANIFEST_VERSION,
-        created_at: new Date().toISOString(),
-        platform,
-        arch: process.arch,
-        node_version: process.version,
-        npm_version: "11.0.0",
-        installer: "npm ci",
-        pins,
-        resolved: pins,
-        remotion_entry: "node_modules/@remotion/cli/remotion-cli.js",
-        files: [],
-        links: [],
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  return payload;
 }

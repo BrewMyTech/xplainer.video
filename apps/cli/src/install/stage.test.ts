@@ -131,7 +131,7 @@ describe("the runtime stager", () => {
       marker: "damaged",
       runnable: false,
     });
-    writeFileSync(join(damaged.outDir, "lib/node_modules/npm/bin/npm-cli.js"), "tampered\n");
+    writeFileSync(damaged.entry, "tampered\n");
 
     expect(() => stageRuntime({ payloadDir: damaged.outDir, stateDir })).toThrow(StageRefusal);
     // Not "empty": the refusal happens before the directory is made, so there is nothing at all.

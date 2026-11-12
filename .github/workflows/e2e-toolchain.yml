@@ -29,26 +29,42 @@
 #     Kokoro — **only run on Linux runners**, and `macos-latest` is an Apple
 #     silicon host with no container engine. The gate says so in the transcript
 #     and renders from T3's fixture audio instead; what macOS proves here is the
-#     browser acquisition, the workspace, the degraded `/healthz`, the render
-#     and the rollback rerun.
+#     browser and ffmpeg acquisitions, the degraded `/healthz`, a render encoded
+#     by setup's own ffmpeg, and the rollback rerun.
 #   * windows-latest — no such provider either, for the same reason.
 #
 # NEITHER SKIP MEANS "NO SPEECH ON THAT PLATFORM" ANY MORE. Every platform has
 # a working route: the in-process `onnx` synthesiser runs on all three, needs no
 # container and no server, and `pnpm e2e:speech` is the proof that owns it. This
 # gate does not take it, deliberately — ~204 MB from three upstream hosts, in a
-# proof whose subject is the browser, the workspace and the rollback rerun — so
+# proof whose subject is the browser, ffmpeg and the rollback rerun — so
 # the skip here is about what this gate exercises and never about what the
 # product can do.
 #
-# WHY workflow_dispatch AND NOTHING ELSE. One run of this gate copies ~147 MB of
-# payload out of the checkout, installs the ~234 MB render workspace from the
-# registry, downloads a ~100 MB Chrome headless shell, renders a video, and then
-# stages two more payloads six times over for the rollback rerun. On `push` that
+# WHY workflow_dispatch AND NOTHING ELSE. One run of this gate copies ~167 MB of
+# payload out of the checkout, downloads a ~105-128 MB Chrome headless shell and
+# an ffmpeg — 2 MB from cdn.xplainer.video on macOS, a 153 MB BtbN archive on
+# Linux and a 195 MB one on Windows — renders a video, and then stages two more
+# payloads six times over for the rollback rerun. On `push` that
 # is three runners' worth of it on every commit. `ci.yml` is the gate that runs
 # on every push; this is the proof, and a proof is run when you want the proof.
 # It is the same argument that keeps `pnpm e2e:render`, `e2e-linux.yml` and
 # `e2e-runtime.yml` out of `pnpm verify`.
+#
+# PRECONDITION OF DISPATCHING: THE v2 MANIFEST IS UPLOADED. ADR 0031's cut
+# (§Note, 2026-11-12) moved the published manifest to
+# `https://cdn.xplainer.video/toolchain/v2/manifest.json`, and that object is
+# uploaded as a release step. The `gate` job does not depend on it — every
+# `setup` the gate runs passes `--manifest` with the committed
+# `apps/cli/src/setup/toolchain.manifest.json` — but the
+# `windows-setup-from-a-checkout` job runs a **bare** `setup`, because asking
+# the published address is what it exists to prove. Dispatched before the
+# upload, that job fails on a 404 — and the CDN can keep serving that cached
+# 404 for up to 30 days, to every user, after the upload. So that job has an
+# input of its own, `windows_setup`, which defaults to `false` and is NOT
+# implied by `windows=true`: every OS selection, `windows=true` included, is
+# safe to dispatch before the upload, and `-f windows_setup=true` is the one
+# that waits until the v2 manifest is published.
 #
 # HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
 # branch**: until this file is on `main` the API answers a dispatch of it with
@@ -61,9 +77,11 @@
 #
 # The per-OS booleans default to `linux=true`, `macos=false`, `windows=false`:
 # a bare dispatch allocates the 1x Linux runner and nothing else, and the line
-# above adds the Windows leg. Pass `-f macos=true` (10x) or `-f windows=true`
-# (2x) for the leg a given question needs, and all three for the run that is
-# offered as full platform coverage.
+# above adds the Windows leg of the gate. Pass `-f macos=true` (10x) or
+# `-f windows=true` (2x) for the leg a given question needs, and all three for
+# the run that is offered as full platform coverage. `-f windows_setup=true`
+# adds the bare Windows `setup` job — once the v2 manifest is up, per the
+# precondition above.
 
 name: e2e-toolchain
 
@@ -89,6 +107,12 @@ on:
         description: Run the Windows legs (windows-latest, bills at 2x).
         type: boolean
         default: false
+      # Not an operating system, and not implied by `windows`: the one job that
+      # reads the published manifest, so it waits for the v2 upload (header).
+      windows_setup:
+        description: Also run windows-setup-from-a-checkout, a bare setup against the published v2 manifest (only once it is uploaded).
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -97,7 +121,7 @@ concurrency:
   # A dispatch supersedes an in-flight dispatch of the same ref and the same
   # selection — a re-run of the same request — and leaves one that asked for
   # different operating systems running.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux }}-${{ inputs.macos }}-${{ inputs.windows }}-${{ inputs.windows_setup }}
   cancel-in-progress: true
 
 defaults:
@@ -127,9 +151,9 @@ jobs:
           - os: ${{ inputs.windows && 'unused' || 'windows-latest' }}
     # The gate itself is minutes of work. The budget is for everything around it
     # on a cold runner, each paid in full on every run: the install, a full
-    # `turbo build` with no cache, the workspace's `npm ci`, Chrome's download,
-    # the Kokoro image pull on ubuntu, the render, and then the rollback rerun,
-    # which stages and switches payloads six more times.
+    # `turbo build` with no cache, Chrome's and ffmpeg's downloads, the Kokoro
+    # image pull on ubuntu, the render, and then the rollback rerun, which
+    # stages and switches payloads six more times.
     timeout-minutes: 90
 
     steps:
@@ -144,11 +168,16 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
-      # `resolveTool()` in the gate takes `ffmpeg` and `ffprobe` off `PATH` (or
-      # from `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`), and it needs them on every
-      # runner: the still's width and height and the MP4's streams are read with
-      # `ffprobe`, and the frame comparison pipes through `ffmpeg`. None of the
-      # three images ships them, and each package manager is the one that image
+      # FOR READING, NEVER FOR ENCODING. The render encodes with the ffmpeg
+      # `setup` acquired and recorded in `toolchain.json` (ADR 0031 D6: no
+      # `PATH` lookup, no Homebrew), and the gate asserts it from the render
+      # job's own log line. These two are the gate's **reading** tools:
+      # `resolveTool()` takes them off `PATH` (or from
+      # `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`, which the gate scrubs from the
+      # daemon's environment) to read the still's size and the MP4's streams
+      # and to pipe the frame comparison. They have to come from the system:
+      # our macOS build ships no `ffprobe` and no `lavfi`. None of the three
+      # images ships them, and each package manager is the one that image
       # already has — no third-party action is introduced for two binaries.
       - name: Install ffmpeg and ffprobe
         run: |
@@ -254,10 +283,12 @@ jobs:
 
   windows-setup-from-a-checkout:
     name: setup completes on windows from a checkout (T20 criterion 3)
-    if: ${{ inputs.windows }}
+    # Its own input, not `windows`: this job reads the published manifest, so
+    # it is dispatched only after the v2 upload (the header's precondition).
+    if: ${{ inputs.windows_setup }}
     runs-on: windows-latest
-    # A real acquisition: a ~98 MB browser, ~204 MB of speech artefacts from
-    # three hosts, and an npm install of the render workspace.
+    # A real acquisition: a ~127 MB browser, a ~195 MB BtbN ffmpeg archive, and
+    # ~204 MB of speech artefacts from three hosts.
     timeout-minutes: 45
 
     steps:
@@ -298,15 +329,19 @@ jobs:
       # `win32-x64` included, by calling `deliveryPosition()` directly.
       #
       # WHAT IT ASSERTS INSTEAD, and it is strictly more than it used to. This
-      # is the only place in the repository that runs `xplainer setup` from a
-      # **checkout** on Windows — no staged payload 1, so `hostRuntimeDir()`
-      # answers null and the workspace provider takes its resolve route. That is
-      # exactly the configuration that could not work at all until 2026-09-10,
-      # when `providers/workspace.ts` was spawning `npm.cmd` and libuv was
-      # refusing it with EINVAL. The old job never caught it because it refused
-      # at the browser and `setup`'s component order is browser, then speech,
-      # then workspace: it stopped one phase short, for every release from B6
-      # onward. Reaching the third component is the point of this job now.
+      # is the only place in the repository that runs a **bare** `xplainer
+      # setup` from a **checkout** on Windows: no staged payload 1 and no
+      # `--manifest`, so the manifest comes from the published address exactly
+      # as a user's does — which is why the header makes the v2 upload a
+      # precondition of dispatching it. Reaching the last component is the
+      # point: the old job refused at the browser and stopped short of the rest,
+      # which is how the third component of its day — the render workspace that
+      # left with payload 2 at ADR 0031's cut, and whose provider libuv refused
+      # with EINVAL for spawning `npm.cmd` until 2026-09-10 — went unexercised
+      # here for every release from B6 onward. `setup`'s order is now browser,
+      # then ffmpeg, then speech, and the ffmpeg in the middle is the Windows
+      # leg of the BtbN zip route that nothing else in this file reaches with
+      # the published manifest.
       - name: setup acquires all three components
         shell: bash
         run: |
@@ -333,11 +368,20 @@ jobs:
           # The manifest came over the network, not from a committed copy: a
           # published build has no committed copy, and reading one here would
           # mean this job was proving something no user experiences.
-          require_present "manifest: https://cdn.xplainer.video/toolchain/v1/manifest.json"
-          # All three components, in setup's own order.
+          require_present "manifest: https://cdn.xplainer.video/toolchain/v2/manifest.json"
+          # All three components, in setup's own order — and ffmpeg's publisher
+          # and licence named before its download, not after.
           require_present "browser: acquired at"
+          require_present "for win32-x64 is built and published by BtbN FFmpeg-Builds under GPL-3.0-or-later"
+          require_present "ffmpeg: acquired — FFmpeg"
           require_present "speech: took the onnx route"
-          require_present "workspace:"
+          said=$(grep -nF "is built and published by BtbN FFmpeg-Builds" setup.out | head -n 1 | cut -d: -f1)
+          fetched=$(grep -nF "ffmpeg: https://github.com/FFmpeg-Builds/" setup.out | head -n 1 | cut -d: -f1)
+          if [ -z "$said" ] || [ -z "$fetched" ] || [ "$said" -ge "$fetched" ]; then
+            echo "FAIL: ffmpeg's publisher sentence (line ${said:-none}) is not before its download (line ${fetched:-none})" >&2
+            exit 1
+          fi
+          echo "ok  ffmpeg's publisher and licence (line $said) came before its download (line $fetched)"
           require_present "recorded"
           require_present "platform win32-x64"
           # The retired reassurance must not reappear, on the platform whose
@@ -359,8 +403,15 @@ jobs:
             const { readFileSync } = require('node:fs');
             const path = process.env.RUNNER_TEMP + '/xplainer-t20-state/toolchain.json';
             const marker = JSON.parse(readFileSync(path, 'utf8'));
-            for (const key of ['chrome', 'speech', 'workspace']) {
+            if (marker.format_version !== 2) {
+              throw new Error('toolchain.json is format ' + marker.format_version + ', expected 2');
+            }
+            if ('workspace' in marker) throw new Error('toolchain.json still records a workspace');
+            for (const key of ['chrome', 'ffmpeg', 'speech']) {
               if (!marker[key]) throw new Error('toolchain.json has no ' + key);
+            }
+            if (marker.ffmpeg.provider !== 'manifest') {
+              throw new Error('ffmpeg provider is ' + marker.ffmpeg.provider + ', expected manifest');
             }
             if (marker.speech.provider !== 'onnx') {
               throw new Error('speech provider is ' + marker.speech.provider + ', expected onnx');

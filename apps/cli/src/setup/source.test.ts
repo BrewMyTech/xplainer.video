@@ -59,7 +59,7 @@ async function serve(status: number, body: string): Promise<string> {
   });
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : 0;
-  return `http://127.0.0.1:${port}/toolchain/v1/manifest.json`;
+  return `http://127.0.0.1:${port}/toolchain/v2/manifest.json`;
 }
 
 describe("loadToolchainManifest", () => {
@@ -71,7 +71,7 @@ describe("loadToolchainManifest", () => {
 
     expect(loaded.kind).toBe("override");
     expect(loaded.source).toBe(file);
-    expect(loaded.manifest.format_version).toBe(1);
+    expect(loaded.manifest.format_version).toBe(2);
   });
 
   it("reads the same override from the environment", async () => {
@@ -173,7 +173,6 @@ describe("loadToolchainManifest", () => {
     const darwin: HostProbe = {
       platform: "darwin",
       arch: "arm64",
-      osRelease: null,
       glibc: null,
     };
 
@@ -197,7 +196,7 @@ describe("loadToolchainManifest", () => {
    */
   it("tells a Windows reader the same thing it tells every other platform", async () => {
     const url = await serve(500, "");
-    const windows: HostProbe = { platform: "win32", arch: "x64", osRelease: null, glibc: null };
+    const windows: HostProbe = { platform: "win32", arch: "x64", glibc: null };
 
     const failure = await loadToolchainManifest({
       url,
@@ -215,6 +214,6 @@ describe("loadToolchainManifest", () => {
 
 describe("the published address", () => {
   it("is the one hostname infra/terraform provisions", () => {
-    expect(TOOLCHAIN_MANIFEST_URL).toBe("https://cdn.xplainer.video/toolchain/v1/manifest.json");
+    expect(TOOLCHAIN_MANIFEST_URL).toBe("https://cdn.xplainer.video/toolchain/v2/manifest.json");
   });
 });

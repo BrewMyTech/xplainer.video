@@ -3,7 +3,7 @@
  * (plan §2 P2, §4 S2.4).
  *
  * `RenderBackend` is the only thing `createMcpServer()` knows about. The CLI
- * daemon backs it with the local Remotion workspace, the hosted media-service
+ * daemon backs it with the local video workspace, the hosted media-service
  * backs it with object storage and a job queue, and a test backs it with an
  * in-memory stub — none of which the registration in `server.ts` can tell
  * apart. That is the point: spec §Constraints/Contract requires local and

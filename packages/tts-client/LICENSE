@@ -20,8 +20,8 @@ under the Apache Licence, Version 2.0:
     packages/skill           @xplainer/skill
     packages/tts-client      @xplainer/tts-client
 
-Everything inside those eight directories is Apache-2.0, including the Remotion
-workspace template and the scaffold templates under `packages/render-core`.
+Everything inside those eight directories is Apache-2.0, including the workspace
+template and the scaffold templates under `packages/render-core`.
 The full licence text is in LICENSE-APACHE-2.0 at the root of this repository,
 and a copy of it is committed as `LICENSE` inside each of the eight package
 directories so that it also travels inside every published tarball. The
@@ -101,11 +101,10 @@ file. It is FFmpeg, x264 and zlib under the GNU General Public License version
 
 THIRD PARTY COMPONENTS
 
-Rendering depends on Remotion, which is licensed commercially by Remotion AG
-on its own terms. The Apache-2.0 grant in Part One covers this software only;
-it grants you nothing in respect of Remotion, and depending on the size of
-your company and how you use it you may need your own Remotion licence. See
-https://remotion.pro/license and the NOTICE file.
+This software depends on components that others own, and `xplainer setup`
+downloads more of them onto the machine it runs on, each under its own licence.
+The Apache-2.0 grant in Part One covers this software only and grants you
+nothing in respect of any of them. The NOTICE file names them and their terms.
 
 
 Questions: rishav@brewmytech.com

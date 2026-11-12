@@ -16,9 +16,10 @@
  *     agree.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { RenderBackend } from "@xplainer/mcp-server";
 import type { Narration } from "@xplainer/protocol";
@@ -29,8 +30,7 @@ import { createJobStore } from "./daemon/job-store.js";
 import { createJobRunner, type JobRunner } from "./daemon/runner.js";
 import { selfIdentity } from "./daemon/worker-identity.js";
 import { readJobRequest } from "./job-request.js";
-import { WORKSPACE_MANIFEST_FILE } from "./runtime/manifest.js";
-import { recordTestToolchain, writeTestWorkspaceManifest } from "./setup/testing/toolchain.js";
+import { recordTestToolchain } from "./setup/testing/toolchain.js";
 
 /** `packages/protocol/schemas/`, from this file rather than from a hard-coded depth. */
 const SCHEMAS = fileURLToPath(new URL("../../../packages/protocol/schemas/", import.meta.url));
@@ -77,14 +77,36 @@ afterEach(async () => {
 });
 
 /**
- * A machine where `xplainer setup` has run: the marker, and the workspace manifest it describes.
+ * A machine where `xplainer setup` has run: the marker, and the files it records.
  *
  * Because the two render tools ask the same question the worker factory asks a moment later — a
  * tool call that succeeded and a job that then failed on the toolchain is exactly the outcome an
  * agent holding a `job_id` cannot act on.
  */
 function pretendInstalled(): void {
-  recordTestToolchain({ stateDir, workspaceRoot: root });
+  recordTestToolchain({ stateDir });
+}
+
+/** Run `body` with `XPLAINER_FFMPEG` set to `value` — or unset — and put it back afterwards. */
+async function withFfmpegOverride(
+  value: string | undefined,
+  body: () => Promise<void>,
+): Promise<void> {
+  const before = process.env.XPLAINER_FFMPEG;
+  if (value === undefined) {
+    delete process.env.XPLAINER_FFMPEG;
+  } else {
+    process.env.XPLAINER_FFMPEG = value;
+  }
+  try {
+    await body();
+  } finally {
+    if (before === undefined) {
+      delete process.env.XPLAINER_FFMPEG;
+    } else {
+      process.env.XPLAINER_FFMPEG = before;
+    }
+  }
 }
 
 /** A narrated video, without running a narration: what `still` and `render` require on disk. */
@@ -158,8 +180,9 @@ describe("explainer_create", () => {
     expect(readFileSync(join(video.source, "Video.tsx"))).toEqual(
       readScaffoldTemplate("Video.tsx"),
     );
-    // The workspace itself is materialised on the first create, never installed by it.
-    expect(existsSync(join(root, "package.json"))).toBe(true);
+    // The workspace itself is materialised on the first create, as sources and nothing installed.
+    expect(existsSync(join(root, "tailwind.css"))).toBe(true);
+    expect(existsSync(join(root, "package.json"))).toBe(false);
     expect(existsSync(join(root, "node_modules"))).toBe(false);
   });
 
@@ -328,31 +351,91 @@ describe("explainer_still and explainer_render", () => {
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/timings\.json/);
   });
 
-  it("refuse a workspace whose dependencies were never installed", async () => {
-    await backend.explainer_create({ slug: "demo" });
-    pretendNarrated("demo");
-    recordTestToolchain({ stateDir, workspaceRoot: root });
-    rmSync(join(root, WORKSPACE_MANIFEST_FILE));
-
-    await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
-      /xplainer setup --workspace/,
-    );
-  });
-
   /**
    * The gate the tool call and the worker factory now share.
    *
-   * An installed workspace is not the whole answer: the browser every frame is drawn with comes
-   * from `xplainer setup` and nothing else on this machine records that it is here, so a machine
-   * with a workspace and no marker has to be refused at the call rather than inside a job.
+   * The browser every frame is drawn with comes from `xplainer setup` and nothing else on this
+   * machine records that it is here, so a machine with no marker has to be refused at the call
+   * rather than inside a job.
    */
-  it("refuse a machine where setup has never run, even with a workspace installed", async () => {
+  it("refuse a machine where setup has never run", async () => {
     await backend.explainer_create({ slug: "demo" });
     pretendNarrated("demo");
-    writeTestWorkspaceManifest({ stateDir, workspaceRoot: root });
 
     await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
     await expect(backend.explainer_still({ slug: "demo" })).rejects.toThrow(/xplainer setup/);
+  });
+
+  /**
+   * AC-A6 (i), ADR 0031 §Note, 2026-11-12, D12: a render needs an encoder and a still does not. On
+   * a machine whose marker records no ffmpeg, with no `XPLAINER_FFMPEG`, the render is refused at
+   * the call — before a job, a worker or a browser exists — and a still is queued as usual.
+   */
+  it("refuse a render at the call where nothing names an ffmpeg, and queue a still", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    recordTestToolchain({ stateDir, ffmpeg: false });
+
+    await withFfmpegOverride(undefined, async () => {
+      const refusal = backend.explainer_render({ slug: "demo" });
+      await expect(refusal).rejects.toMatchObject({ code: "WORKSPACE_NOT_INSTALLED" });
+      await expect(refusal).rejects.toThrow(/records no ffmpeg/);
+      await expect(backend.explainer_still({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
+    expect(runner.get({ job_id: 1 }).job_type).toBe("explainer_still");
+  });
+
+  /** The override is the other half of "a render needs an encoder": named, and executable. */
+  it("accept an executable XPLAINER_FFMPEG in place of the marker's, and refuse one naming nothing", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    const marker = recordTestToolchain({ stateDir, ffmpeg: false });
+
+    await withFfmpegOverride(join(stateDir, "no-such-ffmpeg"), async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
+        /XPLAINER_FFMPEG names .*no-such-ffmpeg, which is not an executable file/,
+      );
+    });
+    const executable = join(stateDir, "named-ffmpeg");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    await withFfmpegOverride(executable, async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
+    expect(marker.ffmpeg).toBeUndefined();
+  });
+
+  /**
+   * D12 at the call: a still needs no ffmpeg, so a recorded one replaced since setup probed it —
+   * a `brew upgrade` under `--ffmpeg-path` — does not refuse it; a render is refused for it, unless
+   * an executable `XPLAINER_FFMPEG` names the encoder instead.
+   */
+  it("queue a still beside a replaced recorded ffmpeg, and a render only on an override", async () => {
+    await backend.explainer_create({ slug: "demo" });
+    pretendNarrated("demo");
+    const marker = recordTestToolchain({ stateDir });
+    writeFileSync(marker.ffmpeg?.path ?? "", "a different binary, put here after setup\n");
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n");
+    chmodSync(named, 0o755);
+
+    await withFfmpegOverride(undefined, async () => {
+      await expect(backend.explainer_still({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+      await expect(backend.explainer_render({ slug: "demo" })).rejects.toThrow(
+        /replaced since setup checked it/,
+      );
+    });
+    await withFfmpegOverride(named, async () => {
+      await expect(backend.explainer_render({ slug: "demo" })).resolves.toMatchObject({
+        status: "queued",
+      });
+    });
   });
 
   it("record the still's frame and scale, defaulted from the schema", async () => {

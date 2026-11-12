@@ -2,28 +2,41 @@
  * The gate every render passes, asserted against real documents on disk.
  *
  * Each case here is a machine state a user can actually be in — setup never run, an artefact
- * cleaned away, a workspace resolved for another platform, a daemon updated past its workspace —
- * and what is asserted is the *reason* and the *repair*, because those are what `/healthz` reports
- * and what the refusal on a job record tells someone to do. Nothing is stubbed: the marker is
- * written by the writer under test and read back by the reader under test.
+ * cleaned away, a marker written before the cut, an ffmpeg replaced or too old — and what is
+ * asserted is the *reason* and the *repair*, because those are what `/healthz` reports and what the
+ * refusal on a job record tells someone to do. Nothing is stubbed: the marker is written by the
+ * writer under test and read back by the reader under test, and every recorded ffmpeg is a real file
+ * whose real size is what the gate stats.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import type { Toolchain, ToolchainFfmpeg } from "@xplainer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { WORKSPACE_MANIFEST_FILE } from "../runtime/manifest.js";
-import { readTemplatePins } from "../runtime/verify.js";
-import { recordTestToolchain, writeTestWorkspaceManifest } from "./testing/toolchain.js";
+import { hashFile } from "../runtime/manifest.js";
+import { recordTestToolchain } from "./testing/toolchain.js";
 import {
+  checkJobToolchain,
   checkToolchain,
-  firstPinSkew,
+  FFMPEG_MIN_LIBAVCODEC,
   hostPlatformKey,
   readToolchainMarker,
+  summariseToolchain,
   TOOLCHAIN_FORMAT_VERSION,
   TOOLCHAIN_MISSING,
   TOOLCHAIN_STALE,
+  toolchainLines,
   toolchainMarkerPath,
   writeToolchainMarker,
 } from "./toolchain.js";
@@ -36,11 +49,43 @@ function temporaryDirectory(prefix: string): string {
   return directory;
 }
 
-/** A state directory and a workspace root, the pair every caller of the gate holds. */
-function machine(): { stateDir: string; workspaceRoot: string } {
+/** A state directory, which is all a caller of the gate holds. */
+function machine(): { stateDir: string } {
+  return { stateDir: temporaryDirectory("xplainer-toolchain-state-") };
+}
+
+/**
+ * A recorded ffmpeg over a real file under the state directory, in the shape the provider records.
+ *
+ * The executable is `files[0]` and its `bytes` are its real size, which is the one fact about it the
+ * gate reads; a case about a replaced binary rewrites the file and leaves the record alone.
+ */
+function recordedFfmpeg(stateDir: string, libavcodec = "62.11.100"): ToolchainFfmpeg {
+  const path = join(stateDir, "toolchain", "ffmpeg-9.0.2", "ffmpeg");
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, "a stand-in for the ffmpeg setup acquired\n", { mode: 0o755 });
+  const sha256 = hashFile(path);
   return {
-    stateDir: temporaryDirectory("xplainer-toolchain-state-"),
-    workspaceRoot: temporaryDirectory("xplainer-toolchain-workspace-"),
+    version: "9.0.2",
+    path,
+    sha256,
+    provider: "manifest",
+    files: [{ path, sha256, bytes: statSync(path).size }],
+    libavcodec,
+    licence: "GPL-2.0-or-later",
+    publisher: "xplainer.video",
+    probe: { version: ["ffmpeg version 9.0.2"], buildconf: ["--enable-gpl"], license: ["GPL"] },
+  };
+}
+
+/** The marker as a version-1 build wrote it: a `workspace`, no `ffmpeg`, `format_version` 1. */
+function versionOneDocument(marker: Toolchain): Record<string, unknown> {
+  return {
+    format_version: 1,
+    created_at: marker.created_at,
+    chrome: marker.chrome,
+    speech: marker.speech,
+    workspace: { platform: hostPlatformKey(), version: "1.0.0" },
   };
 }
 
@@ -70,6 +115,71 @@ describe("the marker", () => {
 
     expect(readToolchainMarker(where.stateDir)).toBeNull();
   });
+
+  it("writes version 2, with no workspace", () => {
+    const where = machine();
+    recordTestToolchain(where);
+
+    const onDisk = JSON.parse(readFileSync(toolchainMarkerPath(where.stateDir), "utf8")) as Record<
+      string,
+      unknown
+    >;
+
+    expect(TOOLCHAIN_FORMAT_VERSION).toBe(2);
+    expect(onDisk.format_version).toBe(2);
+    expect(onDisk).not.toHaveProperty("workspace");
+  });
+
+  /**
+   * ADR 0031 §Note, 2026-11-12, D1: a version-1 marker is a valid shape describing an incomplete
+   * toolchain, not a corrupt document. Its `workspace` is not read, because nothing judges it.
+   */
+  it("reads a version-1 marker, workspace and all, as the two components it records", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    writeFileSync(toolchainMarkerPath(where.stateDir), JSON.stringify(versionOneDocument(marker)));
+
+    expect(readToolchainMarker(where.stateDir)).toEqual({
+      format_version: 1,
+      created_at: marker.created_at,
+      chrome: marker.chrome,
+      speech: marker.speech,
+    });
+  });
+
+  it("keeps a recorded ffmpeg through the writer and the validating reader", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir);
+
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg });
+
+    expect(readToolchainMarker(where.stateDir)?.ffmpeg).toEqual(ffmpeg);
+  });
+
+  /**
+   * Present and malformed rejects the whole document, for the reason `files` does: a reader that
+   * dropped a component it could not parse would judge a render against a toolchain without it.
+   */
+  it("refuses a marker whose ffmpeg is not one, rather than reading it without one", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir);
+    const broken: readonly Record<string, unknown>[] = [
+      { ...ffmpeg, files: [] },
+      { ...ffmpeg, libavcodec: "62" },
+      { ...ffmpeg, probe: { version: [], buildconf: [] } },
+      { ...ffmpeg, licence: "" },
+    ];
+
+    for (const value of broken) {
+      writeFileSync(
+        toolchainMarkerPath(where.stateDir),
+        JSON.stringify({ ...marker, ffmpeg: value }),
+      );
+      expect(readToolchainMarker(where.stateDir), JSON.stringify(value)).toBeNull();
+    }
+  });
 });
 
 describe("checkToolchain", () => {
@@ -81,7 +191,82 @@ describe("checkToolchain", () => {
 
     expect(status.ok).toBe(true);
     expect(status.reason).toBeNull();
-    expect(status.marker?.workspace.platform).toBe(hostPlatformKey());
+    expect(status.marker?.format_version).toBe(TOOLCHAIN_FORMAT_VERSION);
+  });
+
+  /**
+   * Nothing goes red at the cut: a marker written before it records everything a still and a render
+   * needed then, and whether a missing ffmpeg stops a job is the caller's to say.
+   */
+  it("passes a version-1 marker, and one with no ffmpeg, unless the caller requires ffmpeg", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+
+    expect(checkToolchain(where).ok).toBe(true);
+    writeFileSync(toolchainMarkerPath(where.stateDir), JSON.stringify(versionOneDocument(marker)));
+    expect(checkToolchain(where).ok).toBe(true);
+
+    const required = checkToolchain({ ...where, requireFfmpeg: true });
+    expect(required.reason).toBe(TOOLCHAIN_MISSING);
+    expect(required.detail).toContain("records no ffmpeg");
+    expect(required.detail).toContain("xplainer setup");
+  });
+
+  it("passes a recorded ffmpeg that is still the file setup recorded and new enough", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg: recordedFfmpeg(where.stateDir) });
+
+    expect(checkToolchain(where).ok).toBe(true);
+    expect(checkToolchain({ ...where, requireFfmpeg: true }).ok).toBe(true);
+  });
+
+  it("reports toolchain_missing naming a recorded ffmpeg that was cleaned away", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir);
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg });
+    rmSync(ffmpeg.path);
+
+    // Missing whatever the caller asked: a recorded component that is gone is never "ready".
+    const status = checkToolchain(where);
+
+    expect(status.reason).toBe(TOOLCHAIN_MISSING);
+    expect(status.detail).toContain(`ffmpeg (${ffmpeg.path})`);
+  });
+
+  /** The stat-only drift check: a replaced binary is a different size, and nothing is hashed. */
+  it("reports toolchain_stale when the ffmpeg on disk is not the size setup recorded", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir);
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg });
+    writeFileSync(ffmpeg.path, "a different binary, put here after setup checked the first one\n");
+
+    const status = checkToolchain(where);
+
+    expect(status.reason).toBe(TOOLCHAIN_STALE);
+    expect(status.detail).toContain("replaced since setup checked it");
+    expect(status.detail).toContain("xplainer setup");
+  });
+
+  it("reports toolchain_stale for a recorded libavcodec below the floor", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    writeToolchainMarker(where.stateDir, {
+      ...marker,
+      ffmpeg: recordedFfmpeg(where.stateDir, "59.37.100"),
+    });
+
+    const status = checkToolchain(where);
+
+    expect(FFMPEG_MIN_LIBAVCODEC).toBe(60);
+    expect(status.reason).toBe(TOOLCHAIN_STALE);
+    expect(status.detail).toContain("libavcodec 59.37.100");
+    expect(status.detail).toContain("libavcodec 60 or newer");
+    // The floor is the caller's when it names one: an incoming runtime's own, for `daemon update`.
+    expect(checkToolchain({ ...where, ffmpegMinLibavcodec: 59 }).ok).toBe(true);
+    expect(checkToolchain({ ...where, ffmpegMinLibavcodec: 63 }).reason).toBe(TOOLCHAIN_STALE);
   });
 
   it("reports toolchain_missing with `xplainer setup` when there is no marker at all", () => {
@@ -172,51 +357,6 @@ describe("checkToolchain", () => {
     expect(readToolchainMarker(where.stateDir)).toBeNull();
   });
 
-  it("reports toolchain_missing when the workspace has no manifest beside it", () => {
-    const where = machine();
-    recordTestToolchain(where);
-    rmSync(join(where.workspaceRoot, WORKSPACE_MANIFEST_FILE));
-
-    const status = checkToolchain(where);
-
-    expect(status.reason).toBe(TOOLCHAIN_MISSING);
-    expect(status.detail).toContain("xplainer setup --workspace");
-  });
-
-  /**
-   * `@remotion/compositor-<platform>` is a platform-specific optional dependency, so a workspace
-   * copied from another machine is a different artefact even when every declared version matches.
-   */
-  it("reports toolchain_stale for a workspace resolved on another platform", () => {
-    const where = machine();
-    recordTestToolchain(where);
-    writeTestWorkspaceManifest({ ...where, platform: "sunos", arch: "sparc" });
-
-    const status = checkToolchain(where);
-
-    expect(status.reason).toBe(TOOLCHAIN_STALE);
-    expect(status.detail).toContain("sunos-sparc");
-    expect(status.detail).toContain("compositor");
-  });
-
-  /**
-   * Decision D2's skew, from the side a *daemon update* creates it: the tree is intact and the
-   * template this build ships now pins something else. Round 3's check compared only the Remotion
-   * version, which is identical on both sides of the `zod` skew that made `remotion versions`
-   * exit 1 — so what is compared here is every pin the template declares.
-   */
-  it("reports toolchain_stale for a workspace resolved for a different template", () => {
-    const where = machine();
-    recordTestToolchain(where);
-    writeTestWorkspaceManifest({ ...where, pins: { ...readTemplatePins(), zod: "4.5.4" } });
-
-    const status = checkToolchain(where);
-
-    expect(status.reason).toBe(TOOLCHAIN_STALE);
-    expect(status.detail).toContain("zod");
-    expect(status.detail).toContain("remotion versions");
-  });
-
   it("treats a marker from a newer build as a rollback signal and leaves it alone", () => {
     const where = machine();
     const marker = recordTestToolchain(where);
@@ -233,26 +373,160 @@ describe("checkToolchain", () => {
   });
 });
 
-describe("firstPinSkew", () => {
-  it("names the first disagreeing package in name order, and nothing when there is none", () => {
-    const pins = { alpha: "1.0.0", zeta: "2.0.0" };
+/**
+ * ADR 0031 §Note, 2026-11-12, D12, as the gate applies it per job: a still needs no ffmpeg, and a
+ * render needs an override that names an executable by its absolute path **or** a valid recorded
+ * ffmpeg — either one, never both.
+ */
+describe("checkJobToolchain", () => {
+  /** A machine where setup has run, its ffmpeg broken in one of the ways a user's can be. */
+  function brokenFfmpeg(how: "replaced" | "removed" | "too old"): { stateDir: string } {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    const ffmpeg = recordedFfmpeg(where.stateDir, how === "too old" ? "59.37.100" : "62.11.100");
+    writeToolchainMarker(where.stateDir, { ...marker, ffmpeg });
+    if (how === "replaced") {
+      appendFileSync(ffmpeg.path, "and a `brew upgrade` later, a different binary\n");
+    }
+    if (how === "removed") {
+      rmSync(ffmpeg.path);
+    }
+    return where;
+  }
 
-    expect(firstPinSkew({ alpha: "1.0.0", zeta: "2.0.0" }, pins)).toBeNull();
-    expect(firstPinSkew({ alpha: "9.9.9", zeta: "0.0.1" }, pins)).toEqual({
-      name: "alpha",
-      expected: "1.0.0",
-      found: "9.9.9",
-    });
-    expect(firstPinSkew({ zeta: "2.0.0" }, pins)).toEqual({
-      name: "alpha",
-      expected: "1.0.0",
-      found: "nothing",
-    });
+  it("admits a still whatever has become of the recorded ffmpeg, and refuses the render", () => {
+    for (const how of ["replaced", "removed", "too old"] as const) {
+      const where = brokenFfmpeg(how);
+
+      const still = checkJobToolchain({ ...where, job: "still", env: {} });
+      const render = checkJobToolchain({ ...where, job: "render", env: {} });
+
+      expect(still, how).toMatchObject({ ok: true, reason: null });
+      expect(render.ok, how).toBe(false);
+    }
+  });
+
+  it("admits a render on an executable XPLAINER_FFMPEG, whatever has become of the recorded one", () => {
+    const named = join(machine().stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const how of ["replaced", "removed", "too old"] as const) {
+      const where = brokenFfmpeg(how);
+
+      const render = checkJobToolchain({
+        ...where,
+        job: "render",
+        env: { XPLAINER_FFMPEG: named },
+      });
+
+      expect(render, how).toMatchObject({ ok: true, reason: null });
+    }
+  });
+
+  /**
+   * The gate stats an override in the daemon's working directory and the worker spawns it from the
+   * workspace root, so a relative one is judged in one place and run in another — and `ffmpeg` alone
+   * is a `PATH` lookup by another name.
+   */
+  it("refuses a relative or bare XPLAINER_FFMPEG for a render, even where one exists there", () => {
+    const where = machine();
+    recordTestToolchain(where);
+    const cwd = process.cwd();
+    const directory = machine().stateDir;
+    mkdirSync(join(directory, "bin"));
+    writeFileSync(join(directory, "bin", "ffmpeg"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.chdir(directory);
+    try {
+      for (const named of [join("bin", "ffmpeg"), "ffmpeg"]) {
+        const render = checkJobToolchain({
+          ...where,
+          job: "render",
+          env: { XPLAINER_FFMPEG: named },
+        });
+
+        expect(render.reason, named).toBe(TOOLCHAIN_MISSING);
+        expect(render.detail, named).toContain(
+          `XPLAINER_FFMPEG names ${named}, which is not an absolute path`,
+        );
+      }
+      // A still never spawns an encoder, so the variable is nothing to it.
+      expect(
+        checkJobToolchain({ ...where, job: "still", env: { XPLAINER_FFMPEG: "ffmpeg" } }).ok,
+      ).toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  /** The worker's `isExecutableFile`, asked at the gate: Windows has no execute bit to lose. */
+  it("refuses a render whose recorded ffmpeg has lost its execute bit, as stale", () => {
+    const where = machine();
+    const marker = recordTestToolchain(where);
+    chmodSync(marker.ffmpeg?.path ?? "", 0o644);
+
+    const render = checkJobToolchain({ ...where, job: "render", env: {} });
+
+    if (process.platform === "win32") {
+      expect(render.ok).toBe(true);
+    } else {
+      expect(render.reason).toBe(TOOLCHAIN_STALE);
+      expect(render.detail).toContain("is not an executable file any more");
+      expect(render.detail).toContain("xplainer setup");
+    }
+    expect(checkJobToolchain({ ...where, job: "still", env: {} }).ok).toBe(true);
+  });
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D10, as the status commands print it: the verdict is the marker's
+ * alone, and an `XPLAINER_FFMPEG` in the shell asking is a fact reported beside it — never folded
+ * in, because the daemon that renders is not started from that shell.
+ */
+describe("summariseToolchain", () => {
+  it("judges the marker alone, and reports the shell's override as a fact of its own", () => {
+    const where = machine();
+    recordTestToolchain({ ...where, ffmpeg: false });
+    const named = join(where.stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const summary = summariseToolchain(where.stateDir, { XPLAINER_FFMPEG: named });
+    const lines = toolchainLines(summary).join("\n");
+
+    expect(summary).toMatchObject({ ok: false, reason: TOOLCHAIN_MISSING, ffmpeg: null });
+    expect(summary.override).toEqual({ path: named, refusal: null });
+    expect(lines).not.toContain("ready to render");
+    expect(lines).toContain(`toolchain:       ${TOOLCHAIN_MISSING} — `);
+    expect(lines).toContain("ffmpeg:        not recorded");
+    expect(lines).toContain(`XPLAINER_FFMPEG: ${named} — set in this shell`);
+    expect(lines).toContain("a supervised daemon never inherits it");
+  });
+
+  it("says nothing about an override where none is set, and names the one it would refuse", () => {
+    const where = machine();
+    recordTestToolchain(where);
+
+    const unset = summariseToolchain(where.stateDir, {});
+    const refused = summariseToolchain(where.stateDir, { XPLAINER_FFMPEG: "ffmpeg" });
+
+    expect(unset).toMatchObject({ ok: true, override: null });
+    expect(toolchainLines(unset).join("\n")).not.toContain("XPLAINER_FFMPEG");
+    expect(refused.ok).toBe(true);
+    expect(refused.override?.refusal).toContain("not an absolute path");
+    expect(toolchainLines(refused).join("\n")).toContain("refuses every render");
+  });
+
+  it("says the block is this machine's when the status command probed a URL it was given", () => {
+    const where = machine();
+    recordTestToolchain(where);
+
+    const [first] = toolchainLines(summariseToolchain(where.stateDir, {}), "http://10.0.0.2:8787");
+
+    expect(first).toContain("ready to render (read from this machine's toolchain.json");
+    expect(first).toContain("the daemon at http://10.0.0.2:8787 judges its own");
   });
 });
 
 describe("hostPlatformKey", () => {
-  it("is Node's own spelling, which is how the marker and the workspace manifest agree", () => {
+  it("is Node's own spelling, which is how setup reports this machine", () => {
     expect(hostPlatformKey()).toBe(`${process.platform}-${process.arch}`);
   });
 });

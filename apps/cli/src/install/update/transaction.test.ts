@@ -53,7 +53,8 @@ import {
   untilGone,
 } from "../../daemon/testing/spawn-child.js";
 import { isAlive } from "../../daemon/worker-identity.js";
-import { verifyWorkspacePayload } from "../../runtime/verify.js";
+import { RUNTIME_MANIFEST_FILE, readRuntimeManifest } from "../../runtime/manifest.js";
+import { checkToolchain, toolchainMarkerPath } from "../../setup/toolchain.js";
 import { installDaemon } from "../install.js";
 import { launcherPath } from "../launcher.js";
 import { stagedRuntimeRoot } from "../stage.js";
@@ -73,24 +74,17 @@ import {
   recoverUpdate,
   updateStatusSentences,
 } from "./recover.js";
-import { templatePinsOf } from "./stage.js";
 import {
   fixtureEnvironment,
   fixtureLingerMarker,
+  HARNESS_LOG_FILE,
   PARKED_LINE,
   type UpdateHarness,
   updateHarness,
   windowsFixtureEnvironment,
 } from "./testing/harness.js";
 import { renderersAmong, untilProcessesNaming } from "./testing/survivors.js";
-import { writeFixtureWorkspace } from "./testing/workspace.js";
 import { UpdateRefusal, updateDaemon } from "./transaction.js";
-
-/** The pins both supported runtimes declare. Identical, which is what makes an update legal. */
-const PINS = { remotion: "4.0.495", react: "19.2.3" } as const;
-
-/** The pins a runtime that may not be updated to declares. One package, one different version. */
-const OTHER_PINS = { remotion: "4.0.500", react: "19.2.3" } as const;
 
 /** The budget for a case that stages a payload and starts a real daemon out of it. */
 const SPAWN_TIMEOUT_MS = 90_000;
@@ -152,7 +146,7 @@ function stopCommandWord(platform: NodeJS.Platform): string {
 let suiteScratch = "";
 let alpha: FixturePayload;
 let beta: FixturePayload;
-let gamma: FixturePayload;
+let preCut: FixturePayload;
 const scratch: string[] = [];
 /**
  * Every state directory a case made, so a daemon nobody holds a handle for is still cleaned up.
@@ -185,7 +179,6 @@ beforeAll(() => {
     outDir: join(suiteScratch, "alpha"),
     version: "1.2.3-alpha",
     marker: "1.2.3-alpha",
-    templatePins: PINS,
     // `runtime/verify.ts` refuses a payload whose manifest names another platform, so a Windows
     // payload cannot be staged here at all. What *is* checkable everywhere is the artefact, the
     // argv and the command sequence, and those need only a file at the name a `win32` launch
@@ -196,16 +189,16 @@ beforeAll(() => {
     outDir: join(suiteScratch, "beta"),
     version: "2.0.0-beta",
     marker: "2.0.0-beta",
-    templatePins: PINS,
     extraInterpreters: ["node.exe"],
   });
-  // Never started, so it needs no interpreter: it exists to be refused before anything is staged.
-  gamma = buildFixturePayload({
-    outDir: join(suiteScratch, "gamma"),
-    version: "3.0.0-gamma",
-    marker: "3.0.0-gamma",
-    templatePins: OTHER_PINS,
-    runnable: false,
+  // A runtime from before ADR 0031's cut: no `toolchain` block in its manifest, so it reads
+  // `toolchain.json` format 1. Only ever the incoming side: this build refuses to install it, so
+  // the cases with a pre-cut daemon make one with `preCutInstalled` instead.
+  preCut = buildFixturePayload({
+    outDir: join(suiteScratch, "pre-cut"),
+    version: "0.9.0-precut",
+    marker: "0.9.0-precut",
+    toolchain: null,
   });
 }, 180_000);
 
@@ -259,31 +252,19 @@ function scratchDirectory(): string {
   return directory;
 }
 
-/** One machine: a state directory with a setup marker, a home, and a verified workspace. */
-function machine(
-  options: { resolved?: Record<string, string>; pins?: Readonly<Record<string, string>> } = {},
-) {
+/** One machine: a state directory with a setup marker, and a home. */
+function machine() {
   const root = scratchDirectory();
   const stateDir = join(root, "state");
   const home = join(root, "home");
-  const workspaceRoot = join(root, "workspace");
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   mkdirSync(home, { recursive: true });
-  mkdirSync(workspaceRoot, { recursive: true });
   writeToolchainMarker(stateDir);
   stateDirs.push(stateDir);
-  writeFixtureWorkspace({
-    outDir: workspaceRoot,
-    // The pins the workspace was installed from, which is `setup --workspace`'s answer and not
-    // always the installed runtime's: the sixth refusal case is the machine where they differ.
-    pins: options.pins ?? PINS,
-    ...(options.resolved === undefined ? {} : { resolved: options.resolved }),
-  });
   return {
     root,
     stateDir,
     home,
-    workspaceRoot,
     // **The same object the interrupted updater builds for itself.** `interruptEnvironment()` hands
     // the child the scratch *root* on `win32`, because that is the tree `windowsFixtureEnvironment`
     // hangs `Users/tester` and `AppData` off — so a recovery running in *this* process with
@@ -370,6 +351,70 @@ function hashFile(path: string): string {
 }
 
 /**
+ * Every entry under a state directory, by relative path and contents, as one SHA-256.
+ *
+ * AC-A8's "stages and drains nothing", asserted of the **whole** directory rather than of the parts
+ * a case thought to look at. One file is left out, and it is not the product's: the recording
+ * harness's own sink, which the daemon it starts writes to on its own schedule.
+ */
+function stateDigest(stateDir: string): string {
+  const hash = createHash("sha256");
+  const walk = (directory: string, prefix: string): void => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+    );
+    for (const entry of entries) {
+      const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      if (relative === HARNESS_LOG_FILE) {
+        continue;
+      }
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`dir ${relative}\n`);
+        walk(path, relative);
+      } else if (entry.isFile()) {
+        hash.update(`file ${relative}\n`);
+        hash.update(readFileSync(path));
+      } else {
+        hash.update(`other ${relative}\n`);
+      }
+    }
+  };
+  walk(stateDir, "");
+  return hash.digest("hex");
+}
+
+/**
+ * Make the installed runtime one from before ADR 0031's cut, as an earlier release left it.
+ *
+ * `daemon install` refuses a payload that reads format 1, so this build cannot stand a pre-cut
+ * daemon up. What the precondition reads is the manifest `daemon.json`'s `runtime_dir` leads to,
+ * so that manifest is rewritten to the shape every release before the cut wrote — `manifest_version`
+ * 1 and no `toolchain` block — and the daemon already running from it is left alone.
+ */
+function preCutInstalled(stateDir: string): void {
+  const runtimeDir = readDaemonState(stateDir).runtime_dir;
+  expect(runtimeDir).not.toBeNull();
+  const path = join(runtimeDir ?? "", RUNTIME_MANIFEST_FILE);
+  const { toolchain: _declared, ...manifest } = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  writeFileSync(path, `${JSON.stringify({ ...manifest, manifest_version: 1 }, null, 2)}\n`);
+  expect(readRuntimeManifest(runtimeDir ?? "").toolchain).toBeUndefined();
+}
+
+/** Rewrite the machine's marker without its `ffmpeg`: one `setup` wrote before it acquired one. */
+function forgetFfmpeg(stateDir: string): void {
+  const marker = JSON.parse(readFileSync(toolchainMarkerPath(stateDir), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  delete marker.ffmpeg;
+  writeFileSync(toolchainMarkerPath(stateDir), `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+/**
  * The daemon's own answer to an authenticated `/healthz`, or `null` when nothing answers.
  *
  * `node:http` with `agent: false`, not `fetch`: a pooled keep-alive socket outlives the response
@@ -433,7 +478,6 @@ describe("daemon update — the transaction", () => {
         from: beta.outDir,
         environment: where.environment,
         run: harness.run,
-        workspaceRoot: where.workspaceRoot,
         healthTimeoutMs: HEALTH_MS,
       });
 
@@ -484,7 +528,6 @@ describe("daemon update — the transaction", () => {
         from: beta.outDir,
         environment: where.environment,
         run: harness.run,
-        workspaceRoot: where.workspaceRoot,
         healthTimeoutMs: HEALTH_MS,
       });
 
@@ -532,7 +575,6 @@ describe("daemon update — the transaction", () => {
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
           healthTimeoutMs: DOOMED_HEALTH_MS,
         }),
       );
@@ -597,7 +639,6 @@ describe("daemon update — the transaction", () => {
         environment,
         run: harness.run,
         uid: 0,
-        workspaceRoot: where.workspaceRoot,
         healthTimeoutMs: HEALTH_MS,
       });
 
@@ -647,7 +688,6 @@ describe("daemon update — which program sources it will move", () => {
         from: beta.outDir,
         environment: where.environment,
         run: harness.run,
-        workspaceRoot: where.workspaceRoot,
       });
 
       expect(outcome.rolledBack).toBe(false);
@@ -672,7 +712,6 @@ describe("daemon update — which program sources it will move", () => {
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
 
@@ -703,7 +742,6 @@ describe("daemon update — which program sources it will move", () => {
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
 
@@ -715,129 +753,7 @@ describe("daemon update — which program sources it will move", () => {
   );
 });
 
-describe("daemon update — the pre-drain precondition (D9)", () => {
-  it(
-    "refuses a runtime whose template pins differ, having staged nothing and drained nothing",
-    async () => {
-      const where = machine();
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-      const before = readRuntimeState(where.stateDir);
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: gamma.outDir,
-          environment: where.environment,
-          run: harness.run,
-          workspaceRoot: where.workspaceRoot,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("remotion: installed 4.0.495, incoming 4.0.500");
-      expect(refusal.message).toContain("REINSTALL");
-      // The reinstall path, run from the NEW runtime's own program rather than the launcher.
-      expect(refusal.message).toContain(`${gamma.interpreter} ${gamma.entry} setup --workspace`);
-      expect(refusal.message).toContain(
-        `${gamma.interpreter} ${gamma.entry} daemon install --runtime ${gamma.outDir}`,
-      );
-      expect(refusal.message).not.toContain(launcherPath(where.stateDir));
-
-      // Nothing staged, nothing drained, no journal.
-      const slots = stagedSlots(where.stateDir);
-      expect(slots).toHaveLength(1);
-      expect(slots[0]).toContain("1.2.3-alpha");
-      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
-      expect((await askHealth(where.stateDir))?.version).toBe("1.2.3-alpha");
-      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
-  it(
-    "still refuses when a matching payload 2 is staged beside the new runtime",
-    async () => {
-      const where = machine();
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-      // Round 4's paired path, offered and not taken: a workspace that satisfies the incoming
-      // runtime exactly, staged beside it. D9 dropped that route, so the refusal is unchanged.
-      const paired = join(scratchDirectory(), "payload-2");
-      mkdirSync(paired, { recursive: true });
-      writeFixtureWorkspace({ outDir: paired, pins: OTHER_PINS });
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: gamma.outDir,
-          environment: where.environment,
-          run: harness.run,
-          workspaceRoot: where.workspaceRoot,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("REINSTALL");
-      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
-  it(
-    "refuses when the installed workspace does not satisfy the runtimes it must serve",
-    async () => {
-      // Identical pins on both sides, and a workspace that resolved something else — the state a
-      // machine is in when its workspace was installed from a different template.
-      const where = machine({ resolved: { remotion: "4.0.400", react: "19.2.3" } });
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: beta.outDir,
-          environment: where.environment,
-          run: harness.run,
-          workspaceRoot: where.workspaceRoot,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("does not satisfy the installed runtime");
-      expect(refusal.message).toContain("xplainer setup --workspace");
-      expect(stagedSlots(where.stateDir)).toHaveLength(1);
-      expect((await askHealth(where.stateDir))?.version).toBe("1.2.3-alpha");
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
-  it(
-    "refuses when there is no verified workspace at all",
-    async () => {
-      const where = machine();
-      const harness = harnessFor(where);
-      await installed(where, alpha, harness);
-      const empty = join(scratchDirectory(), "no-workspace");
-      mkdirSync(empty, { recursive: true });
-
-      const refusal = await refusalFrom(() =>
-        updateDaemon({
-          stateDir: where.stateDir,
-          from: beta.outDir,
-          environment: where.environment,
-          run: harness.run,
-          workspaceRoot: empty,
-        }),
-      );
-
-      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
-      expect(refusal.message).toContain("xplainer setup --workspace");
-      expect(stagedSlots(where.stateDir)).toHaveLength(1);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
+describe("daemon update — the source of the incoming runtime", () => {
   it(
     "will not take the runtime from PATH: the source is named or there is no update",
     async () => {
@@ -850,7 +766,6 @@ describe("daemon update — the pre-drain precondition (D9)", () => {
           stateDir: where.stateDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
       expect(neither.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
@@ -864,7 +779,6 @@ describe("daemon update — the pre-drain precondition (D9)", () => {
           build: true,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
       expect(both.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
@@ -889,7 +803,6 @@ describe("daemon update — the operation lock and the commanded recovery", () =
         from: beta.outDir,
         environment: where.environment,
         run: harnessFor(where).run,
-        workspaceRoot: where.workspaceRoot,
       }).then(
         () => null,
         (error: unknown) => error,
@@ -954,7 +867,6 @@ describe("daemon update — the operation lock and the commanded recovery", () =
           from: beta.outDir,
           environment: where.environment,
           run: harnessFor(where).run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
       expect(second.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
@@ -976,7 +888,6 @@ describe("daemon update — the operation lock and the commanded recovery", () =
         stateDir: where.stateDir,
         environment: where.environment,
         run: harness.run,
-        workspaceRoot: where.workspaceRoot,
         healthTimeoutMs: HEALTH_MS,
       });
 
@@ -1038,7 +949,6 @@ describe("daemon update — the operation lock and the commanded recovery", () =
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
       expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
@@ -1069,7 +979,6 @@ function interruptEnvironment(
     XPLAINER_TEST_HOME: platform === "win32" ? where.root : where.home,
     XPLAINER_TEST_PAYLOAD_A: alpha.outDir,
     XPLAINER_TEST_PAYLOAD_B: beta.outDir,
-    XPLAINER_TEST_WORKSPACE: where.workspaceRoot,
     XPLAINER_TEST_PARK_AT: boundary,
     XPLAINER_TEST_REFUSE_START: incomingSlotPrefix(where.stateDir),
     XPLAINER_TEST_HEALTH_MS: String(DOOMED_HEALTH_MS),
@@ -1103,24 +1012,27 @@ function stagedDirectoryFor(stateDir: string, version: string): string {
  * Round 4's four assertions — the previous runtime answering, the newer version's state intact, one
  * owner, no surviving Chrome — all pass on a daemon that answers `/healthz` and cannot render, which
  * is the failure class the whole precondition exists for. What makes the rolled-back daemon able to
- * render is that the installed workspace satisfies **the runtime that is installed now**, and that
- * is asked here of the shipped verifier: it re-hashes every file of the workspace and compares its
- * resolved versions against the pins in the rolled-back runtime's own `template/package.json`.
+ * render is that the machine's `toolchain.json` satisfies **the runtime that is installed now**, and
+ * that is asked here of the shipped gate, against that runtime's own manifest's requirements — the
+ * same judgement `daemon update`'s third clause made of the incoming runtime before it staged it.
  *
  * **What is deferred, and to where.** The PNG itself needs a Chrome headless shell and a real
- * payload 2 — T19's and T33's, in B6 — so `scripts/e2e/toolchain.mjs` **reruns every rollback case
- * and renders a still against the recovered daemon**. B5 proves the transaction, the journal, the
- * boundaries, the recovery command and this readiness; B6 proves the image.
+ * encoder, so `scripts/e2e/toolchain.mjs` **reruns every rollback case and renders a still against
+ * the recovered daemon**. B5 proves the transaction, the journal, the boundaries, the recovery
+ * command and this readiness; B6 proves the image.
  */
 function expectRenderReady(where: Machine): void {
   const installedRuntime = readDaemonState(where.stateDir).runtime_dir;
   expect(installedRuntime).not.toBeNull();
-  const report = verifyWorkspacePayload(
-    where.workspaceRoot,
-    templatePinsOf(installedRuntime as string, "installed"),
-  );
-  expect(report.ok).toBe(true);
-  expect(report.checked).toBeGreaterThan(0);
+  const requirement = readRuntimeManifest(installedRuntime as string).toolchain;
+  expect(requirement).toBeDefined();
+  const status = checkToolchain({
+    stateDir: where.stateDir,
+    requireFfmpeg: true,
+    ffmpegMinLibavcodec: requirement?.ffmpeg_min_libavcodec,
+  });
+  expect(status.detail).toBeNull();
+  expect(status.ok).toBe(true);
 }
 
 /**
@@ -1273,7 +1185,6 @@ describe("daemon update — the updater's own death, at every durable boundary",
             stateDir: where.stateDir,
             environment: where.environment,
             run: harness.run,
-            workspaceRoot: where.workspaceRoot,
             healthTimeoutMs: DOOMED_HEALTH_MS,
           }),
         );
@@ -1382,7 +1293,6 @@ describe("daemon update — the updater's own death, at every durable boundary",
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
           healthTimeoutMs: DOOMED_HEALTH_MS,
           rollbackHealthTimeoutMs: ROLLBACK_HEALTH_MS,
         }),
@@ -1402,7 +1312,6 @@ describe("daemon update — the updater's own death, at every durable boundary",
           stateDir: where.stateDir,
           environment: where.environment,
           run: second.run,
-          workspaceRoot: where.workspaceRoot,
           healthTimeoutMs: DOOMED_HEALTH_MS,
         }),
       );
@@ -1438,7 +1347,6 @@ describe("daemon update — the updater's own death, at every durable boundary",
           from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
           healthTimeoutMs: DOOMED_HEALTH_MS,
           rollbackHealthTimeoutMs: ROLLBACK_HEALTH_MS,
         }),
@@ -1457,102 +1365,224 @@ describe("daemon update — the updater's own death, at every durable boundary",
   );
 });
 
-describe("daemon update — the precondition is the three-way one (D9's second clause)", () => {
+describe("daemon update — ADR 0031's cut is a reinstall (§Note, 2026-11-12, D2 (a))", () => {
+  /** The three commands a refusal across the cut ends in, in order. */
+  function expectReinstall(message: string): void {
+    const uninstall = message.indexOf("  xplainer daemon uninstall\n");
+    const setup = message.indexOf("  xplainer setup\n");
+    const install = message.indexOf("  xplainer daemon install\n");
+    expect(uninstall).toBeGreaterThan(-1);
+    expect(setup).toBeGreaterThan(uninstall);
+    expect(install).toBeGreaterThan(setup);
+  }
+
   it(
-    "refuses when the workspace already matches B and the rollback target's pins differ",
+    "refuses forwards: a daemon from before the cut is not updated to a format-2 runtime",
     async () => {
-      // The machine a user is on after running `setup --workspace` from the new runtime: the
-      // workspace matches **B**. `setup --workspace` is T18/T19's command, so the state it leaves
-      // is written directly here — and it is the state, not the route to it, that this case is
-      // about. §1.3d A settles that the route cannot be taken through the installed launcher
-      // anyway, because that launcher execs A and would re-resolve A's pins.
-      const where = machine({ pins: OTHER_PINS });
+      const where = machine();
       const harness = harnessFor(where);
       await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
       const before = readRuntimeState(where.stateDir);
-
-      // This is what makes the case the one the second clause exists for: a check written as
-      // "does the workspace satisfy the incoming runtime" **passes** here.
-      expect(verifyWorkspacePayload(where.workspaceRoot, OTHER_PINS).ok).toBe(true);
-      // And the rollback target is precisely the runtime it no longer satisfies.
-      expect(verifyWorkspacePayload(where.workspaceRoot, PINS).ok).toBe(false);
+      const digest = stateDigest(where.stateDir);
 
       const refusal = await refusalFrom(() =>
         updateDaemon({
           stateDir: where.stateDir,
-          from: gamma.outDir,
+          from: beta.outDir,
           environment: where.environment,
           run: harness.run,
-          workspaceRoot: where.workspaceRoot,
         }),
       );
 
       expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
       expect(refusal.phase).toBe("precondition");
-      expect(refusal.message).toContain("remotion: installed 4.0.495, incoming 4.0.500");
-      expect(refusal.message).toContain("REINSTALL");
-      expect(refusal.message).toContain(`${gamma.interpreter} ${gamma.entry} setup --workspace`);
+      expect(refusal.message).toContain("reads toolchain.json format 1");
+      expect(refusal.message).toContain("reads format 2");
+      expect(refusal.message).toContain("crossed forwards");
+      expectReinstall(refusal.message);
 
-      // Untouched: nothing staged, nothing drained, the same run still answering, no journal.
+      // Nothing staged, nothing drained, no journal, no lock — and the directory says so whole.
       expect(stagedSlots(where.stateDir)).toHaveLength(1);
       expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
-      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
       expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
       expect(existsSync(operationLockPath(where.stateDir))).toBe(false);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
     },
     SPAWN_TIMEOUT_MS,
   );
 
-  /**
-   * The other side of the same clause, and the one that made the check refuse **every** machine.
-   *
-   * `openTransaction()` verifies the live workspace with `verifyWorkspacePayload()`, which used to
-   * re-hash the tree in payload 1's exhaustive mode: anything the payload manifest did not describe
-   * was a mismatch. A workspace manifest describes `node_modules/`, `package.json` and
-   * `package-lock.json` and deliberately nothing else, while `setup` copies three template files in
-   * beside them and the user's own renders land in `videos/` and `out/` — so `xplainer daemon
-   * update` exited `3` on every machine `xplainer setup` had ever run on, before anything was
-   * staged, with no way for a user to get past it. `scripts/e2e/toolchain.mjs` met it first, on a
-   * real workspace, and could not reach a single rollback case.
-   *
-   * The files written here are the exact set a real workspace holds: the three template files
-   * `materialiseWorkspace()` copies, the user's video tree, and the cache Remotion's own webpack
-   * leaves **inside** `node_modules/` after the first render.
-   */
   it(
-    "accepts a workspace holding the template files, the user's videos and Remotion's cache",
+    "refuses two runtimes from before the cut that agree, because this setup writes format 2",
+    async () => {
+      // Clause 1 compared the two sides with each other and nothing else, so a pre-cut daemon
+      // updated to another pre-cut runtime passed it — and the clause-2 check that followed asks a
+      // runtime with no `toolchain` block for no ffmpeg, so it passed too.
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
+      const before = readRuntimeState(where.stateDir);
+      const digest = stateDigest(where.stateDir);
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: preCut.outDir,
+          environment: where.environment,
+          run: harness.run,
+          healthTimeoutMs: HEALTH_MS,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain(
+        `the incoming runtime at ${preCut.outDir} both read toolchain.json format 1, from ` +
+          "before ADR 0031's cut, and this xplainer's `setup` writes format 2.",
+      );
+      expectReinstall(refusal.message);
+
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
+      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses `--build` across the cut before it assembles anything",
+    async () => {
+      // `--build` assembled a ~146 MB payload and only then read the manifest the refusal turns
+      // on — a constant of this build, knowable without the payload. Named as what it is rather
+      // than as the temporary directory it would have been assembled into.
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      preCutInstalled(where.stateDir);
+      const digest = stateDigest(where.stateDir);
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          build: true,
+          environment: where.environment,
+          run: harness.run,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain(
+        "reads toolchain.json format 1 and the runtime this xplainer assembles reads format 2.",
+      );
+      expect(refusal.message).toContain("crossed forwards");
+      expect(refusal.message).not.toContain("xplainer-update-build-");
+      expectReinstall(refusal.message);
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses backwards: a format-2 daemon is not rolled across to a runtime from before the cut",
     async () => {
       const where = machine();
       const harness = harnessFor(where);
       await installed(where, alpha, harness);
+      const before = readRuntimeState(where.stateDir);
+      const digest = stateDigest(where.stateDir);
 
-      for (const name of ["remotion.config.ts", "tailwind.css", "tsconfig.json"]) {
-        writeFileSync(join(where.workspaceRoot, name), "// engine-owned\n");
-      }
-      mkdirSync(join(where.workspaceRoot, "videos", "demo"), { recursive: true });
-      writeFileSync(join(where.workspaceRoot, "videos", "demo", "timings.json"), "{}\n");
-      mkdirSync(join(where.workspaceRoot, "out", "demo"), { recursive: true });
-      writeFileSync(join(where.workspaceRoot, "out", "demo", "explainer.mp4"), "mp4");
-      mkdirSync(join(where.workspaceRoot, "node_modules", ".cache", "webpack"), {
-        recursive: true,
-      });
-      writeFileSync(join(where.workspaceRoot, "node_modules", ".cache", "webpack", "0.pack"), "c");
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: preCut.outDir,
+          environment: where.environment,
+          run: harness.run,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain("reads toolchain.json format 2");
+      expect(refusal.message).toContain("crossed backwards");
+      expectReinstall(refusal.message);
+
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
+      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "within format 2, refuses a marker that records no ffmpeg and names `xplainer setup`",
+    async () => {
+      // Every case's readiness is a `200`, and a daemon reporting a degraded toolchain answers `200`
+      // as well — so this is the clause that stops an update reporting success over a daemon that
+      // cannot render. It takes the place of the two that re-hashed the workspace.
+      const where = machine();
+      forgetFfmpeg(where.stateDir);
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
+      const before = readRuntimeState(where.stateDir);
+      const marker = readFileSync(toolchainMarkerPath(where.stateDir), "utf8");
+      const digest = stateDigest(where.stateDir);
+
+      const refusal = await refusalFrom(() =>
+        updateDaemon({
+          stateDir: where.stateDir,
+          from: beta.outDir,
+          environment: where.environment,
+          run: harness.run,
+        }),
+      );
+
+      expect(refusal.exitCode).toBe(PRECONDITION_UNMET_EXIT_CODE);
+      expect(refusal.phase).toBe("precondition");
+      expect(refusal.message).toContain(
+        "does not satisfy the incoming runtime (toolchain_missing)",
+      );
+      expect(refusal.message).toContain("records no ffmpeg");
+      expect(refusal.message).toContain("  xplainer setup\n");
+      expect(refusal.message).not.toContain("--workspace");
+
+      expect(stagedSlots(where.stateDir)).toHaveLength(1);
+      expect(readRuntimeState(where.stateDir)?.run_id).toBe(before?.run_id);
+      expect(existsSync(updateJournalPath(where.stateDir))).toBe(false);
+      expect(readFileSync(toolchainMarkerPath(where.stateDir), "utf8")).toBe(marker);
+      expect(stateDigest(where.stateDir)).toBe(digest);
+      expect((await askHealth(where.stateDir))?.version).toBe(PREVIOUS_VERSION);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  it(
+    "says what it established before it staged anything",
+    async () => {
+      const where = machine();
+      const harness = harnessFor(where);
+      await installed(where, alpha, harness);
 
       const outcome = await updateDaemon({
         stateDir: where.stateDir,
         from: beta.outDir,
         environment: where.environment,
         run: harness.run,
-        workspaceRoot: where.workspaceRoot,
         healthTimeoutMs: HEALTH_MS,
       });
 
       expect(outcome.rolledBack).toBe(false);
-      expect(outcome.health.version).toBe("2.0.0-beta");
-      expect((await askHealth(where.stateDir))?.version).toBe("2.0.0-beta");
-      // The pins were still proved rather than waved through: the precondition prints how many
-      // files of the workspace it re-hashed, and every one of them is a manifest entry.
-      expect(outcome.steps.join("\n")).toMatch(/[1-9]\d* files re-hashed/);
+      expect(outcome.health.version).toBe(INCOMING_VERSION);
+      expect(outcome.steps.join("\n")).toContain(
+        "both runtimes read toolchain.json format 2, and the marker satisfies the incoming runtime",
+      );
     },
     SPAWN_TIMEOUT_MS,
   );

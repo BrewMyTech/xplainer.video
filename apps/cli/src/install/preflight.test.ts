@@ -115,7 +115,7 @@ function stateDirectory(): string {
   return stateDir;
 }
 
-/** A complete toolchain marker whose two recorded files really are on disk. */
+/** A complete toolchain marker whose recorded files really are on disk. */
 function writeMarker(stateDir: string, overrides: Partial<Toolchain> = {}): Toolchain {
   return writeToolchainMarker(stateDir, overrides);
 }
@@ -332,8 +332,56 @@ describe("the setup marker", () => {
     });
 
     expect(preflight.toolchain.newerFormat).toBe(true);
-    expect(preflight.toolchain.marker?.chrome.provider).toBe("remotion");
+    expect(preflight.toolchain.marker?.chrome.provider).toBe("manifest");
     expect(preflight.refusals.map((refusal) => refusal.code)).not.toContain("setup-unreadable");
+  });
+
+  /**
+   * ADR 0031 §Note, 2026-11-12, D1: a version-1 marker is a valid shape describing an incomplete
+   * toolchain. Its `workspace` is not asked about, and nothing it never recorded can be "gone".
+   */
+  it("accepts a version-1 marker, with its workspace and without an ffmpeg", async () => {
+    const stateDir = stateDirectory();
+    const { ffmpeg: _dropped, ...marker } = writeMarker(stateDir);
+    writeFileSync(
+      toolchainMarkerPath(stateDir),
+      `${JSON.stringify({
+        ...marker,
+        format_version: 1,
+        workspace: { platform: "darwin-arm64", version: "1.0.0" },
+      })}\n`,
+    );
+
+    const preflight = await preflightWithoutWriting({
+      stateDir,
+      port: 0,
+      platform: "darwin",
+      run: runnerAnswering({}).run,
+    });
+
+    expect(preflight.toolchain.formatVersion).toBe(1);
+    expect(preflight.toolchain.newerFormat).toBe(false);
+    expect(preflight.toolchain.marker?.ffmpeg).toBeUndefined();
+    expect(preflight.toolchain.missing).toEqual([]);
+    expect(preflight.refusals.map((refusal) => refusal.code)).not.toContain("setup-unreadable");
+  });
+
+  it("refuses with 3 when the ffmpeg the marker records is gone", async () => {
+    const stateDir = stateDirectory();
+    const marker = writeMarker(stateDir);
+    const ffmpeg = marker.ffmpeg?.path ?? "";
+    expect(ffmpeg).not.toBe("");
+    rmSync(ffmpeg);
+
+    const preflight = await preflightWithoutWriting({
+      stateDir,
+      port: 0,
+      platform: "linux",
+      run: runnerAnswering({ stdout: "running\n" }).run,
+    });
+
+    expect(preflight.toolchain.missing).toEqual([ffmpeg]);
+    expect(preflight.refusals[0]).toMatchObject({ code: "setup-paths-gone" });
   });
 });
 

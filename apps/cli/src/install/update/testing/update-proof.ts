@@ -21,7 +21,7 @@
  * ## What is real, and the two things that are not
  *
  * Real: both payloads, assembled by the shipped `assembleRuntime()` from this checkout, each
- * carrying a copy of this machine's interpreter, npm and the whole `@xplainer/cli` closure; the
+ * carrying a copy of this machine's interpreter and the whole `@xplainer/cli` closure; the
  * staged copies; the plist bytes; `launchctl bootout`, `enable`, `bootstrap` and `kickstart`; the
  * daemon, which is the real `xplainer serve` taking real ownership, reconciling and binding both
  * listeners; the drain, which travels over that daemon's own unix socket; and `/healthz`, which is
@@ -39,12 +39,11 @@
  *    installs the product's real `xplainer.service` in this account's own config directory and
  *    removes it in the `finally`. Run the Linux leg on a runner or in the systemd container, which
  *    is what `.github/workflows/daemon-update.yml` and `infra/e2e/Dockerfile.systemd` are for.
- * 2. **The workspace.** The pre-drain precondition needs a payload-2 that satisfies both runtimes'
- *    template pins, and a real one is an `npm ci` of a 268-package tree. This proof writes a
- *    fixture workspace whose manifest carries **the real template's pins**, read from this
- *    checkout's `@xplainer/render-core`. What that establishes is that the precondition reads and
- *    verifies a real manifest against the real pins. That the workspace can **render** is T16's
- *    rollback rerun and `scripts/e2e/toolchain.mjs`, not this script's claim.
+ * 2. **The toolchain.** The pre-drain precondition judges `toolchain.json` against the incoming
+ *    runtime's stated requirements, and this proof writes the committed fixture marker, whose
+ *    browser and ffmpeg are stand-ins with real digests. What that establishes is that the
+ *    precondition reads a real marker. That the machine can **render** is T16's rollback rerun and
+ *    `scripts/e2e/toolchain.mjs`, not this script's claim.
  *
  * ## How B gets a different `CLI_VERSION`
  *
@@ -63,7 +62,6 @@ import process from "node:process";
 import { readDaemonState, readRuntimeState } from "../../../daemon/daemon-state.js";
 import { assembleRuntime } from "../../../runtime/assemble.js";
 import { PAYLOAD_LIB_DIR, RUNTIME_MANIFEST_FILE, scanTree } from "../../../runtime/manifest.js";
-import { readTemplatePins } from "../../../runtime/verify.js";
 import { installDaemon } from "../../install.js";
 import { currentSupervisorEnvironment } from "../../preflight.js";
 import { supervisorKindForPlatform } from "../../supervisors/index.js";
@@ -73,7 +71,6 @@ import { updateJournalPath } from "../journal.js";
 import { updateDaemon } from "../transaction.js";
 import { fixtureEnvironment } from "./harness.js";
 import { deregisterThrowaway, throwawayProbe } from "./throwaway-supervisor.js";
-import { writeFixtureWorkspace } from "./workspace.js";
 
 /** The label this proof registers under. Never the product's, and booted out in a `finally`. */
 export const THROWAWAY_LABEL = "video.xplainer.t15-proof";
@@ -107,7 +104,6 @@ const labelTranslatingProbe = throwawayProbe(THROWAWAY_LABEL);
 const root = mkdtempSync(join(tmpdir(), "xplainer-t15-proof-"));
 const home = join(root, "home");
 const stateDir = join(root, "state");
-const workspaceRoot = join(stateDir, "workspace");
 // macOS renders into a scratch home and registers a throwaway label; Linux has to use this
 // account's own config directory, because that is the only place its user manager looks.
 const environment =
@@ -156,12 +152,8 @@ try {
   );
   say(`  B: ${beta.outDir} — @xplainer/cli ${alphaVersion} → ${PROOF_VERSION}`);
 
-  say("writing the setup marker and a workspace carrying the real template's pins");
+  say("writing the setup marker");
   writeToolchainMarker(stateDir);
-  const pins = readTemplatePins();
-  mkdirSync(workspaceRoot, { recursive: true });
-  writeFixtureWorkspace({ outDir: workspaceRoot, pins });
-  say(`  pins: ${Object.keys(pins).length} packages, remotion ${pins.remotion ?? "unpinned"}`);
 
   say(
     process.platform === "darwin"
@@ -191,7 +183,6 @@ try {
     from: beta.outDir,
     environment,
     run: labelTranslatingProbe,
-    workspaceRoot,
     log: (line) => {
       say(`  ${line}`);
     },

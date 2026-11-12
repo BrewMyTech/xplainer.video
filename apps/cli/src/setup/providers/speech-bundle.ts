@@ -194,8 +194,8 @@ function component(
  *
  * `null` is a usable answer here and is not in the Chrome provider: a bundle whose entry point this
  * build does not recognise is still a tree whose existence the preflight can check, so the caller
- * records the directory. A browser with no executable in it is not, because Remotion is handed that
- * one path and nothing else.
+ * records the directory. A browser with no executable in it is not, because the render worker
+ * launches that one path and nothing else.
  */
 export function findExecutable(root: string, depth = 3): string | null {
   if (depth < 0 || !existsSync(root)) {

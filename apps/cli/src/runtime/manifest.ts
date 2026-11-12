@@ -1,18 +1,12 @@
 /**
- * What a payload is, written down: the shapes `runtime build` produces and `runtime verify` reads.
- *
- * Two artefacts are described here and they are deliberately different documents.
+ * What a payload is, written down: the shape `runtime build` produces and `runtime verify` reads.
  *
  * **Payload 1 — the runtime.** A relocatable directory carrying its own interpreter, the workspace
- * packages as their `files` allowlists publish them, the transitive closure of the five runtime
- * dependencies, and npm. Its manifest is {@link RuntimeManifest}, written as
- * {@link RUNTIME_MANIFEST_FILE}.
- *
- * **Payload 2 — the render workspace.** A real `npm ci` of `@xplainer/render-core`'s
- * `template/package.json` against the lockfile committed beside it. Its manifest is
- * {@link WorkspaceManifest}, written as {@link WORKSPACE_MANIFEST_FILE}, and it records **every
- * resolved version** rather than only the pins, because the whole point of building it is that the
- * repository's hoisted tree is not the tree the template declares.
+ * packages as their `files` allowlists publish them, and the transitive closure of the runtime
+ * dependencies. Its manifest is {@link RuntimeManifest}, written as
+ * {@link RUNTIME_MANIFEST_FILE}. It is the only payload: the render workspace the previous renderer
+ * needed — payload 2 — left with ADR 0031's Phase 2 (§Note, 2026-11-12, D7), and what is left of an
+ * old one on a machine is `setup/previous-renderer.ts`'s to remove.
  *
  * Three properties are structural rather than conventional, and each one is a rule some earlier
  * shape of this artefact broke:
@@ -22,19 +16,25 @@
  *    directory would describe a tree that no longer exists. Every path here is payload-relative
  *    with `/` separators on every platform, and {@link isPayloadPath} is the predicate the
  *    assembler and the verifier both apply.
- * 2. **The platform and the interpreter's architecture are recorded.**
- *    `@remotion/compositor-<platform>` is a platform-specific optional dependency, so payload 2 is
- *    only valid on the host it was built on; and `runtime build` copies `process.execPath`, so
- *    payload 1 carries the build host's own architecture. Recording both is what lets `verify`
- *    refuse a wrong-host payload by name instead of leaving a user with a spawn error.
- * 3. **Symlinks are a separate list from files.** npm materialises `node_modules/.bin/remotion` as
- *    a symlink to `@remotion/cli/remotion-cli.js`; it has no contents to hash and its *target* is
- *    the thing that can go wrong. Hashing the file it points at would silently pass a link that had
- *    been repointed, so links carry their target and are compared as targets.
+ * 2. **The platform and the interpreter's architecture are recorded.** `runtime build` copies
+ *    `process.execPath`, so the payload carries the build host's own native interpreter and its
+ *    architecture. Recording both is what lets `verify` refuse a wrong-host payload by name instead
+ *    of leaving a user with a spawn error.
+ * 3. **Symlinks are a separate list from files.** A copied package may carry a relative link — npm's
+ *    own `bin/npm` shim, a link to `npm-cli.js`, was the one this list was written for, before npm
+ *    left the payload (D11). A link has no contents to hash and its *target* is the thing that can
+ *    go wrong: hashing the file it points at would silently pass a link that had been repointed, so
+ *    links carry their target and are compared as targets.
  *
- * The manifests are read back by {@link readRuntimeManifest} and {@link readWorkspaceManifest},
- * which validate rather than cast: a manifest is data that arrives from disk, and the file being a
- * `.json` says nothing about its shape.
+ * The manifest is read back by {@link readRuntimeManifest}, which validates rather than casts: a
+ * manifest is data that arrives from disk, and the file being a `.json` says nothing about its
+ * shape.
+ *
+ * **Payload 1 says which `toolchain.json` it reads.** From `manifest_version` 2 a runtime manifest
+ * carries {@link RuntimeToolchain}: the marker format the runtime reads and writes, and the oldest
+ * libavcodec its encoder works with. A payload built before ADR 0031's cut has no such block and
+ * reads as format {@link PRE_CUT_TOOLCHAIN_FORMAT}, which is what lets `daemon update`, `update`
+ * and `setup` refuse to carry an installed daemon across the cut (§Note, 2026-11-12, D2).
  */
 
 import { createHash } from "node:crypto";
@@ -54,20 +54,26 @@ import process from "node:process";
 /** Payload 1's manifest, written at the root of the payload. */
 export const RUNTIME_MANIFEST_FILE = "runtime.manifest.json";
 
-/** Payload 2's manifest, written at the root of the installed workspace. */
-export const WORKSPACE_MANIFEST_FILE = "workspace.manifest.json";
-
-/** Where payload 1 puts the interpreter and npm's shim, payload-relative. */
+/** Where payload 1 puts the interpreter, payload-relative. */
 export const PAYLOAD_BIN_DIR = "bin";
 
-/** Where payload 1 puts every package, payload-relative — npm's own layout, so npm can read it. */
+/** Where payload 1 puts every package, payload-relative — the layout of a global npm install. */
 export const PAYLOAD_LIB_DIR = "lib/node_modules";
 
-/** The npm entry inside payload 1, payload-relative. Spawned, never imported. */
-export const PAYLOAD_NPM_CLI = "lib/node_modules/npm/bin/npm-cli.js";
+/**
+ * The version stamped into every manifest this module writes.
+ *
+ * `2` since ADR 0031's cut, when a runtime manifest gained its {@link RuntimeToolchain} block.
+ * Nothing compares it: a reader asks for the block itself, and a manifest without one — every
+ * payload stamped `1` — is a runtime from before the cut.
+ */
+export const MANIFEST_VERSION = 2;
 
-/** The version stamped into every manifest this module writes. */
-export const MANIFEST_VERSION = 1;
+/**
+ * The `toolchain.json` format a runtime with no {@link RuntimeToolchain} block reads: every payload
+ * built before ADR 0031's cut, whose reader requires the marker's `workspace` and knows no `ffmpeg`.
+ */
+export const PRE_CUT_TOOLCHAIN_FORMAT = 1;
 
 /**
  * The package whose runtime dependency closure payload 1 is.
@@ -181,7 +187,7 @@ export type ManifestPackage = {
 /**
  * How a caller runs this payload — every path payload-relative.
  *
- * This is the contract D1 exists to make explicit: the CLI and the Remotion CLI are both started as
+ * This is the contract D1 exists to make explicit: the CLI is started as
  * `<payload>/<interpreter> <entry>`, never by exec'ing a file whose `#!/usr/bin/env node` shebang
  * needs a `node` on `PATH` that a machine built for this design does not have.
  */
@@ -190,10 +196,22 @@ export type LaunchContract = {
   interpreter: string;
   /** The CLI entry, e.g. `lib/node_modules/@xplainer/cli/dist/bin.js`. */
   entry: string;
-  /** npm's own entry, spawned by `setup --workspace` and never imported by the daemon. */
-  npm_cli: string;
   /** `[interpreter, entry]` — the argv prefix, spelled out so no caller has to reassemble it. */
   argv: string[];
+};
+
+/**
+ * What a runtime requires of the machine's `toolchain.json`, written down by the runtime itself.
+ *
+ * Recorded in the payload rather than inferred from its version, because the question is asked of
+ * a runtime that is **not** the one running: `daemon update` judges the marker against the runtime
+ * it would switch to, and `update` and `setup` against the one the supervisor runs.
+ */
+export type RuntimeToolchain = {
+  /** The marker `format_version` this runtime reads and its `setup` writes. */
+  format: number;
+  /** The oldest libavcodec major this runtime's encoder works with. */
+  ffmpeg_min_libavcodec: number;
 };
 
 /** Payload 1's manifest. */
@@ -208,34 +226,12 @@ export type RuntimeManifest = {
   arch: string;
   /** The interpreter's own version, e.g. `v24.20.0`. */
   node_version: string;
-  /** The npm that travelled inside the payload. */
-  npm_version: string;
   /** Which host assembled it. Always `node`: the other two are refused. */
   host: RuntimeHost;
+  /** Absent from a payload built before ADR 0031's cut: {@link runtimeToolchainFormat}. */
+  toolchain?: RuntimeToolchain;
   launch: LaunchContract;
   packages: ManifestPackage[];
-  files: ManifestFile[];
-  links: ManifestLink[];
-};
-
-/** Payload 2's manifest. */
-export type WorkspaceManifest = {
-  kind: "workspace";
-  manifest_version: number;
-  created_at: string;
-  /** The platform this tree was installed on. `verify` refuses it anywhere else. */
-  platform: string;
-  arch: string;
-  node_version: string;
-  npm_version: string;
-  /** The command that produced the tree. `npm ci`, never `npm install` (D11). */
-  installer: string;
-  /** The template's declared pins, exactly as `template/package.json` states them. */
-  pins: Record<string, string>;
-  /** Every package the install resolved, by name. This is what a pin skew is detected against. */
-  resolved: Record<string, string>;
-  /** Workspace-relative path of the Remotion CLI entry, resolved through its `bin` field. */
-  remotion_entry: string;
   files: ManifestFile[];
   links: ManifestLink[];
 };
@@ -394,7 +390,20 @@ function readLinkTarget(file: string): string {
   return toPayloadPath(readlinkSync(file));
 }
 
-/** Read and validate payload 1's manifest. */
+/** The `toolchain.json` format a runtime reads: its own block's, or the pre-cut one without it. */
+export function runtimeToolchainFormat(manifest: RuntimeManifest): number {
+  return manifest.toolchain?.format ?? PRE_CUT_TOOLCHAIN_FORMAT;
+}
+
+/**
+ * Read and validate payload 1's manifest.
+ *
+ * **npm's two fields are optional and never returned** (ADR 0031 §Note, 2026-11-12, D11). A payload
+ * from before npm left — every one stamped `1`, and the first `2`s built on the way to the cut —
+ * records `npm_version` and `launch.npm_cli`; one from after records neither, and both read. Nothing
+ * is told apart by them, and nothing spawns npm out of a payload any more, so the reader neither
+ * requires them nor hands them on.
+ */
 export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
   const document = readManifestDocument(join(payloadDir, RUNTIME_MANIFEST_FILE));
   if (document.kind !== "runtime") {
@@ -411,41 +420,14 @@ export function readRuntimeManifest(payloadDir: string): RuntimeManifest {
     platform: asString(document.platform, "platform"),
     arch: asString(document.arch, "arch"),
     node_version: asString(document.node_version, "node_version"),
-    npm_version: asString(document.npm_version, "npm_version"),
     host: asHost(document.host),
+    ...asToolchain(document.toolchain),
     launch: {
       interpreter: asString(launch.interpreter, "launch.interpreter"),
       entry: asString(launch.entry, "launch.entry"),
-      npm_cli: asString(launch.npm_cli, "launch.npm_cli"),
       argv: asStringArray(launch.argv, "launch.argv"),
     },
     packages: asPackages(document.packages),
-    files: asFiles(document.files),
-    links: asLinks(document.links),
-  };
-}
-
-/** Read and validate payload 2's manifest. */
-export function readWorkspaceManifest(workspaceDir: string): WorkspaceManifest {
-  const document = readManifestDocument(join(workspaceDir, WORKSPACE_MANIFEST_FILE));
-  if (document.kind !== "workspace") {
-    throw new ManifestError(
-      `${join(workspaceDir, WORKSPACE_MANIFEST_FILE)} says kind ` +
-        `${JSON.stringify(document.kind)}, which is not a workspace payload manifest.`,
-    );
-  }
-  return {
-    kind: "workspace",
-    manifest_version: asNumber(document.manifest_version, "manifest_version"),
-    created_at: asString(document.created_at, "created_at"),
-    platform: asString(document.platform, "platform"),
-    arch: asString(document.arch, "arch"),
-    node_version: asString(document.node_version, "node_version"),
-    npm_version: asString(document.npm_version, "npm_version"),
-    installer: asString(document.installer, "installer"),
-    pins: asVersionMap(document.pins, "pins"),
-    resolved: asVersionMap(document.resolved, "resolved"),
-    remotion_entry: asString(document.remotion_entry, "remotion_entry"),
     files: asFiles(document.files),
     links: asLinks(document.links),
   };
@@ -519,13 +501,26 @@ function asHost(value: unknown): RuntimeHost {
   return host;
 }
 
-function asVersionMap(value: unknown, field: string): Record<string, string> {
-  const record = asRecord(value, field);
-  const map: Record<string, string> = {};
-  for (const [name, version] of Object.entries(record)) {
-    map[name] = asString(version, `${field}.${name}`);
+/**
+ * The optional `toolchain` block: `{}` when absent — a runtime from before the cut — and the block
+ * when it is one. Present and malformed is refused rather than read as absent, because absent means
+ * "format 1", and a damaged block from a version-2 runtime would otherwise be judged as the very
+ * runtime it is not.
+ */
+function asToolchain(value: unknown): { toolchain?: RuntimeToolchain } {
+  if (value === undefined) {
+    return {};
   }
-  return map;
+  const block = asRecord(value, "toolchain");
+  const format = asNumber(block.format, "toolchain.format");
+  const floor = asNumber(block.ffmpeg_min_libavcodec, "toolchain.ffmpeg_min_libavcodec");
+  if (!Number.isInteger(format) || format < 1 || !Number.isInteger(floor) || floor < 0) {
+    throw new ManifestError(
+      "toolchain.format must be a positive integer and toolchain.ffmpeg_min_libavcodec a " +
+        "non-negative one.",
+    );
+  }
+  return { toolchain: { format, ffmpeg_min_libavcodec: floor } };
 }
 
 function asFiles(value: unknown): ManifestFile[] {

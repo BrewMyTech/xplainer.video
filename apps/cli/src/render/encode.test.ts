@@ -1,9 +1,10 @@
 /**
  * Which ffmpeg a render uses, what it is told, and what happens to the file it writes.
  *
- * `resolveFfmpeg` is a pure function over an environment and a set of files, so its order is
- * asserted against machines described here rather than against this one. The encoder itself is
- * driven against a **real** ffmpeg — frames it generated itself, a WAV the narration port's own
+ * `resolveFfmpeg` is a pure function over an environment, the marker's path and a set of files, so
+ * its order is asserted against machines described here rather than against this one — including
+ * that a `PATH` full of ffmpegs is never consulted. The encoder itself is driven against a **real**
+ * ffmpeg, found by the test-only lookup in `setup/testing/toolchain.ts` — frames it generated itself, a WAV the narration port's own
  * encoder wrote — because the property that matters is what lands on disk: an MP4 renamed into
  * place on success, and nothing at all on a failure or an abort.
  */
@@ -15,12 +16,12 @@ import { join } from "node:path";
 import process from "node:process";
 import { DEFAULT_SAMPLE_RATE, encodeWav } from "@xplainer/render-core";
 import { afterEach, describe, expect, it } from "vitest";
+import { findTestFfmpeg } from "../setup/testing/toolchain.js";
 import {
   AUDIO_FILTER,
   assertLibx264,
   encodeArgs,
   FFMPEG_ENV,
-  findFfmpeg,
   partialPath,
   resolveFfmpeg,
   startEncoder,
@@ -41,75 +42,109 @@ afterEach(() => {
   }
 });
 
-/** A machine with exactly these executables on it. */
+/** A machine with exactly these executables on it, and a marker recording `recorded`. */
 function machine(
   files: readonly string[],
   env: Record<string, string | undefined>,
-  platform: NodeJS.Platform = "linux",
+  recorded: string | null = null,
 ): Parameters<typeof resolveFfmpeg>[0] {
   const present = new Set(files);
-  return { env, platform, isExecutable: (path) => present.has(path) };
+  return { env, recorded, isExecutable: (path) => present.has(path) };
 }
 
+/** Every place the renderer used to search, each holding an ffmpeg it must now never take. */
+const SEARCHED_BEFORE = ["/usr/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
+
 describe("resolveFfmpeg", () => {
-  it("takes XPLAINER_FFMPEG over everything else", () => {
-    const lookup = machine(["/custom/ffmpeg", "/usr/bin/ffmpeg"], {
-      [FFMPEG_ENV]: "/custom/ffmpeg",
-      PATH: "/usr/bin",
-    });
-    expect(resolveFfmpeg(lookup)).toBe("/custom/ffmpeg");
+  it("takes XPLAINER_FFMPEG over the ffmpeg toolchain.json records", () => {
+    const lookup = machine(
+      ["/custom/ffmpeg", "/state/toolchain/ffmpeg/ffmpeg"],
+      { [FFMPEG_ENV]: "/custom/ffmpeg", PATH: "/usr/bin" },
+      "/state/toolchain/ffmpeg/ffmpeg",
+    );
+    expect(resolveFfmpeg(lookup)).toEqual({ path: "/custom/ffmpeg", source: "override" });
   });
 
-  it("refuses an XPLAINER_FFMPEG that names nothing, rather than quietly using another", () => {
-    const lookup = machine(["/usr/bin/ffmpeg"], { [FFMPEG_ENV]: "/gone/ffmpeg", PATH: "/usr/bin" });
+  it("refuses an XPLAINER_FFMPEG that names nothing, rather than quietly using the recorded one", () => {
+    const lookup = machine(
+      ["/state/toolchain/ffmpeg/ffmpeg"],
+      { [FFMPEG_ENV]: "/gone/ffmpeg" },
+      "/state/toolchain/ffmpeg/ffmpeg",
+    );
     expect(() => resolveFfmpeg(lookup)).toThrow(
       /^FFMPEG_NOT_FOUND: XPLAINER_FFMPEG names \/gone\/ffmpeg/,
     );
   });
 
-  it("takes the first ffmpeg on PATH, in PATH order", () => {
-    const lookup = machine(["/b/ffmpeg", "/c/ffmpeg", "/opt/homebrew/bin/ffmpeg"], {
-      PATH: "/a:/b:/c",
-    });
-    expect(resolveFfmpeg(lookup)).toBe("/b/ffmpeg");
+  /**
+   * The gate stats an override in the daemon's working directory and this worker resolves it from
+   * the workspace root, so a relative path would be judged in one place and spawned in another, and
+   * a bare `ffmpeg` would be the `PATH` lookup D6 deleted. Here both exist, as relative paths, and
+   * are still refused.
+   */
+  it("refuses an XPLAINER_FFMPEG that is not an absolute path, even one that resolves here", () => {
+    for (const named of ["bin/ffmpeg", "ffmpeg"]) {
+      const lookup = machine(
+        [named, "/state/toolchain/ffmpeg/ffmpeg"],
+        { [FFMPEG_ENV]: named },
+        "/state/toolchain/ffmpeg/ffmpeg",
+      );
+      expect(() => resolveFfmpeg(lookup), named).toThrow(
+        `FFMPEG_NOT_FOUND: XPLAINER_FFMPEG names ${named}, which is not an absolute path`,
+      );
+    }
   });
 
-  /** A launchd or systemd daemon's PATH has neither directory, so they are asked after it. */
-  it("falls back to /opt/homebrew/bin, then /usr/local/bin, when PATH has none", () => {
-    const both = machine(["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"], {
-      PATH: "/usr/bin:/bin",
+  /**
+   * ADR 0031 §Note, 2026-11-12, D6: the recorded ffmpeg is the whole of it once the override is
+   * unset. Every directory the renderer used to search holds one here, and none is taken.
+   */
+  it("takes the ffmpeg toolchain.json records, with an ffmpeg on PATH and in Homebrew ignored", () => {
+    const lookup = machine(
+      [...SEARCHED_BEFORE, "/state/toolchain/ffmpeg/ffmpeg"],
+      { PATH: "/usr/bin:/opt/homebrew/bin:/usr/local/bin" },
+      "/state/toolchain/ffmpeg/ffmpeg",
+    );
+    expect(resolveFfmpeg(lookup)).toEqual({
+      path: "/state/toolchain/ffmpeg/ffmpeg",
+      source: "marker",
     });
-    expect(resolveFfmpeg(both)).toBe("/opt/homebrew/bin/ffmpeg");
-    const local = machine(["/usr/local/bin/ffmpeg"], { PATH: "/usr/bin:/bin" });
-    expect(resolveFfmpeg(local)).toBe("/usr/local/bin/ffmpeg");
   });
 
-  it("refuses by name when there is no ffmpeg anywhere, saying how to get one", () => {
+  it("refuses by name when neither names one, however many ffmpegs PATH and Homebrew hold", () => {
     let message = "";
     try {
-      resolveFfmpeg(machine([], { PATH: "/usr/bin:/bin" }));
+      resolveFfmpeg(machine(SEARCHED_BEFORE, { PATH: "/usr/bin:/opt/homebrew/bin" }));
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
     expect(message).toMatch(/^FFMPEG_NOT_FOUND: /);
-    expect(message).toContain("XPLAINER_FFMPEG");
-    expect(message).toContain("brew install ffmpeg");
-    expect(message).toContain("apt install ffmpeg");
-    expect(message).toContain("`xplainer setup` does not acquire ffmpeg in this release");
+    expect(message).toContain("neither XPLAINER_FFMPEG nor toolchain.json names one");
+    expect(message).toContain("`xplainer setup`");
+    expect(message).toContain("`xplainer setup --ffmpeg-path <file>`");
   });
 
-  it("looks for ffmpeg.exe on a Windows Path, and in no Unix directory", () => {
-    const lookup = machine(
-      ["C:\\tools\\ffmpeg.exe", "/opt/homebrew/bin/ffmpeg"],
-      { Path: "C:\\bin;C:\\tools" },
-      "win32",
+  it("refuses a recorded ffmpeg that is no longer executable, naming setup", () => {
+    expect(() => resolveFfmpeg(machine([], {}, "/state/toolchain/ffmpeg/ffmpeg"))).toThrow(
+      /^FFMPEG_NOT_FOUND: toolchain\.json records the ffmpeg at \/state\/toolchain\/ffmpeg\/ffmpeg/,
     );
-    expect(resolveFfmpeg(lookup)).toMatch(/tools.ffmpeg\.exe$/);
-    expect(() =>
-      resolveFfmpeg(machine(["/opt/homebrew/bin/ffmpeg"], { Path: "C:\\bin" }, "win32")),
-    ).toThrow(/FFMPEG_NOT_FOUND/);
   });
 });
+
+/**
+ * The ffmpeg this machine has, for the cases that encode. Not finding one is a failure, not a skip:
+ * `XPLAINER_SKIP_RENDER_TEST=1` is the one way to skip, and CI installs one and never sets it.
+ */
+function realFfmpeg(): string {
+  const found = findTestFfmpeg();
+  if (found === null) {
+    throw new Error(
+      "no ffmpeg on this machine: install one, point XPLAINER_FFMPEG at one, or set " +
+        "XPLAINER_SKIP_RENDER_TEST=1",
+    );
+  }
+  return found;
+}
 
 describe("encodeArgs", () => {
   /**
@@ -231,7 +266,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
   "the encoder, against a real ffmpeg",
   () => {
     it("accepts an ffmpeg with libx264, and refuses one without it by name", async () => {
-      await expect(assertLibx264(findFfmpeg())).resolves.toBeUndefined();
+      await expect(assertLibx264(realFfmpeg())).resolves.toBeUndefined();
 
       const directory = temporaryDirectory();
       const noX264 = join(directory, "ffmpeg");
@@ -261,7 +296,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
     });
 
     it("renames the finished MP4 into place and leaves no partial behind", async () => {
-      const ffmpeg = findFfmpeg();
+      const ffmpeg = realFfmpeg();
       const directory = temporaryDirectory();
       const output = join(directory, "explainer.mp4");
       const encoder = startEncoder({ ffmpeg, fps: 30, audio: narrationWav(directory), output });
@@ -276,7 +311,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
     });
 
     it("fails as ENCODE_FAILED with ffmpeg's own words, and removes the partial", async () => {
-      const ffmpeg = findFfmpeg();
+      const ffmpeg = realFfmpeg();
       const directory = temporaryDirectory();
       const output = join(directory, "explainer.mp4");
       const encoder = startEncoder({
@@ -307,7 +342,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
      * the pipe's EPIPE, which must arrive as ENCODE_FAILED with ffmpeg's words, not as itself.
      */
     it("fails as ENCODE_FAILED, not as EPIPE, when ffmpeg dies while the pipe is full", async () => {
-      const ffmpeg = findFfmpeg();
+      const ffmpeg = realFfmpeg();
       const directory = temporaryDirectory();
       const output = join(directory, "explainer.mp4");
       const frames = pngFrames(ffmpeg, 3, "testsrc2=s=1920x1080:r=30");
@@ -334,7 +369,7 @@ describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")(
     });
 
     it("aborts mid-stream leaving neither the MP4 nor the partial", async () => {
-      const ffmpeg = findFfmpeg();
+      const ffmpeg = realFfmpeg();
       const directory = temporaryDirectory();
       const output = join(directory, "explainer.mp4");
       const encoder = startEncoder({ ffmpeg, fps: 30, audio: narrationWav(directory), output });

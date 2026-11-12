@@ -8,13 +8,13 @@
  *    golden rather than rebuilt by the test, so a builder that stopped emitting one of the four
  *    values fails here rather than at the moment an installed daemon comes up on the platform
  *    defaults with `daemon.json` recording something else.
- * 2. **The `.bin` shim is never the answer.** `node_modules/.bin/remotion` is a symlink to a file
- *    beginning `#!/usr/bin/env node`, and spawning it measured exit `127` under
+ * 2. **The `.bin` shim is never the answer.** A `node_modules/.bin/<name>` shim is a symlink to a
+ *    file beginning `#!/usr/bin/env node`, and spawning one measured exit `127` under
  *    `PATH=/usr/bin:/bin`. The fixtures put the shim next to the package under both its POSIX and
  *    its Windows name, so "not the shim" is a statement about what was chosen and not about what
- *    happened to be missing. One case resolved the **real** `@remotion/cli` in this checkout and
- *    read that shebang back, until this checkout stopped installing it (2026-11-11); the fixture's
- *    own `#!/usr/bin/env node` entry is what the remaining cases resolve.
+ *    happened to be missing. One case resolved a **real** installed CLI in this checkout and read
+ *    that shebang back, until this checkout stopped installing it (2026-11-11); the fixture's own
+ *    `#!/usr/bin/env node` entry is what the remaining cases resolve.
  * 3. **A missing setting is a refusal, not a default.** Each of the four is dropped in turn and the
  *    builder is required to name it.
  */
@@ -76,25 +76,25 @@ function writePackage(directory: string, manifest: Record<string, unknown>): str
 }
 
 /**
- * `@remotion/cli` as npm installs it: the package with its own three-entry `bin` map, and the
+ * A scoped CLI package as npm installs it: the package with its own three-entry `bin` map, and the
  * `.bin` shims beside it under both platforms' names.
  */
-function installedRemotion(workspace: string): { packageDir: string; entry: string; bin: string } {
-  const packageDir = writePackage(join(workspace, "node_modules", "@remotion", "cli"), {
-    name: "@remotion/cli",
+function installedTool(workspace: string): { packageDir: string; entry: string; bin: string } {
+  const packageDir = writePackage(join(workspace, "node_modules", "@example", "tool"), {
+    name: "@example/tool",
     version: "4.0.495",
     bin: {
-      remotion: "remotion-cli.js",
-      remotionb: "remotionb-cli.js",
-      remotiond: "remotiond-cli.js",
+      tool: "tool-cli.js",
+      toolb: "toolb-cli.js",
+      toold: "toold-cli.js",
     },
   });
   const bin = join(workspace, "node_modules", ".bin");
   mkdirSync(bin, { recursive: true });
-  for (const name of ["remotion", "remotion.cmd"]) {
+  for (const name of ["tool", "tool.cmd"]) {
     writeFileSync(join(bin, name), "#!/bin/sh\n");
   }
-  return { packageDir, entry: join(packageDir, "remotion-cli.js"), bin };
+  return { packageDir, entry: join(packageDir, "tool-cli.js"), bin };
 }
 
 /** A payload-1 directory: both interpreter names, and `@xplainer/cli` as its allowlist ships it. */
@@ -114,22 +114,22 @@ function payload(): { runtimeDir: string; entry: string } {
 
 describe("resolveNodeEntry", () => {
   it("answers the file the `bin` map names, run under this process's own interpreter", () => {
-    const { packageDir, entry } = installedRemotion(root);
+    const { packageDir, entry } = installedTool(root);
 
-    expect(resolveNodeEntry(packageDir, "remotion")).toEqual({
+    expect(resolveNodeEntry(packageDir, "tool")).toEqual({
       executable: process.execPath,
       argv: [entry],
     });
   });
 
   it("never answers the .bin shim, under either of its two names", () => {
-    const { packageDir, entry, bin } = installedRemotion(root);
+    const { packageDir, entry, bin } = installedTool(root);
 
-    const resolved = resolveNodeEntry(packageDir, "remotion", { args: ["versions"] });
+    const resolved = resolveNodeEntry(packageDir, "tool", { args: ["versions"] });
 
     expect(resolved.argv).toEqual([entry, "versions"]);
-    expect(existsSync(join(bin, "remotion"))).toBe(true);
-    expect(existsSync(join(bin, "remotion.cmd"))).toBe(true);
+    expect(existsSync(join(bin, "tool"))).toBe(true);
+    expect(existsSync(join(bin, "tool.cmd"))).toBe(true);
     expect([resolved.executable, ...resolved.argv].some((path) => path.startsWith(bin))).toBe(
       false,
     );
@@ -137,37 +137,38 @@ describe("resolveNodeEntry", () => {
 
   /**
    * D1's Windows clause, as three cases rather than as an argument. Resolution goes through the
-   * package's own `bin` field, so the file each platform's shim *would* have been — `remotion` on
-   * linux and darwin, `remotion.cmd` on win32 — is named here and is not what comes back. There is
+   * package's own `bin` field, so the file each platform's shim *would* have been — `tool` on
+   * linux and darwin, `tool.cmd` on win32 — is named here and is not what comes back. There is
    * no branch in {@link resolveNodeEntry} for any of the three, and that is the claim: going
    * through `bin` means there is no shim to wrap on any platform.
    */
   it.each([
-    ["linux", "remotion"],
-    ["darwin", "remotion"],
-    ["win32", "remotion.cmd"],
-  ])("returns @remotion/cli's own entry on %s, never .bin/%s", (_platform, shim) => {
-    const { packageDir, entry, bin } = installedRemotion(root);
+    ["linux", "tool"],
+    ["darwin", "tool"],
+    ["win32", "tool.cmd"],
+  ])("returns @example/tool's own entry on %s, never .bin/%s", (_platform, shim) => {
+    const { packageDir, entry, bin } = installedTool(root);
 
-    const resolved = resolveNodeEntry(packageDir, "remotion");
+    const resolved = resolveNodeEntry(packageDir, "tool");
 
     expect(existsSync(join(bin, shim))).toBe(true);
     expect(resolved.argv[0]).toBe(entry);
     expect(resolved.argv[0]).not.toBe(join(bin, shim));
   });
 
-  // Note, 2026-11-11: a case here resolved this checkout's own installed @remotion/cli and read
-  // its `#!/usr/bin/env node` shebang back — the measurement D1 rests on, re-taken. The checkout no
-  // longer installs it: the renderer is @xplainer/cli's own and Remotion left its devDependencies.
+  // Note, 2026-11-11: a case here resolved the previous renderer's CLI, installed in this checkout,
+  // and read its `#!/usr/bin/env node` shebang back — the measurement D1 rests on, re-taken. The
+  // checkout no longer installs it: the renderer is @xplainer/cli's own and that CLI left its
+  // devDependencies.
   // The fabricated package these other cases build carries the same shebang on the same entry, and
   // D1's measurement itself — exit 127 under `PATH=/usr/bin:/bin` — is recorded in ADR 0027 and in
   // `launch-spec.ts`'s docblock, so the case was retired rather than pointed at a copy of what it
   // used to read.
   it("runs the entry under the interpreter it is given, with the arguments after it", () => {
-    const { packageDir, entry } = installedRemotion(root);
+    const { packageDir, entry } = installedTool(root);
 
     expect(
-      resolveNodeEntry(packageDir, "remotion", {
+      resolveNodeEntry(packageDir, "tool", {
         interpreter: "/opt/runtime/bin/node",
         args: ["render", "videos/demo/index.ts"],
       }),
@@ -194,10 +195,10 @@ describe("resolveNodeEntry", () => {
   });
 
   it("names what a `bin` map does declare when the one asked for is absent", () => {
-    const { packageDir } = installedRemotion(root);
+    const { packageDir } = installedTool(root);
 
-    expect(() => resolveNodeEntry(packageDir, "remotionx")).toThrow(
-      /declares no `bin.remotionx`; it declares \["remotion","remotionb","remotiond"\]/,
+    expect(() => resolveNodeEntry(packageDir, "toolx")).toThrow(
+      /declares no `bin.toolx`; it declares \["tool","toolb","toold"\]/,
     );
   });
 
@@ -235,21 +236,21 @@ describe("resolveNodeEntry", () => {
 
 describe("findInstalledPackage", () => {
   it("finds a package installed at the root it is given", () => {
-    const { packageDir } = installedRemotion(root);
+    const { packageDir } = installedTool(root);
 
-    expect(findInstalledPackage(root, "@remotion/cli")).toBe(packageDir);
+    expect(findInstalledPackage(root, "@example/tool")).toBe(packageDir);
   });
 
-  it("walks up, so a workspace nested inside an installed tree resolves", () => {
-    const { packageDir } = installedRemotion(root);
+  it("walks up, so a directory nested inside an installed tree resolves", () => {
+    const { packageDir } = installedTool(root);
     const nested = join(root, "videos", "demo");
     mkdirSync(nested, { recursive: true });
 
-    expect(findInstalledPackage(nested, "@remotion/cli")).toBe(packageDir);
+    expect(findInstalledPackage(nested, "@example/tool")).toBe(packageDir);
   });
 
   it("answers null rather than a guessed path when nothing is installed", () => {
-    expect(findInstalledPackage(root, "@remotion/nothing-here")).toBeNull();
+    expect(findInstalledPackage(root, "@example/nothing-here")).toBeNull();
   });
 });
 

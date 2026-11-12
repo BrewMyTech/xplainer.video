@@ -41,7 +41,8 @@ export type ArtefactServer = {
  * because `download.ts` refuses an artefact by extension before fetching it, so a route has to be
  * spelled as something the caller under test will agree to download. The ONNX route fetches npm
  * tarballs and is refused by the same rule the other way round, which is why {@link tarballRoute}
- * exists — the same behaviours, under `.tgz`, over the same server.
+ * exists — the same behaviours, under `.tgz`, over the same server — and the Linux FFmpeg builds
+ * are `.tar.xz`, which is {@link tarXzRoute}.
  */
 export const ARTEFACT_ROUTES = {
   /** Serves the archive, honouring `Range` with a correct `206`. */
@@ -79,6 +80,12 @@ export const ARTEFACT_ROUTES = {
   loop: "/loop.zip",
   /** Answers `HEAD`, then starts a body and stops sending — what a hung proxy looks like. */
   stalls: "/stalls.zip",
+  /** Answers `HEAD` truthfully, then sends a chunked body with no length, twice the artefact's. */
+  oversize: "/oversize.zip",
+  /** `503` on `HEAD`, with a length that is not the artefact's, and the artefact on `GET`. */
+  busyHead: "/busy-head.zip",
+  /** `503` to every request — an origin that is down, which is not a different artefact. */
+  busy: "/busy.zip",
 } as const;
 
 /**
@@ -94,9 +101,19 @@ export function tarballRoute(route: string): string {
   return `${route.replace(/\.zip$/, "")}.tgz`;
 }
 
+/** The same route, spelled as an xz-compressed tarball: {@link tarballRoute}'s twin. */
+export function tarXzRoute(route: string): string {
+  return `${route.replace(/\.zip$/, "")}.tar.xz`;
+}
+
 /** A requested path back to the {@link ARTEFACT_ROUTES} entry whose behaviour it asks for. */
 export function canonicalRoute(path: string): string {
-  return path.endsWith(".tgz") ? `${path.slice(0, -".tgz".length)}.zip` : path;
+  for (const suffix of [".tgz", ".tar.xz"]) {
+    if (path.endsWith(suffix)) {
+      return `${path.slice(0, -suffix.length)}.zip`;
+    }
+  }
+  return path;
 }
 
 /** How long a dropped body's bytes are given to reach the client before the socket is reset. */
@@ -106,6 +123,8 @@ const BLOCKED_PAGE =
   "<!DOCTYPE html><html><head><title>Access Denied</title></head><body>" +
   "<h1>Access Denied</h1><p>Your organisation has blocked this category: File Download.</p>" +
   "</body></html>";
+
+const BUSY_BODY = '{"busy":"retry"}\n';
 
 /** Start the server. The archive is the body every successful route serves. */
 export async function startArtefactServer(archive: Buffer): Promise<ArtefactServer> {
@@ -151,8 +170,9 @@ type RouteContext = {
 function route(context: RouteContext): void {
   const { request, response, archive, corrupted } = context;
   const isHead = request.method === "HEAD";
-  // A `.tgz` request is the same behaviour under the name a tarball caller will accept; see
-  // {@link tarballRoute}. Mapped here so every route below has exactly one implementation.
+  // A `.tgz` or `.tar.xz` request is the same behaviour under the name a tarball caller will
+  // accept; see {@link tarballRoute}. Mapped here so every route below has exactly one
+  // implementation.
   const path = canonicalRoute(context.path);
   switch (path) {
     case ARTEFACT_ROUTES.good:
@@ -300,6 +320,26 @@ function route(context: RouteContext): void {
       response.write(archive.subarray(0, 16));
       // No end, no further writes: the socket stays open and silent until the client gives up.
       return;
+    case ARTEFACT_ROUTES.oversize:
+      if (isHead) {
+        head(response, archive.length, true);
+        return;
+      }
+      // No `Content-Length`, so the body is chunked and only its own end says how long it is.
+      response.writeHead(200, { "content-type": "application/zip" });
+      response.write(archive);
+      response.end(archive);
+      return;
+    case ARTEFACT_ROUTES.busyHead:
+      if (isHead) {
+        busy(response, true);
+        return;
+      }
+      serveRangeable(request, response, archive);
+      return;
+    case ARTEFACT_ROUTES.busy:
+      busy(response, isHead);
+      return;
     default:
       response.writeHead(404, { "content-length": "0" });
       response.end();
@@ -314,6 +354,16 @@ function head(response: ServerResponse, length: number, ranges: boolean): void {
     ...(ranges ? { "accept-ranges": "bytes" } : {}),
   });
   response.end();
+}
+
+/** What a busy origin answers: `503` with a short JSON body, whose length is not the artefact's. */
+function busy(response: ServerResponse, isHead: boolean): void {
+  response.writeHead(503, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(BUSY_BODY)),
+    "retry-after": "1",
+  });
+  response.end(isHead ? undefined : BUSY_BODY);
 }
 
 /** A clean end of body before the declared length — the ordinary truncated download. */

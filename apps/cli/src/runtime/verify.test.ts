@@ -31,10 +31,8 @@ import {
   RUNTIME_MANIFEST_FILE,
   type RuntimeManifest,
   scanTree,
-  WORKSPACE_MANIFEST_FILE,
-  type WorkspaceManifest,
 } from "./manifest.js";
-import { readTemplatePins, verifyRuntimePayload, verifyWorkspacePayload } from "./verify.js";
+import { verifyRuntimePayload } from "./verify.js";
 
 let root = "";
 
@@ -109,11 +107,11 @@ describe("verifyRuntimePayload", () => {
     expect(report.failure?.name).toBe("lib/smuggled.js");
   });
 
-  // The other half of the mode parameter: payload 1 keeps the exhaustive rule, and it keeps it for
-  // the exact shape payload 2 now tolerates. Nothing but `runtime build` and `install stage` writes
+  // The shape the previous workspace verifier tolerated — a package nested under `node_modules` —
+  // refused here like every other added file. Nothing but `runtime build` and `install stage` writes
   // inside a runtime payload, so a file that appeared in one is an integrity failure whatever it is
-  // called — and a workspace's tolerance must not be reachable from here.
-  it("keeps refusing an added file that a workspace would tolerate, because the mode is per payload", () => {
+  // called.
+  it("refuses an added package under node_modules like any other added file", () => {
     writeRuntimePayload();
     mkdirSync(join(root, "node_modules", "zod"), { recursive: true });
     writeFileSync(join(root, "node_modules", "zod", "index.js"), "zz");
@@ -202,7 +200,7 @@ describe("verifyRuntimePayload", () => {
     expect(verifyRuntimePayload(root).failure?.detail).toMatch(/not valid JSON/);
   });
 
-  it("refuses a workspace manifest handed to the runtime verifier", () => {
+  it("refuses a manifest of another kind handed to the runtime verifier", () => {
     const manifest = writeRuntimePayload();
     writeFileSync(
       join(root, RUNTIME_MANIFEST_FILE),
@@ -210,150 +208,6 @@ describe("verifyRuntimePayload", () => {
     );
 
     expect(verifyRuntimePayload(root).failure?.detail).toMatch(/not a runtime payload manifest/);
-  });
-});
-
-describe("verifyWorkspacePayload", () => {
-  it("passes an installed workspace whose resolved versions are the template's pins", () => {
-    writeWorkspacePayload({ react: "19.2.3", zod: "4.3.6" });
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3", zod: "4.3.6" });
-
-    expect(report.failure).toBeNull();
-    expect(report.ok).toBe(true);
-  });
-
-  it("names the package whose resolved version is not the pinned one", () => {
-    writeWorkspacePayload({ react: "19.2.3", zod: "4.5.4" });
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3", zod: "4.3.6" });
-
-    expect(report.failure?.reason).toBe("pin-mismatch");
-    expect(report.failure?.name).toBe("zod");
-    expect(report.failure?.detail).toContain("4.5.4");
-    expect(report.failure?.detail).toContain("4.3.6");
-  });
-
-  it("names a pinned package the install never produced", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3", zod: "4.3.6" });
-
-    expect(report.failure?.reason).toBe("pin-missing");
-    expect(report.failure?.name).toBe("zod");
-  });
-
-  it("compares pins in name order, so the reported package is stable", () => {
-    writeWorkspacePayload({ alpha: "1", zeta: "1" });
-
-    const report = verifyWorkspacePayload(root, { alpha: "2", zeta: "2" });
-
-    expect(report.failure?.name).toBe("alpha");
-  });
-
-  it("refuses a workspace installed on another platform, which is what compositors require", () => {
-    writeWorkspacePayload({ react: "19.2.3" }, { platform: "aix" });
-
-    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).failure?.reason).toBe(
-      "wrong-platform",
-    );
-  });
-
-  it("checks the tree before it checks the pins, so a tampered file is not excused by them", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    writeFileSync(join(root, "lib", "a.js"), "ZZ");
-
-    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).failure?.reason).toBe("changed");
-  });
-
-  // The five directories below are every kind of file a real workspace holds and its manifest has
-  // never described: the three template files `materialiseWorkspace()` copies in, the user's own
-  // `videos/`, `out/` and `public/`, and the caches Remotion writes on the first render. Before the
-  // mode parameter, `daemon update` re-hashed this tree in payload 1's exhaustive mode and exited 3
-  // on every machine `xplainer setup` had ever run on — `transaction.ts` calls this exact function
-  // through `requireCompatibleUpdate()`, so the refusal was unconditional.
-  it("accepts the files a live workspace legitimately holds outside its manifest", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    writeFileSync(join(root, "remotion.config.ts"), "export {};\n");
-    writeFileSync(join(root, "tailwind.css"), "@tailwind base;\n");
-    writeFileSync(join(root, "tsconfig.json"), "{}\n");
-    mkdirSync(join(root, "videos", "demo"), { recursive: true });
-    writeFileSync(join(root, "videos", "demo", "timings.json"), "{}\n");
-    mkdirSync(join(root, "out"), { recursive: true });
-    writeFileSync(join(root, "out", "demo.mp4"), "mp4");
-    mkdirSync(join(root, "public"), { recursive: true });
-    writeFileSync(join(root, "public", "logo.png"), "png");
-    mkdirSync(join(root, ".remotion"), { recursive: true });
-    writeFileSync(join(root, ".remotion", "bundle.json"), "{}\n");
-    mkdirSync(join(root, "node_modules", ".cache", "webpack"), { recursive: true });
-    writeFileSync(join(root, "node_modules", ".cache", "webpack", "0.pack"), "cache");
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
-
-    expect(report.failure).toBeNull();
-    expect(report.ok).toBe(true);
-  });
-
-  it("still refuses a described file that was deleted, because that is what proves the pins", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    unlinkSync(join(root, "node_modules", "zod", "index.js"));
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
-
-    expect(report.failure?.reason).toBe("missing");
-    expect(report.failure?.name).toBe("node_modules/zod/index.js");
-  });
-
-  it("refuses an undescribed file that shadows a described package, by the name it shadows", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    mkdirSync(join(root, "node_modules", "@remotion", "cli", "node_modules", "zod"), {
-      recursive: true,
-    });
-    writeFileSync(
-      join(root, "node_modules", "@remotion", "cli", "node_modules", "zod", "index.js"),
-      "4.5.4",
-    );
-
-    const report = verifyWorkspacePayload(root, { react: "19.2.3" });
-
-    expect(report.failure?.reason).toBe("shadowed");
-    expect(report.failure?.name).toBe("node_modules/@remotion/cli/node_modules/zod/index.js");
-    expect(report.failure?.detail).toContain("zod");
-    expect(report.failure?.detail).toContain("nearest node_modules");
-  });
-
-  it("reads a nested scoped package by its two-segment name, not by its scope", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    mkdirSync(join(root, "node_modules", "zod", "node_modules", "@remotion", "cli"), {
-      recursive: true,
-    });
-    writeFileSync(
-      join(root, "node_modules", "zod", "node_modules", "@remotion", "cli", "index.js"),
-      "other",
-    );
-
-    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).failure?.detail).toContain(
-      "@remotion/cli",
-    );
-  });
-
-  it("allows a nested package the top level does not carry, which shadows nothing", () => {
-    writeWorkspacePayload({ react: "19.2.3" });
-    mkdirSync(join(root, "node_modules", "zod", "node_modules", "tslib"), { recursive: true });
-    writeFileSync(join(root, "node_modules", "zod", "node_modules", "tslib", "index.js"), "ts");
-
-    expect(verifyWorkspacePayload(root, { react: "19.2.3" }).ok).toBe(true);
-  });
-});
-
-describe("readTemplatePins", () => {
-  it("reads the shipped template's own pins, including the zod Remotion requires", () => {
-    const pins = readTemplatePins();
-
-    expect(pins.zod).toBe("4.3.6");
-    expect(pins.remotion).toBe("4.0.495");
-    expect(pins.react).toBe("19.2.3");
-    expect(pins.typescript).toBe("5.7.3");
   });
 });
 
@@ -374,12 +228,10 @@ function writeRuntimePayload(overrides: Partial<RuntimeManifest> = {}): RuntimeM
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: "11.19.0",
     host: "node",
     launch: {
       interpreter: "bin/node",
       entry: "lib/a.js",
-      npm_cli: "lib/b.js",
       argv: ["bin/node", "lib/a.js"],
     },
     packages: [],
@@ -389,37 +241,4 @@ function writeRuntimePayload(overrides: Partial<RuntimeManifest> = {}): RuntimeM
   };
   writeFileSync(join(root, RUNTIME_MANIFEST_FILE), JSON.stringify(manifest));
   return JSON.parse(readFileSync(join(root, RUNTIME_MANIFEST_FILE), "utf8")) as RuntimeManifest;
-}
-
-/** Write a small installed-workspace fixture whose manifest claims `resolved`. */
-function writeWorkspacePayload(
-  resolved: Record<string, string>,
-  overrides: Partial<WorkspaceManifest> = {},
-): void {
-  mkdirSync(join(root, "lib"), { recursive: true });
-  mkdirSync(join(root, "node_modules", "zod"), { recursive: true });
-  mkdirSync(join(root, "node_modules", "@remotion", "cli"), { recursive: true });
-  writeFileSync(join(root, "lib", "a.js"), "aa");
-  writeFileSync(join(root, "node_modules", "zod", "index.js"), "zz");
-  writeFileSync(join(root, "node_modules", "@remotion", "cli", "index.js"), "rr");
-  writeFileSync(join(root, "package.json"), "{}\n");
-
-  const scan = scanTree(root, { exclude: [WORKSPACE_MANIFEST_FILE] });
-  const manifest: WorkspaceManifest = {
-    kind: "workspace",
-    manifest_version: MANIFEST_VERSION,
-    created_at: new Date().toISOString(),
-    platform: process.platform,
-    arch: process.arch,
-    node_version: process.version,
-    npm_version: "11.19.0",
-    installer: "npm ci",
-    pins: resolved,
-    resolved,
-    remotion_entry: "node_modules/@remotion/cli/remotion-cli.js",
-    files: scan.files,
-    links: scan.links,
-    ...overrides,
-  };
-  writeFileSync(join(root, WORKSPACE_MANIFEST_FILE), JSON.stringify(manifest));
 }

@@ -124,8 +124,7 @@ export function materialiseProgramPayload(options: MaterialiseOptions): Material
   } catch (error) {
     discard();
     // `not-a-payload` carries exit 3, which is faithful for every failure the assembler is designed
-    // to produce: `commands/runtime.ts`'s `runtimeRefusalExitCode` maps every reason to 3 except
-    // `install-failed`, which is payload 2's npm run and unreachable here. It flattens a raw I/O
+    // to produce: `commands/runtime.ts` gives every refusal reason 3. It flattens a raw I/O
     // failure, which the table would call 70 — so the underlying text passes through verbatim,
     // because a reader who is out of disk needs to see `ENOSPC` rather than a code.
     throw new MaterialiseRefusal(

@@ -450,12 +450,11 @@ export function openBody(
  * A machine where `xplainer setup` has run, so `explainer_still` and `explainer_render` get past
  * their toolchain gate.
  *
- * What `backend.test.ts` stands up — the real marker and the workspace manifest it describes,
- * written by the real writers — because the two render tools ask `checkToolchain` the same question
- * the worker factory asks a moment later.
+ * What `backend.test.ts` stands up — the real marker, written by the real writer — because the two
+ * render tools ask `checkToolchain` the same question the worker factory asks a moment later.
  */
 export function pretendInstalled(harness: ApiHarness): void {
-  recordTestToolchain({ stateDir: harness.stateDir, workspaceRoot: harness.root });
+  recordTestToolchain({ stateDir: harness.stateDir });
 }
 
 /** A narrated video, without running a narration: `timings.json`, the captions and the audio. */

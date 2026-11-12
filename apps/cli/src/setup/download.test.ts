@@ -30,16 +30,19 @@ import {
   downloadArtefact,
   PART_SUFFIX,
   redirectTarget,
+  TAR_XZ_ARCHIVE,
   WORK_DIR_NAME,
 } from "./download.js";
 import {
   ARTEFACT_ROUTES,
   type ArtefactServer,
   startArtefactServer,
+  tarXzRoute,
 } from "./testing/artefact-server.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "fixtures", "toolchain-fixture.zip");
+const XZ_FIXTURE = join(HERE, "fixtures", "ffmpeg-build-fixture.tar.xz");
 const scratch: string[] = [];
 let archive: Buffer;
 let digest: string;
@@ -383,6 +386,52 @@ describe("the four failures ADR 0005 makes the downloader responsible for", () =
     });
   });
 
+  /**
+   * A chunked body declares no length, so only counting can tell it has run past the artefact's.
+   * It is stopped at the first byte over, and the partial is discarded like any other body that is
+   * not the reviewed artefact — rather than written out in full and kept as a "short body".
+   */
+  it("stops a body that runs past the length the manifest records, and discards it", async () => {
+    await withServer(async (server) => {
+      const partFile = join(scratchDir(), `chrome${PART_SUFFIX}`);
+
+      const refusal = await refusalOf(
+        downloadArtefact({ request: request(server, ARTEFACT_ROUTES.oversize), partFile }),
+      );
+
+      expect(refusal.reason).toBe("checksum-mismatch");
+      expect(refusal.message).toContain(`more than the ${archive.length} bytes`);
+      expect(existsSync(partFile)).toBe(false);
+    });
+  });
+
+  /** A `503` on `HEAD` is an origin that is busy, not one describing a different artefact. */
+  it("takes a HEAD that answers 503 as no probe at all, and downloads on the GET", async () => {
+    await withServer(async (server) => {
+      const outcome = await downloadArtefact({
+        request: request(server, ARTEFACT_ROUTES.busyHead),
+        partFile: join(scratchDir(), `chrome${PART_SUFFIX}`),
+      });
+
+      expect(outcome.sha256).toBe(digest);
+      expect(outcome.transfer).toBe("fresh");
+    });
+  });
+
+  it("names an origin that answers 503 to everything as unreachable, not as another artefact", async () => {
+    await withServer(async (server) => {
+      const refusal = await refusalOf(
+        downloadArtefact({
+          request: request(server, ARTEFACT_ROUTES.busy),
+          partFile: join(scratchDir(), `chrome${PART_SUFFIX}`),
+        }),
+      );
+
+      expect(refusal.reason).toBe("unreachable");
+      expect(refusal.message).toContain("503");
+    });
+  });
+
   it("refuses a length the server and the manifest disagree about, before the GET", async () => {
     await withServer(async (server) => {
       const refusal = await refusalOf(
@@ -487,13 +536,36 @@ describe("committing an artefact", () => {
 
         await expect(refusal).rejects.toThrow(/not a zip archive/);
         expect(existsSync(destination)).toBe(false);
-        expect(
-          readdirNames(join(root, WORK_DIR_NAME)).filter((name) => name.startsWith(".staging-")),
-        ).toEqual([]);
+        // No staging tree, and no verified archive left to fail the same way on the next run.
+        expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
       } finally {
         await notAnArchive.close();
       }
       expect(server.requests).toEqual([]);
+    });
+  });
+
+  /**
+   * A provider's `stage` hook refusing what it unpacked is a fact about bytes whose digest already
+   * matched, so the same bytes would be refused the same way next time. The verified archive is
+   * deleted rather than left in `.setup/` as a resume point for a download that is already whole.
+   */
+  it("deletes the verified archive when the provider's stage hook refuses what it unpacked", async () => {
+    await withServer(async (server) => {
+      const root = scratchDir();
+      const destination = join(root, "chrome");
+
+      const refusal = acquireArtefact({
+        request: request(server, ARTEFACT_ROUTES.good),
+        destination,
+        stage: () => {
+          throw new Error("the provider refused what it unpacked");
+        },
+      });
+
+      await expect(refusal).rejects.toThrow(/the provider refused what it unpacked/);
+      expect(existsSync(destination)).toBe(false);
+      expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
     });
   });
 
@@ -514,11 +586,72 @@ describe("committing an artefact", () => {
   it("refuses an archive format it does not unpack, before it is fetched", () => {
     expect(() =>
       assertZipArtefact("https://cdn.xplainer.video/toolchain/v1/speech.tar.gz"),
-    ).toThrow(/only archive format/);
-    // remotion.media's own URLs carry a query string, which is not part of the format.
+    ).toThrow(/is not a \.zip, and this artefact is read as a zip archive/);
+    // A query string is not part of the format.
     expect(() =>
-      assertZipArtefact("https://remotion.media/chromium-headless-shell-linux-x64-1.zip?clear"),
+      assertZipArtefact("https://cdn.xplainer.video/toolchain/v1/browser.zip?download=1"),
     ).not.toThrow();
+  });
+});
+
+describe("committing an xz tarball", () => {
+  it("fetches a .tar.xz, verifies it, and commits every member through TAR_XZ_ARCHIVE", async () => {
+    const tarXz = readFileSync(XZ_FIXTURE);
+    const server = await startArtefactServer(tarXz);
+    try {
+      const root = scratchDir();
+      const destination = join(root, "ffmpeg");
+
+      const outcome = await acquireArtefact({
+        request: {
+          url: server.url(tarXzRoute(ARTEFACT_ROUTES.good)),
+          sha256: sha256Of(tarXz),
+          size: tarXz.length,
+        },
+        destination,
+        archive: TAR_XZ_ARCHIVE,
+      });
+
+      expect(outcome.extraction).toMatchObject({ files: 4, directories: 3, bytes: 198_086 });
+      expect(
+        readFileSync(join(destination, "ffmpeg-fixture-linuxarm64-gpl", "LICENSE.txt"), "utf8"),
+      ).toMatch(/^GNU GENERAL PUBLIC LICENSE/);
+      expect(readdirNames(join(root, WORK_DIR_NAME))).toEqual([]);
+      expect(server.requests.map((seen) => seen.path)).toContain("/good.tar.xz");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("names a corrupt .tar.xz by its digest, before the decoder is asked", async () => {
+    const tarXz = readFileSync(XZ_FIXTURE);
+    const server = await startArtefactServer(tarXz);
+    try {
+      const destination = join(scratchDir(), "ffmpeg");
+      const refusal = await refusalOf(
+        acquireArtefact({
+          request: {
+            url: server.url(tarXzRoute(ARTEFACT_ROUTES.corrupt)),
+            sha256: sha256Of(tarXz),
+            size: tarXz.length,
+          },
+          destination,
+          archive: TAR_XZ_ARCHIVE,
+        }),
+      );
+
+      expect(refusal.reason).toBe("checksum-mismatch");
+      expect(existsSync(destination)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("refuses a zip as an xz tarball, and an xz tarball as a zip, before either is fetched", () => {
+    expect(() => TAR_XZ_ARCHIVE.assert("https://example.test/ffmpeg.zip")).toThrow(
+      /is not a .tar.xz/,
+    );
+    expect(() => assertZipArtefact("https://example.test/ffmpeg.tar.xz")).toThrow(/is not a \.zip/);
   });
 });
 

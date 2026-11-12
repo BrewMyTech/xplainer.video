@@ -17,22 +17,31 @@
 #      and an authenticated `/healthz` that has to report the **new** release
 #      from a run that is not the one that was drained.
 #   3. **T16's failure injection**, `pnpm e2e:update`. The same suite again —
-#      it is the cheap half and running it twice costs a minute — and then
+#      it is the cheap half and running it twice costs a minute — then
 #      `install/update/testing/failure-proof.ts`, which is the *other* real
 #      transaction: a replacement that starts and never becomes ready, a
-#      rollback that has to land, and the two refusals that must disturb
-#      nothing, each asserted on its message as well as its exit code.
+#      rollback that has to land, and a refusal that must disturb nothing — a
+#      `toolchain.json` that records no ffmpeg, judged against a runtime that
+#      requires one — asserted on its message as well as its exit code. And last,
+#      `install/update/testing/cut-proof.ts`, ADR 0031's cut (§Note,
+#      2026-11-12, D2): a daemon installed from a payload that reads
+#      `toolchain.json` format 1, met by this build — `xplainer update` and
+#      `xplainer setup` both exit 3 with the reinstall sequence before either
+#      touches anything, `daemon update` refuses the cross-format switch at its
+#      precondition, and after each the old daemon still answers `/healthz`
+#      `ok` with its own version.
 #
 # WHAT T16 ADDS THAT T15's TWO STEPS DO NOT. T15 proves an update that works.
 # T16 kills the updater between every pair of durable transitions and asserts
 # twice per boundary — `daemon status` names the transition and the recovery
 # command, and after that command the previous runtime is answering, the newer
 # version's state is intact, one process is running out of the state directory,
-# nothing that looks like Chrome or ffmpeg survives, and the rolled-back
-# runtime's own template pins are satisfied by the installed workspace. The
-# **still itself** — a PNG out of the recovered daemon — needs the browser and
-# the payload-2 workspace T19 and T33 install, so B6's `toolchain.mjs` reruns
-# every rollback case and renders it. That is a split, not an omission.
+# nothing that looks like Chrome or ffmpeg survives, and the installed
+# `toolchain.json` still satisfies what the rolled-back runtime requires of it —
+# the same format, and an ffmpeg when its manifest asks for one. The **still
+# itself** — a PNG out of the recovered daemon — needs the browser `setup`
+# acquires, so B6's `toolchain.mjs` reruns every rollback case and renders it.
+# That is a split, not an omission.
 #
 # WHAT EACH PLATFORM ADDS THAT THE OTHER CANNOT. macOS is where `launchd` is
 # asked whether it accepts a **rewritten** plist — `bootstrap` does not refresh
@@ -89,7 +98,7 @@
 # macOS runner that is not the machine the code was written on.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. The rule every proof workflow here
-# follows: these jobs assemble two ~160 MB payloads, install a supervised daemon
+# follows: these jobs assemble two ~167 MB payloads, install a supervised daemon
 # and wait out real drains and readiness waits. `ci.yml` is the gate that runs on
 # every push; this is a proof, and a proof is run when you want it.
 #

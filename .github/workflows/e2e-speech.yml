@@ -37,12 +37,15 @@
 #     difference and nothing else, which is why it defaults to off at 10x.
 #
 # WHY workflow_dispatch AND NOTHING ELSE. One run downloads a 92 MB model graph, a
-# 111 MB runtime tarball, a ~100 MB browser and the render workspace's whole
-# dependency tree from the registry, then renders a video twice. On `push` that
-# is three runners' worth of it on every commit, from three hosts none of which
-# this repository controls. `ci.yml` is the gate that runs on every push; this is
-# the proof, and a proof is run when you want the proof. It is the same argument
-# that keeps `pnpm e2e:speech` out of `pnpm verify`.
+# 111 MB runtime tarball, a ~105-128 MB browser and an ffmpeg — 2 MB on macOS,
+# a 153 MB BtbN archive on Linux, 195 MB on Windows — then renders a video
+# twice. Every `setup` it runs passes `--manifest` with the committed
+# `apps/cli/src/setup/toolchain.manifest.json`, so the unpublished-until-release
+# `toolchain/v2/manifest.json` is never asked for. On `push` that is three
+# runners' worth of it on every commit, from upstream hosts this repository does
+# not control. `ci.yml` is the gate that runs on every push; this is the proof,
+# and a proof is run when you want the proof. It is the same argument that keeps
+# `pnpm e2e:speech` out of `pnpm verify`.
 #
 # HOW TO DISPATCH IT. `workflow_dispatch` is registered from the **default
 # branch**: until this file is on `main` the API answers a dispatch of it with
@@ -118,7 +121,8 @@ jobs:
     # The proof itself is minutes of work. The budget is for everything around it
     # on a cold runner, each paid in full on every run: the install, a full
     # `turbo build` with no cache, ~304 MB from three upstream hosts, the
-    # workspace's `npm ci`, and then two renders in the browser `setup` recorded.
+    # browser and ffmpeg downloads, and then two renders with the browser and
+    # the ffmpeg `setup` recorded.
     timeout-minutes: 75
 
     steps:
@@ -133,19 +137,22 @@ jobs:
       - name: Enable corepack
         run: corepack enable
 
-      # `resolveTool()` in the proof takes `ffmpeg` and `ffprobe` off `PATH` (or
-      # from `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`), and it needs them on every
+      # FOR READING, NEVER FOR ENCODING. `resolveTool()` in the proof takes
+      # `ffmpeg` and `ffprobe` off `PATH` (or from
+      # `XPLAINER_FFMPEG`/`XPLAINER_FFPROBE`), and it needs them on every
       # runner: the still's dimensions and the MP4's streams are read with
       # `ffprobe`, and the frame comparison pipes through `ffmpeg`. None of the
       # three images ships them, and each package manager is the one that image
       # already has — no third-party action is introduced for two binaries.
       #
-      # The renderer needs ffmpeg as well, with libx264, and each of these
-      # builds carries it. The proof's own child gets a `PATH` composed of the
-      # handful of executables `allowList()` names, and ffmpeg is deliberately
-      # not one of them: the proof hands the child the parent's ffmpeg as
-      # `XPLAINER_FFMPEG` instead — one file, the product's first lookup —
-      # so the composed `PATH` still reaches nothing it does not name.
+      # The render does **not** use these. Since ADR 0031's cut it encodes with
+      # the ffmpeg `setup` acquired and recorded in `toolchain.json` — the
+      # product looks at `XPLAINER_FFMPEG` and then the marker, and never at
+      # `PATH` (D6) — so the proof scrubs `XPLAINER_FFMPEG` from the child's
+      # environment, leaves ffmpeg out of the `PATH` `allowList()` composes, and
+      # asserts the render job's log names the marker's ffmpeg. It used to hand
+      # the child this ffmpeg as `XPLAINER_FFMPEG`; that would now hide whether
+      # `setup`'s acquisition works at all.
       - name: Install ffmpeg and ffprobe
         run: |
           set -euo pipefail

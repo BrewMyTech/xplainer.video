@@ -177,7 +177,6 @@ export function runtimeDigest(manifest: RuntimeManifest): string {
     `platform ${manifest.platform}`,
     `arch ${manifest.arch}`,
     `node ${manifest.node_version}`,
-    `npm ${manifest.npm_version}`,
     `interpreter ${manifest.launch.interpreter}`,
     `entry ${manifest.launch.entry}`,
     ...[...manifest.files]

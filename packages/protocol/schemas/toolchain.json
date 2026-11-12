@@ -1,24 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Toolchain",
-  "description": "The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install \"checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing\" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check compares the workspace it records against an incoming runtime's template pins. The three components are the two binaries a render needs \u2014 the Chrome Headless Shell that draws every frame, and the speech synthesiser every narration goes through, each recorded with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk \u2014 plus the workspace payload, which is recorded here rather than beside the runtime because it survives daemon updates while the runtime does not. Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.",
+  "description": "The marker `xplainer setup` leaves behind, and the first thing `xplainer daemon install` reads. ADR 0020 §Ordering fixes both its existence and its job: install \"checks a marker written by `setup` (`toolchain.json`, recording the Chrome Headless Shell and TTS versions, paths and checksums), verifies the recorded paths still exist, and on failure exits 3 having written nothing\" — because neither `install` nor the daemon ever downloads, so a machine whose render toolchain is absent must be told at install time rather than three days later inside a render. It lives at `<state dir>/toolchain.json`. It is a checked contract rather than a private file because three surfaces read it and none of them owns it: `setup` writes it, install's read-only preflight validates it, and `daemon update`'s compatibility check judges it against what an incoming runtime requires. It records the binaries a render needs — the Chrome Headless Shell that draws every frame, the speech synthesiser every narration goes through and, from `format_version` 2, the FFmpeg every render pipes its frames to — each with the route that acquired it, because the routes are not interchangeable and none of them can be inferred from what is on disk. The schema decides what a document may say and not what a render needs: `ffmpeg` is optional here, and whether its absence stops a render is the gate's judgement (ADR 0031 §Note, 2026-11-12, D1 and D12). Every path in it is absolute and resolved on the machine it describes — a marker copied to another machine names files that are not there, which is precisely what the preflight's existence check catches.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format_version", "created_at", "chrome", "speech", "workspace"],
+  "required": ["format_version", "created_at", "chrome", "speech"],
   "properties": {
     "format_version": {
       "type": "integer",
       "minimum": 1,
-      "description": "The shape of this document. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon."
+      "description": "The shape of this document. `2` is what this build writes: `chrome` and `speech`, an optional `ffmpeg`, and no `workspace`. `1` is the shape every release before ADR 0031's cut wrote, with a required `workspace` and no `ffmpeg`; it still validates here and this build still reads it, as a valid document describing an incomplete toolchain. The two are not interchangeable across a daemon: a runtime records the format it reads, and an update or a `setup` that would leave a version-2 marker under a version-1 daemon is refused, because crossing the cut is a reinstall. A version this build does not know is a rollback signal and never corruption: the marker is preserved and the reader says which version it met, the same rule the job store applies to a record written by a newer daemon."
     },
     "created_at": {
       "type": "string",
       "format": "date-time",
       "description": "When `setup` finished acquiring what is recorded below. RFC 3339, so a support report can say how old the toolchain is without the file's mtime, which a copy or a restore rewrites."
     },
-    "chrome": { "$ref": "#/$defs/ToolchainComponent" },
-    "speech": { "$ref": "#/$defs/ToolchainComponent" },
-    "workspace": { "$ref": "#/$defs/ToolchainWorkspace" }
+    "chrome": {
+      "$ref": "#/$defs/ToolchainComponent"
+    },
+    "speech": {
+      "$ref": "#/$defs/ToolchainComponent"
+    },
+    "ffmpeg": {
+      "$ref": "#/$defs/ToolchainFfmpeg"
+    },
+    "workspace": {
+      "$ref": "#/$defs/ToolchainWorkspace"
+    }
   },
   "$defs": {
     "ToolchainComponent": {
@@ -46,12 +55,14 @@
         "provider": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*$",
-          "description": "Which route acquired this component — `remotion` for the Chrome build the pinned Remotion line selects, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed."
+          "description": "Which route acquired this component — `manifest` for the Chrome for Testing build the toolchain manifest's row for this platform names, and `docker`, `bundle`, `url` or `onnx` for the four speech routes. A machine-readable token rather than prose, because `status` branches on it and a remediation that named the wrong route would send a user to reinstall something they never installed."
         },
         "files": {
           "type": "array",
           "description": "Every file this component is made of, where it is made of more than the one `path` names. Optional, and absent for every route that acquires a single artefact — which is why adding it did not move `format_version`: a build that does not read it still finds everything it needs, and a build that does reads a strictly larger set. It is a **small, named** set and never a tree inventory: the four artefacts the ONNX speech route pins, not the several thousand files inside an unpacked bundle. Its purpose is the existence check ADR 0020 §Ordering requires of `daemon install` — \"verifies the recorded paths still exist\" — which for a multi-file component is only meaningful if every path is recorded. The digests make the same check able to tell a replaced file from a missing one, and are what a warm cache is re-verified against instead of being trusted. It carries no `minItems`, deliberately: a provider that records the field and then leaves it empty is caught by a runtime assertion beside the provider that knows how many files its own route has, and a schema keyword would instead have made the shape depend on `provider` — a conditional, which is the one construct the codegen splitter handles badly.",
-          "items": { "$ref": "#/$defs/ToolchainFile" }
+          "items": {
+            "$ref": "#/$defs/ToolchainFile"
+          }
         }
       }
     },
@@ -79,12 +90,111 @@
         }
       }
     },
+    "ToolchainFfmpeg": {
+      "title": "ToolchainFfmpeg",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "path",
+        "sha256",
+        "provider",
+        "files",
+        "libavcodec",
+        "licence",
+        "probe"
+      ],
+      "description": "The FFmpeg executable every render pipes its frames to, and what `setup` proved about it. A separate definition rather than a `ToolchainComponent`, because that one is `additionalProperties: false` and shared by `chrome` and `speech`, and making these fields conditional on which component it is would be the construct the codegen splitter handles badly. Optional at the root, so that a marker written before FFmpeg was acquired is still a document every reader can parse; a build that renders with it treats its absence as an incomplete toolchain.",
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The token after `ffmpeg version ` on the first line of `ffmpeg -version`, exactly as the build spells it — `9.0.2`, `n9.0.2-39-g7adfbe40dc-20261031`. Reported, never parsed: capability is judged on `libavcodec`."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The absolute path of the executable a render spawns, resolved on this machine. Never looked up on `PATH` at render time: what `setup` probed is what runs."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "For `manifest`: the archive's reviewed digest, as for Chrome. For `path`: the executable's own digest when `setup` probed it — recorded rather than expected, so it detects later drift and proves nothing about provenance."
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Which route recorded it — `manifest` for the pinned build the toolchain manifest's row for this platform names, `path` for an executable named with `setup --ffmpeg-path`. There is no route that finds one on `PATH` by itself."
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The executable **first**, with its own digest and length — the manifest row's reviewed `member_sha256` for `manifest`, the probed digest for `path` — followed by whatever was kept beside it, such as the licence text and the provenance record. `files[0].bytes` is what the stat-only check compares, so a replaced binary is `toolchain_stale` without hashing it. `minItems` is safe here, unlike on `ToolchainComponent.files`, because every route records the executable, so the constraint does not depend on the route.",
+          "items": {
+            "$ref": "#/$defs/ToolchainFile"
+          }
+        },
+        "libavcodec": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "The libavcodec version the executable reported it had loaded, `major.minor.micro`, so a build that raises its floor can judge a recorded component without running it. The floor is judged on the major alone."
+        },
+        "licence": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*$",
+          "description": "The licence the build's own `configure` declared, as an SPDX id — `GPL-3.0-or-later`, `GPL-2.0-or-later`, `LGPL-2.1-or-later`, `LGPL-3.0-or-later`. For `manifest` it is the row's, cross-checked against `probe.license` and `probe.buildconf` before anything is recorded; `status` prints it."
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who published the artefact, as the allowlist in code maps the row's URL prefix — never a value the manifest supplied. Absent for `path`, which no publisher vouches for."
+        },
+        "source_url": {
+          "type": "string",
+          "pattern": "^https://",
+          "description": "Where the corresponding source of that build is published, when its row names one. Recorded so that the licence obligation travels with the binary rather than with a manifest the machine may never read again."
+        },
+        "probe": {
+          "$ref": "#/$defs/ToolchainFfmpegProbe"
+        }
+      }
+    },
+    "ToolchainFfmpegProbe": {
+      "title": "ToolchainFfmpegProbe",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "buildconf", "license"],
+      "description": "What the executable said about itself when `setup` probed it, one array entry per line of output, as it printed them. Kept verbatim rather than summarised so that a support report, or a later build with a different question, can read the answer without running the binary again.",
+      "properties": {
+        "version": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "`ffmpeg -version`: the version line, the configuration and the library versions `libavcodec` is read from."
+        },
+        "buildconf": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "`ffmpeg -buildconf`: the `configure` flags the build was made with, which is what says which encoders and which licence configuration it carries."
+        },
+        "license": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "`ffmpeg -L`: the licence the build itself states. Spelled `license` because it is the name of the flag; the field it is checked against is `licence`."
+        }
+      }
+    },
     "ToolchainWorkspace": {
       "title": "ToolchainWorkspace",
       "type": "object",
       "additionalProperties": false,
       "required": ["platform", "version"],
-      "description": "The workspace payload's own identity: which platform it was resolved for, and which template it resolved.",
+      "description": "**Deprecated: written by `format_version` 1 only.** The workspace payload's own identity — which platform it was resolved for, and which template it resolved — from the releases that installed a render workspace through `setup --workspace`. No render reads that workspace and this build neither writes nor judges this field; it stays in the schema, optional, so that a version-1 marker still validates.",
       "properties": {
         "platform": {
           "type": "string",
@@ -96,7 +206,8 @@
           "minLength": 1,
           "description": "The version of the workspace template this payload resolved. It is the template package's own version and not a pin, so a reader comparing pins reads the payload's manifest; this field says which template the pins came from."
         }
-      }
+      },
+      "deprecated": true
     }
   }
 }

@@ -67,7 +67,7 @@ must resolve to "relocated" rather than looking like a typo.
 | [0002](0002-language-split-python-control-plane-ts-media-plane.md) | Language split: Python hosted control plane, TypeScript media plane and local runtime | accepted — **hosted half relocated (0023)** |
 | [0003](0003-tier-boundary-and-open-later-plan.md) | Tier boundary: `hosted` may import `open-later`, never the reverse — machine-checked from the first commit, with the open-source extraction checklist | accepted — note 2026-09-06 |
 | [0004](0004-electron-over-tauri.md) | Electron over Tauri for the desktop client, and the two `.npmrc` settings electron-builder requires | accepted |
-| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10, 2026-09-11, 2026-11-11 |
+| [0005](0005-download-on-first-run-chrome-headless-shell-and-tts.md) | Chrome Headless Shell and the TTS sidecar are downloaded on first run, not bundled in installers | accepted — notes 2026-09-08, 2026-09-10, 2026-09-11, 2026-11-11, 2026-11-12 |
 | [0006](0006-kokoro-fastapi-http-contract-as-tts-interface.md) | The Kokoro-FastAPI HTTP contract is the TTS interface; word-level timestamps are the reason | accepted — notes 2026-09-10, 2026-11-11 |
 | [0007](0007-mcp-tool-contract-and-put-source.md) | Eight MCP tools with `put_source`, and JSON Schema in `packages/protocol` as the single source of truth for both languages | accepted |
 | [0008](0008-async-job-model-poll-and-progress-no-agent-webhooks.md) | Async job model: return `job_id`, agent polls `explainer_job`, servers emit MCP progress — no webhooks to agents | accepted |
@@ -84,16 +84,16 @@ must resolve to "relocated" rather than looking like a typo.
 | [0019](0019-sequencing-local-cli-before-hosted.md) | Sequencing: the local CLI tier ships before the hosted tier — an external review's hosted-first recommendation is recorded and rejected, not dismissed | accepted — note 2026-09-06 |
 | [0020](0020-always-running-local-daemon.md) | The local runtime is an installed, supervised, per-user daemon — `systemd --user`, a LaunchAgent, a Scheduled Task; never root, and an always-on loopback listener means the token is a requirement, not a later nicety | accepted — dated notes, latest 2026-11-11 |
 | [0021](0021-proprietary-licence-free-to-use.md) | The published packages are proprietary and free to use — `SEE LICENSE IN LICENSE-BINARY`, not open source | **superseded by 0022** |
-| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — notes 2026-09-06, 2026-11-11 |
+| [0022](0022-open-source-the-published-packages.md) | The published packages are open source under Apache-2.0 — Remotion is declared as a dependency, never bundled; supersedes 0021 | accepted — notes 2026-09-06, 2026-11-11, 2026-11-12 |
 | [0023](0023-split-the-repository.md) | Split the repository: the local tier is public and open source here, the hosted tier is relocated to a private repository — deferred pending a vendor answer, not cancelled | accepted |
 | [0024](0024-durable-jobs-and-boot-reconciliation.md) | Render jobs are durable records under the daemon's state directory, reconciled at boot by the process that exclusively owns it — a job whose owner is gone ends `error` with an `error_code`, never a stuck `running` or a `404` | accepted — dated notes, latest 2026-09-08 |
 | [0025](0025-daemon-updates-and-readiness.md) | The package manager updates the daemon; the daemon drains, announces readiness exactly once, and the `mcp --attach` shim exits `8` rather than speaking a skewed contract | accepted — dated notes, latest 2026-09-08 |
 | [0026](0026-agent-first-repository-contracts.md) | The repository's contracts are machine-checked — ten `tsconfig` flags, `isolatedDeclarations`, seven Biome rules, nine ruff groups, five committed API reports and a checked `docs/ARCHITECTURE.md` — and `AGENTS.md` is the one agent instruction surface | accepted |
-| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-11 |
+| [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | The runtime is a relocatable artefact assembled locally — two payloads with two lifetimes, defined by each package's `files` allowlist — the installer resolves the program it starts, and an update rewrites the supervisor artefact rather than flipping an indirection | accepted — dated notes, latest 2026-11-12 |
 | [0028](0028-in-process-onnx-speech-and-a-g2p-we-own.md) | Speech runs in the narration worker on ONNX with a grapheme-to-phoneme layer we own — no Python, no espeak, nothing copyleft, and word timings from the model's own duration predictor | accepted |
 | [0029](0029-the-agent-path-may-be-http-when-the-token-never-enters-the-config.md) | An agent may reach the daemon over HTTP instead of the socket, because a headers helper keeps the bearer token in its `0600` file — one daemon serves many sessions where the `stdio` shim cost a 98 MB process each | accepted |
 | [0030](0030-speech-providers-are-admitted-by-their-timestamps.md) | A speech provider is admissible only if it returns word or character timestamps with its audio; the machine's owner chooses one in `<state>/config.json`, its key lives in a `0600` `credentials.json`, an agent chooses neither, and a failure is never answered with Kokoro — ElevenLabs is the first | accepted |
-| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted |
+| [0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md) | An owned renderer replaces Remotion — a clean-room `@xplainer/motion`, headless Chrome over a CDP pipe, and FFmpeg as a spawned process that encodes; GPL FFmpeg is run, never linked, and the record does not claim that meets the original no-GPL rule. Phase 1 alone is not shippable | accepted — dated notes, latest 2026-11-12 |
 
 ### The relocated five, and why each could not stay
 
@@ -110,8 +110,10 @@ detail** leaves. Applied to each:
   describes nothing this repository contains.
 - **0015** — headcount-band cost analysis and per-video margin, on a record still `proposed`
   against unresolved legal exposure. Its one user-facing obligation — a company above three
-  people needs its own Remotion licence — is discharged by the disclosure sentence ADR 0022
-  requires, on surfaces a user reads before installing.
+  people needs its own Remotion licence — was discharged by the disclosure sentence ADR 0022
+  required, on surfaces a user reads before installing, until 2026-11-12, when nothing this
+  repository ships installed Remotion any more and the obligation lost its object (ADR 0022's note
+  of that date).
 - **0017** — a full vendor cost model with projected volumes, plus the quota-ledger and outbox
   design.
 
@@ -231,18 +233,60 @@ and each note records only what happened underneath its own record:
 | [0022](0022-open-source-the-published-packages.md) | `SKILL.md` and the three plugin and marketplace `description` fields stop saying rendering uses Remotion, because it stopped being true; the three READMEs, `LICENSE` and `NOTICE` keep the disclosure while `setup --workspace` still installs Remotion, and no release carries the narrower set while it does |
 | [0027](0027-relocatable-runtime-artefact-and-the-supervisor-switch.md) | Payload 1 gains the renderer's pure-JS dependencies, with no native code and no install script; payload 2 is read by no render and is removed in Phase 2 |
 
+ADR 0031 then gained a dated note of 2026-11-12 **on itself**: Phase 2's twelve decisions, recorded
+before their code, each quoting the sentence of the record it amends — Follow-up 1's "keeps
+`format_version` 1" and its choice of xz decoder, §B2's "puts the acquired component in front of
+this order", Follow-up 2's "linux-arm64 has no Chrome for Testing build", Follow-up 4's ticket, and
+the page-network and signing questions the owner has now answered. A record correcting its own text
+by note has a precedent in ADR 0025's note of 2026-09-07. ADR 0005, ADR 0027 and ADR 0022 each gain
+a note of their own in the Phase 2 step that changes what their 2026-11-11 note describes, and their
+rows above take the date when it lands.
+
+**ADR 0005 gained the first of those, dated 2026-11-12**, with `toolchain.json`'s version 2: the
+marker records the browser, speech and — optionally — ffmpeg, and no longer the workspace; its
+2026-11-11 note's "Chrome for Testing publishes none" for linux-arm64 is corrected, and its
+description of the `PATH` and Homebrew ffmpeg fallbacks is marked as the order D6 retires; and
+crossing the marker's version is a reinstall that `setup`, `update` and `daemon update` each refuse
+to perform by accident.
+
+**ADR 0027 gained the second, dated 2026-11-12**, with payload 2's removal: there is one payload,
+the workspace holds sources and outputs and nothing installed, `runtime build|verify --workspace`
+and `setup --workspace` are unknown options, and `daemon update`'s precondition is two clauses —
+the same marker format on both sides, and a marker the incoming runtime can use — with decision A's
+template-pin refusal gone because no template pins anything. Decision A's paired-path deferral is
+closed rather than delivered, and `setup` removes what an older `setup --workspace` installed, only
+when that tree is provably its own.
+
+**ADR 0022 gained the third, dated 2026-11-12**, with the same removal: nothing in this repository
+installs Remotion any more, so the four READMEs that still carried the disclosure — the three its
+2026-11-11 note counted and `packages/alias/README.md` — and `LICENSE` and `NOTICE` in all nine
+copies drop it; item 2 has no object, the "binding **today**" paragraph is history, item 1 is
+untouched, and what a user is told now is about the FFmpeg `setup` acquires, in `NOTICE`,
+`docs/third-party-components.md` and the root `README.md`.
+
+**ADR 0031 then gained a second note of its own, later the same day**, recording the Phase 2 plan's
+step 11 and one correction. The idle-machine throughput gate, re-run by the shipped worker on Chrome
+for Testing 157.0.8103.50 and our FFmpeg 9.0.2, cleared the 20 fps macOS bar in all six runs
+(21.53–21.62 fps, load 1.51–2.60), so D4 stands and its fallback is not taken — with a margin of
+7.6 % at the slowest, thinner than the 8–12 % measured on 149. And D9's "allows exactly" list is
+amended to the allowlist `scripts/check-no-remotion.mjs` was committed with, which is wider; the
+note names each addition and why.
+
 ## Licence
 
-The six packages published to npm under the `@xplainer/` scope — `apps/cli`,
-`packages/{mcp-server,protocol,render-core,skill,tts-client}` — are **Apache-2.0**
+The eight packages published to npm — seven under the `@xplainer/` scope, `apps/cli` and
+`packages/{mcp-server,motion,protocol,render-core,skill,tts-client}`, and the unscoped `xplainer`
+in `packages/alias` — are **Apache-2.0**
 ([ADR 0022](0022-open-source-the-published-packages.md)). The full text is
 [`LICENSE-APACHE-2.0`](../../LICENSE-APACHE-2.0) at the repository root, a copy travels inside
 each published tarball, and [`NOTICE`](../../NOTICE) is the attribution notice Apache-2.0
 §4(d) propagates.
 
-**Everything else in this repository is proprietary today.** [`LICENSE`](../../LICENSE) Part
-Two covers `apps/desktop`, `packages/config`, `services/tts-sidecar`, `infra/`, `scripts/`,
-`docs/` and every other root file. Those three members are `open-later` — on the path to being
+**Everything else in this repository is proprietary today, except the macOS FFmpeg build
+scripts.** [`LICENSE`](../../LICENSE) Part Two covers `apps/desktop`, `packages/config`,
+`services/tts-sidecar`, `infra/`, `scripts/`, `docs/` and every other root file; Part Three
+licenses `infra/ffmpeg/` (but not its `keys/`) and `.github/workflows/ffmpeg-macos.yml` under MIT,
+because they are published beside every build as its corresponding source. Those three members are `open-later` — on the path to being
 opened, not opened. Making the repository *public* did not relicense them, and
 [ADR 0023](0023-split-the-repository.md) says so in as many words; doing it is a separate
 decision that has not been taken.

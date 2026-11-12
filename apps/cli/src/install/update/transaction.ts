@@ -50,7 +50,7 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import process from "node:process";
 import { awaitStopped, requestDrain } from "../../daemon/control.js";
 import type { DaemonState, ProgramSource, SupervisorKind } from "../../daemon/daemon-state.js";
@@ -63,7 +63,6 @@ import { resolveIpcPath } from "../../daemon/ipc.js";
 import { resolveTokenPath } from "../../daemon/token.js";
 import { buildLaunchSpec, type LaunchSpec, PORT_FLAG } from "../../runtime/launch-spec.js";
 import { type RuntimeManifest, readRuntimeManifest } from "../../runtime/manifest.js";
-import { resolveWorkspaceRoot } from "../../workspace-root.js";
 import { awaitHealthy, type HealthAnswer, HealthTimeout, type HealthTransport } from "../health.js";
 import { DEFAULT_INSTALL_PORT } from "../install.js";
 import {
@@ -101,6 +100,7 @@ import {
 import { type LockedOperation, withOperationLock } from "./lock.js";
 import {
   type IncomingSource,
+  requireCompatibleAssembly,
   requireCompatibleUpdate,
   resolveIncomingSource,
   stageIncomingRuntime,
@@ -236,8 +236,6 @@ export type UpdateRequest = {
   rollbackHealthTimeoutMs?: number | undefined;
   /** How the readiness poll reaches the daemon. Defaults to a real loopback request. */
   health?: HealthTransport | undefined;
-  /** The workspace root the precondition verifies. Defaults to `resolveWorkspaceRoot()`. */
-  workspaceRoot?: string | undefined;
   /** Told what each step is doing, as it happens. */
   log?: ((line: string) => void) | undefined;
 };
@@ -269,6 +267,21 @@ export async function updateDaemon(request: UpdateRequest): Promise<UpdateOutcom
   return withOperationLock(request.stateDir, "update", async () => {
     const context = updateContext(request);
     requireNoUnfinishedTransaction(context, "update");
+
+    // `--build` assembles ~146 MB before the precondition below could read the result, and what
+    // it would read is a constant of this build. So the precondition is asked of that constant
+    // first, and a refusal costs nothing; `openTransaction` asks again of the payload itself.
+    if (request.build === true && request.from === undefined) {
+      const installed = installedSide(context, readDaemonState(context.stateDir));
+      try {
+        requireCompatibleAssembly({
+          installedRuntimeDir: installed.runtime_dir,
+          stateDir: context.stateDir,
+        });
+      } catch (error) {
+        throw asRefusal("precondition", error, context.steps);
+      }
+    }
 
     let source: IncomingSource;
     try {
@@ -851,15 +864,11 @@ function openTransaction(context: UpdateContext, source: IncomingSource): Update
       installedRuntimeDir: previous.runtime_dir,
       incomingRuntimeDir: source.payloadDir,
       incomingManifest,
-      workspaceRoot:
-        context.request.workspaceRoot ?? resolveWorkspaceRoot(context.stateDir, context.env),
-      incomingProgram: incomingProgramLine(source.payloadDir, incomingManifest),
+      stateDir: context.stateDir,
     });
     context.steps.push(
-      `the incoming and installed template pins are identical (${String(
-        Object.keys(verdict.pins).length,
-      )} packages) and the workspace satisfies both: ` +
-        `${String(verdict.workspaceFilesChecked)} files re-hashed`,
+      `both runtimes read toolchain.json format ${String(verdict.format)}, and the marker ` +
+        `satisfies the incoming runtime`,
     );
   } catch (error) {
     throw asRefusal("precondition", error, context.steps);
@@ -1010,19 +1019,6 @@ function readIncomingManifest(context: UpdateContext, payloadDir: string): Runti
       context.steps,
     );
   }
-}
-
-/**
- * How the incoming runtime's own program is spelled, for the reinstall path a refusal names.
- *
- * The interpreter **and** the entry, because a payload's `dist/bin.js` begins
- * `#!/usr/bin/env node` and the machine this design exists for has no Node on its `PATH` — which is
- * the same reason `install/program.ts` answers with two fields rather than one argv.
- */
-function incomingProgramLine(payloadDir: string, manifest: RuntimeManifest): string {
-  const interpreter = join(payloadDir, ...manifest.launch.interpreter.split("/"));
-  const entry = join(payloadDir, ...manifest.launch.entry.split("/"));
-  return `${interpreter} ${entry}`;
 }
 
 /**

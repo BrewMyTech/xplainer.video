@@ -34,6 +34,8 @@
  *                              correct: `publishConfig.access` says public, and
  *                              every dependency on a workspace member is still
  *                              declared through the `workspace:` protocol.
+ *   Per package                the manifest's `prepublishOnly` runs the
+ *                              release check, so no publish skips it.
  *   Per package                every file that MUST ship as readable source is
  *                              present and byte-identical to its source.
  *   Whole workspace            the publishable set is exactly the declared eight.
@@ -72,7 +74,7 @@
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -138,6 +140,28 @@ const EXPECTED_AUTHOR = "Rishav Anand <rishav@brewmytech.com>";
  * an exception, and the next scoped member is the one that gets to forget it.
  */
 const EXPECTED_ACCESS = "public";
+
+/**
+ * The release check every publish runs first (ADR 0031's note of 2026-11-12, D8).
+ *
+ * `scripts/check-release-ready.mjs` refuses a release while the hard condition is unmet or a
+ * blocker in `docs/release-blockers.json` is open. `pnpm release:publish` runs it, but a hook is
+ * what a bare `pnpm publish -r` cannot skip: pnpm runs `prepublishOnly` in each package before
+ * packing it, and the first refusal stops the run before anything reaches the registry. A
+ * member without the hook would publish around the gate, silently, so the hook's presence is a
+ * rule here rather than a habit.
+ *
+ * The command is exact, and relative to the member, because that is where pnpm runs it. The
+ * offline form only: `--self-test` would pass with every blocker open, and the network rule is
+ * `release:publish`'s alone, run once rather than once per package. And `--prepublish`, because
+ * pnpm runs this workspace's `prepublishOnly` hooks on **install** as well (measured with pnpm
+ * 11.25.0, 2026-11-12: every injected member's hook, `npm_command=install`), so the bare check
+ * refused every fresh `pnpm install` while a blocker was open; with the flag the checker stands
+ * aside for anything pnpm says is not a publish (`check-release-ready.mjs`'s docblock).
+ */
+const RELEASE_CHECK_SCRIPT = "scripts/check-release-ready.mjs";
+const releaseCheckHook = (memberDir) =>
+  `node ${posix.relative(memberDir, RELEASE_CHECK_SCRIPT)} --prepublish`;
 
 /**
  * The name of the private repository the hosted tier moved to (ADR 0023).
@@ -407,14 +431,18 @@ const CONTENT_RULES = [
  * mistake and it is silent — npm publishes a package with a blank sidebar
  * without a word of complaint.
  *
- * The last two are here because the first release took three attempts and this
- * gate watched all three of them go by. Both defects were in the manifest, both
- * are written down in `AGENTS.md` §Publishing a release, and prose is not a
- * gate: it is read by whoever thought to look, which on a release day is nobody.
+ * `access-is-public` and `workspace-deps-use-the-protocol` are here because the
+ * first release took three attempts and this gate watched all three of them go
+ * by. Both defects were in the manifest, both are written down in `AGENTS.md`
+ * §Publishing a release, and prose is not a gate: it is read by whoever thought
+ * to look, which on a release day is nobody. The last rule is the same argument
+ * one step earlier: the release check is a hook in the manifest, and a member
+ * that lacks it publishes around the check without anyone noticing.
  *
  * `check` returns the sentence to print, or `null` when the manifest is fine.
- * It takes the roster entry too, because `repository.directory` is the one
- * field whose correct value differs per member.
+ * It takes the roster entry too, because `repository.directory` and the
+ * hook's relative path are the two fields whose correct value differs per
+ * member.
  */
 const MANIFEST_RULES = [
   {
@@ -525,6 +553,20 @@ const MANIFEST_RULES = [
         }
       }
       return null;
+    },
+  },
+  {
+    id: "prepublish-runs-the-release-check",
+    check: (manifest, member) => {
+      const expected = releaseCheckHook(member.dir);
+      const declared = manifest.scripts?.prepublishOnly;
+      return declared === expected
+        ? null
+        : `package.json "scripts.prepublishOnly" is ${JSON.stringify(declared)}, expected ` +
+            `${JSON.stringify(expected)}. It is the release check every publish of this member ` +
+            "runs first — pnpm runs it before packing, and a refusal stops `pnpm publish -r` " +
+            "before anything reaches the registry — so a member without it publishes around " +
+            "the gate that keeps an unready tree off npm (ADR 0031 D8). Add exactly that line.";
     },
   },
 ];
@@ -644,18 +686,8 @@ const MUST_SHIP_FILES = [
   },
   {
     package: "@xplainer/render-core",
-    path: "template/package.json",
-    why: "Declares the pinned dependency set the user's workspace installs through setup.",
-  },
-  {
-    package: "@xplainer/render-core",
     path: "template/tailwind.css",
     why: "Style entrypoint the scaffolded scenes import.",
-  },
-  {
-    package: "@xplainer/render-core",
-    path: "template/package-lock.json",
-    why: "Pinned dependency resolution consumed by setup through npm ci.",
   },
 
   // --- Scaffold templates the agent reads, writes and then edits -----------
@@ -788,7 +820,7 @@ const MUST_SHIP_TREES = [
     why:
       "The video workspace copied onto the user's machine. A file added here has to ship " +
       "the day it is added or the scaffolded workspace is incomplete on a user's disk — and " +
-      "the four files named individually above could not catch a fifth.",
+      "the two files named individually above could not catch a third.",
   },
 ];
 
@@ -843,6 +875,7 @@ const SELF_TEST_MANIFEST = {
   },
   author: EXPECTED_AUTHOR,
   publishConfig: { access: EXPECTED_ACCESS },
+  scripts: { prepublishOnly: releaseCheckHook(SELF_TEST_MEMBER.dir) },
   // Two entries, one carrying each half of `workspace-deps-use-the-protocol`'s
   // clean sample: a real workspace member on the protocol, and an ordinary
   // third-party dependency pinned to a literal version. The second is the half
@@ -971,6 +1004,32 @@ const SELF_TESTS = [
     // one declaring neither.
     violating: selfTestManifest({ publishConfig: { registry: "https://registry.npmjs.org" } }),
     clean: selfTestManifest({ publishConfig: { access: EXPECTED_ACCESS } }),
+  },
+  {
+    rule: "prepublish-runs-the-release-check",
+    // The hook simply absent, as on every member before the release check existed.
+    violating: selfTestManifest({ scripts: { prepack: "xplainer-sync-license" } }),
+    clean: selfTestManifest({}),
+  },
+  {
+    rule: "prepublish-runs-the-release-check",
+    // The near miss: the self-tests alone pass with every blocker open, so a hook that ran only
+    // them would wave an unready release through while looking like the gate.
+    violating: selfTestManifest({
+      scripts: { prepublishOnly: `${releaseCheckHook(SELF_TEST_MEMBER.dir)} --self-test` },
+    }),
+    clean: selfTestManifest({
+      scripts: { prepublishOnly: "node ../../scripts/check-release-ready.mjs --prepublish" },
+    }),
+  },
+  {
+    rule: "prepublish-runs-the-release-check",
+    // The other near miss, and the one that shipped first: the check without `--prepublish`
+    // refuses every `pnpm install` while a blocker is open, because pnpm runs the hook there too.
+    violating: selfTestManifest({
+      scripts: { prepublishOnly: "node ../../scripts/check-release-ready.mjs" },
+    }),
+    clean: selfTestManifest({}),
   },
   {
     rule: "workspace-deps-use-the-protocol",

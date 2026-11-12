@@ -8,8 +8,8 @@
  * running daemon no longer accepts, a second process holding the recorded port, a supervisor that
  * answers "disabled" for our own label. The one thing that is not carried is ~200 MB of browser and
  * speech bytes, which no assertion here is about: `recordToolchain` runs **the CLI's own fixture
- * writer**, through the CLI's own source hook, so the marker and the workspace manifest are the
- * documents `xplainer setup` writes and are read back by the same code that judges a real one.
+ * writer**, through the CLI's own source hook, so the marker is the document `xplainer setup`
+ * writes and is read back by the same code that judges a real one.
  *
  * The payload's `bin/node` is this process's own interpreter and its `bin.js` is a one-line shim
  * that imports the CLI's built entry, so `spawn` reaches a real CLI through the real layout — the
@@ -49,7 +49,7 @@ const CLI_ENTRY = join(CLI_ROOT, "dist", "bin.js");
 /** The CLI's own `.ts` source hook, which is how its fixture writers are reached. */
 const CLI_SOURCE_HOOK = join(CLI_ROOT, "src", "daemon", "testing", "ts-source-hook.ts");
 
-/** The CLI's own toolchain fixture writer — the marker and the workspace manifest `setup` writes. */
+/** The CLI's own toolchain fixture writer — the marker `setup` writes. */
 const CLI_TOOLCHAIN_FIXTURE = join(CLI_ROOT, "src", "setup", "testing", "toolchain.ts");
 
 /** Every temporary tree these tests made, removed by {@link cleanUpFixtures}. */
@@ -173,13 +173,12 @@ export async function startDaemon(options: {
 }
 
 /**
- * Write the toolchain marker and the workspace manifest a ready daemon needs, using the CLI's own
- * writer.
+ * Write the toolchain marker a ready daemon needs, using the CLI's own writer.
  *
  * Run as a child rather than imported, because it is `.ts` in another package: the CLI's own source
  * hook is what its tests use to run its sources, and this is the same call.
  */
-export function recordToolchain(stateDir: string, workspaceRoot: string): void {
+export function recordToolchain(stateDir: string): void {
   const result = spawnSync(
     process.execPath,
     [
@@ -188,11 +187,11 @@ export function recordToolchain(stateDir: string, workspaceRoot: string): void {
       "--input-type=module",
       "--eval",
       `import { recordTestToolchain } from ${JSON.stringify(pathToFileURL(CLI_TOOLCHAIN_FIXTURE).href)};
-       recordTestToolchain({ stateDir: process.env.FIXTURE_STATE_DIR, workspaceRoot: process.env.FIXTURE_WORKSPACE });`,
+       recordTestToolchain({ stateDir: process.env.FIXTURE_STATE_DIR });`,
     ],
     {
       encoding: "utf8",
-      env: { ...process.env, FIXTURE_STATE_DIR: stateDir, FIXTURE_WORKSPACE: workspaceRoot },
+      env: { ...process.env, FIXTURE_STATE_DIR: stateDir },
     },
   );
   if (result.status !== 0) {

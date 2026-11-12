@@ -27,6 +27,8 @@ import { CHILD_SERVE, type SpawnedChild, spawnEntry } from "../daemon/testing/sp
 import { TOKEN_FILE } from "../daemon/token.js";
 import type { CliIo } from "../io.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
+import { recordTestToolchain } from "../setup/testing/toolchain.js";
+import { TOOLCHAIN_MISSING, toolchainMarkerPath } from "../setup/toolchain.js";
 import { ELEVENLABS_API_KEY_ENV, TTS_PROVIDER_ENV } from "../tts/index.js";
 import { TEST_API_KEY } from "../tts/testing/elevenlabs-fixture.js";
 import { CLI_VERSION } from "../version.js";
@@ -116,8 +118,13 @@ async function status(
   return { exitCode, stdout: out.join(""), stderr: err.join("") };
 }
 
-/** A real daemon on an ephemeral port, already past its ready line. */
+/**
+ * A real daemon on an ephemeral port, already past its ready line, on a machine where setup has
+ * run — so `ok` on its `/healthz` means healthy rather than "this fixture forgot the toolchain",
+ * which is what `serve.test.ts`'s fixture does for the same reason.
+ */
 async function daemonOn(stateDir: string): Promise<{ child: SpawnedChild; port: number }> {
+  recordTestToolchain({ stateDir });
   const child = spawnEntry(CHILD_SERVE, ["--port", "0"], { [STATE_DIR_ENV]: stateDir });
   children.push(child.process);
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
@@ -468,8 +475,9 @@ describe("xplainer status and speech", () => {
   function speechBlock(stdout: string): string[] {
     const lines = stdout.split("\n");
     const socket = lines.findIndex((line) => line.startsWith("socket:"));
-    const probing = lines.findIndex((line) => line.startsWith("probing:"));
-    return lines.slice(socket + 1, probing);
+    // The toolchain block follows speech, so it is where the speech block ends.
+    const toolchain = lines.findIndex((line) => line.startsWith("toolchain:"));
+    return lines.slice(socket + 1, toolchain);
   }
 
   it("reports kokoro by default, and says the route is the job log's to tell", async () => {
@@ -601,5 +609,84 @@ describe("xplainer status and speech", () => {
     expect(json.report.condition).toBe("ready");
     expect(json.report.exit_code).toBe(0);
     expect(json.report.speech?.api_key).toBe("unset");
+  }, 30_000);
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D10: the toolchain block, and `/healthz`'s `reason`. The condition is
+ * untouched — an answering daemon is `ready` in this command's closed set — and a degraded one says
+ * so through `health`, with the toolchain block naming what is wrong.
+ */
+describe("xplainer status — the toolchain", () => {
+  it("prints what the marker records, and reports the gate's verdict as /healthz gives it", async () => {
+    const stateDir = stateDirectory();
+    await daemonOn(stateDir);
+
+    const prose = await status(stateDir, [], { XPLAINER_FFMPEG: undefined });
+    const { report } = await statusJson(stateDir, [], { XPLAINER_FFMPEG: undefined });
+
+    expect(prose.stdout).toContain("toolchain:       ready to render");
+    expect(prose.stdout).toMatch(/\n {2}browser: {7}157\.0\.8103\.50 \(manifest\)\n/);
+    expect(prose.stdout).toMatch(
+      /\n {2}ffmpeg: {8}.+, no publisher \(named with --ffmpeg-path\), provider path\n/,
+    );
+    expect(prose.stdout).toMatch(/\n {2}speech: {8}docker \(/);
+    expect(report.health).toMatchObject({ status: "ok", reason: null });
+    expect(report.toolchain).toMatchObject({
+      ok: true,
+      reason: null,
+      path: toolchainMarkerPath(stateDir),
+      browser: { version: "157.0.8103.50", provider: "manifest" },
+      ffmpeg: { provider: "path", publisher: null },
+      speech: { provider: "docker" },
+    });
+
+    rmSync(toolchainMarkerPath(stateDir));
+    const degraded = await statusJson(stateDir, [], { XPLAINER_FFMPEG: undefined });
+    const degradedProse = await status(stateDir, [], { XPLAINER_FFMPEG: undefined });
+
+    expect(degraded.report.condition).toBe("ready");
+    expect(degraded.report.health).toMatchObject({ status: "degraded", reason: TOOLCHAIN_MISSING });
+    expect(degraded.report.toolchain).toMatchObject({
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      browser: null,
+      ffmpeg: null,
+    });
+    expect(degradedProse.stdout).toContain(`toolchain:       ${TOOLCHAIN_MISSING} — `);
+    expect(degradedProse.stdout).toContain("running, degraded (toolchain_missing)");
+    expect(degradedProse.stdout).not.toContain("running and healthy");
+  }, 30_000);
+
+  /**
+   * The shell running `status` is not the daemon's: a supervised daemon inherits no shell's
+   * `XPLAINER_FFMPEG`. So the block judges the marker alone — it used to print `ready to render`
+   * beside `ffmpeg: not recorded` whenever the shell exported one — and reports the variable as a
+   * line of its own. With `--url` the block still describes this machine, and says so.
+   */
+  it("judges the marker alone, reports this shell's XPLAINER_FFMPEG beside it, and says whose it is", async () => {
+    const stateDir = stateDirectory();
+    recordTestToolchain({ stateDir, ffmpeg: false });
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const prose = await status(stateDir, [], { XPLAINER_FFMPEG: named });
+    const { report } = await statusJson(stateDir, [], { XPLAINER_FFMPEG: named });
+    const remote = await status(stateDir, ["--url", "http://127.0.0.1:9"], {
+      XPLAINER_FFMPEG: undefined,
+    });
+
+    expect(prose.stdout).not.toContain("ready to render");
+    expect(prose.stdout).toContain(`toolchain:       ${TOOLCHAIN_MISSING} — `);
+    expect(prose.stdout).toContain("ffmpeg:        not recorded");
+    expect(prose.stdout).toContain(`XPLAINER_FFMPEG: ${named} — set in this shell`);
+    expect(report.toolchain).toMatchObject({
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      override: { path: named, refusal: null },
+    });
+    expect(remote.stdout).toContain(
+      "(read from this machine's toolchain.json; the daemon at http://127.0.0.1:9 judges its own",
+    );
   }, 30_000);
 });

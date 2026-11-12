@@ -10,10 +10,10 @@
  * produced by the **shipped** scanner, so `verifyRuntimePayload()` really re-hashes it.
  *
  * **Why not `assembleRuntime()` against a fixture checkout.** That is `runtime/assemble.test.ts`'s
- * subject and it copies npm as well, which is 17 MB the stager has no opinion about. What is under
- * test here is what happens to a payload *after* it exists, so the cheapest artefact that is
- * genuinely one — a real interpreter, a real entry, a real manifest — is the right fixture. It is
- * built once per suite and cloned for the second runtime.
+ * subject, and it needs a whole checkout to copy out of, which the stager has no opinion about.
+ * What is under test here is what happens to a payload *after* it exists, so the cheapest artefact
+ * that is genuinely one — a real interpreter, a real entry, a real manifest — is the right fixture.
+ * It is built once per suite and cloned for the second runtime.
  *
  * **The entry is a miniature daemon on purpose.** It serves its own identity over a loopback
  * listener and records where it is listening, so a second process started through the launcher can
@@ -27,7 +27,11 @@
  * order: it mints the bearer token at `--token-file` if the file is absent (`0600`, `O_EXCL`), it
  * binds `--port`, it writes `runtime.json` and merges the port, the token path and the socket into
  * `daemon.json` — merges, so the installer's own fields survive — and only then prints its ready
- * line. `/healthz` answers `401` without that token. What it deliberately does **not** have is the
+ * line. `/healthz` answers `401` without that token, and with it says `degraded` and
+ * `toolchain_missing` where `toolchain.json` is absent or names a path that is gone — the real
+ * gate's first two questions, without its ffmpeg ones — because `daemon status` takes its condition
+ * from that answer, and a fixture that always said `ok` would be a daemon that never degrades.
+ * What it deliberately does **not** have is the
  * job store, the ownership lock, the reconciler, the MCP endpoint or the real guard's `Host` and
  * `Origin` layers: those are `daemon/`'s and are proved in `daemon/`'s own suites against the real
  * `serve`. The end-to-end case — the real `serve`, out of a real `runtime build` payload, under a
@@ -40,20 +44,17 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import {
   MANIFEST_VERSION,
-  type ManifestPackage,
   PAYLOAD_BIN_DIR,
   PAYLOAD_LIB_DIR,
-  PAYLOAD_NPM_CLI,
   RUNTIME_MANIFEST_FILE,
   type RuntimeManifest,
+  type RuntimeToolchain,
   scanTree,
 } from "../../runtime/manifest.js";
+import { FFMPEG_MIN_LIBAVCODEC, TOOLCHAIN_FORMAT_VERSION } from "../../setup/toolchain.js";
 
 /** The package a payload's launch contract names, and the directory it lives in. */
 export const FIXTURE_PACKAGE = "@xplainer/cli";
-
-/** The package whose `template/package.json` declares the workspace pins a runtime resolves. */
-export const TEMPLATE_FIXTURE_PACKAGE = "@xplainer/render-core";
 
 /** What {@link buildFixturePayload} was asked for. */
 export type FixturePayloadOptions = {
@@ -85,15 +86,14 @@ export type FixturePayloadOptions = {
    */
   extraInterpreters?: readonly string[] | undefined;
   /**
-   * The workspace pins a `@xplainer/render-core` inside the payload declares, or none.
+   * What the payload's manifest says it requires of `toolchain.json`, or `null` for none at all.
    *
-   * A real payload always carries one — `render-core`'s `files` allowlist ships `template/`, so
-   * every runtime states which Remotion line its workspace resolves — and T15's pre-drain check
-   * compares exactly that document between two payloads. It is an option rather than the default
-   * because most suites here are about staging, naming and launching, and a payload with one more
-   * package in it is a payload with a different content digest and therefore a different slot name.
+   * Defaults to what this build's assembler writes. `null` is a payload from **before** ADR 0031's
+   * cut, whose manifest has no `toolchain` block and so reads as format 1 — the runtime every
+   * installed daemon ran until then, and the one `daemon update`, `update` and `setup` refuse to
+   * carry across the cut.
    */
-  templatePins?: Readonly<Record<string, string>> | undefined;
+  toolchain?: RuntimeToolchain | null | undefined;
 };
 
 /** One built fixture payload. */
@@ -149,63 +149,29 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
   );
   writeFileSync(entry, entrySource(options.marker));
 
-  const templatePackages: ManifestPackage[] = [];
-  if (options.templatePins !== undefined) {
-    const templateDir = join(
-      options.outDir,
-      ...PAYLOAD_LIB_DIR.split("/"),
-      ...TEMPLATE_FIXTURE_PACKAGE.split("/"),
-    );
-    mkdirSync(join(templateDir, "template"), { recursive: true });
-    writeFileSync(
-      join(templateDir, "package.json"),
-      `${JSON.stringify({ name: TEMPLATE_FIXTURE_PACKAGE, version: options.version }, null, 2)}\n`,
-    );
-    // The same two fields `runtime/verify.ts` reads out of the real template, and in the same
-    // document: `dependencies` is what a workspace resolves and `devDependencies` travels with it.
-    writeFileSync(
-      join(templateDir, "template", "package.json"),
-      `${JSON.stringify(
-        {
-          name: "@xplainer/render-workspace",
-          version: "1.0.0",
-          private: true,
-          dependencies: { ...options.templatePins },
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    templatePackages.push({
-      path: `${PAYLOAD_LIB_DIR}/${TEMPLATE_FIXTURE_PACKAGE}`,
-      name: TEMPLATE_FIXTURE_PACKAGE,
-      version: options.version,
-      workspace: true,
-    });
-  }
-
-  // The manifest names npm's entry, so the payload carries one: a manifest that describes a file
-  // the artefact does not have is a manifest `verify` would call a payload with a hole in it.
-  const npmCli = join(options.outDir, ...PAYLOAD_NPM_CLI.split("/"));
-  mkdirSync(dirname(npmCli), { recursive: true });
-  writeFileSync(npmCli, "process.exitCode = 0;\n");
-
   const relativeEntry = `${PAYLOAD_LIB_DIR}/${FIXTURE_PACKAGE}/dist/bin.js`;
   const relativeInterpreter = `${PAYLOAD_BIN_DIR}/${interpreterName}`;
   const scan = scanTree(options.outDir, { exclude: [RUNTIME_MANIFEST_FILE] });
   const manifest: RuntimeManifest = {
     kind: "runtime",
-    manifest_version: MANIFEST_VERSION,
+    // A pre-cut payload was stamped `1`, and nothing but the missing block distinguishes it.
+    manifest_version: options.toolchain === null ? 1 : MANIFEST_VERSION,
     created_at: new Date().toISOString(),
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    npm_version: "0.0.0-fixture",
     host: "node",
+    ...(options.toolchain === null
+      ? {}
+      : {
+          toolchain: options.toolchain ?? {
+            format: TOOLCHAIN_FORMAT_VERSION,
+            ffmpeg_min_libavcodec: FFMPEG_MIN_LIBAVCODEC,
+          },
+        }),
     launch: {
       interpreter: relativeInterpreter,
       entry: relativeEntry,
-      npm_cli: PAYLOAD_NPM_CLI,
       argv: [relativeInterpreter, relativeEntry],
     },
     packages: [
@@ -215,7 +181,6 @@ export function buildFixturePayload(options: FixturePayloadOptions): FixturePayl
         version: options.version,
         workspace: true,
       },
-      ...templatePackages,
     ],
     files: scan.files,
     links: scan.links,
@@ -298,6 +263,24 @@ if (stateDir === undefined) {
 const record = join(stateDir, "fake-daemon.json");
 const identity = { runtime: RUNTIME, marker: MARKER, pid: process.pid };
 
+/**
+ * Whether \`toolchain.json\` is absent, unreadable, or names a path that is no longer there —
+ * asked per request, as the real \`/healthz\` asks it, so a file removed under a running daemon
+ * degrades it.
+ */
+const toolchainMissing = () => {
+  let marker;
+  try {
+    marker = JSON.parse(readFileSync(join(stateDir, "toolchain.json"), "utf8"));
+  } catch {
+    return true;
+  }
+  const paths = [marker.chrome, marker.speech, marker.ffmpeg]
+    .filter((component) => typeof component === "object" && component !== null)
+    .flatMap((component) => [component.path, ...(component.files ?? []).map((file) => file.path)]);
+  return paths.length < 2 || paths.some((path) => typeof path !== "string" || !existsSync(path));
+};
+
 /** Merge into a JSON file, keeping every key already in it. */
 const mergeJson = (path, changes) => {
   let held = {};
@@ -360,7 +343,13 @@ if (verb === "serve") {
         return;
       }
       response.end(
-        JSON.stringify({ status: "ok", version: MARKER, contract_version: "1" }),
+        JSON.stringify({
+          ...(toolchainMissing()
+            ? { status: "degraded", reason: "toolchain_missing" }
+            : { status: "ok", reason: null }),
+          version: MARKER,
+          contract_version: "1",
+        }),
       );
       return;
     }

@@ -65,12 +65,25 @@ import {
 import { ALLOW_HOST_FLAG, TLS_CERT_FLAG, TLS_KEY_FLAG } from "../daemon/tls.js";
 import { TOKEN_FILE, TOKEN_FILE_ENV } from "../daemon/token.js";
 import { isAlive } from "../daemon/worker-identity.js";
+import {
+  type DaemonStatusReport,
+  DEGRADED_STALE_TOOLCHAIN_SENTENCE,
+  DEGRADED_TOOLCHAIN_SENTENCE,
+  daemonStatus,
+} from "../install/lifecycle.js";
+import type { ProbeRunner } from "../install/preflight.js";
 import type { CliIo } from "../io.js";
 import { createProgram } from "../program.js";
 import { SETTING_FLAGS } from "../runtime/launch-spec.js";
 import { DRAIN_PATH } from "../server.js";
 import { recordTestToolchain } from "../setup/testing/toolchain.js";
-import { VIDEOS_DIR_ENV, WORKSPACE_DIR_NAME } from "../workspace-root.js";
+import {
+  readToolchainMarker,
+  TOOLCHAIN_MISSING,
+  TOOLCHAIN_STALE,
+  toolchainMarkerPath,
+  writeToolchainMarker,
+} from "../setup/toolchain.js";
 import { createServeCommand } from "./serve.js";
 
 /** P1-7's whole budget: the 20 s drain plus teardown. */
@@ -149,10 +162,7 @@ async function serveUntilReady(
   stateDir: string,
   env: Record<string, string> = {},
 ): Promise<{ child: SpawnedChild; ready: ReadyAnnouncement; token: string }> {
-  recordTestToolchain({
-    stateDir,
-    workspaceRoot: env[VIDEOS_DIR_ENV] ?? join(stateDir, WORKSPACE_DIR_NAME),
-  });
+  recordTestToolchain({ stateDir });
   const child = run(entry, ["--port", "0"], { XPLAINER_STATE_DIR: stateDir, ...env });
   const ready = await waitForReadyLine(child.process, { timeoutMs: 20_000 });
   const token = readFileSync(env[TOKEN_FILE_ENV] ?? join(stateDir, TOKEN_FILE), "utf8").trim();
@@ -874,7 +884,7 @@ describe("a non-loopback bind, and the five things R-SEC-9 makes it cost", () =>
     // R-SEC-9 lets guard a remote listener.
     const token = randomBytes(32).toString("base64url");
     writeFileSync(join(stateDir, TOKEN_FILE), `${token}\n`, { mode: 0o600 });
-    recordTestToolchain({ stateDir, workspaceRoot: join(stateDir, WORKSPACE_DIR_NAME) });
+    recordTestToolchain({ stateDir });
 
     const child = run(
       CHILD_SERVE,
@@ -1253,4 +1263,132 @@ describe("POST /api/daemon/drain over the socket", () => {
     // Still there, and still answering on the listener that is allowed to ask.
     expect((await getHealthz({ socketPath: ready.socket ?? "" })).status).toBe(200);
   }, 30_000);
+});
+
+/**
+ * ADR 0031 §Note, 2026-11-12, D10: `daemon status` and `/healthz` agree on the same machine. Before,
+ * `daemon status` judged by existence alone and called a replaced ffmpeg, or a marker with none,
+ * `ready` beside a `/healthz` that said `degraded`. One real daemon, and the marker changed under it
+ * four ways: as setup left it, an ffmpeg replaced since it was probed, a marker that records no
+ * ffmpeg, and no marker at all — and an `XPLAINER_FFMPEG` set on one side and not the other, which
+ * is every supervised daemon asked from a shell that exports one: the condition is what the daemon
+ * answered, and the shell's override is reported beside it.
+ */
+describe("the toolchain verdict, from /healthz and from `daemon status`", () => {
+  /** No supervisor query is the subject here: every one is answered "not here". */
+  const noSupervisor: ProbeRunner = () => ({
+    started: false,
+    status: null,
+    stdout: "",
+    stderr: "",
+  });
+
+  it("is the same on a stale and on a missing marker, reason and all", async () => {
+    const stateDir = stateDirectory();
+    // An override in the developer's shell would make both surfaces judge it rather than the marker.
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir, { XPLAINER_FFMPEG: "" });
+    const env = { ...process.env, XPLAINER_FFMPEG: "" };
+    const ask = async (
+      shell: Record<string, string | undefined> = env,
+    ): Promise<{
+      health: { status: string; reason: string | null };
+      report: DaemonStatusReport;
+    }> => {
+      const answer = await getHealthz(
+        { port: ready.port },
+        { host: `127.0.0.1:${ready.port}`, authorization: `Bearer ${token}` },
+      );
+      expect(answer.status).toBe(200);
+      const report = await daemonStatus({ stateDir, env: shell, run: noSupervisor });
+      // The `--json` document is the report as written; a round trip is what a consumer reads.
+      return {
+        health: JSON.parse(answer.body) as { status: string; reason: string | null },
+        report: JSON.parse(JSON.stringify(report)) as DaemonStatusReport,
+      };
+    };
+    const agree = (
+      seen: Awaited<ReturnType<typeof ask>>,
+      reason: string | null,
+      sentence: string | null,
+    ): void => {
+      expect(seen.health).toMatchObject({ status: reason === null ? "ok" : "degraded", reason });
+      expect(seen.report.condition).toBe(reason === null ? "ready" : "degraded");
+      expect(seen.report.health).toMatchObject({ status: seen.health.status, reason });
+      expect(seen.report.toolchain.reason).toBe(reason);
+      expect(seen.report.toolchain.complete).toBe(reason === null);
+      expect(
+        seen.report.sentences.find((s) => s.state === "degraded-toolchain")?.text ?? null,
+      ).toBe(sentence);
+    };
+
+    const marker = readToolchainMarker(stateDir);
+    const ffmpeg = marker?.ffmpeg?.path ?? "";
+    agree(await ask(), null, null);
+
+    writeFileSync(ffmpeg, "a different binary, put here after setup probed the first one\n");
+    const stale = await ask();
+    agree(stale, TOOLCHAIN_STALE, DEGRADED_STALE_TOOLCHAIN_SENTENCE);
+    expect(stale.report.toolchain.detail).toContain("replaced since setup checked it");
+
+    if (marker !== null) {
+      const { format_version, created_at, chrome, speech } = marker;
+      writeToolchainMarker(stateDir, { format_version, created_at, chrome, speech });
+    }
+    const noFfmpeg = await ask();
+    agree(noFfmpeg, TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+    expect(noFfmpeg.report.toolchain.ffmpeg).toBeNull();
+    expect(noFfmpeg.report.toolchain.browser).not.toBeNull();
+
+    // The shell asking exports an executable `XPLAINER_FFMPEG`; the daemon has none. `/healthz`
+    // still says `degraded`, and so must `daemon status` — the override is a fact about the shell.
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const shellOverride = await ask({ ...env, XPLAINER_FFMPEG: named });
+    agree(shellOverride, TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+    expect(shellOverride.report.toolchain.override).toEqual({ path: named, refusal: null });
+
+    rmSync(toolchainMarkerPath(stateDir));
+    agree(await ask(), TOOLCHAIN_MISSING, DEGRADED_TOOLCHAIN_SENTENCE);
+  }, 60_000);
+
+  /**
+   * The other side of the same disagreement: a daemon started with an executable `XPLAINER_FFMPEG`
+   * renders on it, whatever the marker says about ffmpeg, so `/healthz` answers `ok` — and
+   * `daemon status`, asked from a shell without one, reports the daemon's answer as the condition
+   * and the marker's own verdict beside it.
+   */
+  it("is the daemon's own where only the daemon has an XPLAINER_FFMPEG", async () => {
+    const stateDir = stateDirectory();
+    const named = join(stateDir, "named-ffmpeg");
+    writeFileSync(named, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const { ready, token } = await serveUntilReady(CHILD_SERVE, stateDir, {
+      XPLAINER_FFMPEG: named,
+    });
+    const marker = readToolchainMarker(stateDir);
+    if (marker !== null) {
+      const { format_version, created_at, chrome, speech } = marker;
+      writeToolchainMarker(stateDir, { format_version, created_at, chrome, speech });
+    }
+
+    const answer = await getHealthz(
+      { port: ready.port },
+      { host: `127.0.0.1:${ready.port}`, authorization: `Bearer ${token}` },
+    );
+    const report = await daemonStatus({
+      stateDir,
+      env: { ...process.env, XPLAINER_FFMPEG: "" },
+      run: noSupervisor,
+    });
+
+    expect(JSON.parse(answer.body)).toMatchObject({ status: "ok", reason: null });
+    expect(report.condition).toBe("ready");
+    expect(report.health).toMatchObject({ status: "ok", reason: null });
+    expect(report.sentences.find((s) => s.state === "degraded-toolchain")).toBeUndefined();
+    // The marker on its own would not render, and the report says so where it describes the marker.
+    expect(report.toolchain).toMatchObject({
+      ok: false,
+      reason: TOOLCHAIN_MISSING,
+      override: null,
+    });
+  }, 60_000);
 });

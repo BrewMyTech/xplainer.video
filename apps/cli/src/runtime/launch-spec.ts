@@ -28,19 +28,13 @@
  * a unit or a plist still sees them where they have always been; every emitted value is a **path**
  * and never the token itself, which is the rule R-SEC-6 states.
  *
- * **Decision D1 — Remotion is spawned through the runtime's own interpreter.**
- * `node_modules/.bin/remotion` is a symlink to `@remotion/cli/remotion-cli.js`, whose first line is
+ * **Decision D1 — a package's entry is spawned through the runtime's own interpreter.**
+ * A `node_modules/.bin/<name>` shim is a symlink to the package's entry file, whose first line is
  * `#!/usr/bin/env node`. Spawning that path directly hands it to `/usr/bin/env`, which searches the
- * **child's** `PATH`, and the measurement is unambiguous:
- *
- * ```
- * $ env -i PATH=/usr/bin:/bin HOME=/tmp sh -c 'node_modules/.bin/remotion --version'
- * env: node: No such file or directory
- * EXIT=127
- * ```
- *
+ * **child's** `PATH`, and on a machine with no Node that ends `env: node: No such file or
+ * directory`, exit 127 — measured on the previous renderer's own CLI, and recorded in ADR 0027 §D1.
  * On the machine this whole design exists for — one with no Node — `--version`, `serve`,
- * `/healthz` and `explainer_create` would all pass while every render exited 127. So
+ * `/healthz` and `explainer_create` would all pass while every spawned entry exited 127. So
  * {@link resolveNodeEntry} reads a package's own `bin` field to the **real entry file** and returns
  * `{ executable: <interpreter>, argv: [entry, …] }`, which is the pattern the narration worker
  * already uses (`workers.ts`: `command: process.execPath, args: [compiled]`). Going through `bin`
@@ -52,8 +46,8 @@
  * worker starts — Chrome and ffmpeg included — and makes the runtime non-hermetic for the benefit
  * of one call site.
  *
- * Three call sites use it: this module's own executable, and `daemon/workers.ts`'s two Remotion
- * workers.
+ * One call site uses it: this module's own executable. The daemon's workers need no `bin` lookup,
+ * because each is `process.execPath` with a compiled entry of this package.
  *
  * **What this module deliberately does not do.** It does not check that `serve` accepts the flags
  * it emits. The spellings are pinned by {@link SETTING_FLAGS} so that both halves are one edit
@@ -235,7 +229,7 @@ export function resolveNodeEntry(
 /**
  * The directory an installed package occupies at or above `root`, or `null`.
  *
- * Node's own resolution order, walked explicitly: a workspace installed in place and one nested
+ * Node's own resolution order, walked explicitly: a package installed in place and one nested
  * inside an already-installed tree both answer, and `null` — rather than a guessed path — is what
  * lets a caller name the command that fixes it instead of failing later inside `spawn`.
  */

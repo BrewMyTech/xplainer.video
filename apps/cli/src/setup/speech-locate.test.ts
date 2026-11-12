@@ -126,7 +126,7 @@ describe("onnxSpeechFromToolchain", () => {
   it("reads the marker in the directory XPLAINER_STATE_DIR names", () => {
     const stateDir = temporaryDirectory();
     const speech = recordTestOnnxSpeech(stateDir);
-    recordTestToolchain({ stateDir, workspaceRoot: temporaryDirectory(), overrides: { speech } });
+    recordTestToolchain({ stateDir, overrides: { speech } });
 
     expect(onnxSpeechFromToolchain({ [STATE_DIR_ENV]: stateDir })?.modelPath).toBe(speech.path);
     expect(onnxSpeechFromToolchain({ [STATE_DIR_ENV]: temporaryDirectory() })).toBeNull();
@@ -135,7 +135,7 @@ describe("onnxSpeechFromToolchain", () => {
   it("takes the three variables over the marker, and needs all three of them", () => {
     const stateDir = temporaryDirectory();
     const speech = recordTestOnnxSpeech(stateDir);
-    recordTestToolchain({ stateDir, workspaceRoot: temporaryDirectory(), overrides: { speech } });
+    recordTestToolchain({ stateDir, overrides: { speech } });
     const elsewhere = temporaryDirectory();
     const model = join(elsewhere, "another.onnx");
     const voice = join(elsewhere, "voices", "af_bella.bin");

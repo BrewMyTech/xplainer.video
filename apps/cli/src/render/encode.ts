@@ -3,7 +3,8 @@
  * input, and writes one fast-start MP4.
  *
  * **ffmpeg is only ever a separate process.** Nothing here links it, bundles it or ships it; it is
- * found on this machine ({@link resolveFfmpeg}) and spoken to over a pipe. One process does the
+ * the one `xplainer setup` recorded, or the one `XPLAINER_FFMPEG` names ({@link resolveFfmpeg}),
+ * and it is spoken to over a pipe. One process does the
  * whole job — decode the PNGs, convert RGB to limited-range BT.709 4:2:0, encode H.264 with
  * libx264, resample the narration to 48 kHz, encode AAC and mux — because each of those as a
  * separate step costs a copy of the video and agrees with nothing about timing.
@@ -25,22 +26,12 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, join, posix, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import process from "node:process";
 import { RenderError } from "./render-error.js";
 
-/** The variable that names an ffmpeg explicitly, ahead of everything else. */
+/** The variable that names an ffmpeg explicitly, ahead of the one `setup` recorded. */
 export const FFMPEG_ENV = "XPLAINER_FFMPEG";
-
-/**
- * Where ffmpeg is installed on a Mac and on a Linux box with a hand-built one, looked at after
- * `PATH`. A launchd or systemd daemon's `PATH` contains neither, so a Homebrew ffmpeg that works
- * in a terminal is invisible to the daemon without them.
- */
-export const WELL_KNOWN_FFMPEG: readonly string[] = [
-  "/opt/homebrew/bin/ffmpeg",
-  "/usr/local/bin/ffmpeg",
-];
 
 /** How much of ffmpeg's stderr is kept for a failure message. */
 const STDERR_TAIL_CHARS = 4_000;
@@ -50,11 +41,19 @@ export const LIBX264_PROBE_TIMEOUT_MS = 15_000;
 
 /** Where {@link resolveFfmpeg} looks, so a test can say what the machine has. */
 export type FfmpegLookup = {
-  /** The environment `XPLAINER_FFMPEG` and `PATH` are read from. */
+  /** The environment `XPLAINER_FFMPEG` is read from. Nothing else in it is consulted. */
   env: Readonly<Record<string, string | undefined>>;
-  platform: NodeJS.Platform;
+  /** `toolchain.json`'s `ffmpeg.path`, or `null` where the marker records no ffmpeg. */
+  recorded: string | null;
   /** Whether `path` is a file this process could run. */
   isExecutable: (path: string) => boolean;
+};
+
+/** The ffmpeg a render will spawn, and which of the two places named it. */
+export type ResolvedFfmpeg = {
+  path: string;
+  /** `override` for `XPLAINER_FFMPEG`, `marker` for the one `setup` probed and recorded. */
+  source: "override" | "marker";
 };
 
 /** Whether `path` is a regular file with an execute bit (any file, on Windows). */
@@ -67,66 +66,95 @@ export function isExecutableFile(path: string): boolean {
   }
 }
 
+/** `XPLAINER_FFMPEG` as `env` sets it, or `null` where it is unset or empty. */
+export function readFfmpegOverride(
+  env: Readonly<Record<string, string | undefined>>,
+): string | null {
+  const named = env[FFMPEG_ENV]?.trim();
+  return named === undefined || named === "" ? null : named;
+}
+
 /**
- * The ffmpeg this render will use: `XPLAINER_FFMPEG`, else the first on `PATH`, else a well-known
- * install directory — or `FFMPEG_NOT_FOUND` naming every place looked and how to fix it.
+ * Why `named` — the value of `XPLAINER_FFMPEG` — cannot be the ffmpeg a render spawns, or `null`
+ * when it can. Asked by the render gate and by the worker, so the two refuse the same overrides
+ * with the same sentence.
  *
- * `XPLAINER_FFMPEG` naming something that is not there is a refusal rather than a fall-through:
- * whoever set it meant that file, and quietly using a different ffmpeg would make the variable
- * mean nothing.
+ * **Only an absolute path is an override.** The gate stats it in the daemon's working directory and
+ * the worker spawns it from the workspace root, so a relative path is judged in one directory and
+ * run in another — and a bare `ffmpeg` is a `PATH` lookup by another name, which ADR 0031 §Note,
+ * 2026-11-12, D6 deleted.
  */
-export function resolveFfmpeg(lookup: FfmpegLookup): string {
-  const named = lookup.env[FFMPEG_ENV]?.trim();
-  if (named !== undefined && named !== "") {
-    if (lookup.isExecutable(named)) {
-      return named;
+export function ffmpegOverrideRefusal(
+  named: string,
+  isExecutable: (path: string) => boolean = isExecutableFile,
+): string | null {
+  if (!isAbsolute(named)) {
+    return (
+      `${FFMPEG_ENV} names ${named}, which is not an absolute path: a render resolves it in ` +
+      "another working directory than the one it was checked in, and a bare name would be a PATH " +
+      "lookup. Point it at the absolute path of an ffmpeg binary, or unset it to use the one " +
+      "`xplainer setup` recorded."
+    );
+  }
+  if (!isExecutable(named)) {
+    return (
+      `${FFMPEG_ENV} names ${named}, which is not an executable file. Point it at an ffmpeg ` +
+      "binary, or unset it to use the one `xplainer setup` recorded."
+    );
+  }
+  return null;
+}
+
+/**
+ * The ffmpeg this render will use: `XPLAINER_FFMPEG`, else the one `toolchain.json` records — or
+ * `FFMPEG_NOT_FOUND` saying how to get one.
+ *
+ * **There is no search** (ADR 0031 §Note, 2026-11-12, D6). Until that note this looked on `PATH`
+ * and then in the Homebrew directories, which made the encoder whatever the machine happened to
+ * have; the pinned build is what makes MP4 bytes reproducible, and `setup --ffmpeg-path` is how a
+ * system ffmpeg is used now — by name, probed once, and recorded.
+ *
+ * `XPLAINER_FFMPEG` naming something that is not there, or naming it by a relative path, is a
+ * refusal rather than a fall-through ({@link ffmpegOverrideRefusal}): whoever set it meant that
+ * file, and quietly using a different ffmpeg would make the variable mean nothing.
+ */
+export function resolveFfmpeg(lookup: FfmpegLookup): ResolvedFfmpeg {
+  const named = readFfmpegOverride(lookup.env);
+  if (named !== null) {
+    const refusal = ffmpegOverrideRefusal(named, lookup.isExecutable);
+    if (refusal === null) {
+      return { path: named, source: "override" };
+    }
+    throw new RenderError("FFMPEG_NOT_FOUND", refusal);
+  }
+  if (lookup.recorded !== null) {
+    if (lookup.isExecutable(lookup.recorded)) {
+      return { path: lookup.recorded, source: "marker" };
     }
     throw new RenderError(
       "FFMPEG_NOT_FOUND",
-      `${FFMPEG_ENV} names ${named}, which is not an executable file. Point it at an ffmpeg ` +
-        "binary, or unset it to use the one on PATH.",
+      `toolchain.json records the ffmpeg at ${lookup.recorded}, which is not an executable file ` +
+        "any more. Run `xplainer setup` to acquire it again.",
     );
   }
-
-  const windows = lookup.platform === "win32";
-  const name = windows ? "ffmpeg.exe" : "ffmpeg";
-  const paths = windows ? win32 : posix;
-  const pathValue = lookup.env.PATH ?? lookup.env.Path ?? "";
-  const directories = pathValue.split(paths.delimiter).filter((entry) => entry !== "");
-  for (const directory of directories) {
-    const candidate = paths.join(directory, name);
-    if (lookup.isExecutable(candidate)) {
-      return candidate;
-    }
-  }
-  const wellKnown = windows ? [] : WELL_KNOWN_FFMPEG;
-  for (const candidate of wellKnown) {
-    if (lookup.isExecutable(candidate)) {
-      return candidate;
-    }
-  }
-
-  const looked = [`${FFMPEG_ENV} (unset)`, "PATH", ...wellKnown].join(", ");
   throw new RenderError(
     "FFMPEG_NOT_FOUND",
-    `a render needs ffmpeg and none was found (looked in ${looked}). Install it — ` +
-      "`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Debian or Ubuntu — or set " +
-      `${FFMPEG_ENV} to the path of an ffmpeg binary. \`xplainer setup\` does not acquire ffmpeg ` +
-      "in this release.",
+    `a render needs ffmpeg, and neither ${FFMPEG_ENV} nor toolchain.json names one. Run ` +
+      "`xplainer setup`, which acquires the pinned build, or `xplainer setup --ffmpeg-path <file>` " +
+      `to record an ffmpeg you already have; or set ${FFMPEG_ENV} to the path of an ffmpeg binary.`,
   );
 }
 
 /** {@link resolveFfmpeg} against this process's environment and this machine's files. */
-export function findFfmpeg(): string {
-  return resolveFfmpeg({
-    env: process.env,
-    platform: process.platform,
-    isExecutable: isExecutableFile,
-  });
+export function findFfmpeg(recorded: string | null): ResolvedFfmpeg {
+  return resolveFfmpeg({ env: process.env, recorded, isExecutable: isExecutableFile });
 }
 
 /**
  * Refuse an ffmpeg that cannot encode H.264 with libx264, before a frame is captured.
+ *
+ * Asked of an `XPLAINER_FFMPEG` override, which nothing has probed. The ffmpeg `setup` recorded was
+ * asked the same question, and more, before it was written down.
  *
  * libx264 is the only H.264 encoder this pipeline uses: it is the one with a CRF, the one that
  * reproduces its own bytes for the same frames, and the one every ffmpeg build configured with

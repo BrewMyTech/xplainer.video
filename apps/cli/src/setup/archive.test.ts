@@ -124,7 +124,9 @@ describe("an archive that would write outside the directory it is unpacked into"
 
     expect(() => extractZip(archive, destination)).toThrow(ArchiveRefusal);
     try {
-      extractZip(archive, destination);
+      // A destination of its own: the first call's `good/ABOUT` is already in the one above, and a
+      // member onto a path that is already there is a different refusal.
+      extractZip(archive, join(scratchDir(), "unpacked"));
       expect.unreachable("a climbing entry must refuse");
     } catch (error) {
       expect((error as ArchiveRefusal).reason).toBe("unsafe-entry");
@@ -163,6 +165,150 @@ describe("an archive that would write outside the directory it is unpacked into"
     );
     expect(extractZip(inside, destination).symlinks).toBe(1);
     expect(readFileSync(join(destination, "root", "deep", "link"), "utf8")).toBe("target");
+  });
+
+  /**
+   * Each link of a chain lands inside when it is judged by its name: `a/l` → `..` is the root, and
+   * `a/l/m` → `..` reads as `a`. The kernel follows `a/l` before it reads `m`, so `a/l/m` is really
+   * the root's parent, and a file under it lands outside. What closes it is refusing any member
+   * whose path runs through a link this extraction made, whatever that link points at.
+   */
+  it("refuses a member written through a link it made, which is how a chain of inside links escapes", () => {
+    const work = scratchDir();
+    const archive = writeArchive(
+      buildZip([
+        { name: "a/", contents: "", directory: true },
+        { name: "a/l", contents: "..", symlink: true, mode: 0o777 },
+        { name: "a/l/m", contents: "..", symlink: true, mode: 0o777 },
+        { name: "a/l/m/ESCAPED.txt", contents: "outside the staging tree\n" },
+      ]),
+    );
+
+    try {
+      extractZip(archive, join(work, "staging"));
+      expect.unreachable("a member written through a link must refuse");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArchiveRefusal);
+      expect((error as ArchiveRefusal).reason).toBe("unsafe-entry");
+      expect((error as ArchiveRefusal).entry).toBe("a/l/m");
+      expect((error as ArchiveRefusal).message).toMatch(/through .*, a symlink/);
+    }
+    expect(existsSync(join(work, "ESCAPED.txt"))).toBe(false);
+  });
+
+  /**
+   * `l/..` reads as the directory the link is in, and the kernel resolves `l` first — so where it
+   * lands depends on what `l` is. A link whose value is not in its normal form is refused, which
+   * leaves `..` only at the front, climbing out of directories this extraction made for real.
+   */
+  it("refuses a link that climbs after it descends, whose landing depends on the link it passes", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "a/", contents: "", directory: true },
+        { name: "a/l", contents: "..", symlink: true, mode: 0o777 },
+        { name: "a/x", contents: "l/..", symlink: true, mode: 0o777 },
+      ]),
+    );
+
+    expect(() => extractZip(archive, join(scratchDir(), "staging"))).toThrow(
+      /symlink to "l\/\.\.", which is not in its normal form/,
+    );
+  });
+
+  /**
+   * APFS and NTFS are case-insensitive by default, so `bin/ffmpeg` and `BIN/FFMPEG` are one file
+   * there and the later member would replace the earlier. The filesystem is asked, not the names,
+   * because on a case-sensitive one the two are distinct files and both land.
+   */
+  it("refuses two members a case-insensitive filesystem would land on one path", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "bin/ffmpeg", contents: "first\n" },
+        { name: "BIN/FFMPEG", contents: "second wins\n" },
+      ]),
+    );
+    const probe = scratchDir();
+    writeFileSync(join(probe, "case"), "");
+    const caseInsensitive = existsSync(join(probe, "CASE"));
+    const destination = join(scratchDir(), "staging");
+
+    if (caseInsensitive) {
+      expect(() => extractZip(archive, destination)).toThrow(/already been written to/);
+      expect(readFileSync(join(destination, "bin", "ffmpeg"), "utf8")).toBe("first\n");
+    } else {
+      expect(extractZip(archive, destination).files).toBe(2);
+    }
+  });
+});
+
+describe("a selector, which takes the members a caller names and nothing else", () => {
+  it("writes the named members at the paths it answers, with their modes", () => {
+    const entries = new Map(readZipEntries(readFileSync(FIXTURE)).map((e) => [e.name, e]));
+    const keep: Record<string, string> = {
+      "toolchain-fixture/shell": "bin/shell",
+      "toolchain-fixture/nested/notes.txt": "notes.txt",
+    };
+    const destination = join(scratchDir(), "selected");
+
+    const summary = extractZip(FIXTURE, destination, (name) => keep[name] ?? null);
+
+    expect(summary).toEqual({
+      files: 2,
+      directories: 0,
+      symlinks: 0,
+      bytes:
+        (entries.get("toolchain-fixture/shell")?.uncompressedSize ?? 0) +
+        (entries.get("toolchain-fixture/nested/notes.txt")?.uncompressedSize ?? 0),
+    });
+    expect(existsSync(join(destination, "toolchain-fixture"))).toBe(false);
+    expect(readFileSync(join(destination, "notes.txt")).length).toBe(
+      entries.get("toolchain-fixture/nested/notes.txt")?.uncompressedSize,
+    );
+    if (process.platform !== "win32") {
+      const ran = spawnSync(join(destination, "bin", "shell"), [], { encoding: "utf8" });
+      expect(ran.stdout).toBe("fixture-shell 1.0.0\n");
+    }
+  });
+
+  it("never inflates a member it leaves out, so a corrupt one there costs nothing", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "root/ffmpeg", contents: "the binary" },
+        { name: "root/doc.html", contents: "eight...", crcOverride: 0x0badc0de },
+      ]),
+    );
+    const destination = join(scratchDir(), "unpacked");
+
+    const summary = extractZip(archive, destination, (name) =>
+      name === "root/ffmpeg" ? "ffmpeg" : null,
+    );
+
+    expect(summary.files).toBe(1);
+    expect(readFileSync(join(destination, "ffmpeg"), "utf8")).toBe("the binary");
+  });
+
+  it("holds the selector's answer to the same rule as an archive's own name", () => {
+    expect(() => extractZip(FIXTURE, join(scratchDir(), "out"), () => "../escaped")).toThrow(
+      /climbs out of the directory/,
+    );
+  });
+
+  it("refuses two members the selector would land on one path", () => {
+    const archive = writeArchive(
+      buildZip([
+        { name: "a/LICENSE", contents: "first" },
+        { name: "b/LICENSE", contents: "second" },
+      ]),
+    );
+    const collapse = (name: string): string => name.split("/").slice(-1)[0] ?? name;
+
+    try {
+      extractZip(archive, join(scratchDir(), "out"), collapse);
+      expect.unreachable("a collapsing selector must refuse");
+    } catch (error) {
+      expect((error as ArchiveRefusal).reason).toBe("unsafe-entry");
+      expect((error as ArchiveRefusal).message).toMatch(/already been written to/);
+    }
   });
 });
 

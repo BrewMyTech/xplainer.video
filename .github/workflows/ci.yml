@@ -225,6 +225,25 @@ jobs:
       - name: No type or lint suppressions in source (AC-15e)
         run: pnpm check:no-suppressions
 
+      # The same placement, for the same reason: a grep over the tracked files
+      # that needs Node and nothing installed or built. ADR 0031 removed the
+      # previous renderer, and this keeps its name out of everything but the
+      # allowlist written out in the script, each entry with its reason; a hit
+      # anywhere else, or an entry that admits nothing, is named as path:line.
+      # It runs its own self-tests first. (ADR 0031's note of 2026-11-12, D9)
+      - name: The previous renderer's name only where allowed (ADR 0031 D9)
+        run: pnpm check:no-remotion
+
+      # The release check itself is red until every entry of
+      # docs/release-blockers.json is closed, so what runs on every commit is
+      # its self-tests: each rule fired on a violating sample and held silent on
+      # a clean one, and release:publish's manifest compare and ordering driven
+      # with an injected fetch. The full check runs where it counts: as every
+      # published member's prepublishOnly, and first in `pnpm release:publish`.
+      # (ADR 0031's note of 2026-11-12, D8)
+      - name: The release gates fire on what they refuse (ADR 0031 D8)
+        run: pnpm check:release-gates
+
       - name: Read pinned Python version
         id: python
         run: echo "version=$(tr -d '\r\n' < .python-version)" >> "$GITHUB_OUTPUT"
@@ -282,6 +301,8 @@ jobs:
       # publishable set still exactly six, and — the other direction
       # — that the workspace template, scaffold templates and SKILL.md still
       # ship byte-identical, because those have to be readable to work at all.
+      # And every published manifest's prepublishOnly runs the release check,
+      # so no publish goes around it (ADR 0031 D8).
       - name: Published tarballs leak no source, maps or licence
         run: pnpm check:publish-contract
 

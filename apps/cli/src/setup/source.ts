@@ -1,7 +1,7 @@
 /**
  * Where the toolchain manifest is read from, and what it means when it cannot be reached.
  *
- * `manifest.ts` fixes the *address* — `https://cdn.<zone_name>/toolchain/v1/manifest.json`, the one
+ * `manifest.ts` fixes the *address* — `https://cdn.<zone_name>/toolchain/v2/manifest.json`, the one
  * hostname `infra/terraform` provisions — and this module is the fetch, the two overrides, and the
  * report of which of them answered. Three sources, in a fixed precedence:
  *
@@ -19,7 +19,11 @@
  * **The manifest is published, since 2026-09-11**, and this paragraph used to say the opposite: that
  * nothing was published to `cdn.xplainer.video` because the custom-domain connection and the Cache
  * Rule were manual steps Terraform did not manage. Both are now declared in `infra/terraform`, the
- * address answers `200`, and source 2 is the one a published build actually reads.
+ * address answers `200`, and source 2 is the one a published build actually reads. That is the
+ * version-1 document, which released CLIs keep reading. This build reads format 2 at
+ * `toolchain/v2/manifest.json`, which is uploaded as a release step and which the release check
+ * requires to be served byte-identical to the committed copy before a CLI that reads it is
+ * published (ADR 0031's note of 2026-11-12, D3 and D8).
  *
  * **That makes the two-source rule above a real constraint rather than a footnote.** Between the
  * first npm publish and the manifest upload, a published build had two sources where one had never

@@ -94,7 +94,7 @@ function bareStateDir(): Record<string, string> {
 function onnxStateDir(): { env: Record<string, string>; stateDir: string; modelPath: string } {
   const stateDir = fixtureDirectory();
   const speech = recordTestOnnxSpeech(stateDir);
-  recordTestToolchain({ stateDir, workspaceRoot: fixtureDirectory(), overrides: { speech } });
+  recordTestToolchain({ stateDir, overrides: { speech } });
   return { env: { [STATE_DIR_ENV]: stateDir }, stateDir, modelPath: speech.path };
 }
 
@@ -214,7 +214,7 @@ describe("resolveSpeech and the marker setup wrote", () => {
    */
   it("falls through for a marker recording any other provider", () => {
     const stateDir = fixtureDirectory();
-    const marker = recordTestToolchain({ stateDir, workspaceRoot: fixtureDirectory() });
+    const marker = recordTestToolchain({ stateDir });
     expect(marker.speech.provider).toBe(DOCKER_PROVIDER);
 
     const resolved = resolveSpeech({ [STATE_DIR_ENV]: stateDir });

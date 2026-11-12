@@ -4,16 +4,18 @@
  * `install` refuses a machine with no setup marker — ADR 0020 §Ordering, and `preflight.ts`'s
  * `setup-absent` refusal — and `commands/setup.ts` stops being a stub two batches from here (T19).
  * So this story stands one up: a **fixture**, committed under `../__fixtures__/`, conforming to
- * `packages/protocol/schemas/toolchain.json`, pointing at two stand-in files that exist and are
- * never executed.
+ * `packages/protocol/schemas/toolchain.json`, pointing at three stand-in files that exist and are
+ * never executed. It is a version-2 marker, the shape `setup` writes since ADR 0031's cut, and it
+ * records an `ffmpeg` — so a `daemon update` judging it against a runtime that requires one finds
+ * one, and a case about a marker that lacks it says so by removing it.
  *
- * **The committed document's two paths are relative, and that is the one thing about it that is not
+ * **The committed document's paths are relative, and that is the one thing about it that is not
  * a real marker.** A real marker's paths are absolute and resolved on the machine it describes —
  * the schema says so, and the preflight's existence check is exactly what catches a marker copied
  * from another machine. A committed file cannot hold an absolute path that exists everywhere, so
- * the document names its neighbours as `./chrome-headless-shell` and `./kokoro-fastapi` and
- * {@link writeToolchainMarker} is what turns it into a real one: it **copies** the two stand-ins
- * into `<state>/acquired/` and rewrites the paths to the copies.
+ * the document names its neighbours as `./chrome-headless-shell`, `./kokoro-fastapi` and
+ * `./ffmpeg`, and {@link writeToolchainMarker} is what turns it into a real one: it **copies** the
+ * stand-ins into `<state>/acquired/` and rewrites the paths to the copies.
  *
  * Copies rather than references, for two reasons. A test that proves the `setup-paths-gone` refusal
  * has to *remove* one of those files, and it must not be able to remove a file in the repository.
@@ -30,13 +32,13 @@
  * names `scripts/check-publish-contract.mjs` refuses in a tarball.
  */
 
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Toolchain } from "@xplainer/protocol";
+import type { Toolchain, ToolchainFfmpeg } from "@xplainer/protocol";
 import { toolchainMarkerPath } from "../preflight.js";
 
-/** `apps/cli/src/install/__fixtures__`, where the marker and its two stand-ins live. */
+/** `apps/cli/src/install/__fixtures__`, where the marker and its stand-ins live. */
 export const TOOLCHAIN_FIXTURE_DIR = fileURLToPath(new URL("../__fixtures__/", import.meta.url));
 
 /** The committed document itself. */
@@ -45,23 +47,37 @@ export const TOOLCHAIN_FIXTURE_FILE = join(TOOLCHAIN_FIXTURE_DIR, "toolchain.jso
 /** The subdirectory of a state directory the stand-ins are copied into. */
 export const ACQUIRED_DIR = "acquired";
 
-/** The fixture exactly as it is committed, with its two paths still relative. */
+/** The fixture exactly as it is committed, with its paths still relative. */
 export function readToolchainFixture(): Toolchain {
   return JSON.parse(readFileSync(TOOLCHAIN_FIXTURE_FILE, "utf8")) as Toolchain;
 }
 
-/** The fixture with its two paths resolved against the directory that holds it. */
+/** The fixture with its paths resolved against the directory that holds it. */
 export function resolvedToolchainFixture(): Toolchain {
   const fixture = readToolchainFixture();
   return {
     ...fixture,
     chrome: { ...fixture.chrome, path: resolve(TOOLCHAIN_FIXTURE_DIR, fixture.chrome.path) },
     speech: { ...fixture.speech, path: resolve(TOOLCHAIN_FIXTURE_DIR, fixture.speech.path) },
+    ...(fixture.ffmpeg === undefined
+      ? {}
+      : {
+          ffmpeg: relocatedFfmpeg(
+            fixture.ffmpeg,
+            resolve(TOOLCHAIN_FIXTURE_DIR, fixture.ffmpeg.path),
+          ),
+        }),
   };
 }
 
+/** The recorded ffmpeg with its executable — `path` and `files[0]` alike — at `path`. */
+function relocatedFfmpeg(ffmpeg: ToolchainFfmpeg, path: string): ToolchainFfmpeg {
+  const [binary, ...rest] = ffmpeg.files;
+  return { ...ffmpeg, path, files: [{ ...binary, path }, ...rest] };
+}
+
 /**
- * Materialise the fixture as `<state>/toolchain.json`, with the two stand-ins copied in beside it.
+ * Materialise the fixture as `<state>/toolchain.json`, with the stand-ins copied in beside it.
  *
  * `overrides` is shallow and is applied last, which is what lets one case say
  * `{ format_version: … + 7 }` without restating the rest of a document whose whole point is that it
@@ -78,11 +94,21 @@ export function writeToolchainMarker(
   const speechPath = join(acquired, basename(source.speech.path));
   copyFileSync(source.chrome.path, chromePath);
   copyFileSync(source.speech.path, speechPath);
+  let ffmpeg: ToolchainFfmpeg | undefined;
+  if (source.ffmpeg !== undefined) {
+    const ffmpegPath = join(acquired, basename(source.ffmpeg.path));
+    copyFileSync(source.ffmpeg.path, ffmpegPath);
+    // Executable, as every ffmpeg setup records is: the render gate stats the bit, and the
+    // committed stand-in is a plain file in git.
+    chmodSync(ffmpegPath, 0o755);
+    ffmpeg = relocatedFfmpeg(source.ffmpeg, ffmpegPath);
+  }
 
   const marker: Toolchain = {
     ...source,
     chrome: { ...source.chrome, path: chromePath },
     speech: { ...source.speech, path: speechPath },
+    ...(ffmpeg === undefined ? {} : { ffmpeg }),
     ...overrides,
   };
   mkdirSync(stateDir, { recursive: true });

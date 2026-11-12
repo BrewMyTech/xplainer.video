@@ -32,8 +32,9 @@ restate their meanings.
 ## 1. The supported path, in order
 
 ```sh
-xplainer setup                          # browser, speech route and render workspace; writes toolchain.json
-xplainer setup --workspace              # the workspace alone (`npm ci` against the template's pins)
+xplainer setup                          # browser, ffmpeg and speech route; writes toolchain.json
+xplainer setup --ffmpeg-path <file>     # the same, recording an ffmpeg you name instead of the pin
+xplainer setup --ffmpeg-pinned          # the pin again, replacing one --ffmpeg-path recorded
 xplainer runtime build --out <dir>      # assemble payload 1 (a checkout only; it is the builder)
 xplainer daemon install --runtime <dir> # register with this machine's supervisor and start it
 xplainer daemon status                  # installed? running? healthy? — and which of the three
@@ -43,14 +44,14 @@ xplainer connect claude                 # write `xplainer mcp --attach` into the
 `setup` is the only step that downloads, and `daemon install` refuses without the `toolchain.json`
 it writes (exit `3`).
 
-**A render also needs ffmpeg with libx264, and `setup` does not acquire it in this release**
-([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)). The render worker
-looks in `XPLAINER_FFMPEG`, then on the `PATH` the daemon was started with, then in
-`/opt/homebrew/bin` and `/usr/local/bin` — the last two because a LaunchAgent's `PATH` contains
-neither — and otherwise fails the render with `FFMPEG_NOT_FOUND`. A supervisor's `PATH` is not your
-shell's, so install ffmpeg where the daemon will look: Homebrew's own directories on macOS, the
-distribution's package (`/usr/bin`) on Linux, whose `systemd --user` default `PATH` includes it.
-Stills do not need it.
+**A render also needs FFmpeg, and `setup` acquires it**
+([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of 2026-11-12,
+D6): the pinned build the toolchain manifest names for this platform, or the binary
+`setup --ffmpeg-path <file>` names, recorded in `toolchain.json` either way. The render worker
+spawns `XPLAINER_FFMPEG` when the daemon was started with it set, and otherwise the ffmpeg the
+marker records; it never searches the daemon's `PATH` or a Homebrew directory, so what a launchd or
+systemd `PATH` holds no longer matters. With neither, a render is refused at the call, naming
+`xplainer setup`, and `/healthz` reports `degraded`. Stills do not need it.
 
 What `install` registers, per platform:
 
@@ -124,6 +125,21 @@ the bearer token on `/healthz` as well as `/mcp`. The unix socket (named pipe on
 `0700` directory, which *is* its authentication, and is what `xplainer mcp --attach` dials; that is
 why an agent's configuration holds no URL and no secret.
 
+**The toolchain verdict is one check, asked by three surfaces.** `/healthz` answers `ok`, or
+`degraded` with a `reason`: `toolchain_missing` when what `setup` recorded is not here — no marker,
+a recorded path gone, or no FFmpeg for a render — and `toolchain_stale` when it is here and is no
+longer the right thing, such as an FFmpeg replaced since `setup` probed it or one older than
+libavcodec 60. A still needs no FFmpeg, so it is judged on the browser and speech alone; a render
+needs an `XPLAINER_FFMPEG` naming an executable by its absolute path, or else a valid recorded
+FFmpeg. `daemon status` takes its condition from `/healthz` whenever the daemon answers, so the two
+cannot disagree — the daemon judges with its own environment, and a supervised daemon inherits no
+shell's `XPLAINER_FFMPEG` — and says "running, degraded: the render toolchain is missing" or "… is
+not the one setup recorded" accordingly. Both `daemon status` and `xplainer status` print a
+`toolchain:` block — the same check over this machine's marker alone, the browser's version,
+FFmpeg's version, licence, publisher and provider, the speech route, and on a line of its own any
+`XPLAINER_FFMPEG` the asking shell has set — and `xplainer status --json` carries it as a
+`toolchain` object beside `health.reason`. The repair is `xplainer setup` in every case.
+
 **Drain.** `SIGTERM` stops new jobs, gives in-flight ones at most **20 s** to checkpoint, hard-stops
 Chrome and ffmpeg children, marks anything still `running` or `queued` as `error` with
 `error_code: "daemon_shutdown"`, removes `runtime.json` and the socket, and **exits `0`** — the
@@ -187,25 +203,37 @@ would leave `ExecStart` pointing at the old copy and report success. Every write
 the journal is durable, and `daemon status` reports an interrupted transaction by naming the
 transition it stopped at and the command that finishes it.
 
-**Two refusals, both exit `3`, both before anything is staged or drained:**
+**Two refusals, both exit `3`, both before anything is staged or drained** — and for
+`daemon update --build`, before anything is assembled, since what the payload it would build
+requires is a constant of the build:
 
-- **the template pins differ.** A pin-changing upgrade is a **reinstall** this phase, not an update:
-  the Remotion workspace survives updates by design, so an update that changed its pins would report
-  success, keep `/healthz` green and break the next render. The message names the reinstall and
-  insists it be run from the **new** runtime's own program, because `<state>/bin/xplainer` execs the
-  *installed* runtime and would re-resolve the old pins:
+- **the two runtimes read different `toolchain.json` formats, or agree on one this `setup` does not
+  write.** Format 2 records an FFmpeg and no
+  render workspace, and a daemon on one side of that cut reads the other side's marker as a missing
+  toolchain — so a rollback across it would land on exactly such a daemon. Crossing it, in either
+  direction, is therefore a **reinstall**, and the refusal prints it rather than running it:
 
   ```sh
-  # exactly as the refusal spells it: the new payload's own interpreter and its own entry,
-  # because that payload's dist/bin.js starts `#!/usr/bin/env node` and this machine may have none
-  <new>/bin/node <new>/lib/node_modules/@xplainer/cli/dist/bin.js setup --workspace
-  <new>/bin/node <new>/lib/node_modules/@xplainer/cli/dist/bin.js daemon install --runtime <new>
+  xplainer daemon uninstall
+  xplainer setup
+  xplainer daemon install
   ```
 
-- **the installed workspace does not satisfy both runtimes.** The check runs against the runtime
-  being installed *and* the one it would roll back to, in that order. A workspace that satisfies
-  only the incoming runtime leaves a rollback landing on a daemon that answers `/healthz` and cannot
-  render, which is the failure this check exists for.
+  A payload built before the cut declares no format and counts as the earlier one, and so does an
+  installed runtime whose manifest cannot be read; two such runtimes agree with each other and are
+  refused all the same. `xplainer update` and `xplainer setup` refuse the same crossing, with the
+  same three commands, before they run or write anything, and `daemon install --runtime` refuses a
+  payload from the other side of it
+  ([ADR 0031](adr/0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of 2026-11-12,
+  D2).
+- **the marker does not satisfy the incoming runtime.** Within one format, `toolchain.json` has to
+  meet what the incoming runtime's own manifest says it needs — an FFmpeg recorded, present, still
+  the size `setup` recorded, and at or above that runtime's libavcodec floor — because an update's
+  readiness check is a `200`, and a degraded `/healthz` is a `200` too. The refusal names
+  `xplainer setup`.
+
+The template-pin refusal that used to stand first here left with the render workspace: no render
+reads one, so there are no pins to compare.
 
 ## 5. Exposing the daemon beyond this machine
 
@@ -350,8 +378,8 @@ Three things this recipe does not hide:
   `xplainer mcp --attach` over the socket inside needs none of that.
 - **`toolchain_missing` is not an error.** A fresh container has no Chrome and no speech route:
   `/healthz` answers `200` and says `degraded` until `xplainer setup` has run against the same state
-  directory. A container that renders also needs ffmpeg with libx264 in its image, which `setup`
-  does not provide in this release (§1).
+  directory. That `setup` acquires FFmpeg too, or records one already in the image with
+  `--ffmpeg-path` (§1).
 
 ### 6.3 OpenRC — `supervise-daemon`
 
@@ -434,25 +462,31 @@ the service — and the daemon never self-updates in either arrangement.
 
 The daemon runs on musl. §6.3's whole measurement was made on Alpine: `serve` started, announced
 readiness, answered authenticated `/healthz`, and drained cleanly. What does not run is the browser.
-Remotion's Chrome Headless Shell build for Linux is **glibc-linked**, so solving OpenRC on Alpine
-yields a daemon that starts reliably and fails every render.
+Every Linux build of the Chrome for Testing headless shell is **glibc-linked** — glibc 2.25 or
+newer — so solving OpenRC on Alpine yields a daemon that starts reliably and cannot render.
 
-`setup` states this before it fetches ~100 MB rather than after. `probeHost()` reads the runtime
-glibc the way Remotion does — `process.report.getReport().header.glibcVersionRuntime`, which is
-present only on a glibc Linux — and `assertLibcSatisfied()` refuses an artefact the host cannot run.
+`setup` states this before it fetches ~130 MB rather than after. `probeHost()` reads the runtime
+glibc from `process.report.getReport().header.glibcVersionRuntime`, which is present only on a
+glibc Linux, and `assertLibcSatisfied()` refuses an artefact the host cannot run. The pinned Linux
+FFmpeg builds are glibc builds too (2.28 or newer); `setup --ffmpeg-path` can name the
+distribution's own `ffmpeg` on Alpine, but no route supplies a browser there.
 
 *Measured 2026-09-08:* `node:24-alpine` (Alpine v3.24, arm64) reports `glibcVersionRuntime`
 `undefined`, against `"2.36"` from `node:24-bookworm-slim`, and the probe on Alpine returns
-`glibc: null`. The refusal is `libc-unsatisfied`:
+`glibc: null`. The refusal is `libc-unsatisfied`, and this build words it:
 
 ```
-chrome-headless-shell linux-arm64 is a glibc build and this machine reports no runtime glibc,
-which is what a musl system (Alpine) looks like. The artefact would unpack and fail to start;
-use a glibc base image, or point setup at a Chrome you supply.
+The browser for linux-arm64 is a glibc build and this machine reports no runtime glibc, which is
+what a musl system (Alpine) looks like. The artefact would unpack and fail to start; use a glibc
+base image.
 ```
+
+The message measured on that date named the browser by its artefact and ended "…or point setup at
+a Chrome you supply"; the manifest's format 2 has no such route, and the sentence no longer offers
+one.
 
 So: a glibc base image is the answer for a rendering host, and Alpine is fine for a host that only
-narrates or only proxies — or for one where you supply a Chrome that runs there yourself.
+narrates or only proxies.
 
 ### 7.2 WSL2: the distribution's lifetime is not yours to extend from inside
 

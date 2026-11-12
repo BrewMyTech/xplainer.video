@@ -221,12 +221,13 @@ describe("the program resolver", () => {
      * 2026-09-11.
      *
      * **The route is exercised once, deliberately, and the reason is a measured one.** Resolving it
-     * assembles a real payload — which copies npm, about 17 MB, and then stages a second copy — so
-     * a case per assertion cost four of those in a suite of 83 files and the first one timed out at
-     * vitest's 5 s default under that much concurrent disk work. Heavy real work belongs in
-     * `scripts/e2e/`, outside `pnpm verify`; what a unit suite can honestly do is assemble once and
-     * assert everything about the result, which is what this does. The cheap assertions — the
-     * refusal and the `runtime-dir` half of the precedence — reach no assembler and stay separate.
+     * assembles a real payload — which copied npm, about 17 MB, until D11 took it out, and then
+     * stages a second copy — so a case per assertion cost four of those in a suite of 83 files and
+     * the first one timed out at vitest's 5 s default under that much concurrent disk work. Heavy
+     * real work belongs in `scripts/e2e/`, outside `pnpm verify`; what a unit suite can honestly do
+     * is assemble once and assert everything about the result, which is what this does. The cheap
+     * assertions — the refusal and the `runtime-dir` half of the precedence — reach no assembler
+     * and stay separate.
      *
      * **The fixture is the layout npm actually produces, and the shape is the point.** `npm i -g
      * xplainer` does NOT hoist the CLI: it leaves `@xplainer/cli` nested inside the alias's own
@@ -373,8 +374,10 @@ describe("the program resolver", () => {
      * **It only became assertable once two names moved.** `RUNTIME_ROOT_PACKAGE` and
      * `templateDirectory` were exported from `runtime/assemble.ts`, and `program.ts` needed the
      * first while `runtime/verify.ts` — which `program.ts` does import — needed the second, so the
-     * assembler was in this closure through two edges that had nothing to do with writing. Both
-     * live in `runtime/manifest.ts` now, whose docblocks record that this test is why.
+     * assembler was in this closure through two edges that had nothing to do with writing. The
+     * first lives in `runtime/manifest.ts` now, whose docblock records that this test is why; the
+     * second moved to a module of its own and was then deleted with the template pins it was read
+     * for, when the previous renderer's payload left.
      */
     it("cannot reach either writer, anywhere in its transitive import graph", () => {
       /**
@@ -385,7 +388,7 @@ describe("the program resolver", () => {
        * literal: `install/supervisors/identity.ts` contains the sentence "which is the pattern
        * `../lifecycle.ts`\'s `readSwitch` follows", and following that as a module took the closure
        * from 24 files to 158 — through `lifecycle.ts` to `server.ts` to the whole `/api` surface to
-       * `setup/providers/workspace.ts`, which legitimately imports the assembler. The guard failed
+       * `setup/providers/workspace.ts`, which legitimately imported the assembler. The guard failed
        * on correct code, which is the right way round for a mistake like this to surface.
        *
        * A character scan rather than a regex, because the two forms nest: `//` inside a string is
@@ -571,7 +574,6 @@ describe("the program resolver", () => {
         "not-implemented.ts",
         "runtime/launch-spec.ts",
         "runtime/manifest.ts",
-        "runtime/template.ts",
         "runtime/verify.ts",
       ]);
 

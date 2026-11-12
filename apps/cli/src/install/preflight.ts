@@ -59,7 +59,12 @@ import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import process from "node:process";
-import type { Toolchain, ToolchainComponent, ToolchainFile } from "@xplainer/protocol";
+import type {
+  Toolchain,
+  ToolchainComponent,
+  ToolchainFfmpeg,
+  ToolchainFile,
+} from "@xplainer/protocol";
 import type { SupervisorKind } from "../daemon/daemon-state.js";
 import {
   INSTALL_CONFLICT_EXIT_CODE,
@@ -80,8 +85,14 @@ import {
 /** The marker `setup` writes, and the first file an install reads. */
 export const TOOLCHAIN_MARKER_FILE = "toolchain.json";
 
-/** The shape of {@link TOOLCHAIN_MARKER_FILE} this build knows how to read. */
-export const TOOLCHAIN_FORMAT_VERSION = 1;
+/**
+ * The shape of {@link TOOLCHAIN_MARKER_FILE} this build writes, and the newest it knows how to read.
+ *
+ * `2` since ADR 0031's cut (§Note, 2026-11-12, D1): `chrome` and `speech`, an optional `ffmpeg`, and
+ * no `workspace`. A version-1 marker is still read — it is a valid shape describing an incomplete
+ * toolchain — and anything newer is a rollback signal rather than corruption.
+ */
+export const TOOLCHAIN_FORMAT_VERSION = 2;
 
 /** What `sd_booted(3)` checks, and therefore what this does. Never `command -v systemctl`. */
 export const SYSTEMD_BOOTED_DIR = "/run/systemd/system";
@@ -386,7 +397,7 @@ export function toolchainMarkerPath(stateDir: string): string {
 }
 
 /**
- * Every path one component records, de-duplicated, with `path` first.
+ * Every path one component records, de-duplicated, with `path` first. `ffmpeg` is a component too.
  *
  * It lives here rather than beside the writer because both readers of the marker need it and this
  * module is the one `setup/toolchain.ts` already imports — the other direction would be a cycle.
@@ -394,7 +405,7 @@ export function toolchainMarkerPath(stateDir: string): string {
  * de-duplicated because a multi-file component's `files` normally also carries the artefact `path`
  * names, and a check that reported the same missing file twice would read as two problems.
  */
-export function componentPaths(component: ToolchainComponent): string[] {
+export function componentPaths(component: ToolchainComponent | ToolchainFfmpeg): string[] {
   return [...new Set([component.path, ...(component.files ?? []).map((file) => file.path)])];
 }
 
@@ -563,7 +574,7 @@ function probeToolchain(stateDir: string): ToolchainProbe {
   }
 
   const formatVersion = readFormatVersion(parsed);
-  const marker = readMarker(parsed);
+  const marker = parseToolchainMarker(parsed);
   if (marker === null) {
     return {
       path,
@@ -576,23 +587,26 @@ function probeToolchain(stateDir: string): ToolchainProbe {
         exitCode: PRECONDITION_UNMET_EXIT_CODE,
         message:
           `${path} does not record a complete toolchain: it is missing, or holds a value of the ` +
-          "wrong shape for, one of `chrome`, `speech` or `workspace` — each of which needs a " +
-          "version, an absolute path, a sha256 and the provider that acquired it. An install " +
-          "reads this to know the render toolchain is really here. Nothing was written. Run:" +
-          "\n\n  xplainer setup\n",
+          "wrong shape for, `chrome` or `speech` — each of which needs a version, an absolute " +
+          "path, a sha256 and the provider that acquired it — or it records an `ffmpeg` that is " +
+          "not one. An install reads this to know the render toolchain is really here. Nothing " +
+          "was written. Run:\n\n  xplainer setup\n",
       },
     };
   }
 
-  // Every recorded path, not only the two `path` fields. ADR 0020 §Ordering makes this probe
+  // Every recorded path, not only the `path` fields. ADR 0020 §Ordering makes this probe
   // "verifies the recorded paths still exist", and a component made of several files — the ONNX
   // speech route records its model, its voice and this platform's runtime in `files` — has more
   // than one. Checking only `path` would let an install register a daemon whose synthesiser was
   // half cleaned away, which is exactly the three-days-later failure this refusal exists to
-  // prevent. A marker with no `files` is checked exactly as it always was.
-  const missing = [...componentPaths(marker.chrome), ...componentPaths(marker.speech)].filter(
-    (entry) => !existsSync(entry),
-  );
+  // prevent. A marker with no `files` is checked exactly as it always was, and an `ffmpeg` the
+  // marker records is checked the same way; one it does not record is not this probe's question.
+  const missing = [
+    ...componentPaths(marker.chrome),
+    ...componentPaths(marker.speech),
+    ...(marker.ffmpeg === undefined ? [] : componentPaths(marker.ffmpeg)),
+  ].filter((entry) => !existsSync(entry));
   return {
     path,
     marker,
@@ -1295,8 +1309,18 @@ function readFormatVersion(parsed: unknown): number | null {
  * this file holds, while the runtime check is the same shape `daemon/daemon-state.ts` applies to
  * every field it reads off disk. A newer `format_version` is not rejected — an unknown version is
  * a rollback signal rather than corruption — so long as the fields this build needs are present.
+ *
+ * **Both shapes either side of ADR 0031's cut are read.** A version-1 marker carries a `workspace`
+ * and no `ffmpeg`; a version-2 one the reverse. `workspace` is not read at all — no render uses the
+ * workspace it described, and this build neither writes nor judges it — so a version-1 marker
+ * reads back as a valid document whose toolchain is simply incomplete. An `ffmpeg` that is present
+ * and malformed rejects the whole document, for the reason {@link readFiles} gives.
+ *
+ * Exported because it is the one reader: `setup/toolchain.ts`'s `readToolchainMarker` is this
+ * function over the file, so the install preflight and the daemon's gate cannot disagree about
+ * what a marker says.
  */
-function readMarker(parsed: unknown): Toolchain | null {
+export function parseToolchainMarker(parsed: unknown): Toolchain | null {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return null;
   }
@@ -1305,17 +1329,17 @@ function readMarker(parsed: unknown): Toolchain | null {
   const createdAt = raw.created_at;
   const chrome = readComponent(raw.chrome);
   const speech = readComponent(raw.speech);
-  const workspace = readWorkspace(raw.workspace);
+  const ffmpeg = readFfmpeg(raw.ffmpeg);
   if (
     formatVersion === null ||
     typeof createdAt !== "string" ||
     chrome === null ||
     speech === null ||
-    workspace === null
+    ffmpeg === null
   ) {
     return null;
   }
-  return { format_version: formatVersion, created_at: createdAt, chrome, speech, workspace };
+  return { format_version: formatVersion, created_at: createdAt, chrome, speech, ...ffmpeg };
 }
 
 /** One acquired component's record, or `null` when it is not one. */
@@ -1332,6 +1356,7 @@ function readComponent(value: unknown): ToolchainComponent | null {
     typeof provider !== "string" ||
     version === "" ||
     path === "" ||
+    sha256 === "" ||
     provider === ""
   ) {
     return null;
@@ -1377,15 +1402,72 @@ function readFiles(value: unknown): { files?: ToolchainFile[] } | undefined {
   return { files };
 }
 
-/** The workspace payload's identity, or `null` when it is not recorded. */
-function readWorkspace(value: unknown): Toolchain["workspace"] | null {
+/** `major.minor.micro`, which is how the probe records libavcodec and what its floor is judged on. */
+const LIBAVCODEC_VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The optional `ffmpeg` component: `{}` when it is absent, `{ ffmpeg }` when it is one, and `null`
+ * for a document this build will not accept.
+ *
+ * Absent is a valid marker — every version-1 marker, and any version-2 one written where nothing
+ * acquired FFmpeg. Present and malformed is not, for the reason {@link readFiles} gives: a reader
+ * that dropped a component it could not parse would report a toolchain without it, and a judgement
+ * about whether a render can run would then be made about the wrong document.
+ */
+function readFfmpeg(value: unknown): { ffmpeg?: ToolchainFfmpeg } | null {
+  if (value === undefined) {
+    return {};
+  }
+  const component = readComponent(value);
+  if (component === null) {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const files = component.files;
+  const probe = readProbe(raw.probe);
+  const { libavcodec, licence, publisher, source_url: sourceUrl } = raw;
+  if (
+    files === undefined ||
+    files[0] === undefined ||
+    probe === null ||
+    typeof libavcodec !== "string" ||
+    !LIBAVCODEC_VERSION.test(libavcodec) ||
+    typeof licence !== "string" ||
+    licence === "" ||
+    (publisher !== undefined && (typeof publisher !== "string" || publisher === "")) ||
+    (sourceUrl !== undefined && (typeof sourceUrl !== "string" || sourceUrl === ""))
+  ) {
+    return null;
+  }
+  return {
+    ffmpeg: {
+      version: component.version,
+      path: component.path,
+      sha256: component.sha256,
+      provider: component.provider,
+      files: [files[0], ...files.slice(1)],
+      libavcodec,
+      licence,
+      ...(publisher === undefined ? {} : { publisher }),
+      ...(sourceUrl === undefined ? {} : { source_url: sourceUrl }),
+      probe,
+    },
+  };
+}
+
+/** The three probe transcripts, each an array of lines, or `null` when any is not one. */
+function readProbe(value: unknown): ToolchainFfmpeg["probe"] | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
   const raw = value as Record<string, unknown>;
-  const { platform, version } = raw;
-  if (typeof platform !== "string" || typeof version !== "string" || platform === "") {
+  const lines = (field: unknown): string[] | null =>
+    Array.isArray(field) && field.every((line) => typeof line === "string") ? field : null;
+  const version = lines(raw.version);
+  const buildconf = lines(raw.buildconf);
+  const license = lines(raw.license);
+  if (version === null || buildconf === null || license === null) {
     return null;
   }
-  return { platform, version };
+  return { version, buildconf, license };
 }

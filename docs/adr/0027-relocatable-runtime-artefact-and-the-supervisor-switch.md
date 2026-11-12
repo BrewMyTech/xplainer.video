@@ -824,3 +824,62 @@ narration worker is, and nothing prepends an interpreter to a worker's `PATH` �
 now, since the worker's `PATH` is one of the places ffmpeg is looked for.
 
 This record stays `accepted` and no line above is rewritten.
+
+## Note, 2026-11-12: one payload, and an update transaction with no template-pin refusals
+
+Added as a dated note rather than a rewrite.
+[ADR 0031](0031-an-owned-renderer-replaces-remotion-ffmpeg-encodes.md)'s note of 2026-11-12 takes
+payload 2 out (D7), which this record's note of 2026-11-11 said Phase 2 would do. Every earlier
+sentence this note changes is quoted where it is changed.
+
+**There is one payload.** The Decision Outcome chose option 5 "over two payloads with two
+lifetimes", and §The two payloads called the split "the decision, not an implementation detail".
+The decision still holds of what is left — payload 1 is per-version and an update replaces it — but
+the second payload is gone: `runtime build --workspace`, `runtime verify --workspace` and
+`setup --workspace` are unknown options, and `assembleWorkspace`, `remotionEntryPath`, the
+`workspace.manifest.json` reader and writer, the verifier's `described` mode, and
+`@xplainer/render-core`'s `template/package.json` and `package-lock.json` are deleted. The workspace
+holds only what the owned renderer reads — each video's sources under `videos/`, its narration and
+media under `public/`, `tailwind.css` — plus `tsconfig.json` for an editor, and what the daemon
+writes there (`out/`, `requests/`, `locks/`). Nothing installs anything into it.
+
+**D2 and D11 are retired with the thing they resolved.** "Payload 2 is produced by a **real
+install** of `template/package.json`" and "the lockfile is `packages/render-core/template/package-lock.json`
+… and both ends run `npm ci`" describe a payload that no longer exists, and the
+`check:publish-contract` row the lockfile gained goes with it.
+
+**D3 and D8 lose their purpose, and D1's rule does not.** npm rode inside payload 1 so that
+`setup --workspace` had a package manager; with that command gone it has no caller, and ADR 0031's
+D11 removes it from payload 1 as a change of its own. The scoped `PATH` for the install subprocess
+goes with the install. D1's refusal to put `<runtime>/bin` on a render worker's `PATH` stands
+exactly as written: the render worker is still `process.execPath` plus an entry.
+
+**Decision A's refusal is gone, because a pin that does not exist cannot change.** §D4, D9 and
+decision A's "**Decision as built: refusal only, this phase.** `daemon update` compares the incoming
+runtime's template pins against the recorded workspace **and** against the installed runtime's" no
+longer describes `daemon update`. Its pre-drain precondition is two clauses — the installed and
+incoming runtimes read the same `toolchain.json` format, and that marker satisfies the incoming
+runtime's own stated requirements (ADR 0031 §Note, 2026-11-12, D2 (a)) — and both still refuse with
+`3` having staged nothing and drained nothing. "The invariant the rest of the design rests on:
+within the supported class the installed workspace must satisfy **both** A and B" becomes the same
+invariant over the marker: clause one keeps a rollback target reading the same file in the same
+format, which is what keeps "the rolled-back daemon must render" satisfiable. `--from` and `--build`
+given together, neither given, or a `--from` that does not exist are now refused as
+`incoming-unresolved` rather than under the template reason they used to borrow.
+
+**Two deferrals are closed rather than delivered.** The paired stage-and-switch of payload 2 —
+"**It is the successor's work, deferred and named here rather than omitted**" — and the rejected
+`setup --workspace --from <runtime dir>` have nothing left to pair or to point at. §Consequences'
+"plus about 120 MB once for the workspace", its "Payload verification has two modes", and its "What
+decision A costs a user" each describe a payload that is gone; verification has one, exhaustive,
+mode.
+
+**What an older `setup --workspace` left on a machine is removed, carefully.** `setup` deletes the
+workspace's `node_modules/`, `package.json`, `package-lock.json` and `workspace.manifest.json` only
+when that manifest records the previous renderer's entry and `package.json`'s name and pins are
+exactly the last template's — so a workspace that `XPLAINER_VIDEOS_DIR` points at a user's own
+project is never touched — and only after its refusal to run under a daemon from before the cut has
+passed. It prints what it removed, and it never touches `videos/`, `public/`, `out/`, `requests/` or
+`locks/` (ADR 0031 §Note, 2026-11-12, D7).
+
+This record stays `accepted` and no line above is rewritten.
