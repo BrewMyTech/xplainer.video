@@ -1657,6 +1657,19 @@ records its twelve decisions (D1–D12); the status of each item is as of that d
    committed one byte for byte before `pnpm publish -r`, and publishes nothing on a difference.
    What still blocks it is listed, entry by entry, in `docs/release-blockers.json`. **Open.**
 
+**Render speed, and two harness defects — built 2026-11-13, not yet released.** Capture no longer
+waits on a 60 Hz frame clock (`--disable-frame-rate-limit --disable-gpu-vsync`): the 1723-frame
+benchmark video's median render is 28.8 s against 71.7 s for 0.1.1 and 27.2 s for 0.0.11 in the
+same session on an M5 Pro, its MP4 byte-identical to 0.1.1's, and the macOS throughput gate reads
+43–45 fps. A still's pre-roll now gives each frame where an animation
+changes phase a rendering update, so it shows the animation and transition events the render
+shows; and a render hold's timers and frame loop run on a clock of the wait's own, one event at a
+time, so a second timer beside the release no longer lands on the held frame on some runs. Both
+fixes change bytes for the scenes they affect, by design. ADR 0031's note of 2026-11-13 is the
+record. On the hosted runners the Linux 12 fps bar reads 13.22–13.87, against 12.01–12.41 before,
+and a Windows render completes with the switches (run `43341549659`). **Still open:** parallel
+capture pages, which measured 6–25 % more on top of the switches; they stay booked below.
+
 **Booked, not scheduled:** from the Phase 1 code review, `chrome.kill()` waiting its full grace on a
 zombie helper where orphans are not reaped (a container whose PID 1 is not an init), and no ageing-out
 of `xplainer-chrome-*` profiles a `SIGKILL`ed worker leaves in the temporary directory; WebGL, whose

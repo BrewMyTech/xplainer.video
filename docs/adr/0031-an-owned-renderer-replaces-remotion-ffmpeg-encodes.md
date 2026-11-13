@@ -1043,3 +1043,198 @@ one clears 12 by 0.01 on its first run and by 0.34 at best. So a slower runner i
 cost added to the worker can put it under. The total fps, which a user waiting for a render
 actually feels, is under 12 on all three runs. Nothing here changes the bar. A regression under it
 is a reason to re-measure with this input, not a reason to re-word the bar.
+
+## Note, 2026-11-13: capture stops waiting on a 60 Hz clock, and two harness defects are fixed
+
+Added as a dated note. Nothing above is edited, including the four notes before this one. It
+records one change to the capture browser's flags, which changes no byte of any render, and two
+fixes to `@xplainer/motion`'s harness, which change bytes **by design** for the scenes they affect.
+The owner chose this scope on 2026-11-13: the flags, both fixes, and no parallel capture pages.
+
+### Two Chrome switches: `--disable-frame-rate-limit` and `--disable-gpu-vsync`
+
+**What changed.** Both are appended to `CHROME_FLAGS` (`apps/cli/src/render/cdp.ts`), so every
+render and every still gets them.
+
+**Why.** A headless page paces its compositor on a 60 Hz frame clock, and `Page.captureScreenshot`
+waits for a frame on it. The page has no display to keep pace with, and the screenshot draws the
+frame it returns, so that wait bought time and no pixel, the same argument §The page runs on film
+time made for the settle's own native frame. With the clock, every frame cost at least 16.7 ms and
+one page captured at 24 fps however fast the machine was. The harness owns every clock a scene can
+read, so the switches change when Chrome draws and never what it draws.
+
+**Measured** on an M5 Pro (18 logical CPUs) under a one-minute load of about 6–9 from other
+sessions. The benchmark video is the archived 57-second, 1723-frame six-scene explainer. The method
+and scripts are in the branch's research note:
+
+| Measurement | Without the switches | With them |
+| --- | --- | --- |
+| Capture only, one page | 24.4 fps, 26.8 Chrome CPU-s | **53.3 fps**, 44.7 Chrome CPU-s |
+| Frames identical to the switch-less capture | reference | **1723 of 1723** |
+| Whole render, bundle to MP4, the production encoder | 73.2–77.0 s | **38.1–40.0 s** |
+| MP4 sha256 equal to the archived 0.1.1 render (`2b9603bc…`) | 2 of 2 | **2 of 2** |
+| §The idle-machine throughput gate, 491-frame animated scene, shipped worker, 3 runs | 21.53–21.62 loop fps (idle) | **43.07–44.63** loop fps (loaded) |
+| A ready page left idle for 15 s | 0.00–0.01 Chrome CPU-s | 0.00–0.02: no spin |
+| 450 frames with about 4 cores free (14 busy loops) | 24.3 fps | 72.8–75.0 fps |
+
+The Chrome CPU-s rise is the same work done sooner. The renderer no longer idles between frames,
+and it does no extra work. A scene with event-driven state (CSS animation, transition and
+`element.animate` events, a frame loop, a late `IntersectionObserver`, `Math.random`, `setInterval`
+and a late `<Img>`) captured 300 of 300 frames identically with and without the switches.
+
+**The benchmark, three legs in one session.** The archived method was re-run: a fresh daemon per job
+under `/usr/bin/time -l`, the job submitted over `mcp --attach`, and wall clock taken from the job
+record's `created_at` to `finished_at`. The timed runs used the branch before the review's fixes to
+the hold wait (below). One more render of C on the final build took 26.31 s at load 8.6, with the
+same MP4, and its still came out as the same PNG. The three
+legs are this branch (C, its `@xplainer/cli` linked to the worktree build), 0.1.1 from npm (B), and
+0.0.11 from npm (A, the previous renderer at its default concurrency of 8). All three render the
+same source, narration and captions (one digest across the three). The order was one untimed
+warm-up each, then C B A three times, 5 s apart. The machine was an M5 Pro carrying other
+sessions:
+
+| Leg | Run | load1 before | Wall clock (s) | Effective fps | CPU-s (rusage) | Chrome CPU-s | FFmpeg CPU-s | MP4 sha256 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C, this branch | warm-up | 7.58 | 26.60 | 64.8 | 71.9 | 35.3 | 30.9 | `2b9603bc…` |
+| C, this branch | 1 | 7.88 | **26.88** | 64.1 | 72.7 | 35.4 | 31.3 | `2b9603bc…` |
+| C, this branch | 2 | 10.63 | **28.77** | 59.9 | 76.9 | 38.1 | 32.8 | `2b9603bc…` |
+| C, this branch | 3 | 11.33 | **32.05** | 53.8 | 84.4 | 42.4 | 35.8 | `2b9603bc…` |
+| B, 0.1.1 | warm-up | 7.08 | 71.96 | 23.9 | 59.8 | 26.2 | 27.6 | `2b9603bc…` |
+| B, 0.1.1 | 1 | 8.67 | **71.74** | 24.0 | 61.0 | 27.0 | 28.1 | `2b9603bc…` |
+| B, 0.1.1 | 2 | 10.65 | **72.57** | 23.7 | 63.8 | 28.3 | 29.8 | `2b9603bc…` |
+| B, 0.1.1 | 3 | 12.28 | **71.69** | 24.0 | 60.1 | 26.5 | 27.7 | `2b9603bc…` |
+| A, 0.0.11 | warm-up | 7.72 | 23.97 | 71.9 | 105.1 | 82.1 | 28.4 | `c068e29e…` |
+| A, 0.0.11 | 1 | 7.50 | **27.23** | 63.3 | 114.4 | 90.2 | 31.3 | `c068e29e…` |
+| A, 0.0.11 | 2 | 10.10 | **34.22** | 50.4 | 135.2 | 111.1 | 33.7 | `c068e29e…` |
+| A, 0.0.11 | 3 | 9.49 | **23.04** | 74.8 | 107.0 | 78.8 | 32.2 | `c068e29e…` |
+
+| Timed runs | C, this branch | B, 0.1.1 | A, 0.0.11 |
+| --- | --- | --- | --- |
+| Median wall clock (s) | **28.77** | 71.74 | 27.23 |
+| Median CPU-s (rusage) | **76.9** | 61.0 | 114.4 |
+| Median ÷ A's median | **1.06** | 2.63 | 1 |
+| Median ÷ B's median | **0.40** | 1 | 0.38 |
+
+Both of the owner's bars pass: the median is 1.06 × A's against a bar of 2, and 0.40 × B's against
+a bar of 0.6. The CPU-s median is 0.67 × A's. The archived run of 2026-11-12 had A at 24.29 s and
+B at 75.18 s, so this session sat between them for A and a little faster for B. C's MP4 equals
+0.1.1's on all four renders. A still of frame 851 (one run each) took 1.52 s on C, 1.17 s on B and
+1.18 s on A, and C's PNG is byte-identical to B's. Of C's extra 0.35 s, 74 ms is the pre-roll's
+rendering updates (257 ms against 183 ms to step frames 0–850). The rest is bundling, 971 ms
+against 685 ms, on one run at load 9. C is faster than the 38–40 s that the research's own
+capture-and-encode script measured the day before. This table goes through the shipped daemon and
+worker, and it is the figure to quote.
+
+**Linux and Windows, on hosted runners.** Run `43341549659` of `e2e-toolchain.yml` on this branch,
+with `-f fps=true -f windows=true`, used the same method as the previous note.
+
+| Platform | Measurement | Result |
+| --- | --- | --- |
+| `ubuntu-latest`, 4 vCPU | Loop fps over 3 runs, against the 12 fps bar | **13.22, 13.87, 13.83**: pass |
+| `ubuntu-latest`, 4 vCPU | Total fps (launch and bundling included) | 12.33–12.90 |
+| `windows-latest` | Render with the two switches | completed: pass |
+
+On Linux, before this note, the loop fps was 12.01–12.41 and the total fps was under 12 on all
+three runs. Both now clear the bar. The gain is about 10%, far smaller than the 2× on macOS,
+because the 4-vCPU runner is mostly CPU-bound rather than held by the frame clock. The margin over
+12 is still the thinnest any bar in this record has, and the previous note's warning about it
+stands. Windows has no fps bar: its toolchain gate shows only that `setup`, a still and a render
+complete with the switches.
+
+### The first defect: a still showed animation and transition events late
+
+**The defect.** `animationstart`, `animationiteration`, `animationend`, the `transition*` events and
+their cancellations are dispatched in a rendering update. Each is dispatched from the phase an
+animation is in then, compared with the phase it was in at the previous update. A captured frame
+gets that update from its screenshot. The still's pre-roll (§The page runs on film time, third
+bullet) only *sets* frames 0 to n − 1, so it got none: an `onAnimationEnd` recorded the frame after
+the one it belongs to, or nothing at all before the still was captured. On the research scene the
+still read `animEnd 26` where the render read `animEnd 25`. The pre-roll matched the render for
+animation *values*, which `render.test.ts` covers, and not for *events*.
+
+**The fix.** `setFrame(n, { captured: false })` (`XplainerSetFrameOptions`) is what the still's
+pre-roll now sends (`VideoPage.seek`). After such a frame settles, the harness waits for one native
+animation frame and two tasks (`renderingUpdate`), but only if an animation changed phase or
+iteration on it, appeared, or went. `AnimationSeeker` notes that from each effect's
+`getComputedTiming()` as it seeks (`takePhaseChange`). The wait costs about 9 ms a frame with the
+switches above (16.7 ms without), against about 0.19 ms for a frame that is only set, so it is
+spent only where an event is owed. A captured frame never takes it: its screenshot is its update.
+`setFrame(n)` with no options is unchanged.
+
+**Bytes.** Renders are unchanged. A **still** of a scene whose picture depends on an animation or
+transition event now shows what the render shows on that frame, and so can differ from the same
+still on 0.1.1.
+
+**Proof.** `capture.test.ts`'s "shows on a still the animation and transition events the render
+shows on that frame" compares the stills of frames 8 and 13 with the render's frames. It **fails**
+when `seek` is sent without `{ captured: false }`: frame 8 differs. It passes with it. On the
+research scene, pages that only set the frames they do not capture, two or three of them
+interleaved, now equal a single sequential page on 300 of 300 frames, in two rounds.
+
+### The second defect: a render hold's timers raced on the wall clock
+
+**The defect.** §The page runs on film time's first bullet runs "the timers created since the
+previous frame was released … on the wall clock" while a hold is out. As built, each 2 ms poll fired
+**everything** due by film time plus the wall time waited. A poll that came late therefore fired the
+releasing `setTimeout(…, 100)` and a `setTimeout(show, 120)` made beside it together, so `show`
+landed on the held frame on one run and on its own film frame, four frames later, on the next. A
+`requestAnimationFrame` loop running during the hold was drained on every poll, about fifty times in
+a 100 ms hold, so the count also changed from run to run. Two single-page renders of the research
+scene differed on 150 frames, with the switches and without them.
+
+**The fix.** The wait runs on a clock of its own, `HoldWaitClock` (`clock.ts`, tested in Node), and
+takes one event at a time:
+
+- the earliest due timer, or the next step of its own 60 Hz frame grid when a frame callback is
+  waiting;
+- timers first on a tie;
+- never an event the wall time waited has not reached.
+
+The holds are checked again after each event, two tasks later (one effect → setState hop), so a
+promise or a render the event started can release them first. The wait therefore stops at the event that released the hold however late the
+poll that reached it. A timer created during the wait, by anything, is scheduled from the wait's
+instant and at least 1 ms after it (`HOLD_WAIT_MIN_DELAY_MS`): without that floor, a
+`setTimeout(poll, 0)` re-armed from inside the wait was due at the wait's own instant every time,
+and the clock never reached the timer or the frame that would have released the hold. A browser
+clamps the same chain to 4 ms. A timer and a frame within 1e-6 ms of each other count as one
+instant, because a timer made on a frame of the grid and the later frame it should tie with can
+differ in their last bit. Rebasing every timer the wait created onto the frame's film instant is
+unchanged.
+
+**Bytes.** These scenes change:
+
+- a scene whose hold is released by its own timer, with another timer or a frame loop running beside
+  it on the same frame;
+- the second timer now always fires on the frame its delay reaches;
+- a frame loop now runs six times in a 100 ms hold. It used to run about once per 2 ms poll.
+
+Those frames are now a function of the frame number. Wall time can still reach a frame in two ways,
+and both need a scene that runs timers or a frame loop beside a hold:
+
+- a hold released by something outside the page still lets as many of the frame's events run as the
+  wall time it took allows;
+- a timer that an event's work creates more than two tasks after the event is scheduled from
+  whichever instant the wait has reached by then, and a late poll can have moved that on. The
+  effect of a default-lane render is an example. The code review found this case, and no number of
+  extra tasks closes it.
+
+**Proof.** `capture.test.ts`'s "runs a render hold's timers and frame loop in film order, the same
+on every run" compares two Chrome processes' frames with a pure function of the frame. That
+function shows the word from frame 6 and a call count of the frame plus seven. Against the harness
+before this note the test **failed 3 of 3** runs on the held frame. It passes now. The research
+scene with the race now captures identically across processes on 300 of 300 frames, in two rounds.
+
+### What this note amends
+
+- **§The page runs on film time, first bullet:** "while a hold is out, the timers created since the
+  previous frame was released run on the wall clock" now reads "… run on the wait's own clock, one
+  event at a time and never ahead of the wall time waited". The rest of the bullet stands: the
+  narrower set of timers, the frame callbacks and the rebase.
+- **The same section, third bullet:** a still is the render's frame "by construction" for
+  everything a frame's *setting* decides. For animation and transition events, it is so because of
+  the rendering update above. The pre-roll's cost is about 0.19 ms a frame plus about 9 ms for each
+  frame where an animation changes phase.
+- **§What this record does not decide, "a second capture tab":** the pre-roll such a tab would need
+  is the still's, rendering updates included. Measured on top of the switches, two to eight
+  parallel pages added 6–25 % of capture rate, for 17–48 % more Chrome CPU and about 210 MB a page.
+  That was not built, and it stays booked.

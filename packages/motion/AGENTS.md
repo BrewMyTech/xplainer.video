@@ -31,7 +31,7 @@ exports types and nothing a scene calls). Peer-depends on `react` and `react-dom
 | `runtime.ts` | The state scenes share with the harness: registration, render holds, failures, and the one `<Audio>` a video may mount |
 | `static-file.ts` | `staticFile` over the bundle's `__XPLAINER_PUBLIC_BASE__` |
 | `harness.ts` | The page driver; it composes the pure helpers below |
-| `clock.ts`, `animations.ts`, `failures.ts`, `static-fetch.ts` | The harness's pure helpers — film-time queues, frozen `Date`, Web Animation seeking, failure naming, the static `fetch` lookup — each tested in Node |
+| `clock.ts`, `animations.ts`, `failures.ts`, `static-fetch.ts` | The harness's pure helpers — film-time queues, the render-hold wait's clock, frozen `Date`, Web Animation seeking and phase tracking, failure naming, the static `fetch` lookup — each tested in Node |
 | `testing/` | Test-only: render a component at a frame with the real provider. Excluded from the build |
 
 ## Public surface
@@ -44,7 +44,7 @@ and the types `VideoConfig`, `CalculateMetadataFunction`, `Caption`, `TikTokPage
 component's props.
 
 From `src/harness.ts`, as types only: `XplainerHarness`, `XplainerMetadata`, `XplainerReadiness`,
-`XplainerRenderOptions`, and the `Window` globals the bundle and the renderer agree on —
+`XplainerRenderOptions`, `XplainerSetFrameOptions`, and the `Window` globals the bundle and the renderer agree on —
 `__xplainer`, `__XPLAINER_STATIC__`, `__XPLAINER_PUBLIC_BASE__`, `__XPLAINER_RENDER__`.
 
 ## Commands
@@ -66,20 +66,26 @@ Then the root procedure: `pnpm verify`.
   scheduler capture `setTimeout` and `MessageChannel` when their modules evaluate; patching first
   would put React's own scheduling on film time and stall it. The import order at the top of
   `harness.ts` is load-bearing.
-- **The `window.__xplainer` contract is the renderer's interface.** `metadata()`, `setFrame(n)`,
-  `readiness()` and `frame`, the `pending` names (`metadata`, `first-settle`,
+- **The `window.__xplainer` contract is the renderer's interface.** `metadata()`, `setFrame(n)`
+  and `setFrame(n, { captured: false })` — a frame that will not be screenshotted, given a rendering
+  update of its own when an animation changed phase on it, because that update is where animation
+  and transition events are dispatched — `readiness()` and `frame`, the `pending` names (`metadata`, `first-settle`,
   `delayRender:<label>`, `img:<src>`, `fonts`), and the failure codes (`PAGE_ERROR`,
   `DELAY_RENDER_TIMEOUT`, `IMAGE_BROKEN`, `IMAGE_TIMEOUT`, `NOT_SUPPORTED_IN_V1`) are read by
   `apps/cli/src/render/`. Renaming one is a change on both sides in the same commit. Every
   rejection is an `Error` whose message starts with its code, because CDP reports only the message.
-- **While a render hold is outstanding, film timers and animation-frame callbacks run on the wall
-  clock — and the wall clock is taken back out when it is released.** That is what releases
-  `const h = delayRender(); setTimeout(() => continueRender(h), 100)` and its
-  `requestAnimationFrame` twin, both of which deadlock on a pure film clock. Film time, `Date` and
-  `performance.now` stay frozen during the wait, and when the hold is released every timer the
-  wait created is rebased onto the frame's film instant (`TimerQueue.rebase`), so how long a
-  release took never reaches the video. The rule is in `harness.ts`'s docblock; do not "simplify"
-  it away.
+- **While a render hold is outstanding, the frame's own timers and animation-frame callbacks run
+  on the wait's clock — and the wall clock is taken back out when it is released.** That is what
+  releases `const h = delayRender(); setTimeout(() => continueRender(h), 100)` and its
+  `requestAnimationFrame` twin, both of which deadlock on a pure film clock. The wait's clock
+  (`HoldWaitClock`) moves one event at a time — the earliest due timer or its next 60 Hz frame,
+  timers first on a tie — never ahead of the wall time waited, and the holds are checked after
+  each, so the wait stops at the event that released it however late the poll that reached it:
+  firing everything due by the wall time waited raced a second timer onto the held frame on some
+  runs (ADR 0031's note of 2026-11-13). Film time, `Date` and `performance.now` stay frozen during
+  the wait, and when the hold is released every timer the wait created is rebased onto the frame's
+  film instant (`TimerQueue.rebase`), so how long a release took never reaches the video. The rule
+  is in `harness.ts`'s docblock; do not "simplify" it away.
 - **A frame is released once the page has stopped changing, or with a warning when it will not.**
   The settle runs in passes, and passes again while the last pass changed a node (a
   `MutationObserver` over the document), left a font loading, or left a hold or an image

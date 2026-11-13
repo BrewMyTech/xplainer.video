@@ -10,8 +10,10 @@
  *   after the first ten, and `READINESS_TIMEOUT` naming what never arrived;
  * - **a frame** — `setFrame(n)` then `Page.captureScreenshot`, PNG, from the surface, clipped to
  *   the composition. `optimizeForSpeed` is on: on an opaque frame it changed no pixel in the Phase 0
- *   spike and roughly doubled capture speed on busy content. `seek(n)` is the same `setFrame(n)`
- *   without the screenshot;
+ *   spike and roughly doubled capture speed on busy content. `seek(n)` is
+ *   `setFrame(n, { captured: false })` without the screenshot, which tells the harness to give the
+ *   frame the rendering update a screenshot would have — on the frames where an animation changed
+ *   phase, so an `onAnimationEnd` in a still's pre-roll records the frame the render records;
  * - **the page itself** — an uncaught exception, a `console.error` and a renderer crash are each
  *   `PAGE_ERROR` with the frame they happened on. A `console.warn` is logged and never fatal.
  *
@@ -46,7 +48,8 @@ export type VideoPage = {
   capture: (frame: number) => Promise<Buffer>;
   /**
    * Move to frame `n` without a screenshot, failing as {@link VideoPage.capture} does. The page
-   * keeps state across frames, so this is how a still steps through the frames before its own.
+   * keeps state across frames, so this is how a still steps through the frames before its own, and
+   * it leaves the page in the state a capture of the same frame would have.
    */
   seek: (frame: number) => Promise<void>;
 };
@@ -304,14 +307,15 @@ export async function openVideoPage(options: OpenVideoPageOptions): Promise<Vide
   }
 
   const clip = { x: 0, y: 0, width: metadata.width, height: metadata.height, scale: 1 };
-  const seek = async (frame: number): Promise<void> => {
+  const setFrame = async (frame: number, captured: boolean): Promise<void> => {
     currentFrame = frame;
     // The rejection is caught in the page and returned as a value: its message is the harness's
     // own `CODE: …`, and an exception would arrive as a description with a stack attached.
+    const options = captured ? "" : ", { captured: false }";
     const failure = await guarded(
       evaluate(
         page,
-        `window.__xplainer.setFrame(${frame}).then(() => null, (error) => ` +
+        `window.__xplainer.setFrame(${frame}${options}).then(() => null, (error) => ` +
           "String(error && error.message !== undefined ? error.message : error))",
       ),
     );
@@ -322,9 +326,9 @@ export async function openVideoPage(options: OpenVideoPageOptions): Promise<Vide
   };
   return {
     metadata,
-    seek,
+    seek: (frame) => setFrame(frame, false),
     async capture(frame: number): Promise<Buffer> {
-      await seek(frame);
+      await setFrame(frame, true);
       const shot = await guarded(
         page.send("Page.captureScreenshot", {
           format: "png",

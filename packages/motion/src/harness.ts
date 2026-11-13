@@ -27,7 +27,10 @@
  *    due by then (in due order; those they create wait for the next frame), drains the queued
  *    animation-frame callbacks with the film timestamp and commits the new frame — so everything a
  *    timer sets lands in the same commit as the frame it belongs to. Then every Web Animation is
- *    paused and seeked to film time (`animations.ts`), and the frame settles.
+ *    paused and seeked to film time (`animations.ts`), and the frame settles. A frame set with
+ *    `{ captured: false }` — a still's pre-roll — is then given one rendering update of its own if
+ *    any animation changed phase on it, because that update is where animation and transition
+ *    events are dispatched and a frame nobody screenshots gets none (`renderingUpdate`).
  * 5. **Settles before a capture**, in passes. A pass waits for render holds, then images, then
  *    fonts, then forces a layout — or, once the page has made a `ResizeObserver` or an
  *    `IntersectionObserver`, waits one native animation frame, which is where those report — and
@@ -42,12 +45,19 @@
  * clock.** A scene that writes `const h = delayRender(); setTimeout(() => continueRender(h), 100)`
  * deadlocks on a pure film clock: the timer waits for the next frame and the frame waits for the
  * timer. So while any hold is outstanding, the timers created **since the previous frame was
- * released** run on the wall clock instead: such a timer due Δ ms after the current film time
- * fires Δ wall-clock ms after the wait began, and a timer created during the wait is scheduled from
- * that same advancing point. `requestAnimationFrame(() => continueRender(h))` deadlocks the same
- * way, so the animation-frame callbacks requested since the previous release are drained too, on
- * every poll of the wait, inside `flushSync` and with the frame's film timestamp. Film time itself,
- * `Date` and `performance.now` stay frozen throughout.
+ * released**, and the animation-frame callbacks requested since then, run on a clock of the wait's
+ * own (`HoldWaitClock`): one event at a time — the earliest due timer, or the next of the wait's
+ * 60 Hz animation frames, timers first on a tie — each inside `flushSync`, the frame callbacks with
+ * the frame's film timestamp, and the holds checked again after each, two tasks later. A timer due
+ * Δ ms after the current film time therefore fires once Δ wall-clock ms have passed, but always in
+ * that order and never beside a later one: the wait stops at the event that released the hold,
+ * however late the poll that reached it, so `setTimeout(show, 120)` made beside a 100 ms release
+ * lands on the same frame on every run. (Until 2026-11-13 a poll fired everything due by "film time
+ * plus the wall time waited", and a late poll fired both timers on the held frame; ADR 0031's note
+ * of that date.) A timer created during the wait is scheduled from the wait's instant, at least
+ * `HOLD_WAIT_MIN_DELAY_MS` after it, so a zero-delay polling chain cannot stop the wait's clock.
+ * `requestAnimationFrame(() => continueRender(h))` deadlocks the same way and is released by the
+ * wait's first frame. Film time itself, `Date` and `performance.now` stay frozen throughout.
  *
  * **When the hold is released, the wall clock is taken back out.** Every timer the wait created
  * that is still pending is rebased onto the frame's film instant (`TimerQueue.rebase`): a timeout
@@ -67,8 +77,14 @@
  * fails `DELAY_RENDER_TIMEOUT` after its budget. A scene that waits on something takes the hold
  * where it starts the wait. "Since the previous release" includes this frame's own drain, so a
  * timeout chain the drain re-armed and a `requestAnimationFrame` loop do run during a hold — the
- * loop once per poll, every time with the same film timestamp, which a loop that draws from its
- * timestamp cannot tell apart from one call.
+ * loop once per frame of the wait's 60 Hz clock, every time with the same film timestamp, so a loop
+ * that counts its calls counts the same on every run when a timer released the hold. A hold
+ * released by something outside the page — an image, a `fetch` — still lets as many of those events
+ * run as the wall time it took allows. Wall time can still reach a frame in one other way: the wait
+ * gives each event two tasks — one effect → setState hop — before it takes the next, and a timer that
+ * work started by an event creates later than that, say in the effect of a default-lane render, is
+ * scheduled from whichever instant the wait has reached by then, which a late poll can have moved
+ * on. Both need a scene that runs timers or a frame loop beside a hold.
  *
  * **Images: what is waited for, and why there is no late-image failure.** Every `<img>` in the
  * document must be complete and decoded before a frame is released — the frame waits, up to the
@@ -100,7 +116,14 @@ import {
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { AnimationSeeker } from "./animations.js";
-import { createFrozenDate, FrameCallbackQueue, frameToFilmMs, TimerQueue } from "./clock.js";
+import {
+  createFrozenDate,
+  FrameCallbackQueue,
+  frameToFilmMs,
+  HOLD_WAIT_MIN_DELAY_MS,
+  HoldWaitClock,
+  TimerQueue,
+} from "./clock.js";
 import {
   CompositionCollectorContext,
   type ResolvedVideo,
@@ -137,12 +160,25 @@ export type XplainerReadiness = {
   failed: string[];
 };
 
+/** How the renderer means to use a frame it sets. */
+export type XplainerSetFrameOptions = {
+  /**
+   * `false` when the frame will not be captured — a still's pre-roll. Such a frame gets no
+   * screenshot, and so none of the rendering update a screenshot brings, which is where animation
+   * and transition events are dispatched; the harness gives it one of its own whenever an animation
+   * changed phase, so the page reaches the next frame having dispatched the animation and
+   * transition events a captured run would have. Nothing else a rendering update does is made up
+   * for. Default `true`.
+   */
+  captured?: boolean;
+};
+
 /** The driver the renderer calls over CDP. */
 export type XplainerHarness = {
   /** Resolves once `calculateMetadata` has run; rejects with the failure if mounting failed. */
   metadata(): Promise<XplainerMetadata>;
   /** Show frame `n` and resolve once it has settled and may be captured. */
-  setFrame(frame: number): Promise<void>;
+  setFrame(frame: number, options?: XplainerSetFrameOptions): Promise<void>;
   readiness(): XplainerReadiness;
   /** The frame most recently set. */
   readonly frame: number;
@@ -198,7 +234,9 @@ const native = {
 // ------------------------------------------------------------------------------------ film clock
 
 let filmMs = 0;
-let holdWaitStartedAt: number | undefined;
+
+/** The clock of the render-hold wait in progress, if one is (`settleHolds`). */
+let holdWait: HoldWaitClock | undefined;
 
 /** Timers with an id at least this large were created after the previous frame was released. */
 let releasedAtTimerId = 1;
@@ -212,9 +250,20 @@ function markReleased(): void {
   releasedAtFrameCallbackId = frameCallbacks.nextId;
 }
 
-/** Where a new timer is scheduled from: film time, advanced by the wall clock during a hold. */
+/**
+ * Where a new timer is scheduled from: film time, or during a render-hold wait the wait's current
+ * instant, whatever created it. That is the instant of the event the wait last ran, so a timer a
+ * wait event creates — directly, or within the two tasks the wait gives it before the next event —
+ * is on that event's instant; one created later is on whichever instant the wait has reached by
+ * then.
+ */
 function scheduleBase(): number {
-  return holdWaitStartedAt === undefined ? filmMs : filmMs + (native.now() - holdWaitStartedAt);
+  return holdWait === undefined ? filmMs : holdWait.nowMs;
+}
+
+/** The shortest delay a new timer gets: none, except during a render-hold wait. */
+function minimumDelay(): number {
+  return holdWait === undefined ? 0 : HOLD_WAIT_MIN_DELAY_MS;
 }
 
 /** Call a page callback; a throw becomes a recorded `PAGE_ERROR` instead of aborting the drain. */
@@ -258,9 +307,9 @@ Object.defineProperty(performance, "now", {
   value: () => filmMs,
 });
 host.setTimeout = (handler: TimerHandler, timeout?: number, ...args: unknown[]): number =>
-  timers.add(timerCallback(handler, args), timeout ?? 0, false, scheduleBase());
+  timers.add(timerCallback(handler, args), timeout ?? 0, false, scheduleBase(), minimumDelay());
 host.setInterval = (handler: TimerHandler, timeout?: number, ...args: unknown[]): number =>
-  timers.add(timerCallback(handler, args), timeout ?? 0, true, scheduleBase());
+  timers.add(timerCallback(handler, args), timeout ?? 0, true, scheduleBase(), minimumDelay());
 host.clearTimeout = (id?: number): void => timers.clear(id);
 host.clearInterval = (id?: number): void => timers.clear(id);
 host.requestAnimationFrame = (callback: FrameRequestCallback): number =>
@@ -432,25 +481,46 @@ function nativeSleep(ms: number): Promise<void> {
  */
 function settleTick(): Promise<void> {
   return new Promise((resolve) => {
-    const task = (then: () => void): void => {
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        channel.port1.close();
-        then();
-      };
-      channel.port2.postMessage(0);
-    };
-    const twoTasks = (): void => {
-      task(() => {
-        task(resolve);
-      });
-    };
     if (observersInUse) {
-      native.requestAnimationFrame(twoTasks);
+      native.requestAnimationFrame(() => {
+        twoTasks(resolve);
+      });
       return;
     }
     void document.documentElement.getBoundingClientRect();
-    twoTasks();
+    twoTasks(resolve);
+  });
+}
+
+/** Run `then` in a task of its own, behind the tasks already queued. */
+function task(then: () => void): void {
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    then();
+  };
+  channel.port2.postMessage(0);
+}
+
+/** Two tasks, one after the other: one React effect → setState hop (`settleTick`). */
+function twoTasks(then: () => void): void {
+  task(() => {
+    task(then);
+  });
+}
+
+/**
+ * One rendering update, then two tasks: what a screenshot gives a captured frame, for a frame that
+ * will not be captured (`XplainerSetFrameOptions.captured`). The update dispatches the animation
+ * and transition events and the observer reports the frame is owed, and the two tasks let a
+ * `setState` in a handler commit, as `settleTick`'s observer path does. Measured at about 9 ms in
+ * the headless shell, so it is spent only on a frame where an animation changed phase.
+ */
+function renderingUpdate(): Promise<void> {
+  return new Promise((resolve) => {
+    native.requestAnimationFrame(() => {
+      twoTasks(resolve);
+    });
   });
 }
 
@@ -462,7 +532,8 @@ async function settleHolds(): Promise<void> {
   }
   const startedAt = native.now();
   const createdDuringWait = timers.nextId;
-  holdWaitStartedAt = startedAt;
+  const clock = new HoldWaitClock(filmMs);
+  holdWait = clock;
   try {
     for (;;) {
       const holds = renderHolds();
@@ -483,20 +554,34 @@ async function settleHolds(): Promise<void> {
           throw failWith(failure("DELAY_RENDER_TIMEOUT", `still held: ${labels}`));
         }
       }
-      const waitedTo = filmMs + (now - startedAt);
-      const due = timers.nextDue(releasedAtTimerId);
-      const timersDue = due !== undefined && due <= waitedTo;
-      if (timersDue || frameCallbacks.pending(releasedAtFrameCallbackId) > 0) {
-        flushSync(() => {
-          timers.runDue(waitedTo, run, releasedAtTimerId);
-          frameCallbacks.drain(filmMs, run, releasedAtFrameCallbackId);
-        });
+      // One event at a time, on the wait's own clock, and only as far as the wall time waited.
+      // The holds are checked again before the next one, after two tasks — one React effect →
+      // setState hop (`settleTick`) — in which a promise or a render the event started can
+      // release them or arm its own timers on the event's instant.
+      const event = clock.advance(
+        timers.nextDue(releasedAtTimerId),
+        frameCallbacks.pending(releasedAtFrameCallbackId) > 0,
+        filmMs + (now - startedAt),
+      );
+      if (event === undefined) {
+        throwIfFailed();
+        await nativeSleep(HOLD_POLL_MS);
+        continue;
       }
+      flushSync(() => {
+        if (event.kind === "timers") {
+          timers.runDue(event.atMs, run, releasedAtTimerId);
+        } else {
+          frameCallbacks.drain(filmMs, run, releasedAtFrameCallbackId);
+        }
+      });
       throwIfFailed();
-      await nativeSleep(HOLD_POLL_MS);
+      await new Promise<void>((resolve) => {
+        twoTasks(resolve);
+      });
     }
   } finally {
-    holdWaitStartedAt = undefined;
+    holdWait = undefined;
     timers.rebase(createdDuringWait, filmMs);
   }
 }
@@ -722,7 +807,7 @@ onRegistration((entry) => {
 
 // ---------------------------------------------------------------------------------- the driver
 
-async function setFrame(frame: number): Promise<void> {
+async function setFrame(frame: number, options?: XplainerSetFrameOptions): Promise<void> {
   await mounted.promise;
   throwIfFailed();
   const config = video;
@@ -752,6 +837,12 @@ async function setFrame(frame: number): Promise<void> {
     await settle(frame);
     throwIfFailed();
     markReleased();
+    // Taken on every frame, so a captured frame — whose screenshot is its rendering update —
+    // starts the next one with nothing owed. The boot's own seeks count towards frame 0.
+    const phaseChanged = seeker.takePhaseChange();
+    if (options?.captured === false && phaseChanged) {
+      await renderingUpdate();
+    }
   } catch (error) {
     throw failWith(describeFailure(error));
   } finally {

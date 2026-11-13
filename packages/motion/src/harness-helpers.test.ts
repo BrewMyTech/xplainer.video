@@ -23,6 +23,33 @@ class FakeAnimation implements SeekableAnimation {
   }
 }
 
+/**
+ * An animation whose effect reports its timing the way a browser's does — a delay, then
+ * `iterations` iterations of `durationMs`, filling forwards — so the seeker can read its phase.
+ */
+class TimedAnimation extends FakeAnimation {
+  readonly effect: { getComputedTiming(): ComputedEffectTiming };
+  constructor(durationMs: number, iterations: number, delayMs: number) {
+    super();
+    const active = durationMs * iterations;
+    this.effect = {
+      getComputedTiming: () => {
+        const local = this.currentTime;
+        return {
+          localTime: local,
+          delay: delayMs,
+          activeDuration: active,
+          endTime: delayMs + active,
+          currentIteration:
+            local === null
+              ? null
+              : Math.min(Math.floor(Math.max(local - delayMs, 0) / durationMs), iterations - 1),
+        };
+      },
+    };
+  }
+}
+
 /** A scroll timeline's animation: its time is a percentage, and a number of ms is refused. */
 class ScrollDrivenAnimation implements SeekableAnimation {
   readonly timeline = { kind: "a scroll timeline" };
@@ -63,6 +90,39 @@ describe("AnimationSeeker", () => {
     seeker.seek([animation], 3000, DOCUMENT_TIMELINE);
     seeker.seek([animation], 1200, DOCUMENT_TIMELINE);
     expect(animation.currentTime).toBe(200);
+  });
+
+  it("notes a change of phase or iteration, an animation it has not seen and one that went", () => {
+    const seeker = new AnimationSeeker();
+    // Before for 50 ms, two iterations of 100 ms, then after.
+    const animation = new TimedAnimation(100, 2, 50);
+    const changedAt = (filmMs: number, animations: SeekableAnimation[] = [animation]): boolean => {
+      seeker.seek(animations, filmMs, DOCUMENT_TIMELINE);
+      return seeker.takePhaseChange();
+    };
+    expect(changedAt(1000)).toBe(true); // first seen
+    expect(changedAt(1040)).toBe(false); // still before
+    expect(changedAt(1050)).toBe(true); // active, iteration 0
+    expect(changedAt(1120)).toBe(false); // moved, same iteration
+    expect(changedAt(1160)).toBe(true); // iteration 1: an animationiteration
+    expect(changedAt(1250)).toBe(true); // after, exactly on the end: an animationend
+    expect(changedAt(1300)).toBe(false); // still after
+    expect(changedAt(1333, [])).toBe(false); // gone once finished: no event is owed
+    // Gone while still running: an animationcancel.
+    const running = new TimedAnimation(100, 1, 0);
+    expect(changedAt(2000, [running])).toBe(true);
+    expect(changedAt(2050, [])).toBe(true);
+    expect(changedAt(2100, [])).toBe(false);
+  });
+
+  it("keeps a change until it is taken, whatever the seeks after it found", () => {
+    const seeker = new AnimationSeeker();
+    const animation = new TimedAnimation(100, 1, 0);
+    seeker.seek([animation], 0, DOCUMENT_TIMELINE);
+    seeker.seek([animation], 10, DOCUMENT_TIMELINE);
+    seeker.seek([animation], 20, DOCUMENT_TIMELINE);
+    expect(seeker.takePhaseChange()).toBe(true);
+    expect(seeker.takePhaseChange()).toBe(false);
   });
 
   it("leaves an animation on any other timeline alone, a scroll timeline's included", () => {
