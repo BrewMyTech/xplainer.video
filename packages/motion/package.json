@@ -1,6 +1,6 @@
 {
   "name": "@xplainer/motion",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "The authoring API explainer scenes are written against — frame hooks, interpolate, Easing, spring, Sequence — and the page-side capture harness the xplainer renderer drives one frame at a time.",
   "homepage": "https://xplainer.video",

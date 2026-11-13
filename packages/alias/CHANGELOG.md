@@ -1,5 +1,16 @@
 # xplainer
 
+## 0.2.0
+
+### Minor Changes
+
+- Follows `@xplainer/cli` to 0.2.0, so `npx -y xplainer` runs the CLI that renders about 2.5 times faster and holds a scene's stills and timers in film order, the same on every render.
+
+### Patch Changes
+
+- Updated dependencies [0e2e383]
+  - @xplainer/cli@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes
