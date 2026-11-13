@@ -1,5 +1,13 @@
 # @xplainer/motion
 
+## 0.2.0
+
+### Minor Changes
+
+- 0e2e383: **A render hold's timers and frame loop now run in film order, the same on every render.** While a `delayRender` hold is out, timers created on that frame and its `requestAnimationFrame` callbacks run so that a hold released by its own timer can be released. They used to run on whatever was due by "film time plus the wall time waited", so a poll that came late fired the releasing `setTimeout(…, 100)` and a `setTimeout(show, 120)` beside it together, and `show` landed on the held frame on one render and four frames later on the next; a frame loop ran once per poll, a count that differed run to run. The wait now runs on a clock of its own (`HoldWaitClock`): one event at a time — the earliest due timer, or the next of its own 60 Hz frames, timers first on a tie — stopping at the event that releases the hold, and never ahead of the wall time actually waited. A timer created during the wait is due at least 1 ms after the wait's instant, so a zero-delay polling chain still lets the clock move. A scene that relied on the old race renders differently, and now renders the same way every time.
+
+  **`setFrame(n, { captured: false })`** tells the harness that frame `n` will not be captured. Such a frame gets none of the rendering update a screenshot brings, which is where animation and transition events are dispatched, so the harness gives it one of its own whenever an animation changed phase or iteration on it (`AnimationSeeker.takePhaseChange`). A still's pre-roll uses it, so the still of frame `k` shows the event state the render shows there. `setFrame(n)` with no options is unchanged.
+
 ## 0.1.1
 
 ### Patch Changes
