@@ -39,6 +39,13 @@ import { RenderError } from "./render-error.js";
  * rasterised the same way, a fixed device scale and window so the pixels are the pixels asked
  * for, sRGB and unhinted fonts so colour and glyph positions do not depend on the host's display
  * settings, and the throttling switches off so a page nobody is looking at still runs its timers.
+ *
+ * The last two, `--disable-frame-rate-limit` and `--disable-gpu-vsync`, stop the compositor
+ * waiting on a 60 Hz frame clock. A headless page has no display to keep pace with, and
+ * `Page.captureScreenshot` draws the frame it returns, so that wait bought time and no pixel: with
+ * it every frame cost at least one 16.7 ms tick. Without it the 1723-frame benchmark captures at
+ * 53 frames a second instead of 24, and its MP4 is byte-identical, because the harness owns every
+ * clock a scene can read and the switches change only when Chrome draws, never what it draws.
  */
 export const CHROME_FLAGS: readonly string[] = [
   "--headless",
@@ -58,6 +65,8 @@ export const CHROME_FLAGS: readonly string[] = [
   "--disable-hang-monitor",
   "--disable-component-update",
   "--no-pings",
+  "--disable-frame-rate-limit",
+  "--disable-gpu-vsync",
 ];
 
 /** Chrome's own switch for running without its sandbox. */

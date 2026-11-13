@@ -15,7 +15,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnEntry, untilGone } from "../daemon/testing/spawn-child.js";
-import { CdpConnection, CLOSE_GRACE_MS, launchChrome } from "./cdp.js";
+import { CdpConnection, CHROME_FLAGS, CLOSE_GRACE_MS, launchChrome } from "./cdp.js";
 
 /** A worker that exits while its browser is still starting (`testing/child-launch.ts`). */
 const CHILD_LAUNCH = fileURLToPath(new URL("./testing/child-launch.ts", import.meta.url));
@@ -230,6 +230,29 @@ if (mode === "silent") {
 }
 
 describe("launchChrome", () => {
+  /**
+   * The two switches that stop capture waiting on a 60 Hz frame clock. Losing either one changes
+   * no byte of a render and roughly doubles its time, so nothing else would notice: the launch
+   * arguments are asserted here, and a Chrome re-pin re-runs the throughput gate.
+   */
+  it("launches the browser without the 60 Hz frame clock", async () => {
+    expect(CHROME_FLAGS).toEqual(
+      expect.arrayContaining(["--disable-frame-rate-limit", "--disable-gpu-vsync"]),
+    );
+    const chrome = await launchChrome({
+      executable: fakeBrowser(),
+      log: () => undefined,
+      extraFlags: ["--no-sandbox"],
+    });
+    try {
+      expect(chrome.args).toEqual(
+        expect.arrayContaining(["--disable-frame-rate-limit", "--disable-gpu-vsync"]),
+      );
+    } finally {
+      await chrome.close();
+    }
+  });
+
   /**
    * Ubuntu 24.04 — every GitHub Linux runner — restricts unprivileged user namespaces, and Chrome
    * then refuses to start with "No usable sandbox". On Linux the launch retries once with
