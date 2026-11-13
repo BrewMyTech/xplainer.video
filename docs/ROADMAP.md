@@ -1666,9 +1666,9 @@ changes phase a rendering update, so it shows the animation and transition event
 shows; and a render hold's timers and frame loop run on a clock of the wait's own, one event at a
 time, so a second timer beside the release no longer lands on the held frame on some runs. Both
 fixes change bytes for the scenes they affect, by design. ADR 0031's note of 2026-11-13 is the
-record. **Still open:** the hosted Linux 12 fps gate and a Windows render with the two switches,
-both after the push; parallel capture pages, which measured 6–25 % more on top of the switches,
-stay booked below.
+record. On the hosted runners the Linux 12 fps bar reads 13.22–13.87, against 12.01–12.41 before,
+and a Windows render completes with the switches (run `43341549659`). **Still open:** parallel
+capture pages, which measured 6–25 % more on top of the switches; they stay booked below.
 
 **Booked, not scheduled:** from the Phase 1 code review, `chrome.kill()` waiting its full grace on a
 zombie helper where orphans are not reaped (a container whose PID 1 is not an init), and no ageing-out

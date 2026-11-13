@@ -1125,9 +1125,21 @@ against 685 ms, on one run at load 9. C is faster than the 38–40 s that the re
 capture-and-encode script measured the day before. This table goes through the shipped daemon and
 worker, and it is the figure to quote.
 
-**Not measured here:** Linux and Windows. The hosted Linux runner's 12 fps bar (the previous note)
-is re-run after this lands, and Windows proves only that a render completes; both wait for the
-owner's word to push.
+**Linux and Windows, on hosted runners.** Run `43341549659` of `e2e-toolchain.yml` on this branch,
+with `-f fps=true -f windows=true`, used the same method as the previous note.
+
+| Platform | Measurement | Result |
+| --- | --- | --- |
+| `ubuntu-latest`, 4 vCPU | Loop fps over 3 runs, against the 12 fps bar | **13.22, 13.87, 13.83**: pass |
+| `ubuntu-latest`, 4 vCPU | Total fps (launch and bundling included) | 12.33–12.90 |
+| `windows-latest` | Render with the two switches | completed: pass |
+
+On Linux, before this note, the loop fps was 12.01–12.41 and the total fps was under 12 on all
+three runs. Both now clear the bar. The gain is about 10%, far smaller than the 2× on macOS,
+because the 4-vCPU runner is mostly CPU-bound rather than held by the frame clock. The margin over
+12 is still the thinnest any bar in this record has, and the previous note's warning about it
+stands. Windows has no fps bar: its toolchain gate shows only that `setup`, a still and a render
+complete with the switches.
 
 ### The first defect: a still showed animation and transition events late
 
