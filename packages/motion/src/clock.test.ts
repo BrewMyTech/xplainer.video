@@ -9,6 +9,9 @@ import {
   FILM_EPOCH_MS,
   FrameCallbackQueue,
   frameToFilmMs,
+  HOLD_WAIT_FRAME_RATE,
+  HOLD_WAIT_MIN_DELAY_MS,
+  HoldWaitClock,
   TimerQueue,
 } from "./clock.js";
 
@@ -270,6 +273,222 @@ describe("FrameCallbackQueue", () => {
     expect(queue.drain(0, invoke)).toBe(1);
     expect(seen).toEqual(["first"]);
     expect(queue.size).toBe(0);
+  });
+});
+
+describe("HoldWaitClock, for a render-hold wait", () => {
+  const FILM = 5000;
+  const STEP = 1000 / HOLD_WAIT_FRAME_RATE;
+
+  /**
+   * The harness's wait over the scene that raced: a hold released by a 100 ms timeout, a 120 ms
+   * timeout beside it, and a `requestAnimationFrame` loop — all made on the held frame. `polls`
+   * are the wall-clock offsets the wait happened to wake at; each takes events up to its own offset,
+   * one at a time, and stops at the one that released the hold.
+   */
+  function heldFrame(polls: readonly number[]): {
+    fired: string[];
+    loopCalls: number;
+    released: boolean;
+    nowMs: number;
+    nextDue: number | undefined;
+  } {
+    const timers = new TimerQueue();
+    const frames = new FrameCallbackQueue();
+    const fired: string[] = [];
+    let held = true;
+    let loopCalls = 0;
+    const loop = (): void => {
+      loopCalls += 1;
+      frames.request(loop);
+    };
+    frames.request(loop);
+    timers.add(
+      () => {
+        held = false;
+        fired.push("release at 100");
+      },
+      100,
+      false,
+      FILM,
+    );
+    timers.add(() => fired.push("show at 120"), 120, false, FILM);
+    const clock = new HoldWaitClock(FILM);
+    for (const wallMs of polls) {
+      while (held) {
+        const event = clock.advance(timers.nextDue(), frames.pending() > 0, FILM + wallMs);
+        if (event === undefined) {
+          break;
+        }
+        if (event.kind === "timers") {
+          timers.runDue(event.atMs, invoke);
+        } else {
+          frames.drain(FILM, invoke);
+        }
+      }
+    }
+    return { fired, loopCalls, released: !held, nowMs: clock.nowMs, nextDue: timers.nextDue() };
+  }
+
+  it("stops at the timer that released the hold, however late the poll that reached it", () => {
+    const everyTwoMs = heldFrame(Array.from({ length: 80 }, (_, poll) => poll * 2));
+    const oneLatePoll = heldFrame([0, 150]);
+    const onlyLate = heldFrame([1000]);
+    for (const wait of [everyTwoMs, oneLatePoll, onlyLate]) {
+      expect(wait).toEqual({
+        fired: ["release at 100"],
+        // 0, 16.7, 33.3, 50, 66.7 and 83.3; the frame at 100 loses its tie to the release.
+        loopCalls: 6,
+        released: true,
+        nowMs: FILM + 100,
+        // The 120 ms timeout stays on film time, for the frame it belongs to.
+        nextDue: FILM + 120,
+      });
+    }
+  });
+
+  it("takes no event the wall time waited has not reached, and leaves the clock where it was", () => {
+    const clock = new HoldWaitClock(FILM);
+    expect(clock.advance(FILM + 100, false, FILM + 99.9)).toBeUndefined();
+    expect(clock.advance(undefined, false, FILM + 1000)).toBeUndefined();
+    expect(clock.nowMs).toBe(FILM);
+    expect(clock.advance(FILM + 100, false, FILM + 100)).toEqual({
+      kind: "timers",
+      atMs: FILM + 100,
+    });
+    expect(clock.nowMs).toBe(FILM + 100);
+  });
+
+  it("gives animation frames on a 60 Hz grid from the wait's start, one per step", () => {
+    const clock = new HoldWaitClock(0);
+    const at = [0, 1, 2, 3].map(() => clock.advance(undefined, true, 1000)?.atMs);
+    expect(at).toEqual([0, STEP, 2 * STEP, 3 * STEP]);
+  });
+
+  it("runs timers before a frame at the same instant, and puts a frame a timer asked for on the next step", () => {
+    const clock = new HoldWaitClock(0);
+    expect(clock.advance(0, true, 1000)).toEqual({ kind: "timers", atMs: 0 });
+    expect(clock.advance(undefined, true, 1000)).toEqual({ kind: "frame", atMs: 0 });
+    expect(clock.advance(25, false, 1000)).toEqual({ kind: "timers", atMs: 25 });
+    expect(clock.advance(undefined, true, 1000)).toEqual({ kind: "frame", atMs: 2 * STEP });
+  });
+
+  it("counts a timer and a frame a last bit apart as one instant, timers first", () => {
+    const frameAt = (index: number): number => (index * 1000) / HOLD_WAIT_FRAME_RATE;
+    const clock = new HoldWaitClock(0);
+    for (const index of [0, 1, 2, 3, 4]) {
+      expect(clock.advance(undefined, true, 1000)?.atMs).toBe(frameAt(index));
+    }
+    // Made on the frame at 33.3 with a 50 ms delay: due 83.33333333333334, the frame at
+    // 83.33333333333333. One instant, so the timer runs first and the frame still follows.
+    const due = frameAt(2) + 50;
+    expect(due).not.toBe(frameAt(5));
+    expect(clock.advance(due, true, 1000)).toEqual({ kind: "timers", atMs: due });
+    expect(clock.advance(undefined, true, 1000)).toEqual({ kind: "frame", atMs: frameAt(5) });
+  });
+
+  /**
+   * Run a wait the way the harness does — one event at a time, each timer created during the wait
+   * scheduled from the clock's instant with the wait's minimum delay — until the hold is released
+   * or `events` have run.
+   */
+  function wait(
+    setUp: (page: {
+      timers: TimerQueue;
+      frames: FrameCallbackQueue;
+      clock: HoldWaitClock;
+      setTimeout: (callback: () => void, delay: number) => void;
+      release: () => void;
+    }) => void,
+    events = 10_000,
+  ): { released: boolean; nowMs: number } {
+    const timers = new TimerQueue();
+    const frames = new FrameCallbackQueue();
+    const clock = new HoldWaitClock(FILM);
+    let released = false;
+    setUp({
+      timers,
+      frames,
+      clock,
+      setTimeout: (callback, delay) => {
+        timers.add(callback, delay, false, clock.nowMs, HOLD_WAIT_MIN_DELAY_MS);
+      },
+      release: () => {
+        released = true;
+      },
+    });
+    for (let ran = 0; ran < events && !released; ran += 1) {
+      const event = clock.advance(timers.nextDue(), frames.pending() > 0, Number.POSITIVE_INFINITY);
+      if (event === undefined) {
+        break;
+      }
+      if (event.kind === "timers") {
+        timers.runDue(event.atMs, invoke);
+      } else {
+        frames.drain(FILM, invoke);
+      }
+    }
+    return { released, nowMs: clock.nowMs };
+  }
+
+  it("lets the clock move past a zero-delay polling chain to the timer that ends it", () => {
+    const result = wait(({ timers, setTimeout, release }) => {
+      let ready = false;
+      timers.add(
+        () => {
+          ready = true;
+        },
+        100,
+        false,
+        FILM,
+      );
+      const poll = (): void => {
+        if (ready) {
+          release();
+        } else {
+          setTimeout(poll, 0);
+        }
+      };
+      timers.add(poll, 0, false, FILM);
+    });
+    expect(result.released).toBe(true);
+    expect(result.nowMs).toBeGreaterThanOrEqual(FILM + 100);
+    expect(result.nowMs).toBeLessThanOrEqual(FILM + 100 + HOLD_WAIT_MIN_DELAY_MS);
+  });
+
+  it("gives a frame that releases the hold its turn beside a zero-delay spin", () => {
+    const result = wait(({ timers, frames, setTimeout, release }) => {
+      const spin = (): void => {
+        setTimeout(spin, 0);
+      };
+      timers.add(spin, 0, false, FILM);
+      frames.request(release);
+    });
+    expect(result).toEqual({ released: true, nowMs: FILM });
+  });
+
+  it("schedules a timer made during the wait from the wait's instant, on the page's own order", () => {
+    const timers = new TimerQueue();
+    const clock = new HoldWaitClock(FILM);
+    const fired: number[] = [];
+    timers.add(
+      () => {
+        fired.push(clock.nowMs);
+        timers.add(() => fired.push(clock.nowMs), 30, false, clock.nowMs);
+      },
+      50,
+      false,
+      FILM,
+    );
+    timers.add(() => fired.push(clock.nowMs), 70, false, FILM);
+    for (;;) {
+      const event = clock.advance(timers.nextDue(), false, FILM + 1000);
+      if (event === undefined) {
+        break;
+      }
+      timers.runDue(event.atMs, invoke);
+    }
+    expect(fired).toEqual([FILM + 50, FILM + 70, FILM + 80]);
   });
 });
 

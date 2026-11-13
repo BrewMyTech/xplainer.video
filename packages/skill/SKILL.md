@@ -266,10 +266,13 @@ specific size.
   the wall clock.
 - If a scene has to wait for something asynchronous before a frame is drawn, take
   `const handle = delayRender("label")` and release it with
-  `continueRender(handle)`. Timers you start while a hold is out run on the wall
-  clock, so `setTimeout(() => continueRender(handle), 100)` works; every other
-  timer runs on the video's clock. A hold not released within 30 seconds fails
-  the render with `DELAY_RENDER_TIMEOUT` and names its label.
+  `continueRender(handle)`. Timers you start while a hold is out run while the
+  frame waits — in order, one at a time, stopping at the one that releases the
+  hold — so `setTimeout(() => continueRender(handle), 100)` works, and a timer
+  started beside it for later fires on the frame its delay reaches, the same on
+  every render; every other timer runs on the video's clock. A hold not released
+  within 30 seconds fails the render with `DELAY_RENDER_TIMEOUT` and names its
+  label.
 
 **Videos written for the previous renderer.** Imports from `remotion`,
 `@remotion/media` and `@remotion/captions` still compile for one more release —

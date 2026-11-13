@@ -185,6 +185,100 @@ const Scattered = () => {
 export const scenes = { hook: Scattered };
 `;
 
+/**
+ * A CSS animation from frame 2 and a CSS transition from frame 6, each 100 ms, whose end events
+ * record the frame they were dispatched on as text — so a difference in when an event arrived is a
+ * difference in pixels. `{{HANDLERS}}` is replaced by the handlers, or by nothing for the variant
+ * that proves the events are what the text shows.
+ */
+const EVENTS_TEMPLATE = `import { AbsoluteFill, useCurrentFrame } from "@xplainer/motion";
+import { useRef, useState } from "react";
+
+const Events = () => {
+  const frame = useCurrentFrame();
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
+  const [animationEnd, setAnimationEnd] = useState<number | null>(null);
+  const [transitionEnd, setTransitionEnd] = useState<number | null>(null);
+  const onAnimationEnd = () => setAnimationEnd(frameRef.current);
+  const onTransitionEnd = () => setTransitionEnd(frameRef.current);
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#101828", color: "white", fontSize: 64, padding: 80 }}>
+      <style>{"@keyframes grow { from { width: 10px } to { width: 600px } }"}</style>
+      <div>animationend {String(animationEnd)} transitionend {String(transitionEnd)}</div>
+      {frame >= 2 ? (
+        <div style={{ animation: "grow 100ms linear forwards", height: 40, background: "#f59e0b" }} {{ANIMATION}} />
+      ) : null}
+      <div style={{ transition: "width 100ms linear", width: frame >= 6 ? 600 : 10, height: 40, background: "#10b981" }} {{TRANSITION}} />
+    </AbsoluteFill>
+  );
+};
+
+export const scenes = { hook: Events };
+`;
+
+const EVENTS = EVENTS_TEMPLATE.replace("{{ANIMATION}}", "onAnimationEnd={onAnimationEnd}").replace(
+  "{{TRANSITION}}",
+  "onTransitionEnd={onTransitionEnd}",
+);
+const EVENTS_UNHANDLED = EVENTS_TEMPLATE.replace("{{ANIMATION}}", "").replace("{{TRANSITION}}", "");
+const EVENT_FRAMES = 14;
+
+/**
+ * Frame 2 takes a hold its own 100 ms timeout releases, beside a 101 ms timeout that shows a word,
+ * while a `requestAnimationFrame` loop counts its calls from mount. `HELD_REFERENCE` draws what
+ * that has to come to as a pure function of the frame: the word from frame 6, the first frame
+ * whose film time reaches it, and a count that is the frame's own drain plus the six frames the
+ * wait's 60 Hz clock gives before the release at 100 ms.
+ */
+const HELD = `import { AbsoluteFill, continueRender, delayRender, useCurrentFrame } from "@xplainer/motion";
+import { useEffect, useState } from "react";
+
+const Held = () => {
+  const frame = useCurrentFrame();
+  const [calls, setCalls] = useState(0);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    let id = 0;
+    const tick = () => {
+      setCalls((count) => count + 1);
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, []);
+  useEffect(() => {
+    if (frame === 2) {
+      const handle = delayRender("held");
+      setTimeout(() => continueRender(handle), 100);
+      setTimeout(() => setShown(true), 101);
+    }
+  }, [frame]);
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#101828", color: "white", fontSize: 64, padding: 80 }}>
+      <div>calls {calls} shown {String(shown)}</div>
+    </AbsoluteFill>
+  );
+};
+
+export const scenes = { hook: Held };
+`;
+
+const HELD_REFERENCE = `import { AbsoluteFill, useCurrentFrame } from "@xplainer/motion";
+
+const Held = () => {
+  const frame = useCurrentFrame();
+  const calls = frame < 2 ? frame + 1 : frame + 7;
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#101828", color: "white", fontSize: 64, padding: 80 }}>
+      <div>calls {calls} shown {String(frame >= 6)}</div>
+    </AbsoluteFill>
+  );
+};
+
+export const scenes = { hook: Held };
+`;
+
 // The same switch as the render test: a real browser, so a developer without one can opt out.
 describe.skipIf(process.env.XPLAINER_SKIP_RENDER_TEST === "1")("capturing a real page", () => {
   it("captures the same three frames as the same bytes in two separate Chrome processes", async () => {
@@ -275,6 +369,65 @@ export const scenes = { hook: Animated };
     }
     // The animation is captured moving, not frozen at its first keyframe.
     expect(first[0]?.equals(first[3] ?? Buffer.alloc(0))).toBe(false);
+  }, 120_000);
+
+  /**
+   * A still steps its page through every frame before its own without capturing them, and a frame
+   * nobody captures gets none of the rendering update a screenshot brings — which is where
+   * animation and transition events are dispatched. So the harness gives such a frame one whenever
+   * an animation changed phase on it, and the still of frame k shows the event state the render
+   * shows there. Without it the still recorded each event a frame late, or not at all.
+   */
+  it("shows on a still the animation and transition events the render shows on that frame", async () => {
+    const url = await bundled(fixture(EVENTS, EVENT_FRAMES));
+    const rendered = await captureAll(url);
+    const unhandled = await captureAll(await bundled(fixture(EVENTS_UNHANDLED, EVENT_FRAMES)));
+    const last = EVENT_FRAMES - 1;
+    // The events reached the picture: the same scene without its handlers ends differently.
+    expect(rendered[last]?.equals(unhandled[last] ?? Buffer.alloc(0))).toBe(false);
+
+    const chrome = await launchChrome({ executable: (await testChrome()).path, log: () => {} });
+    try {
+      for (const target of [8, last]) {
+        const page = await openVideoPage({
+          chrome,
+          url,
+          log: () => {},
+          readinessTimeoutMs: 15_000,
+        });
+        for (let frame = 0; frame < target; frame += 1) {
+          await page.seek(frame);
+        }
+        const still = await page.capture(target);
+        expect(
+          still.equals(rendered[target] ?? Buffer.alloc(0)),
+          `the still of frame ${target} differs from the render's frame ${target}`,
+        ).toBe(true);
+      }
+    } finally {
+      await chrome.close();
+    }
+  }, 120_000);
+
+  /**
+   * A hold its own timeout releases, a second timeout 1 ms behind it and a frame loop: until
+   * 2026-11-13 the wait fired whatever was due by the wall time it had waited, so a poll that came
+   * late fired both timeouts on the held frame, and the loop ran once per poll — a count that
+   * differed run to run. The wait now runs on a clock of its own, one event at a time, so every
+   * frame is a function of the frame number.
+   */
+  it("runs a render hold's timers and frame loop in film order, the same on every run", async () => {
+    const reference = await captureAll(await bundled(fixture(HELD_REFERENCE, 8)));
+    const url = await bundled(fixture(HELD, 8));
+    for (const run of [1, 2]) {
+      const frames = await captureAll(url);
+      for (const [frame, png] of frames.entries()) {
+        expect(
+          png.equals(reference[frame] ?? Buffer.alloc(0)),
+          `run ${run}: frame ${frame} differs from the film-time reference`,
+        ).toBe(true);
+      }
+    }
   }, 120_000);
 });
 

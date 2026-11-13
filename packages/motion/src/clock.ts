@@ -74,12 +74,20 @@ export class TimerQueue {
 
   /**
    * Schedule `callback` `delayMs` after `nowMs`. The delay is whatever the page passed, converted
-   * with `Number()` as a browser converts it — `setTimeout(fn, "100")` waits 100 ms — and one that
-   * converts to a non-finite or negative number is 0.
+   * with `Number()` — `setTimeout(fn, "100")` waits 100 ms — and one that converts to a
+   * non-finite or negative number is 0. A fractional delay is kept as it is; a browser would
+   * truncate it to whole milliseconds. `minDelayMs` raises any shorter delay to itself: the
+   * render-hold wait passes `HOLD_WAIT_MIN_DELAY_MS`, so a zero-delay chain cannot stop its clock.
    */
-  add(callback: () => void, delayMs: unknown, repeat: boolean, nowMs: number): number {
+  add(
+    callback: () => void,
+    delayMs: unknown,
+    repeat: boolean,
+    nowMs: number,
+    minDelayMs = 0,
+  ): number {
     const requested = Number(delayMs);
-    const delay = Number.isFinite(requested) && requested > 0 ? requested : 0;
+    const delay = Math.max(Number.isFinite(requested) && requested > 0 ? requested : 0, minDelayMs);
     const id = this.#nextId;
     this.#nextId += 1;
     this.#timers.set(id, {
@@ -257,5 +265,110 @@ export class FrameCallbackQueue {
       invoke(() => callback(timestamp));
     }
     return ran;
+  }
+}
+
+/** How often a render-hold wait gives the page an animation frame, on its own clock. */
+export const HOLD_WAIT_FRAME_RATE = 60;
+
+/**
+ * The shortest delay a timer created during a render-hold wait gets. A browser clamps a nested
+ * zero-delay timer to 4 ms; without a floor, `setTimeout(poll, 0)` re-armed from inside the wait
+ * would be due at the wait's own instant every time, and its clock would never move on to the
+ * timer or the frame that releases the hold.
+ */
+export const HOLD_WAIT_MIN_DELAY_MS = 1;
+
+/**
+ * How far apart a timer and a frame may be and still be one instant. A timer created on a frame of
+ * the wait's grid is due at `(origin + k·1000/60) + d`, and the frame it should tie with is at
+ * `origin + (k + n)·1000/60`; the two sums can differ in their last bit.
+ */
+const HOLD_WAIT_TIE_MS = 1e-6;
+
+/** What a render-hold wait runs next: the due timers at one instant, or one animation frame. */
+export type HoldWaitEvent = {
+  kind: "timers" | "frame";
+  /** The wait's own instant for it, in film milliseconds from the wait's origin. */
+  atMs: number;
+};
+
+/**
+ * The clock a render-hold wait runs its timers and animation frames on, so that the order they
+ * run in is the page's own and never the wall clock's.
+ *
+ * A hold released by its own timer — `setTimeout(() => continueRender(h), 100)` — needs time to
+ * pass while film time stands still, and the harness used to let the wall clock supply it: every
+ * poll fired whatever was due by "film time plus the wall time waited". A poll that came late fired
+ * the releasing timer and a later one together, so a `setTimeout(show, 120)` made beside the
+ * release landed on the held frame on one run and four frames later on the next. This clock moves
+ * one event at a time instead — the earliest due timer, or the next of its own 60 Hz animation
+ * frames, timers first on a tie (to within `HOLD_WAIT_TIE_MS`) — and the harness re-checks the
+ * holds after each, so the wait
+ * stops at the event that released it however late the poll that reached it was.
+ *
+ * The wall clock still bounds it: an event is taken only once the wall time waited has reached
+ * it (`limitMs`), so while a hold waits on something outside the page — an image, a `fetch` — the
+ * timers already waiting run at the pace they would have, rather than every one of them at once. A
+ * timer that outside work creates is scheduled from the wait's last instant, and so may run as
+ * soon as the wall time allows.
+ */
+export class HoldWaitClock {
+  readonly #originMs: number;
+  #nowMs: number;
+  /** The index of the next animation frame this wait can give, counted from the origin. */
+  #frameIndex = 0;
+
+  constructor(originMs: number) {
+    this.#originMs = originMs;
+    this.#nowMs = originMs;
+  }
+
+  /** The wait's current instant: where a timer created now is scheduled from. */
+  get nowMs(): number {
+    return this.#nowMs;
+  }
+
+  #frameAt(index: number): number {
+    return this.#originMs + (index * 1000) / HOLD_WAIT_FRAME_RATE;
+  }
+
+  /**
+   * Take the next event no later than `limitMs` and move the clock to it, or answer `undefined`
+   * and leave the clock where it is. `timerDueMs` is the earliest due time among the timers the
+   * wait may run; `framePending` is whether an animation-frame callback is waiting for one. A frame
+   * falls on the first step of the 60 Hz grid from the origin that is not before now and has not
+   * been given already, so a callback requested by a timer waits for the next step, as it would
+   * in a browser.
+   */
+  advance(
+    timerDueMs: number | undefined,
+    framePending: boolean,
+    limitMs: number,
+  ): HoldWaitEvent | undefined {
+    let frameMs: number | undefined;
+    if (framePending) {
+      while (this.#frameAt(this.#frameIndex) < this.#nowMs - HOLD_WAIT_TIE_MS) {
+        this.#frameIndex += 1;
+      }
+      frameMs = this.#frameAt(this.#frameIndex);
+    }
+    let event: HoldWaitEvent | undefined;
+    if (
+      timerDueMs !== undefined &&
+      (frameMs === undefined || timerDueMs <= frameMs + HOLD_WAIT_TIE_MS)
+    ) {
+      event = { kind: "timers", atMs: Math.max(timerDueMs, this.#nowMs) };
+    } else if (frameMs !== undefined) {
+      event = { kind: "frame", atMs: frameMs };
+    }
+    if (event === undefined || event.atMs > limitMs) {
+      return undefined;
+    }
+    this.#nowMs = Math.max(this.#nowMs, event.atMs);
+    if (event.kind === "frame") {
+      this.#frameIndex += 1;
+    }
+    return event;
   }
 }
